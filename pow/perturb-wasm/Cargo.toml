@@ -1,0 +1,12 @@
+[package]
+name = "sm64coin-perturb-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "The SM64Coin perturbation (sm64coin-perturb) for the browser: the same code as native nodes"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sm64coin-perturb = { path = "../perturb" }
+wasm-bindgen = "0.2"

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Recorder } from '../lib/recorder.js';
 import { daemon, wallet } from '../lib/rpc.js';
-import { rawProof, seal, toM64, download, bytesToHex } from '../lib/proof.js';
+import { rawProof, proofFromRun, seal, toM64, download, bytesToHex } from '../lib/proof.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
@@ -83,7 +83,7 @@ function Miner() {
         if (!done) { if (!restart && !r.skipped) say('out of time: new attempt'); continue; }
         const pads_ = done;
         try {
-          await daemon('submit_block', [seal(t.blocktemplate_blob, rawProof(pads_))]);
+          await daemon('submit_block', [seal(t.blocktemplate_blob, proofFromRun(r.pads, r.poked))]);
           setLast((l) => ({ ...l, result: 'accepted' }));
           announceMined(t.height, t.expected_reward);
           say(`★ BLOCK ${t.height} ACCEPTED: ${pads_.length} frames (${frames(pads_.length)}), ${coins(t.expected_reward)} SM64 to you`);

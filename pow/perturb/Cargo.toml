@@ -1,0 +1,8 @@
+[package]
+name = "sm64coin-perturb"
+version = "0.1.0"
+edition = "2024"
+description = "SM64Coin's controller perturbation and game adapter, dependency-free so the browser runs the same code (via perturb-wasm)"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

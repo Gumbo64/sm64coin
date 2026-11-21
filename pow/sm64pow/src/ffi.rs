@@ -196,17 +196,55 @@ fn copy_out(bytes: &[u8], out: *mut u8, cap: usize) -> usize {
     bytes.len()
 }
 
-/// Decodes a proof blob to raw pads (4 bytes each, codec-free), for the RPC
-/// and explorer. Returns the byte length (call with `out` NULL to size the
-/// buffer; nothing is written unless `cap` is big enough), or `usize::MAX`
-/// if the blob does not decode.
+fn blob_arg<'a>(blob: *const u8, len: usize) -> &'a [u8] {
+    if blob.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(blob, len) } }
+}
+
+/// Decodes a proof blob to its inputs (the non-poked frames' pads, 4 bytes
+/// each, codec-free). Returns the byte length (call with `out` NULL to size
+/// the buffer; nothing is written unless `cap` is big enough), or
+/// `usize::MAX` if the blob does not decode.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_decode_raw(blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
-    let bytes: &[u8] = if blob.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(blob, len) } };
-    match crate::proof::decode(bytes, rules().max_frames_any() as usize) {
-        Ok(pads) => copy_out(&crate::proof::Raw.encode(&pads), out, cap),
+    match crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize) {
+        Ok(pr) => copy_out(&crate::proof::Raw.encode(&pr.inputs), out, cap),
         Err(e) => {
             set_error(e.to_string());
+            usize::MAX
+        }
+    }
+}
+
+/// How many frames a proof's run lasted (0 if it doesn't decode).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_proof_frames(blob: *const u8, len: usize) -> u32 {
+    crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize).map_or(0, |pr| pr.frames)
+}
+
+/// The pads played on every frame of a proof's run, pokes regenerated (for
+/// .m64 export). Replays the run. Same return convention as
+/// `sm64pow_decode_raw`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_played_raw(hash32: *const u8, difficulty: u64, blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
+    if hash32.is_null() {
+        set_error("null seed hash".into());
+        return usize::MAX;
+    }
+    let seed = crate::Seed(unsafe { *(hash32 as *const [u8; 32]) });
+    let bytes = blob_arg(blob, len);
+    let res = std::panic::catch_unwind(|| -> anyhow::Result<Vec<u8>> {
+        let p = params(difficulty);
+        let pr = crate::proof::decode_proof(bytes, p.max_frames as usize)?;
+        Ok(crate::proof::Raw.encode(&crate::played_from_proof(&seed, &p, &pr)?))
+    });
+    match res {
+        Ok(Ok(b)) => copy_out(&b, out, cap),
+        Ok(Err(e)) => {
+            set_error(e.to_string());
+            usize::MAX
+        }
+        Err(_) => {
+            set_error("panic while replaying".into());
             usize::MAX
         }
     }
@@ -216,9 +254,8 @@ pub extern "C" fn sm64pow_decode_raw(blob: *const u8, len: usize, out: *mut u8, 
 /// change). Same return convention as `sm64pow_decode_raw`.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_reencode(blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
-    let bytes: &[u8] = if blob.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(blob, len) } };
-    match crate::proof::decode(bytes, rules().max_frames_any() as usize) {
-        Ok(pads) => copy_out(&crate::proof::encode_best(&pads), out, cap),
+    match crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize) {
+        Ok(pr) => copy_out(&crate::proof::encode_proof(&pr), out, cap),
         Err(e) => {
             set_error(e.to_string());
             usize::MAX

@@ -14,7 +14,8 @@ use anyhow::Result;
 use obrrt_core::read_state;
 use rand::{SeedableRng, rngs::SmallRng};
 use rayon::prelude::*;
-use sm64_binds::{GamePad, SM64Game};
+use sm64_binds::GamePad;
+use sm64pow::MiningGame;
 use sm64pow::{Params, Seed};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -52,7 +53,7 @@ impl Default for BeamConfig {
 }
 
 struct Node {
-    game: SM64Game,
+    game: MiningGame,
     played: Vec<GamePad>,
     snap: Snap,
     /// Reference frame this state is at.
@@ -81,14 +82,13 @@ pub fn mine(
     mut log: impl FnMut(&str),
 ) -> Result<Option<Mined>> {
     let t0 = Instant::now();
-    let generator = sm64pow::generator()?;
     let mut root = sm64pow::new_mining_game(seed, params)?;
-    let mut snap = Snap::new(&read_state(&root, 0, false), None);
+    let mut snap = Snap::new(&read_state(&root.game, 0, false), None);
     let mut p0 = 0;
     for (i, pad) in cfg.start.iter().enumerate() {
-        let got = sm64pow::mine_step(&mut root, seed, params, i, *pad)?;
+        let got = sm64pow::mine_step(&mut root, *pad)?;
         anyhow::ensure!(got == *pad, "start pads don't match the perturbation at frame {i}");
-        snap = Snap::new(&read_state(&root, i as u32 + 1, false), Some(&snap));
+        snap = Snap::new(&read_state(&root.game, i as u32 + 1, false), Some(&snap));
         p0 = locate(reference, &snap, p0, 1).0;
     }
     let mut beam = vec![Node { game: root, played: cfg.start.clone(), snap, p: p0, score: 0.0, on: true }];
@@ -127,9 +127,9 @@ pub fn mine(
             .par_iter()
             .zip(cands.par_iter())
             .map(|(n, cs)| {
-                let mut g = generator.copy_from(&n.game).expect("copy game");
+                let mut g = n.game.fork().expect("copy game");
                 cs.iter()
-                    .map(|c| evaluate(seed, &mut g, &n.game, &n.snap, c, reference, n.p, params, n.played.len()).expect("evaluate"))
+                    .map(|c| evaluate(&mut g, &n.game, &n.snap, c, reference, n.p, params, n.played.len()).expect("evaluate"))
                     .collect()
             })
             .collect();
@@ -186,14 +186,14 @@ pub fn mine(
                 let parent = &beam[i];
                 let o = &outs[i][k];
                 let n = cfg.commit.min(o.pads.len());
-                let mut game = generator.copy_from(&parent.game).expect("copy game");
+                let mut game = parent.game.fork().expect("copy game");
                 let mut played = parent.played.clone();
                 let mut snap = parent.snap;
                 for pad in &o.pads[..n] {
-                    let got = sm64pow::mine_step(&mut game, seed, params, played.len(), *pad).expect("step");
+                    let got = sm64pow::mine_step(&mut game, *pad).expect("step");
                     debug_assert_eq!(got, *pad);
                     played.push(got);
-                    snap = Snap::new(&read_state(&game, played.len() as u32, false), Some(&snap));
+                    snap = Snap::new(&read_state(&game.game, played.len() as u32, false), Some(&snap));
                 }
                 let (p, on) = locate(reference, &snap, parent.p, n);
                 Node { game, played, snap, p, score, on }
@@ -215,7 +215,7 @@ pub fn mine(
             let b = n.p / 64;
             if archive[b].as_ref().is_none_or(|a| n.score > a.score && n.played.len() <= a.played.len() + 64) {
                 archive[b] = Some(Node {
-                    game: generator.copy_from(&n.game)?,
+                    game: n.game.fork()?,
                     played: n.played.clone(),
                     snap: n.snap,
                     p: n.p,
@@ -264,7 +264,7 @@ pub fn mine(
             let back = 1 + reseeds % 4;
             let from = b.saturating_sub(back);
             for (slot, a) in (from..=b).rev().filter_map(|i| archive[i].as_ref()).take(cfg.width / 2).enumerate() {
-                let node = Node { game: generator.copy_from(&a.game)?, played: a.played.clone(), snap: a.snap, p: a.p, score: a.score, on: true };
+                let node = Node { game: a.game.fork()?, played: a.played.clone(), snap: a.snap, p: a.p, score: a.score, on: true };
                 let idx = beam.len() - 1 - slot.min(beam.len() - 1);
                 beam[idx] = node;
             }

@@ -6,7 +6,7 @@ struct MyBot;
 impl Bot for MyBot {
     fn play(&mut self, env: &mut MiningEnv, stop: &dyn Fn() -> bool) -> anyhow::Result<()> {
         while !env.is_over() && !stop() {
-            let played = env.step(GamePad::new(0, 0, 0))?; // reseed + perturbation applied
+            let played = env.step(GamePad::new(0, 0, 0))?; // perturbation applied (a poke replaces the wanted pad)
             let mario = env.state()?;
         }
         Ok(())
@@ -20,7 +20,7 @@ const PY = `from sm64coin import GamePad, practice, run_miner
 
 def bot(env, stop):
     while not env.is_over() and not stop():
-        played = env.step(GamePad(0, 0, 0))   # reseed + rng_pad applied
+        played = env.step(GamePad(0, 0, 0))   # perturbation applied
         mario = env.state()
 
 practice(bot, seed=1, difficulty=1)                       # offline
@@ -41,16 +41,21 @@ export default function Bots() {
 
       <div className="card">
         <h3>The contract</h3>
-        <p className="muted">A task is a 32-byte seed hash (<span className="mono">sm64_seed_hash</span> in the block template) and a difficulty, which fixes the frame limit and the perturbation. For every frame <span className="mono">f</span> (0-based) of a run from power-on:</p>
+        <p className="muted">
+          A task is a 32-byte seed hash (<span className="mono">sm64_seed_hash</span> in the block template) and a difficulty, which fixes the frame limit and the perturbation.
+          The game build is stock: the pokes are generated <em>outside</em> the game, from the seed (<span className="mono">pow/perturb</span>; the browser miner runs the same code as WASM).
+          <span className="mono">MiningGame</span> bundles a game with its perturbation. For every frame of a run from power-on:
+        </p>
         <ol className="muted">
-          <li>if <span className="mono">f &gt; 0</span> and <span className="mono">f % reseed_frames == 0</span>: <span className="mono">game.set_rng_seed(Seed.word(f / reseed_frames))</span>; before frame 0 set the seed to <span className="mono">word(0)</span> and <span className="mono">set_rng_config</span></li>
-          <li><span className="mono">played = game.rng_pad(wanted)</span></li>
-          <li><span className="mono">game.step_game(played)</span>, record <span className="mono">played</span></li>
+          <li>read the game's clock (<span className="mono">gAreaUpdateCounter</span>) before the frame; a frame can be poked only if the clock moved since the previous frame's reading, so pausing neither spends nor rerolls pokes</li>
+          <li>the perturbation picks the pad: in each window of <span className="mono">window_length</span> ticks there are exactly <span className="mono">random_amount</span> bursts of <span className="mono">burst_length</span> poked frames, each possible start taken with probability <span className="mono">remaining / remaining</span> (bursts left over frames left); a poked frame plays a random pad and ignores <span className="mono">wanted</span></li>
+          <li><span className="mono">game.step_game(played)</span>, then, if the clock moved, mix a digest of the new game state into the perturbation, so pokes cannot be predicted without playing the run</li>
         </ol>
         <p className="muted">
-          <span className="mono">Seed.word(k)</span> is the little-endian 32-bit word <span className="mono">k % 8</span> of the seed hash, XOR <span className="mono">(k / 8) * 0x9E3779B9</span> (wrapping), with 0 becoming 1; <span className="mono">reseed_frames</span> is 300.
-          The proof is the list of played pads, ending exactly on the frame a star is first collected, within <span className="mono">max_frames</span> (18000 at difficulty 1).
-          Simulating futures on clones is fine, as long as committed frames go through the same perturbation.
+          The generator is xoshiro256** seeded once from all of the seed hash; the code in <span className="mono">pow/perturb</span> is the specification.
+          The proof stores only the inputs of the frames that were <em>not</em> poked (<span className="mono">varint(frames)</span>, a codec byte, the inputs): the verifier regenerates the pokes from the seed.
+          The run must end exactly on the frame a star is first collected, within <span className="mono">max_frames</span> (18000 at difficulty 1).
+          Simulating futures on clones is fine, as long as committed frames go through the same perturbation: the perturbation is part of the run's state, so copy and save a <span className="mono">MiningGame</span> (game and perturber together), never the game alone.
         </p>
       </div>
 
@@ -72,7 +77,7 @@ export default function Bots() {
         <h3>Practice and test</h3>
         <p className="muted">
           <span className="mono">practice()</span> runs your bot offline on random seeds and verifies a winning proof with the consensus verifier.
-          Check a proof from any implementation with <span className="mono">verify_file &lt;seed_hash&gt; &lt;difficulty&gt; pads.bin</span> (raw 4 bytes a frame; <span className="mono">--conformance</span> checks only that the pads obey the perturbation, for runs that do not win yet).
+          Check a proof from any implementation with <span className="mono">verify_file &lt;seed_hash&gt; &lt;difficulty&gt; pads.bin</span> (the pads played on every frame, raw 4 bytes each; <span className="mono">--blob</span> takes a sealed proof; <span className="mono">--conformance</span> checks only that the pads obey the perturbation, for runs that do not win yet).
         </p>
       </div>
 

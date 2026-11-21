@@ -63,11 +63,14 @@ impl Daemon {
         r["height"].as_u64().ok_or_else(|| anyhow!("get_info: no height"))
     }
 
-    /// The winning run that sealed block `height`: its hash and pads.
+    /// The winning run that sealed block `height`: its hash and the pads played
+/// on every frame (pokes included).
     pub fn block_run(&self, height: u64) -> Result<(String, Vec<sm64_binds::GamePad>)> {
-        let r = self.call("get_block", json!({"height": height}))?;
+        // The proof only holds non-poked inputs; ask the daemon to replay the
+        // run for every frame's played pad.
+        let r = self.call("get_block", json!({"height": height, "sm64_played": true}))?;
         let hash = r["block_header"]["hash"].as_str().unwrap_or_default().to_string();
-        let raw = hex::decode(r["sm64_pads"].as_str().unwrap_or_default())?;
+        let raw = hex::decode(r["sm64_played_pads"].as_str().unwrap_or_default())?;
         let pads = sm64pow::proof::decode(&[&[0u8][..], &raw].concat(), usize::MAX)?;
         Ok((hash, pads))
     }

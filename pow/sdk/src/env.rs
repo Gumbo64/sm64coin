@@ -4,7 +4,7 @@ use crate::daemon::Template;
 use anyhow::{Result, bail};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use sm64_binds::{GamePad, GameState, SM64Game};
-use sm64pow::{Params, Seed, Verdict};
+use sm64pow::{MiningGame, MiningSave, Params, Seed, Verdict};
 
 /// What one block asks of a miner: the seed hash and the difficulty (which
 /// fixes the time limit and the perturbation strength).
@@ -57,23 +57,23 @@ impl Task {
 
 /// A saved point of a run (game memory plus the frames played so far).
 pub struct Snapshot {
-    state: sm64_binds::SaveState,
+    state: MiningSave,
     frame: usize,
     success: bool,
 }
 
 /// A game being played for a [`Task`], with the consensus perturbation applied.
 ///
-/// [`MiningEnv::step`] is the only way to advance a committed run: it reseeds
-/// the RNG when frame `f` is a multiple of `reseed_frames` (f > 0), passes the
-/// wanted pad through `rng_pad`, steps the game with the pad that came out and
-/// records it. The recorded pads are the proof.
+/// [`MiningEnv::step`] is the only way to advance a committed run: it passes
+/// the wanted pad through the perturbation (generated outside the game from the
+/// seed, scheduled on the game's clock), steps the game with the pad that came
+/// out and records it. The proof keeps only the non-poked frames' inputs.
 ///
 /// Exploring futures: [`MiningEnv::fork`] (a copy, to simulate on) and
 /// [`MiningEnv::save`] / [`MiningEnv::restore`] (rewind) go through the very
 /// same perturbation, so what you simulate is what would be played.
 pub struct MiningEnv {
-    game: SM64Game,
+    game: MiningGame,
     task: Task,
     pads: Vec<GamePad>,
     success: bool,
@@ -102,11 +102,10 @@ impl MiningEnv {
         if self.is_over() {
             bail!("frame limit of {} reached", self.task.params.max_frames);
         }
-        let f = self.pads.len();
-        let played = sm64pow::mine_step(&mut self.game, &self.task.seed, &self.task.params, f, wanted)?;
+        let played = sm64pow::mine_step(&mut self.game, wanted)?;
         self.pads.push(played);
-        let st = self.game.get_game_state()?;
-        self.success = sm64pow::rules().is_success(&self.game, &st);
+        let st = self.game.state()?;
+        self.success = sm64pow::rules().is_success(&self.game.game, &st);
         self.state = Some(st);
         Ok(played)
     }
@@ -127,7 +126,7 @@ impl MiningEnv {
     /// Mario's and the level's state after the last frame (cached).
     pub fn state(&mut self) -> Result<GameState> {
         if self.state.is_none() {
-            self.state = Some(self.game.get_game_state()?);
+            self.state = Some(self.game.state()?);
         }
         Ok(self.state.clone().unwrap())
     }
@@ -148,21 +147,21 @@ impl MiningEnv {
     }
 
     /// The underlying game, read-only use (memory reads, object tables, ...).
-    /// Do not step it or reseed it yourself: that breaks the contract.
+    /// Do not step it yourself: that breaks the contract.
     pub fn game_mut(&mut self) -> &mut SM64Game {
-        &mut self.game
+        &mut self.game.game
     }
 
     /// An independent copy of this run, to simulate futures on.
     pub fn fork(&self) -> Result<MiningEnv> {
-        let game = sm64pow::generator()?.copy_from(&self.game)?;
+        let game = self.game.fork()?;
         Ok(MiningEnv { game, task: self.task.clone(), pads: self.pads.clone(), success: self.success, state: self.state.clone() })
     }
 
     /// Makes this run a copy of `other` (cheaper than [`MiningEnv::fork`]: no
     /// new game). Both must be for the same task.
     pub fn copy_from(&mut self, other: &MiningEnv) -> Result<()> {
-        self.game.copy_from(&other.game)?;
+        self.game.sync_from(&other.game)?;
         self.pads.clear();
         self.pads.extend_from_slice(&other.pads);
         self.success = other.success;
@@ -171,7 +170,7 @@ impl MiningEnv {
     }
 
     pub fn save(&self) -> Snapshot {
-        Snapshot { state: self.game.save_state(), frame: self.pads.len(), success: self.success }
+        Snapshot { state: self.game.save(), frame: self.pads.len(), success: self.success }
     }
 
     /// Rewinds to `snap`, taken from this run's line (frames after it are
@@ -180,7 +179,7 @@ impl MiningEnv {
         if snap.frame > self.pads.len() {
             bail!("snapshot at frame {} is ahead of this run ({}); it belongs to another line", snap.frame, self.pads.len());
         }
-        self.game.load_state(&snap.state)?;
+        self.game.load(&snap.state)?;
         self.pads.truncate(snap.frame);
         self.success = snap.success;
         self.state = None;
@@ -190,7 +189,8 @@ impl MiningEnv {
     /// The proof blob in the smallest codec. Meaningful once
     /// [`MiningEnv::is_success`].
     pub fn proof(&self) -> Vec<u8> {
-        sm64pow::proof::encode_best(&self.pads)
+        // Only the non-poked frames' inputs are stored; replays to find them.
+        sm64pow::seal_proof(&self.task.seed, &self.task.params, &self.pads).expect("replaying own run")
     }
 
     /// Raw pads, 4 bytes a frame (u16 LE buttons, i8 x, i8 y): the format

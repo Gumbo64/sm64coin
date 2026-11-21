@@ -5,6 +5,7 @@ import random
 
 from sm64_binds import GamePad, SM64GameGenerator
 
+from .perturb import Perturber, read_view
 from .rules import Params, Seed, params as rules_params
 
 _generator = None
@@ -74,28 +75,38 @@ class Task:
         return cls(Seed.from_hex(t.seed_hash), t.difficulty, p, t)
 
 
+def varint(n: int) -> bytes:
+    out = bytearray()
+    while n >= 0x80:
+        out.append((n & 0x7F) | 0x80)
+        n >>= 7
+    out.append(n)
+    return bytes(out)
+
+
 class Snapshot:
-    def __init__(self, game, frame, success):
-        self.game, self.frame, self.success = game, frame, success
+    def __init__(self, game, pert, frame, inputs, success):
+        self.game, self.pert, self.frame, self.inputs, self.success = game, pert, frame, inputs, success
 
 
 class MiningEnv:
     """A game being played for a Task, with the consensus perturbation applied.
 
-    `step(wanted)` is the only way to advance a committed run: it reseeds when frame f > 0 and
-    f % reseed_frames == 0, runs `wanted` through `game.rng_pad`, steps the game with the result
-    and records it. The recorded pads are the proof.
+    The perturbation (perturb.py) lives outside the game, seeded once from the block hash.
+    `step(wanted)` is the only way to advance a committed run: it reads the game's clock, lets
+    the perturbation replace `wanted` with a random pad (a poke) when its schedule says so,
+    steps the game with the pad that came out and, if the game simulated, mixes the new state's
+    digest into the perturbation. Game and perturbation are one state: `fork`/`save`/`restore`
+    carry both. The proof keeps only the inputs of the frames that were not poked.
     """
 
-    def __init__(self, task: Task, _game=None):
+    def __init__(self, task: Task, _game=None, _pert=None):
         self.task = task
         self._gen = load_rom()
-        if _game is None:
-            _game = self._gen.create_game()
-            _game.set_rng_seed(task.seed.word(0))
-            _game.set_rng_config(task.params.rng_config())
-        self.game = _game
-        self.pads = []
+        self.game = _game if _game is not None else self._gen.create_game()
+        self.pert = _pert if _pert is not None else Perturber(task.seed.data, task.params.poke_config())
+        self.pads = []    # pads played on every frame
+        self.inputs = []  # the wanted pads of the frames that weren't poked (the proof's inputs)
         self.success = False
         self._state = None
 
@@ -105,12 +116,15 @@ class MiningEnv:
             raise RuntimeError(f"already at the success condition (frame {len(self.pads)}); no more frames may be played")
         if self.is_over():
             raise RuntimeError(f"frame limit of {self.task.params.max_frames} reached")
-        f, r = len(self.pads), self.task.params.reseed_frames
-        if f > 0 and f % r == 0:
-            self.game.set_rng_seed(self.task.seed.word(f // r))
-        played = self.game.rng_pad(wanted)
+        before, _ = read_view(self.game)
+        played, poked = self.pert.pad(before, wanted)
         self.game.step_game(played)
+        after, digest = read_view(self.game)
+        if after != before:
+            self.pert.mix(digest)
         self.pads.append(played)
+        if not poked:
+            self.inputs.append(wanted)
         self._state = self.game.get_game_state()
         self.success = self._state.numStars > 0  # the 'any-star' success condition
         return played
@@ -135,26 +149,29 @@ class MiningEnv:
         return self.success or len(self.pads) >= self.task.params.max_frames
 
     def fork(self) -> "MiningEnv":
-        """An independent copy to simulate futures on."""
-        e = MiningEnv(self.task, _game=self._gen.copy(self.game))
-        e.pads, e.success, e._state = list(self.pads), self.success, self._state
+        """An independent copy (game and perturbation) to simulate futures on."""
+        e = MiningEnv(self.task, _game=self._gen.copy(self.game), _pert=self.pert.copy())
+        e.pads, e.inputs, e.success, e._state = list(self.pads), list(self.inputs), self.success, self._state
         return e
 
     def save(self) -> Snapshot:
         """A save point. (The Python binding has no byte-level save state: a snapshot is a clone.)"""
-        return Snapshot(self._gen.copy(self.game), len(self.pads), self.success)
+        return Snapshot(self._gen.copy(self.game), self.pert.copy(), len(self.pads), len(self.inputs), self.success)
 
     def restore(self, snap: Snapshot):
         if snap.frame > len(self.pads):
             raise ValueError("snapshot is ahead of this run (it belongs to another line)")
         self._gen.copy_to(snap.game, self.game)
+        self.pert = snap.pert.copy()
         del self.pads[snap.frame:]
+        del self.inputs[snap.inputs:]
         self.success, self._state = snap.success, None
 
     def proof(self) -> bytes:
-        """Proof blob: codec 0 (raw) + 4 bytes per pad. The daemon re-encodes to the smallest codec."""
-        return b"\x00" + self.proof_raw()
+        """Proof blob: varint(frames) || codec 0 (raw) || 4 bytes per NON-POKED frame's input.
+        The daemon re-encodes to the smallest codec; pokes are regenerated from the seed."""
+        return varint(len(self.pads)) + b"\x00" + b"".join(pad_bytes(p) for p in self.inputs)
 
     def proof_raw(self) -> bytes:
-        """Raw pads for Rust's `examples/verify_file`."""
+        """The pads played on every frame (pokes included), raw: `verify_file`'s default input."""
         return b"".join(pad_bytes(p) for p in self.pads)

@@ -1,6 +1,6 @@
 //! Generates tests/fixtures: a winning run for a practice seed, found with the
 //! built-in miner's beam search (so it can take a while). Used by the Rust and
-//! Python tests as a real, valid proof that crosses reseed boundaries.
+//! Python tests as a real, valid proof that is long enough to contain many pokes.
 //!
 //!   RAYON_NUM_THREADS=4 cargo run --release -p sm64coin-sdk --example make_fixture -- [seed] [route.m64]
 use sm64coin_miner::{beam, tracker};

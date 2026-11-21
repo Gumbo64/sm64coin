@@ -134,7 +134,7 @@ pub const ANY_STAR: AnyStar = AnyStar {
     window: 100,
     burst: 2,
     target: 300,
-    reseed_frames: 300,
+    reseed_frames: 0, // one 256-bit seed per run (the game's generator holds 256 bits)
     retarget_window: 60,
     retarget_cut: 6,
     decay_grace_targets: 2,

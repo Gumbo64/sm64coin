@@ -1,12 +1,13 @@
 import { Sm64VisualEngine, GamepadButtons } from 'sm64-binds-frontend';
-import { Seed } from './seed.js';
+import { Perturbation, perturbReady } from './perturb.js';
 
+// A stock game, powered on, plus the block's perturbation (outside the game).
 async function newEngine(canvas, task) {
-  const seed = new Seed(task.sm64_seed_hash);
+  await perturbReady();
   canvas.id = 'canvas'; // the emscripten build looks the canvas up by id
-  const engine = await Sm64VisualEngine.create(canvas, seed.word(0), task.config.random_config);
+  const engine = await Sm64VisualEngine.create(canvas, NaN, null);
   canvas.id = '';
-  return { engine, seed };
+  return { engine, pert: new Perturbation(task) };
 }
 
 // Frames replayed per animation frame while catching up after a rewind.
@@ -18,8 +19,8 @@ const CATCH_UP_TAIL = 90;
 /**
  * A mining attempt in the browser, with the old miner's controls.
  *
- * Every frame the player's pad goes through the perturbation
- * (engine.rng_pad) and the pad actually played is recorded. The game can't
+ * Every frame the player's pad goes through the perturbation (lib/perturb.js,
+ * outside the game) and the pad actually played is recorded. The game can't
  * be saved and restored, but it is deterministic, so going back means a new
  * engine replaying the recorded pads up to that point (fast, then the last
  * 3 s at normal speed), after which you play on. During a catch-up, "take
@@ -36,7 +37,8 @@ export class Recorder {
     this.won = won;
     this.onStatus = onStatus;
     this.max = task.config.max_solution_time;
-    this.pads = [];
+    this.pads = []; // the pad played on every frame (pokes included)
+    this.poked = []; // whether each frame was poked (proofs leave those out)
     this.speed = 1;
     this.paused = false;
     this.mode = 'play'; // 'play' | 'catchup'
@@ -55,7 +57,7 @@ export class Recorder {
   skip() { this.skipped = true; }
   takeOver() {
     if (this.mode !== 'catchup') return;
-    this.pads.length = this.replayIdx;
+    this.pads.length = this.replayIdx; this.poked.length = this.replayIdx;
     this.mode = 'play';
     this.status();
   }
@@ -81,8 +83,10 @@ export class Recorder {
     this.pending = newEngine(this.canvas, this.task).then((e) => {
       if (this.engine) this.engine.set_audio_enabled(0);
       this.engine = e.engine;
-      this.seed = e.seed;
+      if (this.pert) this.pert.free();
+      this.pert = e.pert;
       this.pads = keep;
+      this.poked = keep.map(() => false); // refilled as the replay runs
       this.replayIdx = 0;
       this.replayTarget = keep.length;
       this.mode = keep.length > 0 ? 'catchup' : 'play';
@@ -94,20 +98,20 @@ export class Recorder {
   // One frame from the replay; false if it doesn't match (shouldn't happen).
   replayOne() {
     const i = this.replayIdx;
-    this.seed.reseed(this.engine, this.task.sm64_reseed_frames, i);
-    const allowed = this.engine.rng_pad(this.pads[i]);
-    if (!allowed.equals(this.pads[i])) return false;
-    this.engine.step_game(this.pads[i]);
+    // Replaying the recorded (played) pads: on poked frames the perturbation
+    // plays its own pad again, which must be the one recorded.
+    const [played, poked] = this.pert.step(this.engine, this.pads[i]);
+    if (!played.equals(this.pads[i])) return false;
+    this.poked[i] = poked;
     this.replayIdx++;
     return true;
   }
 
   // One live frame; returns 'won', 'limit' or null.
   playOne(c) {
-    this.seed.reseed(this.engine, this.task.sm64_reseed_frames, this.pads.length);
-    const pad = this.engine.rng_pad(c);
-    this.engine.step_game(pad);
+    const [pad, poked] = this.pert.step(this.engine, c);
     this.pads.push(pad);
+    this.poked.push(poked);
     if (this.won(this.engine.get_game_state())) return 'won';
     if (this.pads.length >= this.max) return 'limit';
     return null;
@@ -116,7 +120,7 @@ export class Recorder {
   async run(kill) {
     const e = await newEngine(this.canvas, this.task);
     this.engine = e.engine;
-    this.seed = e.seed;
+    this.pert = e.pert;
     this.status();
     return new Promise((resolve) => {
       let last = performance.now();
@@ -145,7 +149,7 @@ export class Recorder {
           }
           this.engine.set_audio_enabled(fast ? 0 : 1);
           while (n-- > 0 && this.mode === 'catchup' && this.replayIdx < this.replayTarget) {
-            if (!this.replayOne()) { this.pads.length = this.replayIdx; break; }
+            if (!this.replayOne()) { this.pads.length = this.replayIdx; this.poked.length = this.replayIdx; break; }
           }
           if (this.replayIdx >= this.replayTarget) { this.mode = 'play'; this.lastStart = true; }
           this.status();
@@ -194,7 +198,7 @@ export async function recordRun(canvas, task, won, kill, onFrame = () => {}, pad
 // like the verifier does. Resolves to 'won', 'mismatch:<frame>', 'ended' or
 // 'killed'.
 export async function playRun(canvas, task, pads, won, kill, speed = () => 1, onFrame = () => {}) {
-  const { engine, seed } = await newEngine(canvas, task);
+  const { engine, pert } = await newEngine(canvas, task);
   let i = 0;
   return new Promise((resolve) => {
     let last = performance.now();
@@ -209,9 +213,8 @@ export async function playRun(canvas, task, pads, won, kill, speed = () => 1, on
       owed -= steps;
       while (steps-- > 0) {
         if (i >= pads.length) { engine.set_audio_enabled(0); resolve('ended'); return; }
-        seed.reseed(engine, task.sm64_reseed_frames, i);
-        if (!engine.rng_pad(pads[i]).equals(pads[i])) { engine.set_audio_enabled(0); resolve(`mismatch:${i}`); return; }
-        engine.step_game(pads[i]);
+        const [played] = pert.step(engine, pads[i]);
+        if (!played.equals(pads[i])) { engine.set_audio_enabled(0); resolve(`mismatch:${i}`); return; }
         i++;
         if (won(engine.get_game_state())) { onFrame(i); engine.set_audio_enabled(0); resolve('won'); return; }
       }

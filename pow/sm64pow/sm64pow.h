@@ -21,10 +21,15 @@ uint64_t sm64pow_effective_difficulty(uint64_t difficulty, uint64_t elapsed_seco
 uint64_t sm64pow_target_seconds(void);
 void sm64pow_params(uint64_t difficulty, uint32_t *max_frames, uint32_t *random_amount,
                     uint32_t *window_length, uint32_t *burst_length);
-/* Proof blob -> raw pads (4 bytes/frame) / smallest encoding. Return the size
- * (out NULL to query), SIZE_MAX if the blob does not decode. */
+/* A proof is varint(frames) || codec || inputs of the non-poked frames (pokes
+ * are regenerated from the seed, never stored).
+ * decode_raw: the inputs (4 bytes each); played_raw: every frame's played pad
+ * (replays the run); reencode: smallest encoding. Return the size (out NULL to
+ * query), SIZE_MAX if the blob does not decode. */
 size_t sm64pow_decode_raw(const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
 size_t sm64pow_reencode(const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
+uint32_t sm64pow_proof_frames(const uint8_t *proof, size_t len);
+size_t sm64pow_played_raw(const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
 void sm64pow_probs(uint64_t difficulty, float *a_prob, float *b_prob, float *z_prob);
 void sm64pow_rules_info(char *name, size_t name_cap, char *goal, size_t goal_cap);
 #ifdef __cplusplus

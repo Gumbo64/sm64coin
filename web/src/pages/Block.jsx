@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { playRun } from '../lib/recorder.js';
 import { daemon } from '../lib/rpc.js';
-import { rawToPads } from '../lib/proof.js';
+import { rawToPads, toM64, download } from '../lib/proof.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { coins, short, when, frames } from '../lib/format.js';
@@ -17,7 +17,9 @@ export default function Block() {
   useEffect(() => {
     setB(null); setErr(null); setWatch(false);
     const params = /^\d+$/.test(id) ? { height: Number(id) } : { hash: id };
-    daemon('get_block', params).then(setB).catch((e) => setErr(String(e)));
+    // sm64_played: the daemon replays the run and returns every frame's pad
+    // (the proof itself leaves out the poked frames).
+    daemon('get_block', { ...params, sm64_played: true }).then(setB).catch((e) => setErr(String(e)));
   }, [id]);
 
   if (err) return <div className="card error">{err}</div>;
@@ -41,7 +43,7 @@ export default function Block() {
           <dt>Time</dt><dd>{h.height === 0 ? 'genesis' : when(h.timestamp)}</dd>
           <dt>Difficulty</dt><dd>{h.difficulty} (cumulative {h.cumulative_difficulty})</dd>
           <dt>Reward</dt><dd>{coins(h.reward)} SM64</dd>
-          <dt>Size</dt><dd>{h.block_size} bytes ({b.sm64_proof_bytes} of them proof-of-play)</dd>
+          <dt>Size</dt><dd>{h.block_size} bytes, plus a {b.sm64_proof_bytes}-byte proof of play</dd>
           <dt>Transactions</dt><dd>{h.num_txes} + coinbase <span className="mono">{short(b.miner_tx_hash, 16)}</span></dd>
           {b.tx_hashes && b.tx_hashes.map((t) => <React.Fragment key={t}><dt></dt><dd className="mono">{t}</dd></React.Fragment>)}
           <dt>Version</dt><dd>{json.major_version}.{json.minor_version}</dd>
@@ -55,6 +57,10 @@ export default function Block() {
             <dt>Perturbation</dt><dd>{b.sm64_random_amount} poke(s) of {b.sm64_burst_length} frames per {b.sm64_window_length}, reseeded every {b.sm64_reseed_frames} frames</dd>
             <dt>Seed hash</dt><dd className="mono">{b.sm64_seed_hash}</dd>
           </dl>
+          <p>
+            <button onClick={() => download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)))}>Download .m64</button>{' '}
+            <span className="muted">every frame as played, pokes included ({b.sm64_frames} frames; the proof stores {b.sm64_pads.length / 8} inputs)</span>
+          </p>
           {!watch ? <button onClick={() => setWatch(true)}>▶ Watch the run that sealed this block</button>
             : <RomGate><Replay block={b} /></RomGate>}
         </div>
@@ -72,7 +78,7 @@ function Replay({ block }) {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     let killed = false;
-    const pads = rawToPads(block.sm64_pads);
+    const pads = rawToPads(block.sm64_played_pads);
     setStatus(`replaying ${pads.length} frames; the perturbation is re-derived and checked on every frame`);
     daemon('get_info')
       .then((info) => {

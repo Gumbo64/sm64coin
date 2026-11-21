@@ -7,4 +7,4 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 rand = "0.9"
-sm64-binds = "=2.0.1"
+sm64-binds = { path = "../sm64-binds" }

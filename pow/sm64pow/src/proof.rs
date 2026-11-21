@@ -1,8 +1,11 @@
 //! The proof-of-play blob: what a block carries instead of a nonce.
 //!
 //! To the daemon it is opaque bytes (`block::sm64_proof`); only this module
-//! knows its format. The first byte names the codec, the rest is that codec's
-//! encoding of the controller pads, one per frame.
+//! knows its format: `varint(frames) || codec id || codec body`. The body
+//! holds only the player's inputs on frames the perturbation didn't poke, in
+//! order: poked frames get their random pad from the game itself (regenerated
+//! from the seed when verifying), so they are never recorded. One proof per
+//! run, so block ids aren't malleable.
 //!
 //! To add compression: implement [`Codec`], give it an unused id, and add it
 //! to [`CODECS`]. Old blocks stay valid because their codec id still decodes.
@@ -27,7 +30,7 @@ pub trait Codec: Sync {
 }
 
 /// Every codec a node accepts.
-pub static CODECS: &[&dyn Codec] = &[&Raw, &RunLength];
+pub static CODECS: &[&dyn Codec] = &[&Raw, &RunLength, &Xz];
 
 pub fn codec(id: u8) -> Option<&'static dyn Codec> {
     CODECS.iter().copied().find(|c| c.id() == id)
@@ -48,6 +51,38 @@ pub fn decode(blob: &[u8], max_frames: usize) -> Result<Vec<GamePad>> {
     let (&id, body) = blob.split_first().ok_or_else(|| anyhow!("empty proof"))?;
     let c = codec(id).ok_or_else(|| anyhow!("unknown proof codec {id}"))?;
     c.decode(body, max_frames.min(MAX_FRAMES))
+}
+
+/// A run as a block carries it: how many frames it lasted, and the inputs of
+/// the frames that weren't poked.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Proof {
+    pub frames: u32,
+    pub inputs: Vec<GamePad>,
+}
+
+pub fn encode_proof_with(c: &dyn Codec, proof: &Proof) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_varint(&mut out, proof.frames as u64);
+    out.extend(encode_with(c, &proof.inputs));
+    out
+}
+
+/// The smallest encoding among all codecs.
+pub fn encode_proof(proof: &Proof) -> Vec<u8> {
+    CODECS.iter().map(|c| encode_proof_with(*c, proof)).min_by_key(|b| b.len()).unwrap()
+}
+
+/// Decodes a proof blob; rejects more than `max_frames` frames or more inputs
+/// than frames.
+pub fn decode_proof(blob: &[u8], max_frames: usize) -> Result<Proof> {
+    let mut i = 0;
+    let frames = get_varint(blob, &mut i)?;
+    if frames as usize > max_frames.min(MAX_FRAMES) {
+        bail!("proof claims {frames} frames, over {max_frames}");
+    }
+    let inputs = decode(&blob[i..], frames as usize)?;
+    Ok(Proof { frames: frames as u32, inputs })
 }
 
 pub fn pad_bytes(p: &GamePad) -> [u8; 4] {
@@ -157,6 +192,38 @@ impl Codec for RunLength {
             pads.extend(std::iter::repeat_n(p, n));
         }
         Ok(pads)
+    }
+}
+
+/// Codec 2: the raw pads (codec 0's body) in an xz (LZMA2) stream. About
+/// 0.6 bytes per frame on real runs, against 1.4 for run-length; canonical
+/// proofs (poked frames repeat the previous input) do better still.
+pub struct Xz;
+
+impl Codec for Xz {
+    fn id(&self) -> u8 {
+        2
+    }
+    fn name(&self) -> &'static str {
+        "xz"
+    }
+    fn encode(&self, pads: &[GamePad]) -> Vec<u8> {
+        use std::io::Write;
+        let raw = Raw.encode(pads);
+        let mut e = xz2::write::XzEncoder::new(Vec::new(), 9 | 0x8000_0000); // preset 9, extreme
+        e.write_all(&raw).expect("xz encode");
+        e.finish().expect("xz encode")
+    }
+    fn decode(&self, body: &[u8], max_frames: usize) -> Result<Vec<GamePad>> {
+        use std::io::Read;
+        // Never expand past the limit (a tiny stream could claim gigabytes).
+        let cap = max_frames.saturating_mul(4).saturating_add(1);
+        let mut raw = Vec::new();
+        xz2::read::XzDecoder::new(body).take(cap as u64).read_to_end(&mut raw).map_err(|e| anyhow!("xz: {e}"))?;
+        if raw.len() >= cap {
+            bail!("proof expands past {max_frames} frames");
+        }
+        Raw.decode(&raw, max_frames)
     }
 }
 

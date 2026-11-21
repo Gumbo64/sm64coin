@@ -18,7 +18,8 @@ use anyhow::Result;
 use obrrt_core::{St, read_state};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rayon::prelude::*;
-use sm64_binds::{GamePad, SM64Game, SaveState};
+use sm64_binds::GamePad;
+use sm64pow::{MiningGame, MiningSave};
 use sm64pow::{Params, Seed};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -439,9 +440,8 @@ pub(crate) struct Outcome {
 }
 
 pub(crate) fn evaluate(
-    seed: &Seed,
-    game: &mut SM64Game,
-    base: &SM64Game,
+    game: &mut MiningGame,
+    base: &MiningGame,
     base_snap: &Snap,
     cand: &Candidate,
     reference: &Reference,
@@ -481,7 +481,7 @@ pub(crate) fn evaluate(
         if let Some((bhv, reach)) = cand.grab {
             if !prev.holding && !pressed {
                 // Steer at the nearest such object; punch-grab (B) when close.
-                let st = read_state(game, (frames_done + t) as u32, true);
+                let st = read_state(&game.game, (frames_done + t) as u32, true);
                 let target = st.objects.as_ref().and_then(|objs| {
                     objs.iter()
                         .filter(|o| o.bhv == bhv)
@@ -496,13 +496,13 @@ pub(crate) fn evaluate(
                 }
             }
         }
-        let played = sm64pow::mine_step(game, seed, params, frames_done + t, want)?;
+        let played = sm64pow::mine_step(game, want)?;
         pads.push(played);
-        let gs = game.get_game_state()?;
-        if rules.is_success(game, &gs) {
+        let gs = game.state()?;
+        if rules.is_success(&game.game, &gs) {
             return Ok(Outcome { score: f32::MAX - t as f32, success_at: Some(t + 1), pads });
         }
-        let st = read_state(game, (frames_done + t + 1) as u32, false);
+        let st = read_state(&game.game, (frames_done + t + 1) as u32, false);
         let s = Snap::new(&st, Some(&prev));
         prev = s;
         // Progress counts only on the reference's path; off it, the score is
@@ -533,7 +533,7 @@ pub struct Mined {
 }
 
 struct Checkpoint {
-    state: SaveState,
+    state: MiningSave,
     played: usize,
     p: usize,
     snap: Snap,
@@ -552,7 +552,7 @@ pub fn mine(
     let t0 = Instant::now();
     let mut base = sm64pow::new_mining_game(seed, params)?;
     let mut played: Vec<GamePad> = Vec::new();
-    let mut snap = Snap::new(&read_state(&base, 0, false), None);
+    let mut snap = Snap::new(&read_state(&base.game, 0, false), None);
     let mut p: usize = 0;
     let mut rng = SmallRng::seed_from_u64(cfg.seed ^ ((seed.word(0) as u64) << 20));
     let mut sim_frames = 0u64;
@@ -565,7 +565,6 @@ pub fn mine(
     let mut furthest = 0usize;
     let mut tries_here = 0usize;
     let mut last_log = Instant::now();
-    let generator = sm64pow::generator()?;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -576,7 +575,7 @@ pub fn mine(
             return Ok(None);
         }
         if played.len() % 32 < cfg.commit {
-            checkpoints.push(Checkpoint { state: base.save_state(), played: played.len(), p, snap });
+            checkpoints.push(Checkpoint { state: base.save(), played: played.len(), p, snap });
             if checkpoints.len() > 64 {
                 checkpoints.remove(0);
             }
@@ -593,8 +592,8 @@ pub fn mine(
         let outs: Vec<Outcome> = cands
             .par_iter()
             .map_init(
-                || generator.copy_from(&base).expect("copy game"),
-                |g, c| evaluate(seed, g, &base, &snap, c, reference, p, params, played.len()).expect("evaluate"),
+                || base.fork().expect("copy game"),
+                |g, c| evaluate(g, &base, &snap, c, reference, p, params, played.len()).expect("evaluate"),
             )
             .collect();
         sim_frames += outs.iter().map(|o| o.pads.len() as u64).sum::<u64>();
@@ -618,10 +617,10 @@ pub fn mine(
         // Commit the first frames of the best plan, on the real game.
         let n = cfg.commit.min(best.pads.len());
         for pad in &best.pads[..n] {
-            let played_pad = sm64pow::mine_step(&mut base, seed, params, played.len(), *pad)?;
+            let played_pad = sm64pow::mine_step(&mut base, *pad)?;
             debug_assert_eq!(played_pad, *pad);
             played.push(played_pad);
-            let st = read_state(&base, played.len() as u32, false);
+            let st = read_state(&base.game, played.len() as u32, false);
             snap = Snap::new(&st, Some(&snap));
         }
         let hi = p + n + LOOK_AHEAD;
@@ -660,7 +659,7 @@ pub fn mine(
             tries_here += 1;
             let back = (1 + backtracks % 6).min(checkpoints.len() - 1);
             let cp = &checkpoints[checkpoints.len() - 1 - back];
-            base.load_state(&cp.state)?;
+            base.load(&cp.state)?;
             played.truncate(cp.played);
             p = cp.p;
             snap = cp.snap;

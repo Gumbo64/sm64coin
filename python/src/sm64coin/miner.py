@@ -10,7 +10,8 @@ from .env import MiningEnv, Task, load_rom
 
 def practice(bot, seed=1, difficulty=1, stop=lambda: False, task=None):
     """Offline run of `bot` on a local task. Returns a dict: frames, max_frames, success, seconds,
-    fps, proof (raw-codec blob, only when success). Verify with Rust: see BOTS.md."""
+    fps, proof (blob: frames + non-poked inputs, only when success), pads_raw (pads played on every frame).
+    Verify with Rust: see BOTS.md."""
     load_rom()
     task = task or Task.practice(seed, difficulty)
     env = MiningEnv(task)

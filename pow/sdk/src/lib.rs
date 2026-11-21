@@ -2,7 +2,7 @@
 //!
 //! You write a [`Bot`]: something that, given a [`MiningEnv`], plays Super
 //! Mario 64 from power-on until a star is collected. The SDK handles the rest:
-//! the controller perturbation and reseeding (the consensus contract, taken
+//! the controller perturbation (generated outside the game, the consensus contract, taken
 //! from `sm64pow` so it cannot drift), block templates from the daemon,
 //! interruption when a new block arrives, local verification and submission.
 //!

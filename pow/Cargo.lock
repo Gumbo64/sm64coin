@@ -1249,6 +1249,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzma-sys"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1985,7 +1996,7 @@ checksum = "826167069c09b99d56f31e9ae5c99049e932a98c9dc2dac47645b08dbbf76ba7"
 
 [[package]]
 name = "sm64-binds"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2031,6 +2042,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm64coin-perturb"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "sm64coin-sdk"
 version = "0.1.0"
 dependencies = [
@@ -2050,8 +2068,11 @@ name = "sm64pow"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
  "sha3",
  "sm64-binds",
+ "sm64coin-perturb",
+ "xz2",
 ]
 
 [[package]]
@@ -2731,6 +2752,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40de123dbb523ebcc00d61ec01840ad192578afc378d859f3429caa38308fad5"
 
 [[package]]
+name = "xz2"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
+dependencies = [
+ "lzma-sys",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2925,3 +2955,7 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "sm64-binds"
+version = "2.0.1"
