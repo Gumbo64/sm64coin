@@ -1,0 +1,10 @@
+[package]
+name = "obrrt-core"
+description = "Vendored copy of sm64-AI-binds/objective-rrt-v2/core (game state reader). Pinned so research edits there don't break the miner."
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+rand = "0.9"
+sm64-binds = "=2.0.1"

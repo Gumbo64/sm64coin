@@ -1,0 +1,85 @@
+// The proof-of-play blob, as far as the browser needs it. The format belongs
+// to pow/sm64pow/src/proof.rs: the first byte names the codec. The browser
+// only writes codec 0 (raw, 4 bytes per frame); the daemon re-encodes
+// submitted proofs with its smallest codec (the block id doesn't change).
+// The explorer reads `sm64_pads` from get_block, already decoded to raw.
+import { GamePad } from 'sm64-binds-frontend';
+
+export function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return out;
+}
+
+export function bytesToHex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Raw pads (4 bytes each: buttons u16 LE, stick x i8, stick y i8) -> GamePads. */
+export function rawToPads(hex) {
+  const b = hexToBytes(hex);
+  const pads = [];
+  for (let i = 0; i + 4 <= b.length; i += 4) {
+    const button = b[i] | (b[i + 1] << 8);
+    const sx = b[i + 2] > 127 ? b[i + 2] - 256 : b[i + 2];
+    const sy = b[i + 3] > 127 ? b[i + 3] - 256 : b[i + 3];
+    pads.push(new GamePad(button, sx, sy));
+  }
+  return pads;
+}
+
+/** A codec-0 proof blob for `pads`. */
+export function rawProof(pads) {
+  const out = new Uint8Array(1 + pads.length * 4);
+  out[0] = 0; // codec id: raw
+  pads.forEach((p, i) => {
+    const o = 1 + i * 4;
+    out[o] = p.button & 0xff;
+    out[o + 1] = (p.button >> 8) & 0xff;
+    out[o + 2] = p.stick_x & 0xff;
+    out[o + 3] = p.stick_y & 0xff;
+  });
+  return out;
+}
+
+/** The block template with `proof` in its last field (the empty proof's 0x00). */
+export function seal(templateHex, proof) {
+  const t = hexToBytes(templateHex);
+  if (t[t.length - 1] !== 0) throw new Error('template does not end with an empty proof');
+  const len = [];
+  let n = proof.length;
+  while (n >= 0x80) { len.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); }
+  len.push(n);
+  const out = new Uint8Array(t.length - 1 + len.length + proof.length);
+  out.set(t.subarray(0, t.length - 1), 0);
+  out.set(len, t.length - 1);
+  out.set(proof, t.length - 1 + len.length);
+  return bytesToHex(out);
+}
+
+/** A Mupen64 movie (.m64) of `pads`: 0x400-byte header, then per frame
+ * buttons (u16 big-endian), stick x, stick y. */
+export function toM64(pads) {
+  const out = new Uint8Array(0x400 + pads.length * 4);
+  out.set([0x4d, 0x36, 0x34, 0x1a], 0); // "M64\x1a"
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0x4, 3, true); // version
+  dv.setUint32(0x18, pads.length, true); // input samples
+  dv.setUint8(0x15, 1); // controllers
+  pads.forEach((p, i) => {
+    const o = 0x400 + i * 4;
+    dv.setUint16(o, p.button, false);
+    out[o + 2] = p.stick_x & 0xff;
+    out[o + 3] = p.stick_y & 0xff;
+  });
+  return out;
+}
+
+export function download(name, bytes, type = 'application/octet-stream') {
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

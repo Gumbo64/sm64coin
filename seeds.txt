@@ -1,0 +1,2 @@
+# SM64Coin seed nodes, one host:port per line (p2p port, default 16480).
+# scripts/start-node.sh passes each as --add-peer. Lines starting with # and blank lines are ignored.

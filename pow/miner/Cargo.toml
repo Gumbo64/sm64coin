@@ -1,0 +1,17 @@
+[package]
+name = "sm64coin-miner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sm64pow = { path = "../sm64pow" }
+sm64-binds = { workspace = true }
+obrrt-core = { path = "../vendor/obrrt-core" }
+rayon = "1"
+anyhow = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+hex = "0.4"
+rand = "0.9"
+clap = { version = "4", features = ["derive"] }

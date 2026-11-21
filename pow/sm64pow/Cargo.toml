@@ -1,0 +1,13 @@
+[package]
+name = "sm64pow"
+version = "0.1.0"
+edition = "2024"
+description = "SM64Coin proof-of-play: consensus parameters and replay verification"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+sm64-binds = { workspace = true }
+anyhow = { workspace = true }
+sha3 = "0.10"

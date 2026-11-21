@@ -1,0 +1,14 @@
+data/
+run/
+pow/target/
+web/node_modules
+web/dist
+baserom.us.z64
+monero/build
+monero/
+gui/
+bin/
+*.bin
+web/run_web.log
+__pycache__/
+*.egg-info/
