@@ -53,3 +53,7 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
   box-shadow: 0 10px 30px rgba(0,0,0,.55); padding: 12px 44px 12px 18px; color: var(--fg); animation: bubble .35s ease-out; }
 .banner.mined { background: #0f3d1e; border-color: #3ddc84; }
 @keyframes bubble { from { opacity: 0; transform: translate(-50%, -12px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+.paysto { margin: 6px 0 2px; font-size: 13px; }
+.paysto .mono { color: var(--acc); }
+.notice { background: #2b2410; border: 1px solid var(--acc); border-radius: 8px; padding: 8px 10px; font-size: 13px; margin: 8px 0; }
+.notice button { margin-top: 6px; }

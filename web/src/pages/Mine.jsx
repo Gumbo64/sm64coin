@@ -61,7 +61,9 @@ function Miner() {
         if (!isAddress(addr.current)) { await new Promise((r) => setTimeout(r, 1000)); continue; }
         let t;
         try {
-          t = await daemon('get_block_template', { wallet_address: addr.current, reserve_size: 0 });
+          const paysTo = addr.current;
+          t = await daemon('get_block_template', { wallet_address: paysTo, reserve_size: 0 });
+          t.paysTo = paysTo; // the template's coinbase pays this address
         } catch (e) { say(String(e)); await new Promise((r) => setTimeout(r, 3000)); continue; }
         const won = successFor(t.sm64_rules);
         if (!won) { say(`unknown rules "${t.sm64_rules}": update web/src/lib/rules.js`); return; }
@@ -109,7 +111,17 @@ function Miner() {
         <label>Reward address
           <input className="mono wide" value={address} onChange={(e) => setAddress(e.target.value.trim())} placeholder="SM64… (open a wallet, or paste an address)" />
         </label>
-        {!isAddress(address) && <p className="muted">Waiting for an address: open a wallet on the Wallet page or paste one. Changes apply from the next attempt.</p>}
+        {task && (
+          <p className="paysto">Mining for <span className="mono" title={task.paysTo}>{task.paysTo.slice(0, 10)}…{task.paysTo.slice(-6)}</span></p>
+        )}
+        {!isAddress(address) && <p className="muted">Waiting for a valid address: open a wallet on the Wallet page or paste one.</p>}
+        {task && isAddress(address) && address !== task.paysTo && (
+          <div className="notice">
+            The game in progress pays the address above; the new one applies from the next attempt
+            (the reward address is part of the block template the run is sealed to).{' '}
+            <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the game)</button>
+          </div>
+        )}
         <Winnings address={address} />
         {task && (
           <dl className="kv">
