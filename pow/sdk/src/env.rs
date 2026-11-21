@@ -4,7 +4,7 @@ use crate::daemon::Template;
 use anyhow::{Result, bail};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use sm64_binds::{GamePad, GameState, SM64Game};
-use sm64pow::{MiningGame, MiningSave, Params, Seed, Verdict};
+use sm64pow::{SM64MiningGame, SM64MiningSave, Params, Seed, Verdict};
 
 /// What one block asks of a miner: the seed hash and the difficulty (which
 /// fixes the time limit and the perturbation strength).
@@ -57,7 +57,7 @@ impl Task {
 
 /// A saved point of a run (game memory plus the frames played so far).
 pub struct Snapshot {
-    state: MiningSave,
+    state: SM64MiningSave,
     frame: usize,
     success: bool,
 }
@@ -73,7 +73,7 @@ pub struct Snapshot {
 /// [`MiningEnv::save`] / [`MiningEnv::restore`] (rewind) go through the very
 /// same perturbation, so what you simulate is what would be played.
 pub struct MiningEnv {
-    game: MiningGame,
+    game: SM64MiningGame,
     task: Task,
     pads: Vec<GamePad>,
     success: bool,
@@ -170,7 +170,7 @@ impl MiningEnv {
     }
 
     pub fn save(&self) -> Snapshot {
-        Snapshot { state: self.game.save(), frame: self.pads.len(), success: self.success }
+        Snapshot { state: self.game.save_state(), frame: self.pads.len(), success: self.success }
     }
 
     /// Rewinds to `snap`, taken from this run's line (frames after it are
@@ -179,7 +179,7 @@ impl MiningEnv {
         if snap.frame > self.pads.len() {
             bail!("snapshot at frame {} is ahead of this run ({}); it belongs to another line", snap.frame, self.pads.len());
         }
-        self.game.load(&snap.state)?;
+        self.game.load_state(&snap.state)?;
         self.pads.truncate(snap.frame);
         self.success = snap.success;
         self.state = None;

@@ -4,7 +4,7 @@
 //! moves when the game simulates and stands still otherwise: paused, menus)
 //! and a *digest* of the game state (a few words), both supplied by a game
 //! adapter (see [`sm64`]). The game build is stock; this state lives next to
-//! it, and save states bundle the two (sm64pow's `MiningGame`). This crate has
+//! it, and save states bundle the two (sm64pow's `SM64MiningGame`). This crate has
 //! no dependencies, so the browser runs the very same code (perturb-wasm).
 //!
 //! * A 256-bit generator (xoshiro256**) seeded once from the whole block hash.
@@ -126,7 +126,7 @@ impl Perturber {
     }
 
     fn stick(&mut self) -> i8 {
-        (self.next32() % 161) as i8 - 80
+        ((self.next32() % 161) as i32 - 80) as i8
     }
 
     fn is_poke(&mut self) -> bool {

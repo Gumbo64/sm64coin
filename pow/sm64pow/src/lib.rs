@@ -6,7 +6,7 @@
 //! ([`perturb`]): a 256-bit generator seeded from the whole block hash, mixed
 //! with a digest of the game state ([`game`]) after every frame the game
 //! simulates, and scheduled on the game's own clock (so pausing neither spends
-//! nor rerolls pokes). The game build is stock; [`MiningGame`] bundles it with
+//! nor rerolls pokes). The game build is stock; [`SM64MiningGame`] bundles it with
 //! its perturbation so save states carry both.
 //!
 //! This crate is the single source of truth that the daemon (through the C
@@ -31,7 +31,7 @@ pub mod game;
 pub mod proof;
 pub mod rules;
 
-pub use game::{MiningGame, MiningSave};
+pub use game::{SM64MiningGame, SM64MiningSave};
 
 pub use rules::{Params, Rules, active as rules, level8};
 pub use sm64_binds;
@@ -152,19 +152,19 @@ pub fn generator() -> Result<&'static SM64GameGenerator> {
 }
 
 /// A fresh game, powered on, with the block's perturbation armed.
-pub fn new_mining_game(seed: &Seed, p: &Params) -> Result<MiningGame> {
-    MiningGame::new(seed, p)
+pub fn new_mining_game(seed: &Seed, p: &Params) -> Result<SM64MiningGame> {
+    SM64MiningGame::new(seed, p)
 }
 
 /// Plays one frame the way a miner must: the controller goes through the
 /// perturbation, which may replace it with a random pad (a poke). Returns the
 /// pad actually played and whether the frame was poked.
-pub fn play_frame(game: &mut MiningGame, wanted: GamePad) -> Result<(GamePad, bool)> {
+pub fn play_frame(game: &mut SM64MiningGame, wanted: GamePad) -> Result<(GamePad, bool)> {
     game.step(wanted)
 }
 
 /// Like [`play_frame`], returning only the pad played.
-pub fn mine_step(game: &mut MiningGame, wanted: GamePad) -> Result<GamePad> {
+pub fn mine_step(game: &mut SM64MiningGame, wanted: GamePad) -> Result<GamePad> {
     Ok(game.step(wanted)?.0)
 }
 
@@ -176,7 +176,7 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn step(&mut self, game: &mut MiningGame, wanted: GamePad) -> Result<GamePad> {
+    pub fn step(&mut self, game: &mut SM64MiningGame, wanted: GamePad) -> Result<GamePad> {
         let (played, poked) = play_frame(game, wanted)?;
         if !poked {
             self.proof.inputs.push(wanted);

@@ -19,7 +19,7 @@ use obrrt_core::{St, read_state};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rayon::prelude::*;
 use sm64_binds::GamePad;
-use sm64pow::{MiningGame, MiningSave};
+use sm64pow::{SM64MiningGame, SM64MiningSave};
 use sm64pow::{Params, Seed};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -440,8 +440,8 @@ pub(crate) struct Outcome {
 }
 
 pub(crate) fn evaluate(
-    game: &mut MiningGame,
-    base: &MiningGame,
+    game: &mut SM64MiningGame,
+    base: &SM64MiningGame,
     base_snap: &Snap,
     cand: &Candidate,
     reference: &Reference,
@@ -533,7 +533,7 @@ pub struct Mined {
 }
 
 struct Checkpoint {
-    state: MiningSave,
+    state: SM64MiningSave,
     played: usize,
     p: usize,
     snap: Snap,
@@ -575,7 +575,7 @@ pub fn mine(
             return Ok(None);
         }
         if played.len() % 32 < cfg.commit {
-            checkpoints.push(Checkpoint { state: base.save(), played: played.len(), p, snap });
+            checkpoints.push(Checkpoint { state: base.save_state(), played: played.len(), p, snap });
             if checkpoints.len() > 64 {
                 checkpoints.remove(0);
             }
@@ -659,7 +659,7 @@ pub fn mine(
             tries_here += 1;
             let back = (1 + backtracks % 6).min(checkpoints.len() - 1);
             let cp = &checkpoints[checkpoints.len() - 1 - back];
-            base.load(&cp.state)?;
+            base.load_state(&cp.state)?;
             played.truncate(cp.played);
             p = cp.p;
             snap = cp.snap;

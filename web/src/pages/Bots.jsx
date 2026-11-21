@@ -44,7 +44,7 @@ export default function Bots() {
         <p className="muted">
           A task is a 32-byte seed hash (<span className="mono">sm64_seed_hash</span> in the block template) and a difficulty, which fixes the frame limit and the perturbation.
           The game build is stock: the pokes are generated <em>outside</em> the game, from the seed (<span className="mono">pow/perturb</span>; the browser miner runs the same code as WASM).
-          <span className="mono">MiningGame</span> bundles a game with its perturbation. For every frame of a run from power-on:
+          <span className="mono">SM64MiningGame</span> bundles a game with its perturbation. For every frame of a run from power-on:
         </p>
         <ol className="muted">
           <li>read the game's clock (<span className="mono">gAreaUpdateCounter</span>) before the frame; a frame can be poked only if the clock moved since the previous frame's reading, so pausing neither spends nor rerolls pokes</li>
@@ -55,7 +55,7 @@ export default function Bots() {
           The generator is xoshiro256** seeded once from all of the seed hash; the code in <span className="mono">pow/perturb</span> is the specification.
           The proof stores only the inputs of the frames that were <em>not</em> poked (<span className="mono">varint(frames)</span>, a codec byte, the inputs): the verifier regenerates the pokes from the seed.
           The run must end exactly on the frame a star is first collected, within <span className="mono">max_frames</span> (18000 at difficulty 1).
-          Simulating futures on clones is fine, as long as committed frames go through the same perturbation: the perturbation is part of the run's state, so copy and save a <span className="mono">MiningGame</span> (game and perturber together), never the game alone.
+          Simulating futures on clones is fine, as long as committed frames go through the same perturbation: the perturbation is part of the run's state, so copy and save a <span className="mono">SM64MiningGame</span> (game and perturber together), never the game alone.
         </p>
       </div>
 

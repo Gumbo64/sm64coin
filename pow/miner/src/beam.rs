@@ -15,7 +15,7 @@ use obrrt_core::read_state;
 use rand::{SeedableRng, rngs::SmallRng};
 use rayon::prelude::*;
 use sm64_binds::GamePad;
-use sm64pow::MiningGame;
+use sm64pow::SM64MiningGame;
 use sm64pow::{Params, Seed};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -53,7 +53,7 @@ impl Default for BeamConfig {
 }
 
 struct Node {
-    game: MiningGame,
+    game: SM64MiningGame,
     played: Vec<GamePad>,
     snap: Snap,
     /// Reference frame this state is at.
