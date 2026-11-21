@@ -40,12 +40,14 @@ pub struct BeamConfig {
     /// Write the best state's pads here when it first reaches this
     /// reference frame (for experiments).
     pub dump_at: Option<(usize, String)>,
+    /// Updated with the furthest reference frame reached (for route stats).
+    pub reached: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     pub seed: u64,
 }
 
 impl Default for BeamConfig {
     fn default() -> Self {
-        BeamConfig { width: 16, per_state: 24, horizon: 90, commit: 8, max_children: 4, patience: 30, give_up: 10, start: vec![], dump_at: None, seed: 1 }
+        BeamConfig { width: 16, per_state: 24, horizon: 90, commit: 8, max_children: 4, patience: 30, give_up: 10, start: vec![], dump_at: None, reached: None, seed: 1 }
     }
 }
 
@@ -224,6 +226,9 @@ pub fn mine(
         }
         if top > furthest {
             furthest = top;
+            if let Some(r) = &cfg.reached {
+                r.store(furthest, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         // Real progress (not a one-frame creep) clears the stagnation counters.
         if top > credited + 24 {

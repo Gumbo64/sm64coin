@@ -8,7 +8,8 @@ export RAYON_NUM_THREADS="${THREADS:-4}"
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 BINARY="$ROOT/pow/target/release/automine"
 # Space-separated; tried in order (the first is the calmest to follow).
-ROUTE="${ROUTE:-$ROOT/pow/miner/routes/block1-human.m64 $(echo "$ROOT"/pow/miner/routes/chomp-*.m64)}"
+# Routes from files; the chain's own winning runs are added automatically.
+ROUTE="${ROUTE:-$ROOT/pow/miner/routes/block1-human.m64}"
 # Always (re)build: a stale miner with other rules would waste its runs.
 (cd "$ROOT/pow" && cargo build --release -q -p sm64coin-miner --bin automine)
 [ -f "$ROM" ] || { echo "missing ROM $ROM" >&2; exit 1; }

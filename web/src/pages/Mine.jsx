@@ -7,7 +7,6 @@ import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
-import useInterval from '../lib/useInterval.js';
 
 // The manual miner: play Super Mario 64 yourself. Each attempt is sealed to a
 // block template (its seed drives the controller pokes), and a successful run
@@ -21,7 +20,11 @@ const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
 
 function Miner() {
   const canvas = useRef(null);
-  const [address, setAddress] = useState(localStorage.getItem('sm64coin.address') || '');
+  // ?address= (the GUI wallet's "Play to mine" link) beats the stored address.
+  const [address, setAddress] = useState(() => {
+    const q = new URLSearchParams(window.location.search).get('address');
+    return q && isAddress(q.trim()) ? q.trim() : localStorage.getItem('sm64coin.address') || '';
+  });
   const addr = useRef(address);
   addr.current = address;
   useEffect(() => {
@@ -93,37 +96,48 @@ function Miner() {
     return () => { stopped = true; clearInterval(timer); };
   }, []);
 
+  const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+  const [editing, setEditing] = useState(false);
+  const paying = task ? task.paysTo : address;
+  const pending = task && isAddress(address) && address !== task.paysTo;
+
   return (
     <div className="mine">
-      <div>
-        <canvas ref={canvas} className="sm64canvas" />
-        {clock && (
-          <div className="clock">
-            frame {clock.frame} · {frames(Math.max(0, clock.max - clock.frame))} left · {clock.speed}×
-            {clock.paused && ' · PAUSED'}
-            {clock.mode === 'catchup' && ` · replaying to frame ${clock.target} (take over to play from here)`}
-          </div>
-        )}
-        <Controls rec={rec} />
-        <Help />
+      <canvas ref={canvas} className="sm64canvas" />
+      <div className="statusbar">
+        <span className="stat" title="Block being mined">{task ? `block ${task.height}` : 'connecting…'}</span>
+        <span className="stat" title="Time left in this attempt">
+          {clock ? `${frames(Math.max(0, clock.max - clock.frame))} left` : '—'}
+        </span>
+        <span className="stat" title="Playback speed">{clock ? `${clock.speed}×` : '—'}</span>
+        {clock && clock.paused && <span className="stat warn">PAUSED</span>}
+        {clock && clock.mode === 'catchup' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
+        <span className="grow" />
+        <button className="linkish" title="Click to change the reward address" onClick={() => setEditing((e) => !e)}>
+          Mining for {isAddress(paying || '') ? <span className="mono paysto" title={paying}>{short(paying)}</span> : <em>no address</em>} ✎
+        </button>
       </div>
-      <div className="card side">
-        <label>Reward address
-          <input className="mono wide" value={address} onChange={(e) => setAddress(e.target.value.trim())} placeholder="SM64… (open a wallet, or paste an address)" />
-        </label>
-        {task && (
-          <p className="paysto">Mining for <span className="mono" title={task.paysTo}>{task.paysTo.slice(0, 10)}…{task.paysTo.slice(-6)}</span></p>
-        )}
-        {!isAddress(address) && <p className="muted">Waiting for a valid address: open a wallet on the Wallet page or paste one.</p>}
-        {task && isAddress(address) && address !== task.paysTo && (
-          <div className="notice">
-            The game in progress pays the address above; the new one applies from the next attempt
-            (the reward address is part of the block template the run is sealed to).{' '}
-            <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the game)</button>
-          </div>
-        )}
-        <Winnings address={address} />
-        {task && (
+      {(editing || !isAddress(address)) && (
+        <div className="addrpop">
+          <label>Reward address
+            <input className="mono wide" value={address} onChange={(e) => setAddress(e.target.value.trim())} placeholder="SM64… (paste an address)" />
+          </label>
+          {!isAddress(address) && <p className="muted">Waiting for a valid address.</p>}
+        </div>
+      )}
+      {pending && (
+        <div className="notice">
+          The game in progress pays {short(task.paysTo)}; the new address applies from the next attempt
+          (the reward address is part of the block template the run is sealed to).{' '}
+          <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the game)</button>
+        </div>
+      )}
+      <Controls rec={rec} />
+      <p className="muted links"><a href="/wallet">Wallet &amp; leaderboard →</a> <a href="/leaderboard">Leaderboard</a></p>
+
+      <details className="sec"><summary>How to play</summary><Help /></details>
+      <details className="sec"><summary>This block</summary>
+        {task ? (
           <dl className="kv">
             <dt>Block</dt><dd>{task.height}</dd>
             <dt>Difficulty</dt><dd>{task.difficulty}</dd>
@@ -132,11 +146,12 @@ function Miner() {
             <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
             <dt>Goal</dt><dd>{task.sm64_goal}</dd>
           </dl>
-        )}
+        ) : <p className="muted">No template yet.</p>}
+      </details>
+      <details className="sec"><summary>Debug</summary>
         {last && (
           <div className="debug">
-            <h4>Last attempt</h4>
-            <p className="muted">{last.pads.length} frames · block {last.template.height} · {last.result}</p>
+            <p className="muted">Last attempt: {last.pads.length} frames · block {last.template.height} · {last.result}</p>
             <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.m64`, toM64(last.pads))}>Download .m64</button>{' '}
             <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.json`, JSON.stringify({
               height: last.template.height,
@@ -152,7 +167,7 @@ function Miner() {
           </div>
         )}
         <pre className="log">{log.join('\n')}</pre>
-      </div>
+      </details>
     </div>
   );
 }
@@ -182,16 +197,20 @@ function Controls({ rec }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [rec]);
   const act = (f) => () => { if (rec.current) { f(rec.current); force((x) => x + 1); } };
+  const btn = (label, tip, f, on) => (
+    <button key={tip} title={tip} aria-label={tip} className={on ? 'on' : ''} onClick={act(f)}>{label}</button>
+  );
   return (
     <div className="controls">
-      <button onClick={act((r) => r.restart())}>⟲ Restart</button>
-      {[1, 5, 10, 30].map((s) => <button key={s} onClick={act((r) => r.back(s))}>◀ {s} s</button>)}
-      <button onClick={act((r) => r.togglePause())}>⏯ Pause</button>
-      <button onClick={act((r) => r.takeOver())}>✋ Take over</button>
+      {btn('⟲', 'Restart the attempt (G)', (r) => r.restart())}
+      {[[1, '[ '], [5, 'Backspace'], [10, 'D-pad up'], [30, 'Shift+Backspace']].map(([s, k]) =>
+        btn(`◀${s}s`, `Back ${s} s (${k.trim()})`, (r) => r.back(s)))}
+      {btn('II', 'Pause / resume (P)', (r) => r.togglePause())}
+      {btn('▶ play', 'Take over during a replay (T)', (r) => r.takeOver())}
       <span className="sep" />
-      {SPEEDS.map((s) => <button key={s} className={rec.current && rec.current.speed === s ? 'on' : ''} onClick={act((r) => r.setSpeed(s))}>{s}×</button>)}
+      {SPEEDS.map((s, i) => btn(`${s}×`, `Speed ${s}× (${i + 1})`, (r) => r.setSpeed(s), rec.current && rec.current.speed === s))}
       <span className="sep" />
-      <button onClick={act((r) => r.skip())}>⏭ New template</button>
+      {btn('▶| new', 'New template: restart on a fresh block template (N)', (r) => r.skip())}
     </div>
   );
 }
@@ -212,46 +231,6 @@ function Help() {
         template builds on the current top block, and the controller pokes are seeded from it. Once a new block is on
         top, a run for the old template can't seal a block any more, so you get a fresh template (and fresh pokes) for
         the next block, and the game starts again from power-on.</p>
-    </div>
-  );
-}
-
-// Balance and past winnings of the open wallet (the wallet RPC), shown when it
-// is the reward address. Mined coins unlock after 10 blocks.
-function Winnings({ address }) {
-  const [w, setW] = useState(null);
-  useInterval(async () => {
-    try {
-      const [a, b, t] = await Promise.all([
-        wallet('get_address', { account_index: 0 }),
-        wallet('get_balance', { account_index: 0 }),
-        wallet('get_transfers', { in: true }),
-      ]);
-      const blocks = (t.in || []).filter((x) => x.type === 'block').sort((x, y) => y.height - x.height);
-      setW({ address: a.address, balance: b.balance, unlocked: b.unlocked_balance, toUnlock: b.blocks_to_unlock, blocks });
-    } catch { setW(null); }
-  }, 5000);
-  if (!w) return <div className="card inner"><p className="muted">Open a wallet (Wallet page) to see your balance and winnings here.</p></div>;
-  const same = w.address === address;
-  const total = w.blocks.reduce((s, x) => s + x.amount, 0);
-  return (
-    <div className="card inner">
-      <h4>{same ? 'Your winnings' : "Open wallet's winnings (not the reward address above)"}</h4>
-      <dl className="kv">
-        <dt>Balance</dt><dd>{coins(w.balance)} SM64</dd>
-        <dt>Spendable</dt><dd>{coins(w.unlocked)} SM64{w.toUnlock > 0 && ` (rest unlocks in ${w.toUnlock} blocks)`}</dd>
-        <dt>Blocks mined</dt><dd>{w.blocks.length} · {coins(total)} SM64 in total</dd>
-      </dl>
-      {w.blocks.length > 0 && (
-        <table className="small">
-          <thead><tr><th>Block</th><th>Reward</th><th>When</th></tr></thead>
-          <tbody>
-            {w.blocks.slice(0, 8).map((x) => (
-              <tr key={x.txid}><td><a href={`/block/${x.height}`}>{x.height}</a></td><td>+{coins(x.amount)}</td><td>{new Date(x.timestamp * 1000).toLocaleString()}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      )}
     </div>
   );
 }

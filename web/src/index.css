@@ -30,9 +30,17 @@ button { background:var(--acc); color:#1a1a1a; border:0; border-radius:6px; padd
 button:disabled { opacity:.4; cursor: default; }
 .search { display:flex; gap:8px; margin-bottom:12px; }
 .search input { flex:1; margin:0; }
-.sm64canvas { width: 640px; height: 480px; max-width:100%; background:#000; border-radius:8px; display:block; }
-.mine { display:grid; grid-template-columns: 660px 1fr; gap:16px; align-items:start; }
-.mine .side { margin:0; }
+.sm64canvas { width: min(100%, calc((100vh - 190px) * 4 / 3)); aspect-ratio: 4 / 3; height: auto; margin: 0 auto; background:#000; border-radius:8px; display:block; }
+.mine { max-width: 1100px; margin: 0 auto; }
+.statusbar { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; margin-top:8px; font-family: ui-monospace, monospace; font-size:13px; }
+.statusbar .grow { flex:1; }
+.statusbar .warn { color: var(--acc); }
+button.linkish { background:transparent; color:var(--fg); padding:2px 6px; font-weight:400; }
+button.linkish:hover { background:#2a2f4a; }
+.addrpop { margin-top:6px; }
+.sec { margin-top:10px; border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+.sec summary { cursor:pointer; font-weight:600; }
+.links { font-size:12px; }
 .clock { margin-top:6px; font-family: ui-monospace, monospace; color: var(--acc); }
 .log { white-space: pre-wrap; font-size:12px; color: var(--mut); max-height: 320px; overflow:auto; }
 .controls { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; align-items:center; }

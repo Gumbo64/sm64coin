@@ -57,6 +57,21 @@ impl Daemon {
         Ok(r["top_block_hash"].as_str().unwrap_or_default().to_string())
     }
 
+    /// Chain height (number of blocks, genesis included).
+    pub fn height(&self) -> Result<u64> {
+        let r = self.call("get_info", json!({}))?;
+        r["height"].as_u64().ok_or_else(|| anyhow!("get_info: no height"))
+    }
+
+    /// The winning run that sealed block `height`: its hash and pads.
+    pub fn block_run(&self, height: u64) -> Result<(String, Vec<sm64_binds::GamePad>)> {
+        let r = self.call("get_block", json!({"height": height}))?;
+        let hash = r["block_header"]["hash"].as_str().unwrap_or_default().to_string();
+        let raw = hex::decode(r["sm64_pads"].as_str().unwrap_or_default())?;
+        let pads = sm64pow::proof::decode(&[&[0u8][..], &raw].concat(), usize::MAX)?;
+        Ok((hash, pads))
+    }
+
     pub fn submit(&self, block_hex: &str) -> Result<()> {
         self.call("submit_block", json!([block_hex]))?;
         Ok(())
