@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { daemon } from '../lib/rpc.js';
-import { coins, short, ago } from '../lib/format.js';
+import { coins, short, ago, frames } from '../lib/format.js';
 import useInterval from '../lib/useInterval.js';
 
 const PAGE = 25;
@@ -10,6 +10,10 @@ export default function Explorer() {
   const [info, setInfo] = useState(null);
   const [task, setTask] = useState(null);
   const [blocks, setBlocks] = useState([]);
+  // Proof sizes and run lengths come from get_block (headers don't carry
+  // them); blocks never change, so cache them by hash.
+  const proofs = useRef({});
+  const [, bump] = useState(0);
   const [err, setErr] = useState(null);
   const [q, setQ] = useState('');
   const nav = useNavigate();
@@ -21,7 +25,13 @@ export default function Explorer() {
       const top = i.height - 1;
       const start = Math.max(0, top - PAGE + 1);
       const r = await daemon('get_block_headers_range', { start_height: start, end_height: top });
-      setBlocks([...r.headers].reverse());
+      const hs = [...r.headers].reverse();
+      setBlocks(hs);
+      const missing = hs.filter((h) => h.height > 0 && !proofs.current[h.hash]);
+      Promise.all(missing.map((h) => daemon('get_block', { hash: h.hash })
+        .then((b) => { proofs.current[h.hash] = { bytes: b.sm64_proof_bytes, frames: b.sm64_frames }; })
+        .catch(() => {})))
+        .then(() => { if (missing.length) bump((x) => x + 1); });
       // get_info carries the task a block found now would have to meet.
       setTask(i.sm64_max_frames ? { ...i, difficulty: i.sm64_difficulty } : null);
       setErr(null);
@@ -55,7 +65,7 @@ export default function Explorer() {
         <button>Go</button>
       </form>
       <table>
-        <thead><tr><th>Height</th><th>Hash</th><th>Age</th><th>Difficulty</th><th>Reward</th><th>Txs</th><th>Size</th></tr></thead>
+        <thead><tr><th>Height</th><th>Hash</th><th>Age</th><th>Difficulty</th><th>Reward</th><th>Txs</th><th title="Block weight: transactions and coinbase">Size</th><th title="The proof of play (encoded inputs), stored with the block on top of its size">Proof</th><th title="Length of the run that sealed the block">Run</th></tr></thead>
         <tbody>
           {blocks.map((b) => (
             <tr key={b.hash}>
@@ -66,6 +76,8 @@ export default function Explorer() {
               <td>{coins(b.reward)}</td>
               <td>{b.num_txes}</td>
               <td>{(b.block_size / 1024).toFixed(1)} kB</td>
+              <td>{b.height === 0 ? '—' : proofs.current[b.hash] ? `${(proofs.current[b.hash].bytes / 1024).toFixed(1)} kB` : '…'}</td>
+              <td>{b.height === 0 ? '—' : proofs.current[b.hash] ? `${proofs.current[b.hash].frames} frames (${frames(proofs.current[b.hash].frames)})` : '…'}</td>
             </tr>
           ))}
         </tbody>

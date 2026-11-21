@@ -102,41 +102,38 @@ function Miner() {
   const pending = task && isAddress(address) && address !== task.paysTo;
 
   return (
-    <div className="mine">
-      <canvas ref={canvas} className="sm64canvas" />
-      <div className="statusbar">
-        <span className="stat" title="Block being mined">{task ? `block ${task.height}` : 'connecting…'}</span>
-        <span className="stat" title="Time left in this attempt">
-          {clock ? `${frames(Math.max(0, clock.max - clock.frame))} left` : '—'}
-        </span>
-        <span className="stat" title="Playback speed">{clock ? `${clock.speed}×` : '—'}</span>
-        {clock && clock.paused && <span className="stat warn">PAUSED</span>}
-        {clock && clock.mode === 'catchup' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
-        <span className="grow" />
-        <button className="linkish" title="Click to change the reward address" onClick={() => setEditing((e) => !e)}>
-          Mining for {isAddress(paying || '') ? <span className="mono paysto" title={paying}>{short(paying)}</span> : <em>no address</em>} ✎
-        </button>
+    <div className="mine2">
+      <div className="gamecol">
+        <canvas ref={canvas} className="sm64canvas" />
+        <div className="statusbar">
+          <span className="stat" title="Time left in this attempt">
+            {clock ? `${frames(Math.max(0, clock.max - clock.frame))} left` : '—'}
+          </span>
+          <span className="stat" title="Playback speed">{clock ? `${clock.speed}×` : '—'}</span>
+          {clock && clock.paused && <span className="stat warn">PAUSED</span>}
+          {clock && clock.mode === 'catchup' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
+        </div>
+        <Controls rec={rec} />
       </div>
-      {(editing || !isAddress(address)) && (
-        <div className="addrpop">
-          <label>Reward address
-            <input className="mono wide" value={address} onChange={(e) => setAddress(e.target.value.trim())} placeholder="SM64… (paste an address)" />
-          </label>
-          {!isAddress(address) && <p className="muted">Waiting for a valid address.</p>}
-        </div>
-      )}
-      {pending && (
-        <div className="notice">
-          The game in progress pays {short(task.paysTo)}; the new address applies from the next attempt
-          (the reward address is part of the block template the run is sealed to).{' '}
-          <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the game)</button>
-        </div>
-      )}
-      <Controls rec={rec} />
-      <p className="muted links"><a href="/wallet">Wallet &amp; leaderboard →</a> <a href="/leaderboard">Leaderboard</a></p>
 
-      <details className="sec"><summary>How to play</summary><Help /></details>
-      <details className="sec"><summary>This block</summary>
+      <aside className="card side">
+        <div className="paysto-row">
+          Mining for {isAddress(paying || '') ? <span className="mono paysto" title={paying}>{short(paying)}</span> : <em>no address</em>}{' '}
+          <button className="linkish" title="Change the reward address" onClick={() => setEditing((e) => !e)}>✎ change</button>
+        </div>
+        {(editing || !isAddress(address)) && (
+          <div className="addrpop">
+            <input className="mono wide" value={address} onChange={(e) => setAddress(e.target.value.trim())} placeholder="SM64… (paste an address)" />
+            {!isAddress(address) && <p className="muted">Waiting for a valid address.</p>}
+          </div>
+        )}
+        {pending && (
+          <div className="notice">
+            The game in progress pays {short(task.paysTo)}; the new address applies from the next attempt
+            (the reward address is part of the block template the run is sealed to).{' '}
+            <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the game)</button>
+          </div>
+        )}
         {task ? (
           <dl className="kv">
             <dt>Block</dt><dd>{task.height}</dd>
@@ -146,28 +143,30 @@ function Miner() {
             <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
             <dt>Goal</dt><dd>{task.sm64_goal}</dd>
           </dl>
-        ) : <p className="muted">No template yet.</p>}
-      </details>
-      <details className="sec"><summary>Debug</summary>
-        {last && (
-          <div className="debug">
-            <p className="muted">Last attempt: {last.pads.length} frames · block {last.template.height} · {last.result}</p>
-            <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.m64`, toM64(last.pads))}>Download .m64</button>{' '}
-            <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.json`, JSON.stringify({
-              height: last.template.height,
-              difficulty: last.template.difficulty,
-              seed_hash: last.template.sm64_seed_hash,
-              reseed_frames: last.template.sm64_reseed_frames,
-              max_frames: last.template.sm64_max_frames,
-              won: last.won,
-              result: last.result,
-              blocktemplate_blob: last.template.blocktemplate_blob,
-              pads_raw_hex: bytesToHex(rawProof(last.pads).subarray(1)),
-            }, null, 1), 'application/json')}>Download debug JSON</button>
-          </div>
-        )}
-        <pre className="log">{log.join('\n')}</pre>
-      </details>
+        ) : <p className="muted">Getting a block template…</p>}
+        <details className="sec"><summary>How to play</summary><Help /></details>
+        <details className="sec"><summary>Debug</summary>
+          {last && (
+            <div className="debug">
+              <p className="muted">Last attempt: {last.pads.length} frames · block {last.template.height} · {last.result}</p>
+              <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.m64`, toM64(last.pads))}>Download .m64</button>{' '}
+              <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.json`, JSON.stringify({
+                height: last.template.height,
+                difficulty: last.template.difficulty,
+                seed_hash: last.template.sm64_seed_hash,
+                reseed_frames: last.template.sm64_reseed_frames,
+                max_frames: last.template.sm64_max_frames,
+                won: last.won,
+                result: last.result,
+                blocktemplate_blob: last.template.blocktemplate_blob,
+                pads_raw_hex: bytesToHex(rawProof(last.pads).subarray(1)),
+              }, null, 1), 'application/json')}>Download debug JSON</button>
+            </div>
+          )}
+          <pre className="log">{log.join('\n')}</pre>
+        </details>
+        <p className="muted links"><a href="/wallet">Wallet</a> · <a href="/leaderboard">Leaderboard</a></p>
+      </aside>
     </div>
   );
 }
