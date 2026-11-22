@@ -333,7 +333,7 @@ jobs:
     name: Build macos-arm64
     needs: web
     if: ${{ !cancelled() }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 360
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
