@@ -211,7 +211,20 @@ function Strip({ blocks, pads, attempt, highlight, playhead }) {
           </div>
         )}
       </div>
-      <div className="timeline" ref={wrap} onMouseMove={(e) => setHover(frameAt(e))} onMouseLeave={() => setHover(null)}>
+      <div
+        className="timeline clickable"
+        ref={wrap}
+        onMouseMove={(e) => setHover(frameAt(e))}
+        onMouseLeave={() => setHover(null)}
+        onClick={(e) => {
+          // Open the replay of the block under the click, at that frame
+          // (frames count from the cycle's start, as on the block page).
+          const f = frameAt(e);
+          const at = blockAt(f);
+          if (at) nav(`/block/${at.hash}?f=${f}`);
+        }}
+        title="Click to watch from here"
+      >
         <canvas ref={strip} className="strip" style={{ width: '100%', height: 36 }} />
         <div className="played" style={{ width: pct(pads.length) }} />
         {blocks.map((b) => (
