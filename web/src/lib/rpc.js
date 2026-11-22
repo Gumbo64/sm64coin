@@ -1,4 +1,4 @@
-// JSON-RPC to the SM64Coin daemon and wallet.
+// JSON-RPC to the SM64Coin daemon.
 // Daemon: the node URL is read from localStorage 'sm64coin.node'. Empty (the
 // default) means same-origin '/json_rpc' (the Vite dev/preview proxy, see
 // vite.config.js). A URL like https://node.example.org:16481 is called
@@ -32,4 +32,3 @@ async function call(url, method, params = {}) {
 // Same as daemon() but against an explicit node URL ('' = same-origin proxy).
 export const daemonAt = (node, method, params) => call(`${node || ''}/json_rpc`, method, params);
 export const daemon = (method, params) => daemonAt(getNode(), method, params);
-export const wallet = (method, params) => call('/wallet/json_rpc', method, params);

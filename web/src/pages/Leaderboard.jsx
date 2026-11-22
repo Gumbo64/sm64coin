@@ -5,56 +5,15 @@ import React, { useEffect, useState, useCallback } from 'react';
 const apiBase = () => localStorage.getItem('sm64coin.leaderboard') || '/leaderboard-api';
 const fmt = (a) => (a / 1e12).toLocaleString(undefined, { maximumFractionDigits: 6 });
 
-async function walletRpc(method, params) {
-  const r = await fetch('/wallet/json_rpc', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: '0', method, params }),
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error.message);
-  return j.result;
-}
-
-async function post(path, body) {
-  const r = await fetch(apiBase() + path, { method: 'POST', body: JSON.stringify(body) });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-  return j;
-}
-
 export default function Leaderboard() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [form, setForm] = useState({ name: '', address: '', view_key: '' });
-  const [msg, setMsg] = useState('');
-  const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
     fetch(apiBase() + '/leaderboard').then((r) => r.json()).then((j) => { setRows(j); setErr(''); })
       .catch((e) => setErr('Leaderboard service unreachable: ' + e.message));
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
-
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
-
-  const useWallet = async () => {
-    setMsg('');
-    try {
-      const a = await walletRpc('get_address', { account_index: 0 });
-      const k = await walletRpc('query_key', { key_type: 'view_key' });
-      setForm((f) => ({ ...f, address: a.address, view_key: k.key }));
-    } catch (e) { setMsg('Wallet error: ' + e.message); }
-  };
-
-  const act = (path, done) => async () => {
-    setBusy(true); setMsg('');
-    try {
-      const j = await post(path, path === '/register' ? form : { address: form.address, view_key: form.view_key });
-      setMsg(done(j)); load();
-    } catch (e) { setMsg('Error: ' + e.message); }
-    setBusy(false);
-  };
 
   const totalBlocks = (rows || []).reduce((s, r) => s + r.blocks, 0);
 
@@ -87,20 +46,13 @@ export default function Leaderboard() {
 
       <div className="card">
         <h2>Join the leaderboard</h2>
-        <p className="muted">
-          Privacy note: sharing your private view key lets the leaderboard operator see all of your incoming
-          payments. It cannot be used to spend your funds. Joining is optional, and anyone can run their own
-          leaderboard (see the README).
-        </p>
-        <div className="kv"><span>Name</span><input value={form.name} onChange={set('name')} maxLength={32} placeholder="display name" /></div>
-        <div className="kv"><span>Address</span><input className="mono" style={{ width: '100%' }} value={form.address} onChange={set('address')} placeholder="SM64..." /></div>
-        <div className="kv"><span>View key</span><input className="mono" style={{ width: '100%' }} value={form.view_key} onChange={set('view_key')} placeholder="private view key (hex)" /></div>
         <p>
-          <button onClick={useWallet} disabled={busy}>Use my open wallet</button>{' '}
-          <button onClick={act('/register', (j) => `Joined: ${j.blocks} block(s) found so far.`)} disabled={busy}>Join</button>{' '}
-          <button onClick={act('/unregister', () => 'Removed from the leaderboard.')} disabled={busy}>Leave (address + view key)</button>
+          Joining is opt-in and done from the <b>SM64Coin wallet</b> app: <b>Advanced → Leaderboard</b>. It shares your
+          address and private view key with this leaderboard server, so it can count the blocks your wallet received.
+          A view key can't spend your coins, but it does let the operator see all of your incoming payments.
         </p>
-        {msg && <p className="muted">{msg}</p>}
+        <p className="muted">This website never asks for your keys. Anyone can run their own leaderboard server
+          (scripts/leaderboard.sh) and point this page at it above.</p>
       </div>
     </div>
   );

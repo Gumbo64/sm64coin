@@ -20,29 +20,32 @@ Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is st
 ## Architecture
 
 ```
- +-----------------------------+        +------------------------+
- | web/  (Vite + React)        |  /json_rpc          /wallet/json_rpc
- |  Explorer, Block replay,    |------+          +----------------+
- |  Mine (browser), Wallet     |      |          |
- +-----------------------------+      v          v
-                              +-------------+  +--------------------+
- | pow/miner  automine  ----->|  sm64coind  |  | sm64coin-wallet-rpc  |
- |  (JSON-RPC: get_block_     |  (monero/,  |  | / sm64coin-wallet-cli|
- |   template, submit_block)  |  branch     |  +--------------------+
- +----------------------------+  sm64coin)  |
-                              |      |      |
-                              |  src/sm64coin glue (C++)
-                              |      | C ABI (ffi.rs)
-                              |      v
-                              |  pow/sm64pow (Rust): rules, emulator
-                              |  replay, proof codecs, retarget
-                              +-------------+
+ +-----------------------------+   +-----------------------------+
+ | web/  (Vite + React)        |   | gui/  SM64Coin wallet (Qt)  |
+ |  Explorer, Block replay,    |   |  funds, Mining, Leaderboard |
+ |  Mine (browser), Bots docs  |   |  (opt-in), Play to mine ->  |
+ |  no keys, no wallet         |   |  web /mine?address=...      |
+ +-------------+---------------+   +--------------+--------------+
+               | /json_rpc                        | daemon RPC
+               v                                  v
+ +----------------------------+  +-------------------------------+
+ | pow/miner  automine  ----->|  sm64coind  (monero/, branch     |
+ |  (JSON-RPC: get_block_     |  sm64coin)                       |
+ |   template, submit_block)  |      |                           |
+ +----------------------------+  src/sm64coin glue (C++)         |
+   sm64coin-wallet-rpc / -cli    |      | C ABI (ffi.rs)           |
+   (scripts, bots) -------------->      v                          |
+                                 |  pow/sm64pow (Rust): rules,     |
+                                 |  emulator replay, perturbation  |
+                                 |  (pow/perturb), proof codecs,   |
+                                 |  retarget                       |
+                                 +---------------------------------+
 ```
 
 - `monero/` the fork. Every changed upstream line is marked `SM64COIN` (`grep -rn SM64COIN monero/src`); the glue lives in `monero/src/sm64coin/`. cmake builds `pow/sm64pow` automatically.
 - `pow/sm64pow` consensus crate: `rules.rs` (the `Rules` trait: success condition, difficulty to task, retarget, decay; `active()` selects the rules), `proof.rs` (proof codecs), `ffi.rs` (C ABI).
 - `pow/miner` the `automine` binary (automated miner) and `trackbench` (offline tracker test).
-- `web/` explorer, in-browser replay and manual miner, wallet UI.
+- `web/` explorer, in-browser replay and manual miner, read-only leaderboard, bot docs. It holds no keys and needs no wallet: the wallet is the desktop app (`gui/`).
 
 Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet RPC 16483; web dev server 5181 (preview 4174).
 
@@ -63,7 +66,7 @@ make web                  # http://localhost:5181
 make stop                 # stops node and wallet RPC (pid files only)
 ```
 
-Manual mining: open `/mine` in the web UI, upload the ROM once (it stays in the browser), and play. Explore blocks at `/`, replay any block's proof at `/block/:id`, manage funds at `/wallet`.
+Manual mining: open `/mine` in the web UI, upload the ROM once (it stays in the browser), and play. Explore blocks at `/`, replay any block's proof at `/block/:id`. Funds, mining controls and joining the leaderboard are in the wallet app (`bin/sm64coin-wallet-gui`); its Mining → Play to mine opens `/mine` with your address.
 
 Joining an existing network: there are no public seed nodes. Run `PEERS="host:16480 host2:16480" make node` (do not set `SOLO`).
 
@@ -155,7 +158,7 @@ Sync verifies every block by replay (about 0.1 to 1 s per block). Notes from tes
 
 ### Web app on static hosting
 
-The web app needs no server of its own except for the wallet (wallet RPC still goes through the local Vite proxy and is not available on a static site) and the leaderboard. To host the explorer and miner anywhere:
+The web app needs no server of its own except a daemon's RPC and (optionally) a leaderboard server. To host the explorer and miner anywhere:
 
 ```sh
 cd web && npx vite build        # output in web/dist

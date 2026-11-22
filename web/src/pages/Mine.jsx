@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Recorder } from '../lib/recorder.js';
-import { daemon, wallet } from '../lib/rpc.js';
+import { daemon } from '../lib/rpc.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex } from '../lib/proof.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
@@ -11,7 +11,8 @@ import { announceMined } from '../lib/payout.js';
 // The manual miner: play Super Mario 64 yourself. Each attempt is sealed to a
 // block template (its seed drives the controller pokes), and a successful run
 // is submitted as the block's proof of play. Opens straight onto the game:
-// the reward address comes from the wallet (or the last one used).
+// the reward address comes from the wallet app's "Play to mine" link
+// (?address=), or is pasted (and remembered).
 export default function Mine() {
   return <RomGate><Miner /></RomGate>;
 }
@@ -30,10 +31,6 @@ function Miner() {
   useEffect(() => {
     if (isAddress(address)) localStorage.setItem('sm64coin.address', address);
   }, [address]);
-  useEffect(() => {
-    if (isAddress(addr.current)) return;
-    wallet('get_address', { account_index: 0 }).then((r) => setAddress(r.address)).catch(() => {});
-  }, []);
   const [task, setTask] = useState(null);
   const [log, setLog] = useState([]);
   const [clock, setClock] = useState(null);
@@ -124,7 +121,8 @@ function Miner() {
         {(editing || !isAddress(address)) && (
           <div className="addrpop">
             <input className="mono wide" value={address} onChange={(e) => setAddress(e.target.value.trim())} placeholder="SM64… (paste an address)" />
-            {!isAddress(address) && <p className="muted">Waiting for a valid address.</p>}
+            {!isAddress(address) && <p className="muted">Paste your address (in the SM64Coin wallet: Receive), or open
+              this page from the wallet's Mining → Play to mine.</p>}
           </div>
         )}
         {pending && (
@@ -165,7 +163,7 @@ function Miner() {
           )}
           <pre className="log">{log.join('\n')}</pre>
         </details>
-        <p className="muted links"><a href="/wallet">Wallet</a> · <a href="/leaderboard">Leaderboard</a></p>
+        <p className="muted links"><a href="/leaderboard">Leaderboard</a></p>
       </aside>
     </div>
   );
