@@ -56,7 +56,9 @@ compiler (Windows: MSYS2's `rust`, target `x86_64-pc-windows-gnu`).
 `scripts/ci-smoke.sh` is run on every unpacked bundle: the launcher reports the missing ROM and exits
 2, `sm64coind --version`, wallet CLI/RPC `--version`, the wallet app resolves its libraries (Linux
 `ldd`, Windows Qt files present, macOS `otool`), the QML loads headless (informational), and with the
-ROM a 60 s full run.
+ROM a 60 s full run. Without the ROM it still runs the launcher against a stand-in node
+(`SM64COIN_TEST_NO_ROM=1`, CI only): website, `/json_rpc` proxy, single-page routes, the wallet app as a
+child process (Windows, macOS) and that ending the launcher leaves no wallet process behind.
 
 ## Known gaps
 

@@ -58,8 +58,48 @@ qmlcheck() { # qmlcheck LABEL VAR=VALUE...
 }
 case "$OS" in
   windows) qmlcheck "default platform" A=1; qmlcheck "offscreen + software" QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ;;
+  macos) qmlcheck "default platform" A=1 ;;
   *) qmlcheck "offscreen" QT_QPA_PLATFORM=offscreen ;;
 esac
+
+# The launcher's own plumbing against a stand-in node (no ROM needed): website, /json_rpc proxy,
+# the wallet app as a child process, and that stopping the launcher leaves nothing behind.
+echo "--- launcher with a stand-in node"
+PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
+cat > "$H/mocknode.py" <<'PYEOF'
+import http.server, json
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        b = json.dumps({"jsonrpc": "2.0", "id": 0, "result": {"height": 7, "target_height": 0, "synchronized": True}}).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+    do_GET = do_POST
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', 27481), H).serve_forever()
+PYEOF
+"$PY" "$H/mocknode.py" & mockpid=$!
+sleep 2
+wallet_arg=""; [ "$OS" = linux ] && wallet_arg="--no-wallet"   # no display on the Linux runner
+SM64COIN_TEST_NO_ROM=1 HOME="$H" USERPROFILE="$H" ./sm64coin$X --no-browser $wallet_arg --rpc-port 27481 --web-port 27181 --data-dir "$H/plumbing" < /dev/null > "$H/plumbing.log" 2>&1 &
+lpid=$!
+sleep 12
+cat "$H/plumbing.log"
+curl -s -m 5 http://127.0.0.1:27181/ | grep -qi "<html\|<!doctype" || bad "plumbing: website not served"
+curl -s -m 5 -d '{"jsonrpc":"2.0","id":0,"method":"get_info"}' http://127.0.0.1:27181/json_rpc | grep -q '"height"' || bad "plumbing: /json_rpc proxy"
+curl -s -m 5 http://127.0.0.1:27181/some/route | grep -qi "<html\|<!doctype" || bad "plumbing: single-page routes"
+if [ "$OS" != linux ]; then
+  grep -q "Wallet app started" "$H/plumbing.log" || bad "plumbing: wallet app not started"
+  if [ "$OS" = windows ]; then tasklist | grep -i "sm64coin-wallet-gui" > /dev/null && echo "wallet app is running"; else pgrep -f monero-wallet-gui > /dev/null && echo "wallet app is running"; fi
+fi
+if [ "$OS" = windows ]; then kill -f $lpid 2>/dev/null; else kill $lpid 2>/dev/null; fi
+sleep 6
+if [ "$OS" = windows ]; then
+  tasklist | grep -i "sm64coin-wallet-gui" > /dev/null && bad "plumbing: wallet app still running after the launcher ended"
+  taskkill //F //IM sm64coin-wallet-gui.exe >/dev/null 2>&1
+elif [ "$OS" = macos ]; then
+  pgrep -f monero-wallet-gui > /dev/null && echo "(note: wallet app outlived the launcher killed with SIGTERM)"
+fi
+kill $mockpid 2>/dev/null
 
 if [ -n "${SM64COIN_ROM_FILE:-}" ] && [ -f "${SM64COIN_ROM_FILE}" ]; then
   echo "--- full run for 60 s with the ROM"

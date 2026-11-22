@@ -449,7 +449,9 @@ fn run(o: Opts) -> Result<(), String> {
     let tool = |n: &str| -> PathBuf { exe_dir.join(format!("{n}{EXE}")) };
 
     println!("SM64Coin {}", env!("CARGO_PKG_VERSION"));
-    let rom = find_rom(o.rom.as_deref(), &exe_dir, &data_dir)?;
+    // CI only: SM64COIN_TEST_NO_ROM=1 skips the ROM search so the launcher's own plumbing (website,
+    // /json_rpc proxy, child processes, shutdown) can be tested against a stand-in node.
+    let rom = if std::env::var_os("SM64COIN_TEST_NO_ROM").is_some() { PathBuf::from("no-rom-test") } else { find_rom(o.rom.as_deref(), &exe_dir, &data_dir)? };
     println!("ROM: {} (SHA-1 ok)", rom.display());
 
     let daemon_bin = tool("sm64coind");
