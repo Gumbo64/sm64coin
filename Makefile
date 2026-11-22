@@ -1,13 +1,16 @@
+# Parallel compile jobs (Monero's C++ needs ~1.5 GB RAM per job: use JOBS=2 on a Raspberry Pi).
+JOBS ?= $(shell nproc)
+
 .PHONY: build build-monero build-pow build-web node wallet mine web stop test clean-data
 
 build: build-monero build-pow build-web links
 
 build-monero:
 	mkdir -p monero/build/release
-	cd monero/build/release && cmake -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTS=OFF -D USE_DEVICE_TREZOR=OFF -D MANUAL_SUBMODULES=1 ../.. && $(MAKE) -j daemon simplewallet wallet_rpc_server
+	cd monero/build/release && cmake -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTS=OFF -D USE_DEVICE_TREZOR=OFF -D MANUAL_SUBMODULES=1 ../.. && $(MAKE) -j$(JOBS) daemon simplewallet wallet_rpc_server
 
 build-pow:
-	cd pow && cargo build --release -p sm64coin-miner --bin automine
+	cd pow && cargo build --release -j$(JOBS) -p sm64coin-miner --bin automine
 
 build-web:
 	cd web && npm install && npm run build

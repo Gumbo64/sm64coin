@@ -176,6 +176,10 @@ Upload `web/dist` to any static host (GitHub Pages, Netlify, S3, nginx). Serve i
 - The leaderboard service and the project's own web hosting are single servers; they do not affect consensus.
 - Blocks are only as unpredictable as the play: a strong player or bot with a fast search can mine most blocks (see Caveats).
 
+## Running a public node (Raspberry Pi)
+
+See [docs/raspberry-pi.md](docs/raspberry-pi.md): packages, `git clone --recursive`, `make build-monero JOBS=2`, `scripts/public-node.sh`, a systemd unit, and adding the node to `seeds.txt`.
+
 ## Desktop wallet (GUI)
 
 `gui/` is a fork of the Monero GUI wallet (v0.18.5.4, branch `sm64coin`, edits marked `SM64COIN`) built against
