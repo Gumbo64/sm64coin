@@ -7,6 +7,11 @@ description = "SM64Coin proof-of-play: consensus parameters and replay verificat
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+# Hard fork switch (off): accept state-aware codecs (statecodec.rs) in blocks
+# and let sealing pick them. Without it nodes reject them like any unknown id.
+state-codec = []
+
 [dependencies]
 sm64-binds = { workspace = true }
 anyhow = { workspace = true }

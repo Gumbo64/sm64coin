@@ -11,6 +11,8 @@
 //! To add compression: implement [`Codec`], give it an unused id, and add it
 //! to [`CODECS`]. Old blocks stay valid because their codec id still decodes.
 //! Miners choose with [`encode_best`] (smallest wins) or [`encode_with`].
+//! State-aware codecs (decoded during the replay, from the game state) live in
+//! [`crate::statecodec`] and are off until the `state-codec` feature.
 //! Adding a codec is a hard fork for nodes that don't know it (they reject
 //! blocks using it); removing one breaks old blocks, so don't.
 
@@ -87,6 +89,18 @@ pub fn encode_proof(proof: &Proof) -> Vec<u8> {
     CODECS.iter().map(|c| encode_proof_with(*c, proof)).min_by_key(|b| b.len()).unwrap()
 }
 
+/// A blob's header: frames, start, codec id and the codec's body.
+pub fn split_blob(blob: &[u8]) -> Result<(u32, Start, u8, &[u8])> {
+    let mut i = 0;
+    let frames = get_varint(blob, &mut i)?;
+    if frames > MAX_FRAMES as u64 {
+        bail!("proof claims {frames} frames");
+    }
+    let start = proof_start(blob)?;
+    let id = *blob.get(i + 1).ok_or_else(|| anyhow!("truncated proof"))?;
+    Ok((frames as u32, start, id, &blob[i + 2..]))
+}
+
 /// Just the start of a proof blob (cheap: no decompression).
 pub fn proof_start(blob: &[u8]) -> Result<Start> {
     let mut i = 0;
@@ -155,7 +169,7 @@ impl Codec for Raw {
 /// smaller than raw. A placeholder for real compression.
 pub struct RunLength;
 
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         out.push((v as u8) | 0x80);
         v >>= 7;

@@ -83,6 +83,94 @@ pub fn view(bytes: &[u8]) -> View {
 }
 
 
+// --- Features: what a state-aware proof codec may condition on. Integers only
+// (the decode path is consensus): floats in memory are converted by bit
+// manipulation, truncating, so every platform agrees.
+
+const MARIO_INPUT: usize = 2;
+const MARIO_FLAGS: usize = 4;
+const MARIO_PREV_ACTION: usize = 16;
+const MARIO_ACTION_STATE: usize = 24;
+const MARIO_ACTION_TIMER: usize = 26;
+const MARIO_INTENDED_MAG: usize = 32;
+const MARIO_INTENDED_YAW: usize = 36;
+
+/// `f32` bits to a fixed-point integer with `frac` fraction bits, truncating
+/// toward zero and saturating (NaN and infinities saturate): no float maths.
+pub fn f32_fx(bits: u32, frac: u32) -> i32 {
+    let neg = bits >> 31 != 0;
+    let e = ((bits >> 23) & 0xff) as i32;
+    if e == 0 {
+        return 0;
+    }
+    let m = ((bits & 0x7f_ffff) | 0x80_0000) as u64;
+    let shift = e - 127 - 23 + frac as i32;
+    let mag: u64 = if shift >= 0 {
+        if shift > 31 { u64::MAX } else { m << shift }
+    } else if -shift >= 64 {
+        0
+    } else {
+        m >> (-shift)
+    };
+    let mag = mag.min(i32::MAX as u64) as i32;
+    if neg { -mag } else { mag }
+}
+
+/// The game state a state-aware codec conditions on, read (from the same
+/// bytes as [`view`]) before a frame is played.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Features {
+    pub action: u32,
+    pub prev_action: u32,
+    pub flags: u32,
+    pub input: u16,
+    pub action_state: u16,
+    pub action_timer: u16,
+    pub intended_yaw: u16,
+    /// Last frame's stick magnitude, 8 fraction bits.
+    pub intended_mag: i32,
+    pub face_yaw: u16,
+    pub cam_yaw: u16,
+    /// Position, whole units.
+    pub pos: [i32; 3],
+    /// Forward speed and velocity, 8 fraction bits.
+    pub fwd: i32,
+    pub vel: [i32; 3],
+    pub health: u16,
+    pub level: u16,
+    pub area: u16,
+    pub timer: u32,
+}
+
+/// [`Features`] from the regions' bytes, concatenated in [`regions`] order.
+pub fn features(bytes: &[u8]) -> Features {
+    let u16_at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+    let u32_at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+    let m = 2;
+    let l = m + MARIO_SIZE as usize;
+    let rest = l + LAKITU_SIZE as usize;
+    let fx = |o: usize, f: u32| f32_fx(u32_at(m + o), f);
+    Features {
+        action: u32_at(m + MARIO_ACTION),
+        prev_action: u32_at(m + MARIO_PREV_ACTION),
+        flags: u32_at(m + MARIO_FLAGS),
+        input: u16_at(m + MARIO_INPUT),
+        action_state: u16_at(m + MARIO_ACTION_STATE),
+        action_timer: u16_at(m + MARIO_ACTION_TIMER),
+        intended_yaw: u16_at(m + MARIO_INTENDED_YAW),
+        intended_mag: fx(MARIO_INTENDED_MAG, 8),
+        face_yaw: u16_at(m + MARIO_FACE_ANGLE + 2),
+        cam_yaw: u16_at(l + LAKITU_YAW),
+        pos: [fx(MARIO_POS, 0), fx(MARIO_POS + 4, 0), fx(MARIO_POS + 8, 0)],
+        fwd: fx(MARIO_FORWARD_VEL, 8),
+        vel: [fx(MARIO_VEL, 8), fx(MARIO_VEL + 4, 8), fx(MARIO_VEL + 8, 8)],
+        health: u16_at(m + MARIO_HEALTH),
+        level: u16_at(rest + 6),
+        area: u16_at(rest + 8),
+        timer: u32_at(rest),
+    }
+}
+
 // --- Progress: what a block must add (a star, a Bowser key, the Grand Star).
 
 // include/sm64.h, src/game/save_file.h (the same in every wasm32 build).

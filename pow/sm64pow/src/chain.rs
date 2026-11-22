@@ -160,7 +160,54 @@ fn replay(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params,
     Ok(Err("no progress was made (no new star, key or Grand Star)".into()))
 }
 
-fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Vec<GamePad>>) -> Result<BlockVerdict> {
+/// [`replay`] for a state-coded proof: the inputs are decoded from `body`
+/// frame by frame, in the state they are played in. Besides the usual
+/// conditions the body must be exactly the canonical encoding of the decoded
+/// inputs (re-encoded alongside), so a run has one valid encoding.
+#[allow(clippy::too_many_arguments)]
+fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params, frames: u32, codec: &dyn crate::statecodec::StateCodec, body: &[u8], max_frames: Option<u32>, played: Option<&mut Vec<GamePad>>) -> Result<std::result::Result<(SM64MiningGame, Progress), String>> {
+    let r = rules();
+    if frames == 0 {
+        return Ok(Err("empty proof".into()));
+    }
+    if let Some(m) = max_frames {
+        if frames > m {
+            return Ok(Err(format!("{frames} frames exceeds the limit of {m}")));
+        }
+    }
+    // Never more inputs than frames: one decode per non-poked frame, at most `frames` frames.
+    let mut g = SM64MiningGame::from_game(game, seed, p);
+    let mut dec = codec.decoder(body);
+    let mut enc = codec.encoder();
+    let mut out = played;
+    for f in 0..frames as usize {
+        let (pad, poked) = g.step_with(|ft| {
+            let pad = dec.pad(ft);
+            enc.pad(ft, pad);
+            Ok(pad)
+        })?;
+        if poked {
+            dec.poked();
+            enc.poked();
+        }
+        if let Some(o) = out.as_deref_mut() {
+            o.push(pad);
+        }
+        let now = g.progress()?;
+        if r.is_success(&before, &now) {
+            if f + 1 != frames as usize {
+                return Ok(Err(format!("success at frame {} but the proof runs to {frames}", f + 1)));
+            }
+            if enc.finish() != body {
+                return Ok(Err("state-coded proof is not the canonical encoding".into()));
+            }
+            return Ok(Ok((g, now)));
+        }
+    }
+    Ok(Err("no progress was made (no new star, key or Grand Star)".into()))
+}
+
+fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Vec<GamePad>>, state_ok: bool) -> Result<BlockVerdict> {
     let p = params(difficulty.unwrap_or(1));
     let elapsed = match parent {
         Parent::Block { gap_seconds, .. } => *gap_seconds,
@@ -170,22 +217,35 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
         Some(d) => rules().max_frames(d, elapsed),
         None => proof::MAX_FRAMES as u32,
     };
-    let pr = match proof::decode_proof(blob, limit as usize) {
-        Ok(x) => x,
-        Err(e) => return Ok(BlockVerdict::Invalid(format!("bad proof: {e}"))),
+    // State-aware codecs are decoded during the replay.
+    let state = match proof::split_blob(blob) {
+        Ok((frames, start, cid, body)) if state_ok => crate::statecodec::state_codec(cid).map(|c| (frames, start, c, body)),
+        _ => None,
     };
-    let (game, before) = match start_game(pr.start, parent)? {
+    let (start, pr) = match &state {
+        Some((_, start, _, _)) => (*start, None),
+        None => match proof::decode_proof(blob, limit as usize) {
+            Ok(x) => (x.start, Some(x)),
+            Err(e) => return Ok(BlockVerdict::Invalid(format!("bad proof: {e}"))),
+        },
+    };
+    let (game, before) = match start_game(start, parent)? {
         None => return Ok(BlockVerdict::NeedParent),
         Some(Err(why)) => return Ok(BlockVerdict::Invalid(why)),
         Some(Ok(x)) => x,
     };
-    match replay(game, before, seed, &p, &pr, difficulty.map(|_| limit), played)? {
+    let (frames, result) = match (&state, &pr) {
+        (Some((frames, _, c, body)), _) => (*frames, replay_state(game, before, seed, &p, *frames, *c, body, difficulty.map(|_| limit), played)?),
+        (None, Some(pr)) => (pr.frames, replay(game, before, seed, &p, pr, difficulty.map(|_| limit), played)?),
+        _ => unreachable!(),
+    };
+    match result {
         Err(why) => Ok(BlockVerdict::Invalid(why)),
         Ok((g, now)) => {
             let ends_cycle = rules().ends_cycle(&now);
             let event = crate::game::event(&before, &now);
             remember(*id, EndState { game: g.game.save_state(), progress: now, ends_cycle, event });
-            Ok(BlockVerdict::Valid { frames: pr.frames, progress: now, ends_cycle })
+            Ok(BlockVerdict::Valid { frames, progress: now, ends_cycle })
         }
     }
 }
@@ -194,20 +254,34 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
 /// time limit also depends on the parent gap, see [`crate::Rules::max_frames`])
 /// on top of `parent`, and caches its end state when valid.
 pub fn verify_block(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8]) -> Result<BlockVerdict> {
-    check(id, &parent, seed, Some(difficulty), blob, None)
+    verify_block_opts(id, parent, seed, difficulty, blob, crate::statecodec::state_codec_enabled())
+}
+
+/// [`verify_block`] with the state-codec switch given (see
+/// [`crate::statecodec::state_codec_enabled`]; tests turn it on).
+pub fn verify_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8], state_ok: bool) -> Result<BlockVerdict> {
+    check(id, &parent, seed, Some(difficulty), blob, None, state_ok)
 }
 
 /// Replays an already-accepted block to cache its end state (no time limit:
 /// its difficulty was checked when it was accepted).
 pub fn rebuild_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> Result<BlockVerdict> {
-    check(id, &parent, seed, None, blob, None)
+    rebuild_block_opts(id, parent, seed, blob, crate::statecodec::state_codec_enabled())
+}
+
+pub fn rebuild_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8], state_ok: bool) -> Result<BlockVerdict> {
+    check(id, &parent, seed, None, blob, None, state_ok)
 }
 
 /// The pads a block's run played on every frame (pokes included), e.g. for
 /// replays and `.m64` export. Needs the parent's end state, like verifying.
 pub fn played_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> Result<std::result::Result<Vec<GamePad>, BlockVerdict>> {
+    played_block_opts(id, parent, seed, blob, crate::statecodec::state_codec_enabled())
+}
+
+pub fn played_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8], state_ok: bool) -> Result<std::result::Result<Vec<GamePad>, BlockVerdict>> {
     let mut pads = Vec::new();
-    match check(id, &parent, seed, None, blob, Some(&mut pads))? {
+    match check(id, &parent, seed, None, blob, Some(&mut pads), state_ok)? {
         BlockVerdict::Valid { .. } => Ok(Ok(pads)),
         v => Ok(Err(v)),
     }

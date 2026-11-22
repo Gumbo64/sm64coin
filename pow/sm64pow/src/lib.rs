@@ -31,6 +31,7 @@ pub mod chain;
 pub mod game;
 pub mod proof;
 pub mod rules;
+pub mod statecodec;
 
 pub use game::{SM64MiningGame, SM64MiningSave};
 
@@ -94,6 +95,13 @@ impl Seed {
 /// changing any block id. An undecodable blob gets a hash of its bytes behind
 /// a marker (such a block fails verification anyway).
 pub fn proof_id(blob: &[u8]) -> [u8; 32] {
+    if statecodec::state_codec_enabled() {
+        if let Ok((_, _, id, _)) = proof::split_blob(blob) {
+            if statecodec::state_codec(id).is_some() {
+                return statecodec::state_proof_id(blob);
+            }
+        }
+    }
     let mut h = Keccak256::new();
     // No valid proof is longer than the easiest task allows; decoding no
     // further keeps a tiny compressed blob from costing megabytes here.
@@ -255,7 +263,26 @@ pub fn played_from_proof(seed: &Seed, p: &Params, pr: &proof::Proof) -> Result<V
 
 /// The proof blob for a run given as the pads played on every frame.
 pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Vec<u8>> {
-    Ok(proof::encode_proof(&proof_from_played_at(start, parent, seed, p, played)?))
+    let pr = proof_from_played_at(start, parent, seed, p, played)?;
+    let best = proof::encode_proof(&pr);
+    if statecodec::state_codec_enabled() {
+        // Hard fork switch: a state codec may win.
+        let mut best = best;
+        for c in statecodec::STATE_CODECS {
+            let b = statecodec::encode_proof_state(*c, parent, seed, p, &pr)?;
+            if b.len() < best.len() {
+                best = b;
+            }
+        }
+        return Ok(best);
+    }
+    Ok(best)
+}
+
+/// The proof blob in a state-aware codec (see [`statecodec`]): the same run,
+/// coded given the game states it passes through.
+pub fn seal_proof_state_at(c: &dyn statecodec::StateCodec, start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Vec<u8>> {
+    statecodec::encode_proof_state(c, parent, seed, p, &proof_from_played_at(start, parent, seed, p, played)?)
 }
 
 /// [`seal_proof_at`] for a run from power-on.

@@ -11,7 +11,7 @@ use crate::{Params, Seed};
 use anyhow::Result;
 use crate::rules::RngConfig;
 use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
-pub use sm64coin_perturb::sm64::{Addrs, Event, HEADLESS, Progress, VISUAL, event, View, progress, progress_regions, progress_regions_len, regions, regions_len, view};
+pub use sm64coin_perturb::sm64::{Features, features, Addrs, Event, HEADLESS, Progress, VISUAL, event, View, progress, progress_regions, progress_regions_len, regions, regions_len, view};
 pub use sm64coin_perturb::{Pad, PokeConfig, Perturber};
 
 pub fn to_pad(p: GamePad) -> Pad {
@@ -33,15 +33,26 @@ pub fn poke_config(r: &RngConfig) -> PokeConfig {
     }
 }
 
-/// Reads the regions from a native (headless) game.
-pub fn read_view(game: &SM64Game) -> Result<View> {
+/// The bytes of the regions of a native (headless) game, concatenated in
+/// [`regions`] order.
+pub fn read_region_bytes(game: &SM64Game) -> Result<Vec<u8>> {
     let mut bytes = vec![0u8; regions_len(&HEADLESS)];
     let mut o = 0;
     for (addr, len) in regions(&HEADLESS) {
         game.read_memory(addr, &mut bytes[o..o + len as usize])?;
         o += len as usize;
     }
-    Ok(view(&bytes))
+    Ok(bytes)
+}
+
+/// Reads the regions from a native (headless) game.
+pub fn read_view(game: &SM64Game) -> Result<View> {
+    Ok(view(&read_region_bytes(game)?))
+}
+
+/// The state features a state-aware proof codec conditions on.
+pub fn read_features(game: &SM64Game) -> Result<Features> {
+    Ok(features(&read_region_bytes(game)?))
 }
 
 /// How far into the game a native (headless) game is: stars, Bowser keys,
@@ -108,6 +119,23 @@ impl SM64MiningGame {
         let before = read_view(&self.game)?.clock;
         let (played, poked) = self.pert.pad(before, to_pad(wanted));
         let played = from_pad(played);
+        self.game.step_game(played)?;
+        let after = read_view(&self.game)?;
+        if after.clock != before {
+            self.pert.mix(&after.digest);
+        }
+        Ok((played, poked))
+    }
+
+    /// [`step`](SM64MiningGame::step) for a codec that decodes the input from
+    /// the game state: `wanted` is called with the state's [`Features`]
+    /// before the frame, only when the frame isn't poked (a poke doesn't
+    /// depend on the wanted pad), and returns the pad to play.
+    pub fn step_with(&mut self, wanted: impl FnOnce(&Features) -> Result<GamePad>) -> Result<(GamePad, bool)> {
+        let bytes = read_region_bytes(&self.game)?;
+        let before = view(&bytes).clock;
+        let (played, poked) = self.pert.pad(before, to_pad(GamePad::default()));
+        let played = if poked { from_pad(played) } else { wanted(&features(&bytes))? };
         self.game.step_game(played)?;
         let after = read_view(&self.game)?;
         if after.clock != before {
