@@ -1,6 +1,6 @@
 [package]
 name = "sm64coin-launcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "sm64coin: one command that finds the ROM, runs the node, serves the website and opens the wallet"
 license = "BSD-3-Clause"
