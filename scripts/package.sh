@@ -147,6 +147,7 @@ bundle_windows_libs() {
 # Imports of the build machine's Homebrew that a macOS binary of the bundle still has (bash 3.2:
 # keep this out of a $( ) with parentheses in it).
 mac_bad_imports() {
+  set +e +o pipefail
   local f id
   find "$STAGE" -type f | while read -r f; do
     if file "$f" | grep -q 'Mach-O'; then
@@ -159,6 +160,7 @@ mac_bad_imports() {
 # ---- macOS: Homebrew dylibs of the command-line programs; ad-hoc signatures -----------------
 bundle_macos_libs() {
   command -v dylibbundler >/dev/null || { echo "package.sh: dylibbundler is required (brew install dylibbundler)" >&2; exit 1; }
+  set +e +o pipefail   # the loops below probe files with commands that may fail; errors are checked explicitly
   local args=() f
   for f in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-leaderboard sm64coin-automine; do
     [ -f "$STAGE/$f" ] && args+=(-x "$STAGE/$f")
@@ -189,8 +191,9 @@ bundle_macos_libs() {
   if [ -d "$STAGE/SM64Coin-Wallet.app" ]; then codesign --force --deep --sign - "$STAGE/SM64Coin-Wallet.app" 2>/dev/null; fi
   local bad
   bad="$(mac_bad_imports)" || true
-  [ -z "$bad" ] || { echo "package.sh: binaries still import Homebrew libraries:" >&2; echo "$bad" >&2; exit 1; }
+  [ -z "$bad" ] || { echo "package.sh: binaries still import Homebrew libraries:" >&2; echo "$bad" | head -40 >&2; exit 1; }
   du -sh "$STAGE/lib" | sed 's/^/  lib: /'
+  set -e -o pipefail
 }
 case "$PLATFORM" in linux-*) bundle_linux_libs ;; windows-*) bundle_windows_libs ;; macos-*) bundle_macos_libs ;; esac
 
