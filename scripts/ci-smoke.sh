@@ -43,7 +43,6 @@ case "$OS" in
     app=SM64Coin-Wallet.app/Contents/MacOS/monero-wallet-gui
     [ -x "$app" ] || bad "wallet app missing"
     otool -L "$app" | head -20
-    ls SM64Coin-Wallet.app/Contents/Frameworks | head -30
     gui="./$app" ;;
 esac
 # QML loads (headless). Informational: a display-less runner may lack what Qt wants.
@@ -58,12 +57,8 @@ qmlcheck() { # qmlcheck LABEL VAR=VALUE...
 }
 case "$OS" in
   windows) qmlcheck "default platform" A=1; qmlcheck "offscreen + software" QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ;;
-  macos)
-    qmlcheck "default platform" QT_DEBUG_PLUGINS=1
-    grep -i -E "cocoa|dlopen|not loaded|reason|image not found|signature" "$H/qml.log" | cut -c1-300 | head -12
-    otool -L SM64Coin-Wallet.app/Contents/PlugIns/platforms/libqcocoa.dylib | cut -c1-160 | head -20
-    ls SM64Coin-Wallet.app/Contents/Frameworks | tr '\n' ' '; echo
-    codesign -vv SM64Coin-Wallet.app 2>&1 | tail -3 ;;
+  macos) qmlcheck "default platform" A=1
+    codesign -vv SM64Coin-Wallet.app 2>&1 | tail -2 ;;
   *) qmlcheck "offscreen" QT_QPA_PLATFORM=offscreen ;;
 esac
 
