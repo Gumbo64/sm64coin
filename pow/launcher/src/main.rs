@@ -301,6 +301,25 @@ fn port_free(port: u16, host: &str) -> bool {
     std::net::TcpListener::bind((host, port)).is_ok()
 }
 
+/// A free port: `preferred` if free, else one of the next 20, else any port the
+/// system hands out. `taken` are ports this launcher already chose.
+fn pick_port(preferred: u16, host: &str, taken: &[u16]) -> u16 {
+    let ok = |p: u16| p != 0 && !taken.contains(&p) && port_free(p, host);
+    if let Some(p) = (0..=20u16).map(|i| preferred.saturating_add(i)).find(|&p| ok(p)) {
+        return p;
+    }
+    for _ in 0..20 {
+        if let Ok(l) = std::net::TcpListener::bind((host, 0)) {
+            if let Ok(a) = l.local_addr() {
+                if !taken.contains(&a.port()) {
+                    return a.port();
+                }
+            }
+        }
+    }
+    preferred
+}
+
 fn content_type(p: &Path) -> &'static str {
     match p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
         "html" => "text/html; charset=utf-8",
@@ -395,8 +414,22 @@ fn handle(req: tiny_http::Request, cfg: &WebCfg) {
     }
 }
 
-fn serve_web(host: &str, port: u16, cfg: WebCfg) -> Result<(), String> {
-    let server = tiny_http::Server::http((host, port)).map_err(|e| format!("cannot serve the website on {host}:{port}: {e}"))?;
+/// Serves the website on `port`, or the next free port if it is taken (by an
+/// earlier run, another program, an editor's port forwarding...). Returns the port.
+fn serve_web(host: &str, port: u16, cfg: WebCfg) -> Result<u16, String> {
+    let mut last = String::new();
+    let mut server = None;
+    for p in (0..=20u16).map(|i| port.saturating_add(i)).chain(std::iter::once(0)) {
+        match tiny_http::Server::http((host, p)) {
+            Ok(s) => {
+                let actual = s.server_addr().to_ip().map(|a| a.port()).unwrap_or(p);
+                server = Some((s, actual));
+                break;
+            }
+            Err(e) => last = e.to_string(),
+        }
+    }
+    let (server, port) = server.ok_or_else(|| format!("cannot serve the website on {host} (port {port} and the next ones): {last}"))?;
     let server = Arc::new(server);
     let cfg = Arc::new(cfg);
     for _ in 0..8 {
@@ -407,7 +440,7 @@ fn serve_web(host: &str, port: u16, cfg: WebCfg) -> Result<(), String> {
             }
         });
     }
-    Ok(())
+    Ok(port)
 }
 
 /// The wallet app has no command-line option for its node: it reads its settings file.
@@ -420,13 +453,21 @@ fn seed_wallet_settings(rpc_port: u16) {
     }
     let dir = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("sm64coin");
     let f = dir.join("sm64coin-wallet.conf");
-    if f.exists() {
-        println!("(wallet settings exist: if it does not find the node, use remote node 127.0.0.1:{rpc_port} in its settings)");
+    let nodes = format!(r#"{{\"selected\":0,\"nodes\":[{{\"address\":\"127.0.0.1:{rpc_port}\",\"username\":\"\",\"password\":\"\",\"trusted\":true}}]}}"#);
+    let line = format!("remoteNodesSerialized=\"{nodes}\"");
+    if let Ok(text) = fs::read_to_string(&f) {
+        // Ours (written by this launcher, marked) and the node moved to another port: follow it.
+        // Never touch settings the user made themselves.
+        if text.contains("sm64coinLauncherNode=true") {
+            let updated: Vec<String> = text.lines().map(|l| if l.starts_with("remoteNodesSerialized=") { line.clone() } else { l.to_string() }).collect();
+            let _ = fs::write(&f, updated.join("\n") + "\n");
+        } else {
+            println!("(wallet settings exist: if it does not find the node, use remote node 127.0.0.1:{rpc_port} in its settings)");
+        }
         return;
     }
-    let nodes = format!(r#"{{\"selected\":0,\"nodes\":[{{\"address\":\"127.0.0.1:{rpc_port}\",\"username\":\"\",\"password\":\"\",\"trusted\":true}}]}}"#);
     let _ = fs::create_dir_all(&dir);
-    let _ = fs::write(&f, format!("[General]\ncheckForUpdates=false\nuseRemoteNode=true\nremoteNodesSerialized=\"{nodes}\"\n"));
+    let _ = fs::write(&f, format!("[General]\ncheckForUpdates=false\nuseRemoteNode=true\nsm64coinLauncherNode=true\n{line}\n"));
 }
 
 fn open_browser(url: &str) {
@@ -473,20 +514,29 @@ fn run(o: Opts) -> Result<(), String> {
 
     let mut procs: Vec<Proc> = Vec::new();
     let mut started_node = false;
+    // Ports actually used: the defaults, or free ones nearby when those are taken.
+    let mut o = o;
+    let reuse_node = rpc_get_info(o.rpc_port).is_some();
+    if !reuse_node {
+        let mut taken: Vec<u16> = Vec::new();
+        for (name, port) in [("P2P", &mut o.p2p_port), ("RPC", &mut o.rpc_port), ("ZMQ", &mut o.zmq_port)] {
+            let p = pick_port(*port, "127.0.0.1", &taken);
+            if p != *port {
+                println!("{name} port {} is in use by another program: using {p}.", *port);
+                *port = p;
+            }
+            taken.push(p);
+        }
+    }
     let rpc_url = format!("http://127.0.0.1:{}", o.rpc_port);
 
     let result = (|| -> Result<(), String> {
         // --- node ---
-        if rpc_get_info(o.rpc_port).is_some() {
+        if reuse_node {
             println!("A node is already running on RPC port {}: using it (it is left running when you exit).", o.rpc_port);
         } else {
             if !have_daemon {
                 return Err(format!("{} is missing", daemon_bin.display()));
-            }
-            for (n, p) in [("p2p", o.p2p_port), ("RPC", o.rpc_port), ("ZMQ", o.zmq_port)] {
-                if !port_free(p, "127.0.0.1") {
-                    return Err(format!("{n} port {p} is in use by another program; pick another with --{}-port", n.to_lowercase()));
-                }
             }
             let mut peers: Vec<String> = Vec::new();
             let seed_files = match &o.seeds {
@@ -556,8 +606,11 @@ fn run(o: Opts) -> Result<(), String> {
 
         // --- website ---
         let host = if o.public { "0.0.0.0" } else { "127.0.0.1" };
-        serve_web(host, o.web_port, WebCfg { dir: web_dir, rpc: rpc_url.clone(), leaderboard: lb_url })?;
-        let site = format!("http://localhost:{}/", o.web_port);
+        let web_port = serve_web(host, o.web_port, WebCfg { dir: web_dir, rpc: rpc_url.clone(), leaderboard: lb_url })?;
+        if web_port != o.web_port {
+            println!("Port {} is in use by another program: the website is on {web_port} instead.", o.web_port);
+        }
+        let site = format!("http://localhost:{web_port}/");
         println!("Website: {site}");
         if !o.no_browser {
             open_browser(&site);
