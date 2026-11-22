@@ -4,12 +4,14 @@ name: Release
 # GitHub release. "Run workflow" (workflow_dispatch) is a dry run: it builds everything and
 # keeps the bundles as workflow artifacts, but publishes nothing.
 #
-# Platforms: Linux x86_64 and Linux aarch64 (Raspberry Pi 4/5, 64-bit OS). Windows and macOS
-# are not built yet, see packaging/RELEASING.md.
+# Platforms: Linux x86_64, Linux aarch64 (Raspberry Pi 4/5, 64-bit OS), Windows x86_64 (MSYS2
+# UCRT64), macOS arm64 (Apple silicon, Homebrew). A push to the branch `release-test` is a dry
+# run too (nothing is published); only a v* tag publishes.
 
 on:
   push:
     tags: ['v*']
+    branches: ['release-test']
   workflow_dispatch:
     inputs:
       version:
@@ -21,7 +23,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version || '0.0.0-test' }}
 
 jobs:
   web:
@@ -59,15 +61,16 @@ jobs:
           path: web/dist
           if-no-files-found: error
 
-  build:
+  build-linux:
     name: Build ${{ matrix.platform }}
     needs: web
+    if: ${{ !cancelled() }}   # dry runs build the programs even when the website job fails
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu 22.04 (glibc 2.35) so the bundles also run on Raspberry Pi OS Bookworm,
-          # Debian 12, Ubuntu 22.04 and anything newer.
+          # Ubuntu 22.04 (glibc 2.35) so the bundles also run on Raspberry Pi OS Bookworm
+          # (glibc 2.36), Debian 12, Ubuntu 22.04 and anything newer.
           - platform: linux-x86_64
             runner: ubuntu-22.04
           - platform: linux-aarch64
@@ -86,9 +89,10 @@ jobs:
 
       - name: System packages
         run: |
+          sudo rm -rf /usr/local/share/boost
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config ccache git curl ca-certificates patchelf zip \
+            build-essential cmake ninja-build pkg-config ccache git curl ca-certificates patchelf zip \
             libssl-dev libzmq3-dev libunbound-dev libsodium-dev libunwind-dev liblzma-dev \
             libreadline-dev libexpat1-dev libpgm-dev libhidapi-dev libusb-1.0-0-dev \
             libprotobuf-dev protobuf-compiler libudev-dev libboost-all-dev libgcrypt20-dev libgpg-error-dev \
@@ -108,54 +112,60 @@ jobs:
             pow/launcher
           key: ${{ matrix.platform }}
 
-      - name: ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-${{ matrix.platform }}-${{ github.sha }}
+          key: ccache-${{ matrix.platform }}-${{ github.run_id }}
           restore-keys: ccache-${{ matrix.platform }}-
 
       - name: Prepare the workspace (drops the private-dependency crates)
         run: scripts/ci-prepare.sh
 
-      - name: Launcher and leaderboard server (Rust)
-        run: |
-          (cd pow/launcher && cargo build --release)
-          (cd pow && cargo build --release -p sm64coin-leaderboard)
+      - name: Launcher (Rust)
+        run: scripts/ci-run.sh launcher bash -c 'cd pow/launcher && cargo build --release'
 
-      # The daemon and wallet CLI/RPC; Monero's CMake builds pow/sm64pow (Rust) itself.
-      - name: Daemon and wallets (C++)
-        run: make build-monero JOBS=$(nproc)
+      - name: Leaderboard server (Rust)
+        run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
 
-      # See gui/SM64COIN.md: the GUI links libwallet, which it builds (with the daemon) itself.
-      - name: Wallet app (Qt)
+      # One CMake tree builds everything: the wallet app's tree contains the daemon (monerod) and
+      # libwallet (gui/SM64COIN.md), so the wallet CLI and RPC server are just two more targets
+      # of it. ARCH=default: no -march=native, the bundle must run on other CPUs than the runner's.
+      - name: Daemon, wallets and wallet app (C++, Qt)
         run: |
           [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
           mkdir -p gui/build && cd gui/build
-          cmake -DCMAKE_BUILD_TYPE=Release -DMANUAL_SUBMODULES=1 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF \
-                -DWITH_DESKTOP_ENTRY=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
-          make -j$(nproc)
+          ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 \
+                -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_DESKTOP_ENTRY=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
+          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server
+          ls -la bin
+        env:
+          CI_LOG_DIR: ${{ github.workspace }}/ci-logs
+
+      - name: ccache statistics
+        if: always()
+        run: ccache -s | head -20 || true
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.platform }}-${{ github.run_id }}
 
       - uses: actions/download-artifact@v4
+        continue-on-error: ${{ github.ref_type != 'tag' }}   # dry runs go on without the website (placeholder page)
         with:
           name: web-dist
           path: web/dist
 
       - name: Bundle
-        run: scripts/package.sh
+        run: scripts/ci-run.sh bundle scripts/package.sh
         env:
           VERSION: ${{ env.VERSION }}
+          ALLOW_NO_WEB: ${{ github.ref_type != 'tag' && '1' || '' }}
           PLATFORM: ${{ matrix.platform }}
-
-      - name: Smoke test (the bundle starts and asks for the ROM)
-        run: |
-          mkdir smoke && tar -xzf dist/sm64coin-*-${{ matrix.platform }}.tar.gz -C smoke
-          cd smoke/sm64coin-*/
-          out="$(HOME=$PWD/h ./sm64coin 2>&1 || true)"
-          echo "$out"
-          echo "$out" | grep -q "Could not find your Super Mario 64 ROM"
-          ./sm64coind --version
-          ./sm64coin-wallet-cli --version
+          MONERO_BIN: ${{ github.workspace }}/gui/build/bin
+          CI_LOG_DIR: ${{ github.workspace }}/ci-logs
 
       - uses: actions/upload-artifact@v4
         with:
@@ -163,10 +173,277 @@ jobs:
           path: dist/sm64coin-*.tar.gz
           if-no-files-found: error
 
+      - name: Fetch the ROM (optional)
+        id: rom
+        run: |
+          if [ -n "$ROM_URL" ]; then curl -fsSL --proto '=https' --tlsv1.2 "$ROM_URL" -o "$RUNNER_TEMP/baserom.us.z64" && echo "file=$RUNNER_TEMP/baserom.us.z64" >> "$GITHUB_OUTPUT"; fi
+        env:
+          ROM_URL: ${{ secrets.ROM_URL }}
+
+      - name: Smoke test (the bundle starts and asks for the ROM)
+        run: |
+          mkdir smoke && tar -xzf dist/sm64coin-*-${{ matrix.platform }}.tar.gz -C smoke
+          scripts/ci-run.sh smoke scripts/ci-smoke.sh smoke/sm64coin-*/
+        env:
+          SM64COIN_ROM_FILE: ${{ steps.rom.outputs.file }}
+          CI_LOG_DIR: ${{ github.workspace }}/ci-logs
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.platform }}
+          path: ci-logs
+          if-no-files-found: ignore
+
+  build-windows:
+    name: Build windows-x86_64
+    needs: web
+    if: ${{ !cancelled() }}
+    runs-on: windows-2022
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
+      CCACHE_MAXSIZE: 2G
+      CARGO_HOME: ${{ github.workspace }}\.cargo-home
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CI_LOG_DIR: ${{ github.workspace }}/ci-logs
+    steps:
+      - name: Git settings (no CRLF conversion, long paths, no symlinks)
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+          git config --global core.symlinks false
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: "gui/monero is a symlink to ../monero, make it a junction"
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force gui\monero -ErrorAction SilentlyContinue
+          New-Item -ItemType Junction -Path gui\monero -Target (Resolve-Path monero).Path
+          Get-Item gui\monero | Format-List FullName, LinkType, Target
+
+      # Same C++ and Rust toolchain from one place: MSYS2 UCRT64 (upstream's wallet app build uses it too).
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: false
+          install: >-
+            make zip unzip git
+          pacboy: >-
+            toolchain:p pcre:p cmake:p ninja:p boost:p openssl:p zeromq:p libsodium:p hidapi:p
+            protobuf-c:p libusb:p unbound:p qt5:p libgcrypt:p angleproject:p rust:p ccache:p
+
+      - name: Restore caches (ccache, cargo)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .ccache
+            .cargo-home/registry
+            pow/target
+            pow/launcher/target
+          key: windows-${{ github.run_id }}
+          restore-keys: windows-
+
+      - name: Tool versions
+        run: |
+          gcc --version | head -1; cmake --version | head -1; cargo --version; rustc -vV | grep host; qmake-qt5 -v | tail -1 || true; ccache --version | head -1
+
+      - name: Prepare the workspace (drops the private-dependency crates)
+        run: scripts/ci-prepare.sh
+
+      - name: Launcher (Rust)
+        run: scripts/ci-run.sh launcher bash -c 'cd pow/launcher && cargo build --release'
+
+      - name: Leaderboard server (Rust)
+        run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: Daemon, wallets and wallet app (C++, Qt)
+        run: |
+          [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
+          mkdir -p gui/build && cd gui/build
+          ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DSTATIC=OFF -DCMAKE_BUILD_TYPE=Release -DARCH=x86-64 -DBUILD_64=ON -DBUILD_TAG=win-x64 \
+                -DMANUAL_SUBMODULES=1 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
+          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server
+          ls -la bin
+
+      - name: Save caches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .ccache
+            .cargo-home/registry
+            pow/target
+            pow/launcher/target
+          key: windows-${{ github.run_id }}
+
+      # The wallet app needs the Qt DLLs, plugins and QML modules next to it.
+      - name: windeployqt
+        run: |
+          cp -f "$MSYSTEM_PREFIX/bin/qmake-qt5.exe" "$MSYSTEM_PREFIX/bin/qmake.exe"
+          cp -f "$MSYSTEM_PREFIX/bin/windeployqt-qt5.exe" "$MSYSTEM_PREFIX/bin/windeployqt.exe"
+          cd gui/build/bin
+          ../../../scripts/ci-run.sh windeployqt env PATH="$MSYSTEM_PREFIX/bin:$PATH" windeployqt.exe monero-wallet-gui.exe -no-translations -qmldir="$GITHUB_WORKSPACE/gui"
+          ls
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: ${{ github.ref_type != 'tag' }}   # dry runs go on without the website (placeholder page)
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Bundle
+        run: scripts/ci-run.sh bundle scripts/package.sh
+        env:
+          VERSION: ${{ env.VERSION }}
+          ALLOW_NO_WEB: ${{ github.ref_type != 'tag' && '1' || '' }}
+          PLATFORM: windows-x86_64
+          MONERO_BIN: ${{ github.workspace }}/gui/build/bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-windows-x86_64
+          path: dist/sm64coin-*.zip
+          if-no-files-found: error
+
+      - name: Smoke test (the bundle starts and asks for the ROM)
+        shell: bash
+        run: |
+          mkdir smoke && cd smoke && unzip -q ../dist/sm64coin-*-windows-x86_64.zip && cd ..
+          if [ -n "$ROM_URL" ]; then curl -fsSL --proto '=https' --tlsv1.2 "$ROM_URL" -o "$RUNNER_TEMP/baserom.us.z64" && export SM64COIN_ROM_FILE="$RUNNER_TEMP/baserom.us.z64"; fi
+          scripts/ci-run.sh smoke scripts/ci-smoke.sh smoke/sm64coin-*/
+        env:
+          ROM_URL: ${{ secrets.ROM_URL }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-windows-x86_64
+          path: ci-logs
+          if-no-files-found: ignore
+
+  build-macos:
+    name: Build macos-arm64
+    needs: web
+    if: ${{ !cancelled() }}
+    runs-on: macos-14
+    timeout-minutes: 360
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CI_LOG_DIR: ${{ github.workspace }}/ci-logs
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Homebrew packages
+        run: |
+          brew install --quiet cmake ninja pkg-config ccache boost hidapi openssl@3 zmq libpgm unbound \
+            libunwind-headers protobuf libsodium qt@5 dylibbundler gnu-sed
+          echo "$(brew --prefix gnu-sed)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow
+            pow/launcher
+          key: macos-arm64
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-macos-arm64-${{ github.run_id }}
+          restore-keys: ccache-macos-arm64-
+
+      - name: Prepare the workspace (drops the private-dependency crates)
+        run: scripts/ci-prepare.sh
+
+      - name: Launcher (Rust)
+        run: scripts/ci-run.sh launcher bash -c 'cd pow/launcher && cargo build --release'
+
+      - name: Leaderboard server (Rust)
+        run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: Daemon, wallets and wallet app (C++, Qt)
+        run: |
+          [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
+          mkdir -p gui/build && cd gui/build
+          ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 \
+                -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF \
+                -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" ..
+          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server
+          ls -la bin
+
+      - name: ccache statistics
+        if: always()
+        run: ccache -s | head -20 || true
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-macos-arm64-${{ github.run_id }}
+
+      # macdeployqt: puts the Qt frameworks, plugins and QML modules into the .app (ad-hoc signed).
+      - name: macdeployqt
+        run: |
+          cd gui/build
+          ../../scripts/ci-run.sh macdeployqt cmake --build . --target deploy
+          ls -la bin
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: ${{ github.ref_type != 'tag' }}   # dry runs go on without the website (placeholder page)
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Bundle
+        run: scripts/ci-run.sh bundle scripts/package.sh
+        env:
+          VERSION: ${{ env.VERSION }}
+          ALLOW_NO_WEB: ${{ github.ref_type != 'tag' && '1' || '' }}
+          PLATFORM: macos-arm64
+          MONERO_BIN: ${{ github.workspace }}/gui/build/bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-macos-arm64
+          path: dist/sm64coin-*.tar.gz
+          if-no-files-found: error
+
+      - name: Smoke test (the bundle starts and asks for the ROM)
+        run: |
+          mkdir smoke && tar -xzf dist/sm64coin-*-macos-arm64.tar.gz -C smoke
+          if [ -n "$ROM_URL" ]; then curl -fsSL --proto '=https' --tlsv1.2 "$ROM_URL" -o "$RUNNER_TEMP/baserom.us.z64" && export SM64COIN_ROM_FILE="$RUNNER_TEMP/baserom.us.z64"; fi
+          scripts/ci-run.sh smoke scripts/ci-smoke.sh smoke/sm64coin-*/
+        env:
+          ROM_URL: ${{ secrets.ROM_URL }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-macos-arm64
+          path: ci-logs
+          if-no-files-found: ignore
+
   publish:
     name: Publish release
     if: github.ref_type == 'tag'
-    needs: build
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5

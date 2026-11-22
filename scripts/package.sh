@@ -5,14 +5,20 @@
 # Bundle layout (flat, everything next to the launcher):
 #   sm64coin  sm64coind  sm64coin-wallet-cli  sm64coin-wallet-rpc  sm64coin-wallet-gui
 #   sm64coin-leaderboard  [sm64coin-automine]  web/  seeds.txt  README.txt  LICENSE
-#   lib/ qt/ qt.conf        (Linux: the shared libraries and Qt plugins the binaries need,
-#                            found through RPATH $ORIGIN/lib, so users install nothing)
+#   Linux:   lib/ qt/ qt.conf   the shared libraries and Qt plugins the binaries need, found
+#                               through RPATH $ORIGIN/lib, so users install nothing
+#   Windows: the GUI's Qt DLLs/plugins/qml (windeployqt, run before this script) and every
+#            MSYS2 DLL the programs import, all next to the .exe files; zip
+#   macOS:   SM64Coin-Wallet.app (macdeployqt) instead of sm64coin-wallet-gui, lib/ with the
+#            Homebrew dylibs of the command-line programs (dylibbundler), ad-hoc code-signed
 #
 # Env (all optional):
 #   VERSION   (git describe)        PLATFORM (linux-x86_64 / linux-aarch64 from uname)
 #   OUT       (dist)                MONERO_BIN (monero/build/release/bin: monerod, monero-wallet-cli/-rpc)
 #   GUI_BIN   (gui/build/bin/monero-wallet-gui; skipped if missing)
+#   GUI_APP   (macOS: gui/build/bin/monero-wallet-gui.app, the deployed app bundle)
 #   POW_TARGET (pow/target/release: sm64coin-leaderboard, automine; each skipped if missing)
+#   ALLOW_NO_WEB=1  dry runs: a placeholder page when there is no website build
 #   LAUNCHER  (pow/launcher/target/release/sm64coin)       WEB_DIST (web/dist)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +36,7 @@ PLATFORM="${PLATFORM:-$def_plat}"
 OUT="${OUT:-$ROOT/dist}"
 MONERO_BIN="${MONERO_BIN:-$ROOT/monero/build/release/bin}"
 GUI_BIN="${GUI_BIN:-$ROOT/gui/build/bin/monero-wallet-gui}"
+GUI_APP="${GUI_APP:-$ROOT/gui/build/bin/monero-wallet-gui.app}"
 POW_TARGET="${POW_TARGET:-$ROOT/pow/target/release}"
 LAUNCHER="${LAUNCHER:-$ROOT/pow/launcher/target/release/sm64coin}"
 WEB_DIST="${WEB_DIST:-$ROOT/web/dist}"
@@ -50,14 +57,21 @@ put "$LAUNCHER$X"                          "sm64coin$X" required
 put "$MONERO_BIN/monerod$X"                "sm64coind$X" required
 put "$MONERO_BIN/monero-wallet-cli$X"      "sm64coin-wallet-cli$X" required
 put "$MONERO_BIN/monero-wallet-rpc$X"      "sm64coin-wallet-rpc$X" required
-put "$GUI_BIN$X"                           "sm64coin-wallet-gui$X"
+case "$PLATFORM" in
+  macos-*) [ -d "$GUI_APP" ] && { cp -R "$GUI_APP" "$STAGE/SM64Coin-Wallet.app"; echo "  + SM64Coin-Wallet.app"; } || echo "  - wallet app skipped (no $GUI_APP)" ;;
+  *) put "$GUI_BIN$X"                        "sm64coin-wallet-gui$X" ;;
+esac
 put "$POW_TARGET/sm64coin-leaderboard$X"   "sm64coin-leaderboard$X"
 put "$POW_TARGET/automine$X"               "sm64coin-automine$X"
+if [ ! -f "$WEB_DIST/index.html" ] && [ -n "${ALLOW_NO_WEB:-}" ]; then   # dry runs only
+  echo "package.sh: WARNING no website build, using a placeholder page"
+  mkdir -p "$WEB_DIST"; echo '<!doctype html><title>SM64Coin</title><p>placeholder website (dry run)</p>' > "$WEB_DIST/index.html"
+fi
 need "$WEB_DIST/index.html"
 cp -r "$WEB_DIST" "$STAGE/web"
 cp seeds.txt "$STAGE/seeds.txt"
-cp packaging/README.txt "$STAGE/README.txt"
-sed -i "s/@VERSION@/$VERSION/g" "$STAGE/README.txt"
+sed "s/@VERSION@/$VERSION/g" packaging/README.txt > "$STAGE/README.txt"
+case "$PLATFORM" in windows-*) sed -i 's/$/\r/' "$STAGE/README.txt" ;; esac   # Notepad-friendly
 [ -f monero/LICENSE ] && cp monero/LICENSE "$STAGE/LICENSE"
 [ -d pow/miner/routes ] && [ -e "$STAGE/sm64coin-automine$X" ] && { mkdir -p "$STAGE/routes"; cp pow/miner/routes/block1-human.m64 "$STAGE/routes/"; }
 
@@ -108,7 +122,47 @@ bundle_linux_libs() {
   strip --strip-unneeded "${elfs[@]}" 2>/dev/null || true
   du -sh "$STAGE/lib" | sed 's/^/  lib: /'
 }
-case "$PLATFORM" in linux-*) bundle_linux_libs ;; esac
+# ---- Windows: the GUI's deployed Qt files and every MSYS2 DLL ----------------------------------
+bundle_windows_libs() {
+  local gdir; gdir="$(dirname "$GUI_BIN")"
+  if [ -f "$GUI_BIN$X" ]; then
+    # windeployqt output: DLLs and plugin/qml folders next to the GUI exe (the exes are put above).
+    for e in "$gdir"/*; do
+      case "$e" in *.exe|*.a|*.lib|*.log) continue ;; esac
+      [ "$(basename "$e")" = "monero" ] && continue
+      cp -R "$e" "$STAGE/"
+    done
+  fi
+  local pref="${MSYSTEM_PREFIX:-/ucrt64}" pass f l
+  for pass in 1 2 3; do
+    while IFS= read -r f; do ldd "$f" 2>/dev/null || true; done < <(find "$STAGE" -type f \( -name '*.exe' -o -name '*.dll' \)) \
+      | awk -v p="$pref/" 'index($3,p)==1 {print $3}' | sort -u | while IFS= read -r l; do cp -n "$l" "$STAGE/"; done
+  done
+  # Nothing may still import an MSYS2 DLL that is not next to the programs.
+  local bad
+  bad="$(find "$STAGE" -type f \( -name '*.exe' -o -name '*.dll' \) -print0 | xargs -0 -n1 ldd 2>/dev/null | awk -v p="$pref/" 'index($3,p)==1 {print $1}' | sort -u | while read -r d; do [ -e "$STAGE/$d" ] || echo "$d"; done)"
+  [ -z "$bad" ] || { echo "package.sh: DLLs not bundled: $bad" >&2; exit 1; }
+}
+
+# ---- macOS: Homebrew dylibs of the command-line programs; ad-hoc signatures -----------------
+bundle_macos_libs() {
+  command -v dylibbundler >/dev/null || { echo "package.sh: dylibbundler is required (brew install dylibbundler)" >&2; exit 1; }
+  local args=() f
+  for f in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-leaderboard sm64coin-automine; do
+    [ -f "$STAGE/$f" ] && args+=(-x "$STAGE/$f")
+  done
+  dylibbundler -od -b "${args[@]}" -d "$STAGE/lib" -p @executable_path/lib/ -s /opt/homebrew/lib -s /usr/local/lib
+  # install_name_tool invalidated the signatures; Apple Silicon refuses unsigned code.
+  find "$STAGE" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
+    file "$f" | grep -q 'Mach-O' && codesign --force --sign - "$f"
+  done
+  [ -d "$STAGE/SM64Coin-Wallet.app" ] && codesign --force --deep --sign - "$STAGE/SM64Coin-Wallet.app"
+  local bad
+  bad="$(find "$STAGE" -type f | while read -r f; do file "$f" | grep -q 'Mach-O' && otool -L "$f" | tail -n +2 | grep -E '/opt/homebrew|/usr/local/' | sed "s|^|$f: |"; done)"
+  [ -z "$bad" ] || { echo "package.sh: binaries still import Homebrew libraries:" >&2; echo "$bad" >&2; exit 1; }
+  du -sh "$STAGE/lib" | sed 's/^/  lib: /'
+}
+case "$PLATFORM" in linux-*) bundle_linux_libs ;; windows-*) bundle_windows_libs ;; macos-*) bundle_macos_libs ;; esac
 
 # ---- archive --------------------------------------------------------------------------------
 cd "$OUT"

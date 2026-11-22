@@ -94,17 +94,66 @@ fn main() {
 }
 
 /// A double-clicked Windows program closes its console at exit: keep the message readable.
+/// Only when this process is alone in its console (started from Explorer, not from cmd/PowerShell
+/// and not by a script that closes stdin).
 fn pause_if_console_would_close() {
     #[cfg(windows)]
     {
-        eprintln!("\nPress Enter to close.");
-        let mut s = String::new();
-        let _ = std::io::stdin().read_line(&mut s);
+        use std::io::IsTerminal;
+        unsafe extern "system" {
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        }
+        let mut ids = [0u32; 4];
+        let n = unsafe { GetConsoleProcessList(ids.as_mut_ptr(), ids.len() as u32) };
+        if n <= 1 && std::io::stdin().is_terminal() {
+            eprintln!("\nPress Enter to close.");
+            let mut s = String::new();
+            let _ = std::io::stdin().read_line(&mut s);
+        }
+    }
+}
+
+/// Windows: put every child into a job object that kills them when this program ends for any
+/// reason (console window closed, killed), so no node or wallet is left running unseen.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::*;
+
+    struct Job(HANDLE);
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+    static JOB: OnceLock<Job> = OnceLock::new();
+
+    pub fn adopt(child: &std::process::Child) {
+        let job = JOB.get_or_init(|| unsafe {
+            let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+            Job(h)
+        });
+        unsafe {
+            AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE);
+        }
+    }
+}
+
+/// Paths from canonicalize() carry a `\\?\` prefix on Windows that some programs cannot read.
+fn plain(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(r) if !r.starts_with("UNC") => PathBuf::from(r),
+        _ => p,
     }
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    // Windows: the user's profile (a HOME variable only exists inside MSYS/Git shells).
+    let (a, b) = if cfg!(windows) { ("USERPROFILE", "HOME") } else { ("HOME", "USERPROFILE") };
+    std::env::var_os(a).or_else(|| std::env::var_os(b)).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn sha1_file(p: &Path) -> std::io::Result<String> {
@@ -155,7 +204,7 @@ fn find_rom(arg: Option<&Path>, exe_dir: &Path, data_dir: &Path) -> Result<PathB
     let mut seen = BTreeSet::new();
     let mut wrong: Vec<(PathBuf, String)> = Vec::new();
     for f in files {
-        let key = fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+        let key = plain(fs::canonicalize(&f).unwrap_or_else(|_| f.clone()));
         if !f.is_file() || !seen.insert(key.clone()) {
             continue;
         }
@@ -190,6 +239,8 @@ struct Proc {
     name: &'static str,
     child: Child,
     log: PathBuf,
+    /// Windows has no SIGTERM: this HTTP address asks the program to exit by itself first.
+    stop_url: Option<String>,
 }
 
 impl Proc {
@@ -198,7 +249,9 @@ impl Proc {
         let err = out.try_clone().map_err(|e| e.to_string())?;
         cmd.stdin(Stdio::null()).stdout(out).stderr(err);
         let child = cmd.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
-        Ok(Proc { name, child, log })
+        #[cfg(windows)]
+        job::adopt(&child);
+        Ok(Proc { name, child, log, stop_url: None })
     }
     fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
@@ -219,7 +272,11 @@ impl Proc {
             libc::kill(self.child.id() as i32, libc::SIGTERM);
         }
         #[cfg(not(unix))]
-        let _ = self.child.kill();
+        if let Some(u) = &self.stop_url {
+            let _ = ureq::post(u).timeout(Duration::from_secs(5)).send_string("{}");
+        } else {
+            let _ = self.child.kill();
+        }
         let t = Instant::now();
         while self.alive() && t.elapsed() < Duration::from_secs(secs) {
             thread::sleep(Duration::from_millis(200));
@@ -387,7 +444,7 @@ fn open_browser(url: &str) {
 
 fn run(o: Opts) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_dir = fs::canonicalize(&exe).unwrap_or(exe).parent().map(Path::to_path_buf).unwrap_or_default();
+    let exe_dir = plain(fs::canonicalize(&exe).unwrap_or(exe)).parent().map(Path::to_path_buf).unwrap_or_default();
     let data_dir = o.data_dir.clone().unwrap_or_else(|| home().join(".sm64coin"));
     let tool = |n: &str| -> PathBuf { exe_dir.join(format!("{n}{EXE}")) };
 
@@ -456,7 +513,9 @@ fn run(o: Opts) -> Result<(), String> {
                 println!("Note: no peers are known (seeds.txt is empty). Pass --peer HOST:PORT to join a network.");
             }
             println!("Starting the node (data in {}) ...", node_dir.display());
-            procs.push(Proc::spawn("node", cmd, log_dir.join("node.log"))?);
+            let mut node = Proc::spawn("node", cmd, log_dir.join("node.log"))?;
+            node.stop_url = Some(format!("{rpc_url}/stop_daemon"));
+            procs.push(node);
             started_node = true;
             let t = Instant::now();
             loop {
@@ -503,7 +562,12 @@ fn run(o: Opts) -> Result<(), String> {
         }
 
         // --- wallet app ---
-        let gui = tool("sm64coin-wallet-gui");
+        // macOS: the app bundle (Qt frameworks inside) from the same folder.
+        let gui = if cfg!(target_os = "macos") {
+            exe_dir.join("SM64Coin-Wallet.app").join("Contents").join("MacOS").join("monero-wallet-gui")
+        } else {
+            tool("sm64coin-wallet-gui")
+        };
         if !o.no_wallet {
             if gui.is_file() {
                 let cmd = Command::new(&gui);
