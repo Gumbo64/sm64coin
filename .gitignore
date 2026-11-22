@@ -12,3 +12,4 @@ bin/
 web/run_web.log
 __pycache__/
 *.egg-info/
+pow/perturb-wasm/target/
