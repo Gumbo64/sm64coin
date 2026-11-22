@@ -2309,7 +2309,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
- "sm64lb",
  "tiny_http",
  "ureq",
 ]
@@ -2330,7 +2329,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sm64-binds",
- "sm64lb",
  "sm64pow",
  "ureq",
 ]
@@ -2355,15 +2353,6 @@ dependencies = [
  "sm64coin-miner",
  "sm64pow",
  "ureq",
-]
-
-[[package]]
-name = "sm64lb"
-version = "0.1.0"
-dependencies = [
- "curve25519-dalek",
- "hex",
- "sha3",
 ]
 
 [[package]]

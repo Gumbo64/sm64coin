@@ -47,9 +47,8 @@ jobs:
         with:
           workspaces: |
             pow/perturb-wasm
-            pow/lb-wasm
           key: wasm
-      - name: Browser WASM modules (perturbation, leaderboard tag check)
+      - name: Browser WASM module (perturbation)
         run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
       - run: npm ci
         working-directory: web

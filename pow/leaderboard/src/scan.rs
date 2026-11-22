@@ -28,8 +28,6 @@ struct CbInfo {
     r: Option<EdwardsPoint>,
     outs: Vec<(u64, [u8; 32], Option<u8>)>, // amount, key, view_tag
     frames: Option<u64>,
-    /// A verified on-chain opt-in tag (sm64lb) in this coinbase.
-    tag: Option<sm64lb::tag::Verified>,
 }
 
 pub struct State {
@@ -104,14 +102,11 @@ fn parse_block(res: &Value) -> Result<CbInfo, String> {
         let key = k.and_then(|s| hex::decode(s).ok()).and_then(|v| <[u8; 32]>::try_from(v).ok());
         outs.push((amount, key.unwrap_or([0; 32]), vt));
     }
-    let outs_t: Vec<sm64lb::tag::Out> = outs.clone();
-    let tag = sm64lb::tag::verify_coinbase(&extra, &outs_t);
     Ok(CbInfo {
         hash: res["block_header"]["hash"].as_str().unwrap_or("").to_string(),
         r,
         outs,
         frames: res["sm64_frames"].as_u64(),
-        tag,
     })
 }
 
@@ -235,27 +230,8 @@ impl State {
     }
 
     pub fn leaderboard(&self) -> Value {
-        use std::collections::HashMap;
-        // On-chain opt-ins: verified tags in the coinbases (sm64lb), by address.
-        struct Chain { name: String, blocks: u64, reward: u64, last: u64, best: Option<u64> }
-        let mut chain: HashMap<String, Chain> = HashMap::new();
-        for (h, cb) in self.cache.iter().enumerate() {
-            if let Some(t) = &cb.tag {
-                let c = chain.entry(t.address.clone()).or_insert(Chain { name: String::new(), blocks: 0, reward: 0, last: 0, best: None });
-                c.name = t.name.clone();
-                c.blocks += 1;
-                c.reward += t.reward;
-                c.last = h as u64;
-                c.best = match (c.best, cb.frames) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
-            }
-        }
-        // a registration and a tag are the same miner when they name the same public keys
-        let canon = |a: &str| decode_address(a).ok().map(|d| (d.spend, d.view));
         let mut rows: Vec<Value> = self.participants.iter().map(|p| {
             let a = &p.address;
-            let key = canon(a);
-            let onchain = chain.iter().find(|(addr, _)| canon(addr) == key && key.is_some()).map(|(addr, _)| addr.clone());
-            if let Some(addr) = &onchain { chain.remove(addr); }
             json!({
                 "name": p.name,
                 "address": a,
@@ -264,21 +240,8 @@ impl State {
                 "reward_atomic": p.blocks.iter().map(|b| b.reward).sum::<u64>(),
                 "last_block_height": p.blocks.iter().map(|b| b.height).max(),
                 "best_frames": p.blocks.iter().filter_map(|b| b.frames).min(),
-                "onchain": onchain.is_some(),
             })
         }).collect();
-        for (a, c) in chain {
-            rows.push(json!({
-                "name": c.name,
-                "address": a,
-                "address_short": format!("{}…{}", &a[..8], &a[a.len() - 6..]),
-                "blocks": c.blocks,
-                "reward_atomic": c.reward,
-                "last_block_height": c.last,
-                "best_frames": c.best,
-                "onchain": true,
-            }));
-        }
         rows.sort_by(|x, y| y["blocks"].as_u64().cmp(&x["blocks"].as_u64()).then(y["reward_atomic"].as_u64().cmp(&x["reward_atomic"].as_u64())));
         Value::Array(rows)
     }

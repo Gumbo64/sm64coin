@@ -7,5 +7,4 @@ build() { # crate-dir out-dir out-name
   wasm-pack build "$ROOT/pow/$1" --release --target web --no-opt --out-dir "$ROOT/web/src/wasm/$2" --out-name "$3"
 }
 build perturb-wasm perturb sm64coin_perturb_wasm
-[ -d "$ROOT/pow/lb-wasm" ] && build lb-wasm lb sm64lb_wasm
 exit 0

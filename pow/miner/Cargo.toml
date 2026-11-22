@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 sm64pow = { path = "../sm64pow" }
-sm64lb = { path = "../sm64lb" }
 sm64-binds = { workspace = true }
 # The user's research crates (objective-rrt-v2): the rolling-horizon GA over SM64MiningGame (feature sm64coin).
 obrrt-core = { path = "/workspaces/sm64-combined/sm64-AI-binds/objective-rrt-v2/core" }
