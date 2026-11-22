@@ -1,19 +1,19 @@
 # SM64Coin
 
-A Monero fork (v0.18.5.4, git branch `sm64coin`) whose proof of work is **playing Super Mario 64**. A block is sealed by a controller input sequence that, replayed on an emulated N64 from power-on, reaches a star. Every node verifies a block by replaying the proof in an emulator.
+A Monero fork (v0.18.5.4, git branch `sm64coin`) whose proof of work is **playing Super Mario 64**. A block is sealed by a controller input sequence that, replayed on an emulated N64 from the previous block's end state, makes the game's next progress point (a star, a Bowser key, the Grand Star). Every node verifies a block by replaying the proof in an emulator.
 
 Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is stock Monero.
 
 ## Theory
 
-- **The task.** From power-on, play until a star is collected. Success condition and parameters are in `pow/sm64pow/src/rules.rs`.
-- **Unforgeable runs.** The controller is randomly perturbed: a xorshift generator seeded from the block, re-mixed with Mario's position and velocity after every frame, injects 5 random bursts of 2 frames per 100-frame window at difficulty 1. Runs cannot be precomputed, recycled between blocks, or cheaply cherry-picked; the miner has to steer around the noise as it goes.
-- **The whole block hash is the seed.** xorshift32 holds only 32 bits, which a miner could grind with the nonce to land on a seed they had stockpiled a run for. So the seed is all 256 bits of `cn_fast_hash(hashing blob)`: the RNG is reset to the next 32-bit word of it every 300 frames (`Seed` in `pow/sm64pow/src/lib.rs`). A stockpiled run is worth at most the first 10 seconds.
-- **Timestamps increase strictly** (block after parent), so the difficulty decay below measures real time since the parent and can't be gamed by back-dating.
-- **Difficulty is hardness.** Each doubling of difficulty cuts the time limit by about 15% (10 min at difficulty 1, floor 1 min) and adds one poke per 100 frames.
+- **The 70-star cycle.** Each block is the game's next progress point (a new star, a Bowser key, or the Grand Star once there are 70 stars), played on from the **parent block's end state**. The Grand Star ends the cycle; the next block starts from power-on. A power-on start is also allowed after the genesis block, and for a block timestamped more than 3600 s after its parent (the escape from a state nobody can progress from). The chain is thus one long playthrough, one star per block. Rules: `pow/sm64pow/src/rules.rs` (`StarCycle`), chain logic `pow/sm64pow/src/chain.rs`.
+- **Proof format.** `varint(frames) || start byte (0 = parent, 1 = power-on) || codec || inputs of the non-poked frames`. Success (`is_success(start_progress, now_progress)`: one more star, key or Grand Star than at the start) must first hold on the last frame. Verification needs the parent's end state: nodes keep recent end states in memory and rebuild missing ones by replaying the cycle (seconds), nothing is stored on disk.
+- **Unforgeable runs.** The controller is randomly perturbed: a generator seeded from the block, re-mixed with a digest of the game state after every frame, injects 5 random bursts of 2 frames per 100 game-clock ticks, at every difficulty. Runs cannot be precomputed, and a recorded route fails within a few frames.
+- **The whole block hash is the seed**, all 256 bits of `cn_fast_hash(hashing blob)`; it does not include the timestamp, so a miner stamps the block "now" right before submitting (rewriting the template's timestamp, not fetching a new template).
+- **Difficulty is only the time limit.** Each eighth of a doubling cuts it by 2 % (10 min at difficulty 1, floor 600 frames); the pokes are fixed.
 - **Retarget.** Monero-style, over 60 blocks, targeting 300 s per block.
-- **Liveness.** The effective difficulty halves for every 300 s beyond 600 s since the parent block, so the chain keeps moving if miners disappear.
-- **Block id** commits to the *decoded* inputs, independent of codec. The daemon therefore re-encodes submitted proofs to the smallest codec.
+- **Liveness: continuous decay.** After a 600 s grace the limit grows every second (one difficulty halving per 300 s), so a run longer than the current limit becomes valid later (`get_block_template` with `sm64_frames: N` returns `sm64_valid_at`); short runs win first. Chain weight counts the effective difficulty and ties are broken by the shorter run (fewer frames). The chain keeps moving if miners disappear.
+- **Block id** commits to the *decoded* proof (frame count and start included), independent of codec. The daemon therefore re-encodes submitted proofs to the smallest codec.
 - **Genesis coinbase** is burned (paid to the RingCT H point). Coinbase unlock window: 10 blocks.
 - The built-in hash miner is disabled.
 
@@ -44,7 +44,7 @@ Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is st
 
 - `monero/` the fork. Every changed upstream line is marked `SM64COIN` (`grep -rn SM64COIN monero/src`); the glue lives in `monero/src/sm64coin/`. cmake builds `pow/sm64pow` automatically.
 - `pow/sm64pow` consensus crate: `rules.rs` (the `Rules` trait: success condition, difficulty to task, retarget, decay; `active()` selects the rules), `proof.rs` (proof codecs), `ffi.rs` (C ABI).
-- `pow/miner` the `automine` binary (automated miner) and `trackbench` (offline tracker test).
+- `pow/miner` the `automine` binary (automated miner: per block it rebuilds the parent's end state from `get_sm64_cycle` and plays on with a rolling-horizon GA over a route library, `src/rh.rs`), `rhbench` (offline benchmark, `--chain N` for further blocks) and `trackbench` (older beam controller).
 - `web/` explorer, in-browser replay and manual miner, read-only leaderboard, bot docs. It holds no keys and needs no wallet: the wallet is the desktop app (`gui/`).
 
 Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet RPC 16483; web dev server 5181 (preview 4174).
@@ -101,6 +101,8 @@ Conflicts can only occur at lines marked `SM64COIN`; resolve them keeping the ma
 ## RPC additions
 
 - `get_block_template`: extra `sm64_*` fields describing the task: `sm64_seed_hash` (the 32-byte perturbation seed), `sm64_reseed_frames`, `sm64_seed` (its first word), `sm64_max_frames`, `sm64_random_amount`, `sm64_window_length`, `sm64_burst_length`, `sm64_a/b/z_prob`, `sm64_retarget_difficulty`, `sm64_easier_at` (when a fresh template would be easier), `sm64_rules`, `sm64_goal`. `difficulty` is already the effective (decayed) one. The template blob's last byte is the empty proof (`00`): replace it with `varint(len) + proof`.
+- `get_block_template`, cycle fields: `sm64_start` (`parent`, `power-on` or `either`), `sm64_power_on_at`, `sm64_parent_timestamp`, `sm64_parent_stars`, `sm64_parent_keys`, `sm64_cycle_start_height`, `sm64_retarget_difficulty`; with the request parameter `sm64_frames: N` also `sm64_valid_at` (unix time from which a run of N frames is valid).
+- `get_sm64_cycle {hash?}` (JSON-RPC; default the tip): `{blocks: [{height, hash, frames, power_on}], played_pads, stars, keys, grand_star, ends_cycle}`. `played_pads` is hex, 4 bytes per frame (u16 LE buttons, i8 x, i8 y), every frame's played pad from the cycle's first block to that tip; replaying it unperturbed from power-on reaches the tip's end state, the next block's start state.
 - `get_info`: `sm64_*` fields for the task a block found now would face (`sm64_rules`, `sm64_goal`, `sm64_difficulty`, `sm64_reseed_frames`, `sm64_max_frames`, `sm64_window_length`, `sm64_random_amount`, `sm64_burst_length`, `sm64_a_prob`, `sm64_b_prob`, `sm64_z_prob`, `sm64_easier_at`).
 - `get_block`: `sm64_pads` (the proof decoded to raw pads, hex, 4 bytes per frame), `sm64_seed_hash`, `sm64_seed`, `sm64_reseed_frames`, `sm64_frames`, `sm64_proof_bytes` and the task the block met (`sm64_max_frames`, `sm64_random_amount`, ...), used by the web replay.
 - `submit_block` re-encodes the proof with the smallest codec before storing and relaying it (the block id doesn't change).
@@ -112,7 +114,7 @@ Check the exact field names with `curl -s http://127.0.0.1:16481/json_rpc -d '{"
 ## Caveats
 
 - The ROM is required by the daemon (`--sm64-rom`), the miner and the web UI; it is not distributed.
-- The automated miner follows reference routes (`pow/miner/routes/*.m64`, unperturbed runs from objective-rrt) and searches around the noise (`pow/miner/src/tracker.rs`): candidates are simulated through the real perturbation, so whatever it commits verifies. Glitch-heavy routes (hyperspeed, cannon) are hard to follow; `calm-first-star.m64` is the default. It may fail at high difficulty.
+- The automated miner (`pow/miner`) rebuilds the parent's end state (replaying `get_sm64_cycle`), then plays on with the rolling-horizon GA (`src/rh.rs`) along a small route library keyed by the stars already collected. Today it can make Bob-omb Battlefield's "Behind Chain Chomp's Gate" star (from power-on) and the "Big Bob-omb on the Summit" star (from the castle after the first); for any other state it has no route and waits (a new tip, or the stall time after which the power-on start is allowed). A winning run over the current limit waits for `sm64_valid_at`. Candidates are simulated through the real perturbation, so whatever it commits verifies.
 - Browser recordings verify natively: a headless-Chromium test recorded 3000-frame runs on 3 seeds with the rendering WASM build and replayed them with the native verifier, matching on every frame (pads forced by the perturbation and Mario's state), including across reseeds. Only that input script was tested.
 - `generateblocks` (regtest) can't make valid blocks (no proof); the built-in hash miner is disabled.
 - The web miner's success check mirrors `web/src/lib/rules.js`; it must be kept in sync with `rules.rs`.

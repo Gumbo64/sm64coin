@@ -1,24 +1,30 @@
-"""Mirror of the consensus rules in pow/sm64pow/src/{lib,rules}.rs.
+"""Mirror of the consensus rules in pow/sm64pow/src/{lib,rules}.rs (`StarCycle`, "star-cycle-70").
 
-The Rust crate is the source of truth. This is a copy of the current
-`any-star` rules; daemon tasks carry the daemon's own numbers and
-`Task.from_template` refuses a mismatch, so a stale copy cannot silently mine
-invalid blocks. The perturbation is covered by tests that verify Python
-proofs with the Rust verifier.
+The Rust crate is the source of truth. Each block is the game's next progress (a star, a Bowser
+key, the Grand Star after 70 stars) played from the parent's end state (or from power-on, see
+`env.Task`); the Grand Star ends the cycle. Difficulty is ONLY the time limit; the pokes are fixed.
+The limit grows continuously with the time since the parent after a grace period (`max_frames`).
+Daemon tasks carry the daemon's own numbers and `Task.from_template` refuses a mismatch, so a stale
+copy cannot silently mine invalid blocks. All arithmetic is integer, identical to Rust's u64
+(saturating where Rust saturates).
 """
 
 from dataclasses import dataclass
 
-from .perturb import PokeConfig
+from .perturb import PokeConfig, Progress
 
+NAME = "star-cycle-70"
 BASE_FRAMES = 10 * 60 * 30
-MIN_FRAMES = 60 * 30
+MIN_FRAMES = 20 * 30
 SHRINK_PERCENT = 98
-BASE_RANDOM = 5
-MAX_RANDOM = 40
+RANDOM = 5  # pokes: bursts per window
 WINDOW = 100
 BURST = 2
+TARGET = 300  # seconds between blocks the retarget aims for
+DECAY_GRACE_TARGETS = 2
+STALL_SECONDS = 3600  # after this long without a block a block may start from power-on
 RESEED_FRAMES = 0  # one 256-bit seed per run (the perturbation is seeded once, from the whole hash)
+U64 = (1 << 64) - 1
 
 
 def level8(d: int) -> int:
@@ -44,21 +50,81 @@ class Params:
 
 
 def params(difficulty: int) -> Params:
-    """What the `any-star` rules ask at `difficulty`."""
+    """The task at (effective) `difficulty`: the time limit and the (fixed) pokes."""
     l8 = level8(difficulty)
     frames = BASE_FRAMES
     for _ in range(l8):
         frames = frames * SHRINK_PERCENT // 100
         if frames <= MIN_FRAMES:
             break
-    return Params(
-        level8=l8,
-        max_frames=max(frames, MIN_FRAMES),
-        random_amount=min(BASE_RANDOM + l8 // 8, MAX_RANDOM),
-        window=WINDOW,
-        burst=BURST,
-        reseed_frames=RESEED_FRAMES,
-    )
+    return Params(level8=l8, max_frames=max(frames, MIN_FRAMES), random_amount=RANDOM,
+                  window=WINDOW, burst=BURST, reseed_frames=RESEED_FRAMES)
+
+
+def max_frames_any() -> int:
+    """The most frames any difficulty allows."""
+    return params(1).max_frames
+
+
+def effective_difficulty(difficulty: int, elapsed_seconds: int) -> int:
+    """The difficulty a block actually needs, given how long after its parent it is timestamped."""
+    grace = DECAY_GRACE_TARGETS * TARGET
+    if elapsed_seconds <= grace:
+        return max(difficulty, 1)
+    halvings = (elapsed_seconds - grace) // TARGET
+    return 1 if halvings >= 64 else max(difficulty >> halvings, 1)
+
+
+def max_frames(difficulty: int, elapsed_seconds: int) -> int:
+    """The time limit of a block at retarget `difficulty` timestamped `elapsed_seconds` after its
+    parent. Continuous in time: after the grace period the limit grows every second (one
+    difficulty halving, 8 levels, per target)."""
+    t = TARGET
+    grace = DECAY_GRACE_TARGETS * t
+    decay = min(max(elapsed_seconds - grace, 0) * 8, U64)  # in 1/t levels
+    level = max(level8(difficulty) * t - decay, 0)         # in 1/t levels
+    whole, frac = divmod(level, t)
+    frames = BASE_FRAMES
+    for _ in range(whole):
+        frames = frames * SHRINK_PERCENT // 100
+        if frames <= MIN_FRAMES:
+            return MIN_FRAMES
+    step = 100 - SHRINK_PERCENT  # percent per level
+    frames = frames * (100 * t - step * frac) // (100 * t)
+    return max(frames, MIN_FRAMES)
+
+
+def valid_after(difficulty: int, frames: int):
+    """The smallest number of seconds after its parent a block at retarget `difficulty` may be
+    timestamped for a run of `frames` frames to be within the limit (None: never)."""
+    if frames > max_frames(difficulty, 1 << 62):
+        return None
+    lo, hi = 0, 1 << 62
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if max_frames(difficulty, mid) >= frames:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def is_success(start: Progress, now: Progress) -> bool:
+    """Whether `now` (the state after a frame) completes a block that started at `start`."""
+    return now.points() > start.points()
+
+
+def ends_cycle(end: Progress) -> bool:
+    """Whether a block ending at `end` ends the cycle (the next block starts from power-on)."""
+    return end.grand_star
+
+
+def stall_seconds() -> int:
+    return STALL_SECONDS
+
+
+def target_seconds() -> int:
+    return TARGET
 
 
 class Seed:

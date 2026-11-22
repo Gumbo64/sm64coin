@@ -38,7 +38,7 @@ fn random_run_conforms() {
         }
         assert!(poked > 50, "perturbation should poke: {poked}");
         match sm64pow::verify_pads(&task.seed, &task.params, env.pads()).unwrap() {
-            Verdict::Invalid(why) => assert_eq!(why, "success condition never met"),
+            Verdict::Invalid(why) => assert!(why.contains("no progress"), "{why}"),
             v => panic!("{v:?}"),
         }
     }
@@ -92,35 +92,56 @@ fn fork_and_restore_are_exact() {
     assert_eq!(env.state().unwrap(), fork.state().unwrap());
 }
 
-/// A real winning run (found by the built-in beam search; see
-/// examples/make_fixture.rs), replayed through MiningEnv, ends on the success
-/// frame and its proof is valid, in every codec.
+/// A real winning run (the AutoMiner's block 1 of the 2026-11-21 chain, the
+/// fixture of sm64pow's tests), replayed through MiningEnv from power-on, ends
+/// on the success frame; its proof is valid in every codec. Then the same
+/// game plays on from that end state as the next block's task.
 #[test]
-#[ignore = "fixture win_seed1_d1.json was recorded under the old in-game perturbation and is invalid; regenerating it with examples/make_fixture failed within 25 min (beam stuck at reference frame ~4100/4329) under the new perturbation. Regenerate, then remove this ignore."]
 fn winning_fixture_verifies() {
     rom();
-    let path = format!("{}/fixtures/win_seed1_d1.json", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/../sm64pow/tests/fixtures/power_on_star.json", env!("CARGO_MANIFEST_DIR"));
     let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).unwrap();
     let seed = Seed::from_hex(j["seed_hash"].as_str().unwrap()).unwrap();
-    let raw = hex::decode(j["pads_raw_hex"].as_str().unwrap()).unwrap();
-    let wanted: Vec<GamePad> = raw.chunks_exact(4).map(proof::pad_from).collect();
+    let blob = hex::decode(j["proof_hex"].as_str().unwrap()).unwrap();
+    let pr = proof::decode_proof(&blob, 1 << 20).unwrap();
+    assert_eq!(pr.start, proof::Start::PowerOn);
+    let task = Task::new(seed, 1);
+    let wanted = sm64pow::played_from_proof_at(None, &seed, &task.params, &pr).unwrap();
     assert!(wanted.len() > 600, "fixture must be long enough to have been poked");
-    let mut env = MiningEnv::new(&Task::new(seed, 1)).unwrap();
+    let mut env = MiningEnv::new(&task).unwrap();
     for (i, w) in wanted.iter().enumerate() {
         assert!(!env.is_success(), "success before the last frame ({i})");
         assert_eq!(env.step(*w).unwrap(), *w, "frame {i}: fixture pads are already perturbed");
     }
     assert!(env.is_success());
+    let p = env.progress().unwrap();
+    assert_eq!((p.stars, p.keys, p.grand_star), (1, 0, false));
+    assert_eq!(sm64pow::game::event(&Progress::default(), &p).unwrap().name(), "c01s6");
     assert!(env.step(GamePad::default()).is_err(), "no frames after success");
     assert_eq!(env.verify().unwrap(), Verdict::Valid { frames: wanted.len() as u32 });
-    let pr = sm64pow::proof_from_played(&seed, &sm64pow::params(1), env.pads()).unwrap();
+    let pr = sm64pow::proof_from_played_at(proof::Start::PowerOn, None, &seed, &task.params, env.pads()).unwrap();
     assert!(pr.inputs.len() < pr.frames as usize, "pokes aren't stored");
     for c in sm64pow::proof::CODECS {
         let blob = proof::encode_proof_with(*c, &pr);
-        assert_eq!(verify(&seed, 1, &blob).unwrap(), Verdict::Valid { frames: wanted.len() as u32 });
+        assert_eq!(task.check(&blob).unwrap(), Verdict::Valid { frames: wanted.len() as u32 });
     }
-    // Truncated: not a win.
-    assert!(matches!(sm64pow::verify_pads(&seed, &sm64pow::params(1), &wanted[..wanted.len() - 1]).unwrap(), Verdict::Invalid(_)));
+    // Wrong start byte, or one frame short: not a win.
+    let mut wrong = pr.clone();
+    wrong.start = proof::Start::Parent;
+    assert!(matches!(task.check(&proof::encode_proof(&wrong)).unwrap(), Verdict::Invalid(_)));
+    assert!(matches!(sm64pow::verify_pads(&seed, &task.params, &wanted[..wanted.len() - 1]).unwrap(), Verdict::Invalid(_)));
+
+    // The next block: a task starting from this end state, one more point to make.
+    let next = Task::after(env.end_state(), env.progress().unwrap(), sm64pow::Seed([7; 32]), 1);
+    assert_eq!(next.start, proof::Start::Parent);
+    let mut e2 = MiningEnv::new(&next).unwrap();
+    assert_eq!(e2.progress().unwrap().points(), 1);
+    for _ in 0..60 {
+        e2.step(GamePad::default()).unwrap();
+    }
+    assert!(!e2.is_success());
+    let blob = proof::encode_proof(&proof::Proof { frames: 60, start: proof::Start::Parent, inputs: vec![] });
+    assert!(matches!(next.check(&blob).unwrap(), Verdict::Invalid(_)), "no progress in 60 idle frames");
 }
 
 #[test]

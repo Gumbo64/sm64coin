@@ -135,6 +135,7 @@ class Perturber:
 HEADLESS = dict(
     gMarioStates=0xb0a010, gLakituState=0xb097c8, gGlobalTimer=0xb09e94, gRandomSeed16=0xb05f20,
     gAreaUpdateCounter=0xbb0bc8, gCurrLevelNum=0x7ba0a2, gCurrAreaIndex=0xb09756,
+    gSaveBuffer=0xbf7b70, gCurrSaveFileNum=0x7ba0a0,
 )
 
 MARIO_ACTION, MARIO_FACE_ANGLE, MARIO_POS, MARIO_VEL = 12, 44, 60, 72
@@ -178,3 +179,85 @@ def view(b: bytes):
 def read_view(game):
     """The (clock, digest) of a headless game."""
     return view(b"".join(game.read_memory(a, n) for a, n in regions()))
+
+
+# ---- Progress: what a block must add (a star, a Bowser key, the Grand Star) ----
+# Mirror of `progress` / `progress_regions` in pow/perturb/src/sm64.rs.
+
+ACT_JUMBO_STAR_CUTSCENE = 0x0000_1909
+SAVE_FILE_SIZE = 0x38  # struct SaveFile
+SAVE_FILES = 4         # NUM_SAVE_FILES, two copies each
+SAVE_FLAGS = 8         # SaveFile.flags
+COURSE_STARS = 12      # SaveFile.courseStars[25]
+HAVE_KEY_1 = 1 << 4
+HAVE_KEY_2 = 1 << 5
+UNLOCKED_BASEMENT_DOOR = 1 << 6
+UNLOCKED_UPSTAIRS_DOOR = 1 << 7
+GRAND_STAR_MIN_STARS = 70  # stars needed before the Grand Star counts (the 70-star category)
+
+
+@dataclass(frozen=True)
+class Progress:
+    """How far into the game a state is: one point per star, per Bowser key (held, or already
+    used on its door) and for the Grand Star (with at least 70 stars)."""
+    stars: int = 0
+    keys: int = 0
+    grand_star: bool = False
+    # Which stars (bookkeeping, not consensus): index 0 the castle's secret stars, 1..=25 course
+    # N's stars (bit k = star k+1).
+    star_flags: tuple = (0,) * 26
+
+    def points(self) -> int:
+        return self.stars + self.keys + int(self.grand_star)
+
+
+def progress_regions(a=HEADLESS):
+    """(address, length) that `progress` reads, in order: Mario, the save files (first copies),
+    the current file's number."""
+    return [
+        (a["gMarioStates"], MARIO_SIZE),
+        (a["gSaveBuffer"], SAVE_FILE_SIZE * 2 * SAVE_FILES),
+        (a["gCurrSaveFileNum"], 2),
+    ]
+
+
+def progress_regions_len(a=HEADLESS) -> int:
+    return sum(n for _, n in progress_regions(a))
+
+
+def progress(b: bytes) -> Progress:
+    """`Progress` from the bytes of `progress_regions`, concatenated."""
+    u16 = lambda o: b[o] | b[o + 1] << 8
+    u32 = lambda o: b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24
+    stars = u16(MARIO_NUM_STARS)
+    action = u32(MARIO_ACTION)
+    saves = MARIO_SIZE
+    file = u16(saves + SAVE_FILE_SIZE * 2 * SAVE_FILES)
+    flags = u32(saves + (file - 1) * 2 * SAVE_FILE_SIZE + SAVE_FLAGS) if 1 <= file <= SAVE_FILES else 0
+    star_flags = [0] * 26
+    if 1 <= file <= SAVE_FILES:
+        f = saves + (file - 1) * 2 * SAVE_FILE_SIZE
+        star_flags[0] = (flags >> 24) & 0x7F
+        for c in range(25):
+            star_flags[c + 1] = b[f + COURSE_STARS + c] & 0x7F
+    keys = int(flags & (HAVE_KEY_1 | UNLOCKED_BASEMENT_DOOR) != 0) + int(flags & (HAVE_KEY_2 | UNLOCKED_UPSTAIRS_DOOR) != 0)
+    return Progress(stars, keys, action == ACT_JUMBO_STAR_CUTSCENE and stars >= GRAND_STAR_MIN_STARS, tuple(star_flags))
+
+
+def event(before: Progress, after: Progress):
+    """What a block added, as a short stable name: "c09s1" (course 9 star 1), "c00s3" (castle
+    secret star 3), "key1", "grand"; None if nothing (the first difference, like Rust `event`)."""
+    if after.grand_star and not before.grand_star:
+        return "grand"
+    for c in range(26):
+        new = after.star_flags[c] & ~before.star_flags[c]
+        if new:
+            return f"c{c:02d}s{(new & -new).bit_length()}"
+    if after.keys > before.keys:
+        return f"key{after.keys}"
+    return None
+
+
+def read_progress(game) -> Progress:
+    """The `Progress` of a headless game (what the rules' success condition reads)."""
+    return progress(b"".join(game.read_memory(a, n) for a, n in progress_regions()))

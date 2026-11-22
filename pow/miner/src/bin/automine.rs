@@ -1,14 +1,19 @@
 //! sm64coin-automine: mines SM64Coin by playing Super Mario 64 automatically.
 //!
-//! Loop: fetch a block template from the daemon, play the run its seed and
-//! difficulty ask for (following a reference route through the controller
-//! perturbation, see tracker.rs), check the proof with the consensus verifier,
-//! put it in the block and submit. A new block on the network, or the
-//! difficulty decaying, restarts the attempt on a fresh template.
+//! Loop: fetch a block template from the daemon, build the block's start
+//! state (power-on, or the parent's end state: the current cycle's played pads
+//! replayed unperturbed, cached per tip), play on from there to the game's
+//! next progress point (rh.rs: a route library keyed by the stars already
+//! collected), seal the proof with `seal_proof_at`, stamp the block "now" and
+//! submit. A winning run longer than the current time limit waits until the
+//! limit has grown to it (continuous decay, `sm64_valid_at`) unless the tip
+//! changes. A new block on the network restarts the attempt on a fresh template.
 
 use anyhow::{Result, bail};
 use clap::Parser;
 use sm64coin_miner::{beam, rh, routes::Library, rpc};
+use sm64pow::proof::Start;
+use sm64pow::sm64_binds::SaveState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,14 +29,16 @@ struct Args {
     /// US Super Mario 64 ROM.
     #[arg(long, default_value = "baserom.us.z64")]
     rom: String,
-    /// Reference route(s) (.m64) that meet the success condition unperturbed.
+    /// Beam controller only: reference route(s) (.m64) that meet the success condition unperturbed.
     /// The first that works is used; others are fallbacks.
     /// (The chain's own blocks are added too, see --chain-routes; the bomb-boost
     /// routes chomp-*.m64 rarely survive the perturbation, so they're opt-in.)
     #[arg(long, default_values_t = ["pow/miner/routes/block1-human.m64".to_string()])]
     route: Vec<String>,
     /// The controller: `rh` (the rolling-horizon GA over the ETA objectives of
-    /// the Chomp star route, rh.rs) or `beam` (the old reference-following beam search).
+    /// the BoB star routes, rh.rs; the only one that continues from a parent's
+    /// end state) or `beam` (the old reference-following beam search; first
+    /// star from power-on only).
     #[arg(long, default_value = "rh")]
     controller: String,
     /// rh: population, horizon, frames committed per step, threads.
@@ -60,8 +67,8 @@ struct Args {
     /// Stop after this many blocks (0: forever).
     #[arg(long, default_value_t = 0)]
     blocks: u64,
-    /// Also learn routes from the chain: every block's winning run (default on).
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    /// Beam controller only: also learn routes from the chain (blocks from power-on only; default off).
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     chain_routes: bool,
     /// Where to keep each route's win/attempt record.
     #[arg(long, default_value = "run/automine-routes.json")]
@@ -69,13 +76,47 @@ struct Args {
     /// Routes tried per block template (best-ranked first).
     #[arg(long, default_value_t = 3)]
     routes_per_template: usize,
-    /// Save each sealed proof's pads here as <height>.m64.
+    /// rh: frames a run may take (0: the most any difficulty allows, 18000).
+    #[arg(long, default_value_t = 0)]
+    rh_frames: usize,
+    /// Save each sealed proof's pads here as <height>.m64 (from the block's start state, not from power-on).
     #[arg(long)]
     save_dir: Option<String>,
 }
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// The parent's end state, cached per tip.
+struct ParentCache {
+    tip: String,
+    state: SaveState,
+}
+
+/// Smallest `ts` such that a run of `frames` is within the limit of a block
+/// timestamped `ts` (never before `from`).
+fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
+    let r = sm64pow::rules();
+    let mut ts = from.max(parent_ts);
+    // The limit grows with the timestamp; step by doubling then bisect.
+    if r.max_frames(retarget, ts - parent_ts) >= frames {
+        return ts;
+    }
+    let mut hi = ts + 1;
+    while r.max_frames(retarget, hi - parent_ts) < frames {
+        hi = ts + (hi - ts) * 2;
+        if hi - parent_ts > 1 << 40 {
+            return u64::MAX;
+        }
+    }
+    let mut lo = ts;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if r.max_frames(retarget, mid - parent_ts) >= frames { hi = mid } else { lo = mid }
+    }
+    ts = hi;
+    ts
 }
 
 fn main() -> Result<()> {
@@ -86,22 +127,30 @@ fn main() -> Result<()> {
     sm64pow::init(std::fs::read(&a.rom)?)?;
     let daemon = rpc::Daemon::new(&a.daemon);
     let mut lib = Library::new(Some(a.route_stats.clone()));
-    for r in &a.route {
-        if let Err(e) = lib.add_file(r) {
-            println!("route {r} skipped: {e}");
+    if a.controller == "beam" {
+        for r in &a.route {
+            if let Err(e) = lib.add_file(r) {
+                println!("route {r} skipped: {e}");
+            }
         }
-    }
-    if a.chain_routes {
-        match lib.harvest(&daemon) {
-            Ok(n) => println!("{n} routes learned from the chain"),
-            Err(e) => println!("route harvest failed: {e}"),
+        if a.chain_routes {
+            match lib.harvest(&daemon) {
+                Ok(n) => println!("{n} routes learned from the chain"),
+                Err(e) => println!("route harvest failed: {e}"),
+            }
         }
-    }
-    if a.controller == "beam" && lib.routes.is_empty() {
-        bail!("no usable reference route");
+        if lib.routes.is_empty() {
+            bail!("no usable reference route");
+        }
+    } else {
+        println!("rh routes:");
+        for (point, route) in rh::coverage() {
+            println!("  {point}  <-  {route}");
+        }
     }
     let mut mined = 0u64;
     let mut attempt = 0u64;
+    let mut parent_cache: Option<ParentCache> = None;
     loop {
         attempt += 1;
         let t = match daemon.template(&a.address) {
@@ -112,108 +161,169 @@ fn main() -> Result<()> {
                 continue;
             }
         };
-        let params = sm64pow::params(t.difficulty);
+        let params = sm64pow::params(t.sm64_retarget_difficulty.max(1));
         let seed = sm64pow::Seed::from_hex(&t.sm64_seed_hash)?;
-        if params.max_frames != t.sm64_max_frames
-            || params.rng.random_amount != t.sm64_random_amount
-            || params.reseed_frames != t.sm64_reseed_frames
-        {
+        let elapsed = t.sm64_timestamp.saturating_sub(t.sm64_parent_timestamp);
+        let limit_now = sm64pow::rules().max_frames(t.sm64_retarget_difficulty.max(1), elapsed);
+        if limit_now != t.sm64_max_frames || params.rng.random_amount != t.sm64_random_amount || params.rng.window_length != t.sm64_window_length {
             bail!(
                 "this miner's rules ({}, {} frames) differ from the daemon's ({}, {} frames): rebuild one of them",
                 sm64pow::rules().name(),
-                params.max_frames,
+                limit_now,
                 t.sm64_rules,
                 t.sm64_max_frames
             );
         }
         println!(
-            "\nblock {} on {}..  difficulty {} (retarget {})  limit {} frames  {} pokes/{}  seed {}",
+            "\nblock {} on {}..  retarget {}  limit {} frames now  start {}  parent {} stars {} keys  seed {}",
             t.height,
             &t.prev_hash[..12],
-            t.difficulty,
             t.sm64_retarget_difficulty,
             t.sm64_max_frames,
-            t.sm64_random_amount,
-            t.sm64_window_length,
-            t.sm64_seed
+            t.sm64_start,
+            t.sm64_parent_stars,
+            t.sm64_parent_keys,
+            &t.sm64_seed_hash[..8]
         );
 
-        // Watch for a new block (or an easier task) while playing.
+        // Where the run starts: the parent's end state, or power-on.
+        let mut start = if t.sm64_start == "power-on" { Start::PowerOn } else { Start::Parent };
+        let mut parent_state: Option<SaveState> = None;
+        if start == Start::Parent {
+            if parent_cache.as_ref().is_none_or(|c| c.tip != t.prev_hash) {
+                match daemon.cycle(Some(&t.prev_hash)).and_then(|c| rpc::cycle_end_state(&c).map(|s| (c, s))) {
+                    Ok((c, (state, p))) => {
+                        println!("  cycle: {} blocks, {} frames replayed -> {} stars {} keys", c.blocks.len(), c.pads.len(), p.stars, p.keys);
+                        parent_cache = Some(ParentCache { tip: t.prev_hash.clone(), state });
+                    }
+                    Err(e) => {
+                        println!("  cannot build the parent's end state: {e:#}; retrying in 5 s");
+                        std::thread::sleep(Duration::from_secs(5));
+                        continue;
+                    }
+                }
+            }
+            parent_state = parent_cache.as_ref().map(|c| c.state.clone());
+        }
+
+        // Watch for a new block while playing.
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         let watcher = {
             let (stop, done) = (stop.clone(), done.clone());
-            let (url, prev, easier) = (a.daemon.clone(), t.prev_hash.clone(), t.sm64_easier_at);
+            let (url, prev) = (a.daemon.clone(), t.prev_hash.clone());
+            // A parent-only template becomes "either" at sm64_power_on_at.
+            let power_on_at = if t.sm64_start == "parent" { t.sm64_power_on_at } else { 0 };
             std::thread::spawn(move || {
                 let d = rpc::Daemon::new(&url);
                 while !done.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_secs(2));
-                    match d.top_hash() {
-                        Ok(h) if h != prev => {
+                    if power_on_at != 0 && now() >= power_on_at {
+                        println!("  the stall time has passed: restarting to allow the power-on start");
+                        stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    if let Ok(h) = d.top_hash() {
+                        if h != prev {
                             println!("  new block {}.. on the network: restarting", &h[..12]);
                             stop.store(true, Ordering::Relaxed);
                             return;
                         }
-                        _ => {}
-                    }
-                    if easier != 0 && now() >= easier {
-                        println!("  the difficulty has decayed: restarting on an easier task");
-                        stop.store(true, Ordering::Relaxed);
-                        return;
                     }
                 }
             })
         };
 
-        if a.chain_routes {
-            if let Ok(n) = lib.harvest(&daemon) {
-                if n > 0 {
-                    println!("  {n} new route(s) from the chain");
+        let mut result = None;
+        let mut no_route = None;
+        if a.controller == "rh" {
+            let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt, frame_cap: a.rh_frames, max_retries: if t.sm64_start == "either" { 3 } else { 40 }, ..Default::default() };
+            let mut r = rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &stop, |m| println!("  {m}"))?;
+            let fallback = match &r {
+                rh::Attempt::NoRoute(why) => Some(format!("no route from the parent's end state: {why}")),
+                rh::Attempt::Gave(why) if t.sm64_start == "either" && !stop.load(Ordering::Relaxed) => Some(format!("the parent's end state didn't give progress quickly ({why})")),
+                _ => None,
+            };
+            if let Some(why) = fallback {
+                println!("  {why}");
+                if t.sm64_start == "either" {
+                    println!("  taking the power-on start");
+                    start = Start::PowerOn;
+                    parent_state = None;
+                    r = rh::mine(start, None, &seed, &params, &o, &stop, |m| println!("  {m}"))?;
                 }
             }
-        }
-        println!("  routes: {}", lib.summary());
-        let mut result = None;
-        if a.controller == "rh" {
-            let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt, ..Default::default() };
-            result = rh::mine(&seed, &params, &o, &stop, |m| println!("  {m}"))?;
-        }
-        for (k, i) in lib.ranked().into_iter().take(if a.controller == "beam" { a.routes_per_template.max(1) } else { 0 }).enumerate() {
-            let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let cfg = beam::BeamConfig {
-                width: a.beam,
-                per_state: a.candidates,
-                horizon: a.horizon,
-                commit: a.commit,
-                give_up: a.give_up,
-                seed: attempt * 1000 + k as u64,
-                reached: Some(reached.clone()),
-                ..Default::default()
-            };
-            let route = &lib.routes[i];
-            println!("  following route {} ({} frames)", route.name, route.reference.inputs.len());
-            let len = route.reference.inputs.len();
-            result = beam::mine(&seed, &params, &route.reference, &cfg, &stop, |m| println!("  {m}"))?;
-            if stop.load(Ordering::Relaxed) && result.is_none() {
-                break; // interrupted by a new block: not the route's fault
+            match r {
+                rh::Attempt::Found(m) => result = Some(m),
+                rh::Attempt::Gave(why) => println!("  no progress: {why}"),
+                rh::Attempt::NoRoute(why) => no_route = Some(why),
             }
-            let progress = reached.load(Ordering::Relaxed) as f64 / len.max(1) as f64;
-            lib.record(i, result.is_some(), progress);
-            if result.is_some() {
-                break;
+        } else if start == Start::PowerOn || t.sm64_parent_stars + t.sm64_parent_keys == 0 {
+            for (k, i) in lib.ranked().into_iter().take(a.routes_per_template.max(1)).enumerate() {
+                let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let cfg = beam::BeamConfig {
+                    width: a.beam,
+                    per_state: a.candidates,
+                    horizon: a.horizon,
+                    commit: a.commit,
+                    give_up: a.give_up,
+                    seed: attempt * 1000 + k as u64,
+                    reached: Some(reached.clone()),
+                    ..Default::default()
+                };
+                let route = &lib.routes[i];
+                println!("  following route {} ({} frames)", route.name, route.reference.inputs.len());
+                let len = route.reference.inputs.len();
+                result = beam::mine(&seed, &params, &route.reference, &cfg, &stop, |m| println!("  {m}"))?;
+                if stop.load(Ordering::Relaxed) && result.is_none() {
+                    break; // interrupted by a new block: not the route's fault
+                }
+                let progress = reached.load(Ordering::Relaxed) as f64 / len.max(1) as f64;
+                lib.record(i, result.is_some(), progress);
+                if result.is_some() {
+                    break;
+                }
             }
+            start = Start::PowerOn;
+        } else {
+            no_route = Some("the beam controller only starts from power-on".into());
         }
         done.store(true, Ordering::Relaxed);
         let _ = watcher.join();
-        let Some(m) = result else { continue };
+        let Some(m) = result else {
+            if let Some(why) = no_route {
+                // Nothing to play from here: wait for a new tip or the stall
+                // time (after which the template allows the power-on start).
+                let wake = if t.sm64_power_on_at > now() { t.sm64_power_on_at } else { now() + 5 };
+                println!("  nothing to try ({why}); power-on start allowed at {} (in {} s)", t.sm64_power_on_at, wake.saturating_sub(now()));
+                while now() < wake.min(now() + 3600) {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
+                        break;
+                    }
+                    if now() >= wake {
+                        break;
+                    }
+                }
+            }
+            continue;
+        };
 
         // The block stores only the non-poked frames' inputs (pokes are
         // regenerated from the seed).
-        let proof = sm64pow::seal_proof(&seed, &params, &m.pads)?;
-        match sm64pow::verify(&seed, t.difficulty, &proof)? {
-            sm64pow::Verdict::Valid { frames } => println!("  proof verified locally: {frames} frames, {} bytes", proof.len()),
-            sm64pow::Verdict::Invalid(why) => {
-                println!("  BUG: own proof rejected: {why}");
+        let frames = m.pads.len() as u32;
+        let proof = sm64pow::seal_proof_at(start, parent_state.as_ref(), &seed, &params, &m.pads)?;
+        match sm64pow::proof::decode_proof(&proof, sm64pow::proof::MAX_FRAMES) {
+            Ok(pr) if pr.frames == frames && pr.start == start => {
+                let again = sm64pow::played_from_proof_at(parent_state.as_ref(), &seed, &params, &pr)?;
+                if again != m.pads {
+                    println!("  BUG: proof does not replay to the run's pads");
+                    continue;
+                }
+                println!("  proof sealed: {frames} frames, {} bytes, {} inputs, start {:?}", proof.len(), pr.inputs.len(), start);
+            }
+            other => {
+                println!("  BUG: own proof does not decode: {:?}", other.map(|p| p.frames));
                 continue;
             }
         }
@@ -228,7 +338,32 @@ fn main() -> Result<()> {
             }
             std::fs::write(format!("{dir}/{}.m64", t.height), m64)?;
         }
-        match daemon.submit(&rpc::seal(&t.blocktemplate_blob, &proof)?) {
+
+        // Within the time limit now? Otherwise wait until it has grown to
+        // this run's length (the tip changing abandons it).
+        let retarget = t.sm64_retarget_difficulty.max(1);
+        let mut ts = valid_from(retarget, t.sm64_parent_timestamp, frames, now());
+        if ts > now() {
+            let asked = daemon.template_valid_at(&a.address, frames).map(|x| x.sm64_valid_at).unwrap_or(0);
+            ts = ts.max(asked);
+            println!("  {frames} frames is over the current limit ({}); valid at {ts} (in {} s, daemon says {asked})", sm64pow::rules().max_frames(retarget, now().saturating_sub(t.sm64_parent_timestamp)), ts.saturating_sub(now()));
+            let mut abandoned = false;
+            while now() < ts {
+                std::thread::sleep(Duration::from_secs(1));
+                if now() % 3 == 0 && daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
+                    println!("  new block on the network: abandoning the waiting run");
+                    abandoned = true;
+                    break;
+                }
+            }
+            if abandoned {
+                continue;
+            }
+            ts = ts.max(now());
+        } else {
+            ts = now();
+        }
+        match daemon.submit(&rpc::seal(&t.blocktemplate_blob, &proof, Some(ts))?) {
             Ok(()) => {
                 mined += 1;
                 println!(

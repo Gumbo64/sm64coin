@@ -228,6 +228,7 @@ impl Reference {
     /// records the states. Fails if it never succeeds.
     pub fn record(route: &[GamePad]) -> Result<Reference> {
         let mut g = sm64pow::generator()?.create_game()?;
+        let start = sm64pow::game::read_progress(&g)?;
         let rules = sm64pow::rules();
         let mut snaps: Vec<Snap> = Vec::new();
         let mut pickups = Vec::new();
@@ -243,8 +244,7 @@ impl Reference {
             }
             let s = Snap::new(&st, snaps.last());
             snaps.push(s);
-            let gs = g.get_game_state()?;
-            if rules.is_success(&g, &gs) {
+            if rules.is_success(&start, &sm64pow::game::read_progress(&g)?) {
                 let waiting = waiting_runs(&snaps);
                 let star = find_star(route, i, &snaps[i]);
                 return Ok(Reference { inputs: route[..=i].to_vec(), snaps, waiting, pickups, star });
@@ -439,6 +439,9 @@ pub(crate) struct Outcome {
     pub(crate) pads: Vec<GamePad>,
 }
 
+/// The beam controller only mines from power-on (no stars, no keys).
+const POWER_ON: sm64pow::game::Progress = sm64pow::game::Progress { stars: 0, keys: 0, grand_star: false, star_flags: [0; 26] };
+
 pub(crate) fn evaluate(
     game: &mut SM64MiningGame,
     base: &SM64MiningGame,
@@ -498,8 +501,7 @@ pub(crate) fn evaluate(
         }
         let played = sm64pow::mine_step(game, want)?;
         pads.push(played);
-        let gs = game.state()?;
-        if rules.is_success(&game.game, &gs) {
+        if rules.is_success(&POWER_ON, &game.progress()?) {
             return Ok(Outcome { score: f32::MAX - t as f32, success_at: Some(t + 1), pads });
         }
         let st = read_state(&game.game, (frames_done + t + 1) as u32, false);

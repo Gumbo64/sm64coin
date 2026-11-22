@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A mining bot. Play the run: call [`MiningEnv::step`] until
-/// `env.is_success()`, then return. Return early (without success) if
-/// `stop()` becomes true (a new block arrived, the task got easier) or you
+/// `env.is_success()` (the game's next progress point: a star, a Bowser key or
+/// the Grand Star, from wherever the block starts), then return. Return early
+/// (without success) if `stop()` becomes true (a new block arrived) or you
 /// give up; the miner then fetches a fresh template and calls you again.
 ///
 /// A bot may be called many times (once per template); reset your own state in
@@ -31,13 +32,43 @@ pub struct MinerConfig {
     pub verbose: bool,
 }
 
-/// Mines forever with `bot`. Per template: build the task, run the bot while a
-/// watcher thread raises `stop` on a new block, verify the proof locally, seal
-/// it into the template and submit.
+/// Mines forever with `bot` (see [`run_miner_with`]).
 pub fn run_miner(bot: &mut dyn Bot, daemon_url: &str, address: &str, rom: &str) -> Result<()> {
     run_miner_with(bot, &MinerConfig { daemon_url: daemon_url.into(), address: address.into(), rom: rom.into(), blocks: 0, verbose: true })
 }
 
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// Smallest timestamp at or after `from` at which a block mined on a parent
+/// timestamped `parent_ts` may carry a run of `frames` frames.
+fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
+    let r = sm64pow::rules();
+    let lo0 = from.max(parent_ts);
+    if r.max_frames(retarget, lo0 - parent_ts) >= frames {
+        return lo0;
+    }
+    let (mut lo, mut hi) = (lo0, lo0 + 1);
+    while r.max_frames(retarget, hi - parent_ts) < frames {
+        hi = lo0 + (hi - lo0) * 2;
+        if hi - parent_ts > 1 << 40 {
+            return u64::MAX;
+        }
+    }
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if r.max_frames(retarget, mid - parent_ts) >= frames { hi = mid } else { lo = mid }
+    }
+    hi
+}
+
+/// The mining loop. Per template: build the [`Task`] (the parent's end state
+/// from `get_sm64_cycle`, or power-on), run the bot while a watcher thread
+/// raises `stop` on a new block, check the proof locally, wait if the run is
+/// longer than the current time limit (it becomes valid as the limit grows),
+/// stamp the block "now", seal the proof into the template and submit. The
+/// task allows over-budget runs ([`Task::allow_over_budget`]).
 pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
     if !cfg.address.starts_with("SM6") {
         bail!("{} does not look like an SM64Coin address", cfg.address);
@@ -54,28 +85,30 @@ pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
                 continue;
             }
         };
-        let task = Task::from_template(&t)?;
+        let task = match Task::from_template(&t, &daemon) {
+            Ok(task) => task.allow_over_budget(),
+            Err(e) => {
+                eprintln!("cannot start the block's task: {e:#}; retrying in 5 s");
+                std::thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+        };
         if cfg.verbose {
             println!(
-                "block {} difficulty {} limit {} frames, {} pokes per {}",
-                t.height, t.difficulty, t.sm64_max_frames, t.sm64_random_amount, t.sm64_window_length
+                "block {} start {:?} ({} stars {} keys), limit {} frames now, {} pokes per {}",
+                t.height, task.start, task.start_progress.stars, task.start_progress.keys, t.sm64_max_frames, t.sm64_random_amount, t.sm64_window_length
             );
         }
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         let watcher = {
             let (stop, done) = (stop.clone(), done.clone());
-            let (url, prev, easier) = (cfg.daemon_url.clone(), t.prev_hash.clone(), t.sm64_easier_at);
+            let (url, prev) = (cfg.daemon_url.clone(), t.prev_hash.clone());
             std::thread::spawn(move || {
                 let d = Daemon::new(&url);
                 while !done.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_secs(2));
                     if matches!(d.top_hash(), Ok(h) if h != prev) {
-                        stop.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                    if easier != 0 && now >= easier {
                         stop.store(true, Ordering::Relaxed);
                         return;
                     }
@@ -95,16 +128,17 @@ pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
         }
         if !env.is_success() {
             if cfg.verbose {
-                println!("  no star (stopped at frame {}); fetching a new template", env.frame());
+                println!("  no progress (stopped at frame {}); fetching a new template", env.frame());
             }
             std::thread::sleep(Duration::from_secs(1));
             continue;
         }
         let proof = env.proof();
-        match sm64pow::verify(&task.seed, task.difficulty, &proof)? {
+        let frames = env.frame() as u32;
+        match task.check(&proof)? {
             Verdict::Valid { frames } => {
                 if cfg.verbose {
-                    println!("  proof verified locally: {frames} frames, {} bytes, found in {:.1} s", proof.len(), t0.elapsed().as_secs_f64())
+                    println!("  proof checked locally: {frames} frames, {} bytes, found in {:.1} s", proof.len(), t0.elapsed().as_secs_f64())
                 }
             }
             Verdict::Invalid(why) => {
@@ -112,7 +146,32 @@ pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
                 continue;
             }
         }
-        match daemon.submit(&seal(&t.blocktemplate_blob, &proof)?) {
+        // Over the time limit: valid once the limit has grown to the run's length.
+        let retarget = task.difficulty.max(1);
+        let mut ts = valid_from(retarget, t.sm64_parent_timestamp, frames, now());
+        if ts > now() {
+            let asked = daemon.template_valid_at(&cfg.address, frames).map(|x| x.sm64_valid_at).unwrap_or(0);
+            ts = ts.max(asked);
+            if cfg.verbose {
+                println!("  {frames} frames is over the current limit; valid at {ts} (in {} s)", ts.saturating_sub(now()));
+            }
+            let mut abandoned = false;
+            while now() < ts {
+                std::thread::sleep(Duration::from_secs(1));
+                if now() % 3 == 0 && matches!(daemon.top_hash(), Ok(h) if h != t.prev_hash) {
+                    abandoned = true;
+                    break;
+                }
+            }
+            if abandoned {
+                println!("  new block on the network: abandoning the waiting run");
+                continue;
+            }
+            ts = ts.max(now());
+        } else {
+            ts = now();
+        }
+        match daemon.submit(&seal(&t.blocktemplate_blob, &proof, Some(ts))?) {
             Ok(()) => {
                 mined += 1;
                 println!("  BLOCK {} ACCEPTED ({:.6} SM64)", t.height, t.expected_reward as f64 / 1e12);
@@ -155,6 +214,6 @@ pub fn practice(bot: &mut dyn Bot, seed: u64, difficulty: u64, stop: &dyn Fn() -
     bot.play(&mut env, stop)?;
     let seconds = t0.elapsed().as_secs_f64();
     let (success, proof) = (env.is_success(), env.proof());
-    let verdict = if success { Some(sm64pow::verify(&task.seed, difficulty, &proof)?) } else { None };
+    let verdict = if success { Some(task.check(&proof)?) } else { None };
     Ok(PracticeReport { seed, difficulty, frames: env.frame(), max_frames: env.max_frames(), success, verdict, seconds, proof })
 }

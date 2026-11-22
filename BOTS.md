@@ -1,29 +1,56 @@
 # Writing a bot for SM64Coin
 
-SM64Coin's proof of work is playing Super Mario 64: from power-on, get a star within the time limit while the controller is randomly perturbed. A **bot** is anything that produces such a run. This guide gives the contract, quick starts for Rust and Python, and how to test your work offline. Both SDKs build on the `sm64-binds` game library (a WASM build of the game, with clone and save states) and wrap the consensus rules so you only write the bot.
+SM64Coin's proof of work is playing Super Mario 64: each block is the game's **next progress point** (a new star, a Bowser key, or the Grand Star once you have 70 stars), played on from the end state of the previous block, within a time limit, while the controller is randomly perturbed. After the Grand Star the cycle ends and the next block starts again from power-on (the "70-star cycle"). A **bot** is anything that produces such a run. This guide gives the contract, quick starts for Rust and Python, and how to test your work offline. Both SDKs build on the `sm64-binds` game library (a WASM build of the game, with clone and save states) and wrap the consensus rules so you only write the bot.
 
 - Rust: `pow/sdk` (crate `sm64coin-sdk`, depends on `pow/sm64pow`, so the rules cannot drift).
 - Python: `python/` (package `sm64coin`, on the `sm64-binds` Python package; keeps a copy of the rules that tests check against Rust).
 
 ## The contract
 
-A task is a **seed hash** (32 bytes, `cn_fast_hash` of the block's hashing blob), a **difficulty**, and what the difficulty implies (`sm64pow::params(difficulty)`): `max_frames` and the perturbation settings (`window_length`, `random_amount` bursts of `burst_length`, button probabilities). The daemon's `get_block_template` returns them as `sm64_seed_hash`, `difficulty`, `sm64_max_frames`, `sm64_random_amount`, `sm64_window_length`, `sm64_burst_length`.
+### Where a run starts
 
-The game build is stock: **the pokes are generated outside the game**, from the seed, in the `perturb` crate (`pow/perturb`; the browser runs the same code compiled to WASM, Python has a line-by-line port in `python/src/sm64coin/perturb.py`). `sm64pow::SM64MiningGame { game, pert }` bundles a game with its perturbation; use it for everything you play. Play a fresh game from power-on. For every frame, with `wanted` what your bot wants to press:
+A block's run starts from one of two states:
+
+- **Parent** (`start byte 0`, the normal case): the game state at the end of the parent block's run. Replaying every frame the cycle has played (unperturbed: the pads actually played, pokes included) from power-on reaches exactly that state. The daemon serves them: JSON-RPC `get_sm64_cycle {hash?}` (default: the tip) returns `{blocks: [{height, hash, frames, power_on}], played_pads, stars, keys, grand_star, ends_cycle}`, `played_pads` being hex, 4 bytes per frame (u16 LE buttons, i8 stick x, i8 stick y) from the cycle's first block to that tip. Both SDKs do the replay for you (`Task::from_template` / `Daemon.get_task`); cache the resulting state per tip.
+- **Power-on** (`start byte 1`): a fresh game. Allowed for the first block after the genesis block, after a block that ended a cycle (the Grand Star), and for any block timestamped more than 3600 s after its parent (stall escape, for a chain stuck on a state nobody can progress from).
+
+The template says which is allowed: `sm64_start` is `"parent"`, `"power-on"` or `"either"`, with `sm64_power_on_at` (unix time from which power-on is allowed), `sm64_parent_timestamp`, `sm64_parent_stars`, `sm64_parent_keys`, `sm64_cycle_start_height`.
+
+### Success
+
+`rules().is_success(start_progress, now_progress)`: the game's progress (`Progress { stars, keys, grand_star }`, read from Mario's star counter, the save file's key and door flags, and the Grand Star cutscene with at least 70 stars; `pow/perturb/src/sm64.rs`, `points() = stars + keys + grand_star`) is one point more than at the start of the run. It must first hold on the last frame of the run: a proof with frames after the first success is invalid. In Rust `env.is_success()` / `env.progress()`; in Python the same.
+
+### The task and the perturbation
+
+A task is the **seed hash** (32 bytes, `cn_fast_hash` of the block's hashing blob; it does not include the timestamp) and the time limit. The pokes are fixed at every difficulty: 5 bursts of 2 frames per 100 game-clock ticks. Difficulty only sets the time limit.
+
+The game build is stock: **the pokes are generated outside the game**, from the seed, in the `perturb` crate (`pow/perturb`; the browser runs the same code compiled to WASM, Python has a line-by-line port in `python/src/sm64coin/perturb.py`). `sm64pow::SM64MiningGame { game, pert }` bundles a game with its perturbation; use it for everything you play. Start it with `sm64pow::chain::mining_start(start, Some(&parent_state) or None, &seed, &params)`. For every frame, with `wanted` what your bot wants to press:
 
 1. Read the game's **clock** (`gAreaUpdateCounter`, a `u16`) *before* the frame.
-2. The perturbation decides the pad. It can poke only if the clock moved since the previous frame's reading (so pausing and menus neither spend nor reroll pokes; there is no explicit rule about pausing). Pokes are scheduled in windows of `window_length` clock-ticking frames: exactly `random_amount` bursts of `burst_length` frames per window, each frame that may start a burst starting one with probability `remaining bursts / remaining frames of the window` (so the budget is always spent). A poked frame plays a random pad (A, B, Z with probabilities 0.5, 0.5, 0.2, and both stick axes uniform in -80..80) and ignores `wanted`; otherwise `played = wanted`.
+2. The perturbation decides the pad. It can poke only if the clock moved since the previous frame's reading (so pausing and menus neither spend nor reroll pokes). Pokes are scheduled in windows of `window_length` clock-ticking frames: exactly `random_amount` bursts of `burst_length` frames per window, each frame that may start a burst starting one with probability `remaining bursts / remaining frames of the window`. A poked frame plays a random pad (A, B, Z with probabilities 0.5, 0.5, 0.2, and both stick axes uniform in -80..80) and ignores `wanted`; otherwise `played = wanted`.
 3. `game.step_game(played)`.
-4. If the clock moved during the frame, **mix a digest of the new game state** (Mario's position, velocity, action, angles, health, coins, stars, Lakitu's yaw, the global timer, the game's own RNG, level and area) into the perturbation. So the next pokes depend on everything that happened, and cannot be predicted without playing the run.
+4. If the clock moved during the frame, **mix a digest of the new game state** into the perturbation, so the next pokes depend on everything that happened and cannot be predicted without playing the run.
 5. Record `played`.
 
-The generator is xoshiro256** seeded once from all 256 bits of the seed hash (there is no reseeding), mixed with splitmix64 and the digest. The exact algorithm and memory regions are in `pow/perturb/src/lib.rs` and `pow/perturb/src/sm64.rs`; that code is the specification. In Rust this is `sm64pow::SM64MiningGame::step(wanted) -> (played, poked)` (also `sm64pow::play_frame` / `mine_step`); you do not implement any of it yourself.
+The generator is xoshiro256** seeded once from all 256 bits of the seed hash, mixed with splitmix64 and the digest. The exact algorithm and memory regions are in `pow/perturb/src/lib.rs` and `pow/perturb/src/sm64.rs`; that code is the specification. In Rust this is `sm64pow::SM64MiningGame::step(wanted) -> (played, poked)`; you do not implement any of it yourself. Note the perturbation starts fresh at the start of every block's run (from the block's own seed), whatever state the run starts from.
 
-The **proof** stores only what the player decided: `varint(frames) || codec byte || codec body`, where the body holds the inputs (`wanted`) of the frames that were **not poked**, in order, 4 bytes each in codec 0 (u16 little-endian buttons, i8 stick x, i8 stick y). Poked frames are not stored: the verifier regenerates the pokes from the seed. The run must end exactly on the frame the success condition first holds (currently: any star, `num_stars > 0`), at most `max_frames` long, and use every input; a proof with trailing frames after the first success is invalid. The daemon re-encodes to the smallest codec; the block id depends only on the decoded proof. If you only keep the pads played on every frame, `sm64pow::seal_proof(seed, params, played)` (Rust; `env.proof()` in the SDKs) replays them and drops the poked ones.
+### The proof
 
-Simulating futures on clones or save states is allowed (it is how the built-in miner works), as long as the frames you commit went through exactly the same perturbation. **The perturbation is part of the state of a run**: copy, fork and save a `SM64MiningGame` (`fork()`, `sync_from()`, `save()`/`load()`), never its inner `game` alone, or the clone will draw different pokes than the run you commit. (The SDKs' `fork()`, `save()` and `restore()` do this for you.)
+`varint(frames) || start byte (0 = parent, 1 = power-on) || codec byte || codec body`. The body holds the inputs (`wanted`) of the frames that were **not poked**, in order, 4 bytes each in codec 0. Poked frames are not stored: the verifier regenerates the pokes from the seed. The run must end exactly on the frame the success condition first holds, use every input, and be within the time limit. The daemon re-encodes to the smallest codec; the block id depends only on the decoded proof (frame count and start included). If you only keep the pads played on every frame, `sm64pow::seal_proof_at(start, parent_state, seed, params, played)` (Rust; `env.proof()` in the SDKs) replays them and drops the poked ones.
 
-Difficulty: 1 is the easiest (18000 frames = 10 minutes at 30 fps, 10 poked frames per 100: 5 bursts of 2). Each doubling shortens the limit by about 15% (floor 1800 frames) and adds one burst per 100 frames. The effective difficulty halves for every 300 s past 600 s since the parent block. The success condition and parameters are in `pow/sm64pow/src/rules.rs`; the SDKs refuse a daemon whose numbers differ from theirs.
+Simulating futures on clones or save states is allowed (it is how the built-in miner works), as long as the frames you commit went through exactly the same perturbation. **The perturbation is part of the state of a run**: copy, fork and save a `SM64MiningGame` (`fork()`, `sync_from()`, `save_state()`/`load_state()`), never its inner `game` alone. (The SDKs' `fork()`, `save()` and `restore()` do this for you.)
+
+### Time limit, decay and ties
+
+Difficulty is only the time limit: 18000 frames (10 minutes at 30 fps) at difficulty 1, shrinking by 2 % per eighth of a doubling (about 15 % per doubling), floor 600 frames. The limit **grows continuously** once a block is more than 600 s old: after the grace period every second adds a little, one halving of the difficulty per 300 s (`rules().max_frames(retarget_difficulty, seconds_since_parent)`, integer arithmetic; `sm64_retarget_difficulty` in the template). So a run longer than the current limit is not lost: it becomes valid later. Ask the daemon when: `get_block_template` with the request parameter `sm64_frames: N` returns `sm64_valid_at`, the unix time from which a run of N frames is valid. Chain weight (what the best chain is) counts the effective difficulty, and blocks with the same work are tie-broken by the shorter run (fewer frames).
+
+### Timestamps
+
+The seed does not include the timestamp, so **set the block's timestamp to "now" right before submitting**, in the template blob itself (`varint major_version, varint minor_version, varint timestamp, prev_id, nonce, ...`; rewrite the third varint) rather than fetching a new template (new mempool transactions would change the seed). The limit that applies is the one at the block's timestamp. Both SDKs: `seal(template_hex, proof, timestamp)`.
+
+A miner that finds an over-budget run therefore waits until `sm64_valid_at`, stamps the block then, and submits, unless the tip changes first (then the run is worthless). `run_miner` does this.
+
+The success condition and parameters are in `pow/sm64pow/src/rules.rs`; the SDKs refuse a daemon whose numbers differ from theirs.
 
 ## Rust quick start
 
@@ -47,7 +74,7 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-`MiningEnv` (wraps a `SM64MiningGame`): `step(wanted) -> played`, `frame()`, `frames_left()`, `state()`, `is_success()`, `is_over()`, `pads()`, `fork()` (independent copy), `save()` / `restore(&snap)` (rewind), `copy_from(&other)`, `game_mut()` (read memory; never step it yourself), `proof()` (the sealed blob), `proof_raw()` (every played pad), `verify()`. `Task::from_template`, `Task::practice(seed, difficulty)`, `Task::new(Seed, difficulty)`. `run_miner` loops over templates, raises `stop` when a new block arrives or the difficulty decays, verifies the proof locally and submits it. `stop` only matters to long searches: check it now and then and return.
+`MiningEnv` (wraps a `SM64MiningGame`): `step(wanted) -> played`, `frame()`, `frames_left()`, `state()`, `progress()`, `is_success()`, `is_over()`, `pads()`, `fork()` (independent copy), `save()` / `restore(&snap)` (rewind), `copy_from(&other)`, `game_mut()` (read memory; never step it yourself), `end_state()` (the game's save state: the next block's parent state), `proof()` (the sealed blob, with the start byte), `proof_raw()` (every played pad), `verify()`. `Task::from_template(&template, &daemon)` (rebuilds the parent's end state from `get_sm64_cycle`, or powers on), `Task::practice(seed, difficulty)` / `Task::new(Seed, difficulty)` (power-on), `Task::after(parent_state, progress, seed, difficulty)` (the next block of a cycle, offline), `task.allow_over_budget()`. `run_miner` loops over templates, raises `stop` when a new block arrives, checks the proof locally, waits if the run is over the current limit, stamps the block and submits it. `stop` only matters to long searches: check it now and then and return. A bot's `play` sees `env.task().start` and `env.progress()`: it has to make the *next* progress from wherever the game is (after a star the game is in the castle, not at power-on).
 
 Examples (run from the repository root, which holds `baserom.us.z64`; or set `SM64COIN_ROM`):
 
@@ -75,11 +102,11 @@ print(practice(bot, seed=1, difficulty=1)["success"])        # offline
 run_miner(bot, "http://127.0.0.1:16481", "SM64...")          # against a daemon
 ```
 
-`Daemon(url).get_task(address)` returns `(Task, Template)`; `daemon.seal(template, env.proof())` and `daemon.submit(block_hex)` finish a block by hand. The Python SDK reimplements the perturbation (`sm64coin.perturb`, reading the game's memory through `sm64-binds`) and seals the proof itself; the tests check both against the Rust verifier. The `sm64-binds` Python package must be the one with the current game build (reinstall it from `sm64-binds/python` after a game rebuild). It has no byte-level save states, only game copies, so `env.save()` is a clone (game plus perturbation). See `python/examples/`.
+`Daemon(url).get_task(address)` returns `(Task, Template)` (it fetches `get_sm64_cycle` and replays it for a parent start; `start="power-on"` overrides); `Daemon.cycle()`, `Daemon.valid_at(address, frames)`; `seal(template_hex, proof, timestamp)` and `daemon.submit(block_hex)` finish a block by hand. `run_miner` waits for over-budget runs and stamps the block. The Python SDK reimplements the perturbation (`sm64coin.perturb`, reading the game's memory through `sm64-binds`) and seals the proof itself; the tests check both against the Rust verifier. The `sm64-binds` Python package must be the one with the current game build (reinstall it from `sm64-binds/python` after a game rebuild). It has no byte-level save states, only game copies, so `env.save()` is a clone (game plus perturbation). See `python/examples/`.
 
 ## Practice offline
 
-No daemon needed: `practice(bot, seed, difficulty)` (Rust and Python) runs your bot on a local task and, on success, checks the proof with the consensus verifier (Rust: automatically). Try many seeds, and higher difficulties for harder perturbation and a shorter limit.
+No daemon needed: `practice(bot, seed, difficulty)` (Rust and Python) runs your bot on a local task and, on success, checks the proof with the consensus verifier (Rust: automatically). Try many seeds, and higher difficulties for a shorter limit. `Task::after` (Rust) and `Task.practice(..., start_pads=...)` (Python) practise the next block of a cycle from a finished run's end state.
 
 ## Test your proof
 
@@ -87,10 +114,10 @@ No daemon needed: `practice(bot, seed, difficulty)` (Rust and Python) runs your 
 cd pow && cargo build --release -p sm64coin-sdk --examples
 target/release/examples/verify_file <seed_hash_hex> <difficulty> pads.bin          # exit 0 = VALID
 target/release/examples/verify_file <seed_hash_hex> <difficulty> pads.bin --conformance   # only checks every pad is what the perturbation allows (for runs that do not win yet)
-target/release/examples/verify_file <seed_hash_hex> <difficulty> proof.bin --blob   # a sealed proof: varint(frames) + codec + non-poked inputs
+target/release/examples/verify_file <seed_hash_hex> <difficulty> proof.bin --blob   # a sealed power-on proof: varint(frames) + start + codec + non-poked inputs
 ```
 
-`pads.bin` is the pads played on **every** frame, raw 4-bytes-a-frame (`env.proof_raw()` in Python and Rust); `proof.bin` is the sealed blob (`env.proof()`) that goes in a block. The Python test suite checks both: a Python run that replays a real winning run, and random runs full of pokes, are verified with this Rust verifier (`pytest python/tests`). `checkrun` (in `pow/miner`) does the same for the web miner's debug JSON (it takes the pads played).
+`verify_file` checks runs from power-on (the first block of a cycle); a run from a parent state is checked by the SDKs (`env.verify()`, `task.check(blob)`) or by the daemon. `pads.bin` is the pads played on **every** frame, raw 4-bytes-a-frame (`env.proof_raw()` in Python and Rust); `proof.bin` is the sealed blob (`env.proof()`) that goes in a block. The Python test suite checks both: a Python run that replays a real winning run, and random runs full of pokes, are verified with this Rust verifier (`pytest python/tests`). `checkrun` (in `pow/miner`) does the same for the web miner's debug JSON (it takes the pads played).
 
 ## Tips
 
@@ -98,5 +125,6 @@ target/release/examples/verify_file <seed_hash_hex> <difficulty> proof.bin --blo
 - **Clones and save states.** `fork()` copies the game (cheapest for many short rollouts); `save()` / `restore()` rewinds one env. In Rust the lower-level `sm64_binds::SaveState` can be written to disk.
 - **Reading Mario.** `env.state()` gives position, velocity, stars, level, course/act, health. For more (action, objects, floor) read game memory through `env.game_mut()`; the `obrrt-core` crate (`pow/vendor/obrrt-core`) has `read_state` with actions, surfaces and objects.
 - **Replaying a route fails.** A recorded route (e.g. `pow/miner/routes/*.m64`) played blindly is poked within a few frames and diverges (a route is a sequence of `wanted` pads; replay it through `SM64MiningGame::step`). `replay_bot` shows it.
-- **Reference-route approach (built-in miner, `pow/miner/src/beam.rs`, `tracker.rs`).** Take an unperturbed route that reaches a star. It gives a target state per frame. Rolling-horizon: from the committed state, simulate many candidate continuations (route inputs time-shifted and mutated) on `SM64MiningGame` forks through the real perturbation (`sm64pow::mine_step`), score how far along the route each ends up and how close, commit the first few frames of the best, repeat. `beam.rs` keeps a beam of states instead of one line and re-seeds from an archive when stuck. Because candidates run through the exact perturbation, whatever is committed verifies.
-- **A new block restarts everything.** Check `stop()`; a stale run is worthless.
+- **Reference-route approach (the older built-in controller, `pow/miner/src/beam.rs`, `tracker.rs`; power-on first star only; the default controller is now the rolling-horizon GA of `rh.rs`).** Take an unperturbed route that reaches a star. It gives a target state per frame. Rolling-horizon: from the committed state, simulate many candidate continuations (route inputs time-shifted and mutated) on `SM64MiningGame` forks through the real perturbation (`sm64pow::mine_step`), score how far along the route each ends up and how close, commit the first few frames of the best, repeat. `beam.rs` keeps a beam of states instead of one line and re-seeds from an archive when stuck. Because candidates run through the exact perturbation, whatever is committed verifies.
+- **Each block continues the previous one.** After a star the game exits to the castle (and shows the save menu: press A). The built-in miner (`pow/miner/src/rh.rs`) keeps a small route library keyed by which stars the save file already has (today: Bob-omb Battlefield's Chain Chomp star and King Bob-omb star, then it has nothing for further blocks until the power-on stall escape); a bot needs a plan for every progress point it wants to make.
+- **A new block restarts everything.** Check `stop()`; a stale run is worthless (unless it is waiting for the limit to grow and the tip has not moved).
