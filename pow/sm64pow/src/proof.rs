@@ -1,7 +1,8 @@
 //! The proof-of-play blob: what a block carries instead of a nonce.
 //!
 //! To the daemon it is opaque bytes (`block::sm64_proof`); only this module
-//! knows its format: `varint(frames) || codec id || codec body`. The body
+//! knows its format: `varint(frames) || start || codec id || codec body`.
+//! `start` says where the run begins ([`Start`]). The body
 //! holds only the player's inputs on frames the perturbation didn't poke, in
 //! order: poked frames get their random pad from the game itself (regenerated
 //! from the seed when verifying), so they are never recorded. One proof per
@@ -53,17 +54,30 @@ pub fn decode(blob: &[u8], max_frames: usize) -> Result<Vec<GamePad>> {
     c.decode(body, max_frames.min(MAX_FRAMES))
 }
 
-/// A run as a block carries it: how many frames it lasted, and the inputs of
-/// the frames that weren't poked.
+/// Where a block's run begins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Start {
+    /// From the parent block's end state (the normal case).
+    #[default]
+    Parent = 0,
+    /// From power-on: the first block of a cycle (after the genesis block or
+    /// a cycle-ending block), or any block once the chain has stalled.
+    PowerOn = 1,
+}
+
+/// A run as a block carries it: how many frames it lasted, where it started,
+/// and the inputs of the frames that weren't poked.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Proof {
     pub frames: u32,
+    pub start: Start,
     pub inputs: Vec<GamePad>,
 }
 
 pub fn encode_proof_with(c: &dyn Codec, proof: &Proof) -> Vec<u8> {
     let mut out = Vec::new();
     put_varint(&mut out, proof.frames as u64);
+    out.push(proof.start as u8);
     out.extend(encode_with(c, &proof.inputs));
     out
 }
@@ -71,6 +85,18 @@ pub fn encode_proof_with(c: &dyn Codec, proof: &Proof) -> Vec<u8> {
 /// The smallest encoding among all codecs.
 pub fn encode_proof(proof: &Proof) -> Vec<u8> {
     CODECS.iter().map(|c| encode_proof_with(*c, proof)).min_by_key(|b| b.len()).unwrap()
+}
+
+/// Just the start of a proof blob (cheap: no decompression).
+pub fn proof_start(blob: &[u8]) -> Result<Start> {
+    let mut i = 0;
+    get_varint(blob, &mut i)?;
+    match blob.get(i) {
+        Some(0) => Ok(Start::Parent),
+        Some(1) => Ok(Start::PowerOn),
+        Some(x) => bail!("unknown start {x}"),
+        None => bail!("truncated proof"),
+    }
 }
 
 /// Decodes a proof blob; rejects more than `max_frames` frames or more inputs
@@ -81,8 +107,14 @@ pub fn decode_proof(blob: &[u8], max_frames: usize) -> Result<Proof> {
     if frames as usize > max_frames.min(MAX_FRAMES) {
         bail!("proof claims {frames} frames, over {max_frames}");
     }
-    let inputs = decode(&blob[i..], frames as usize)?;
-    Ok(Proof { frames: frames as u32, inputs })
+    let start = match blob.get(i) {
+        Some(0) => Start::Parent,
+        Some(1) => Start::PowerOn,
+        Some(x) => bail!("unknown start {x}"),
+        None => bail!("truncated proof"),
+    };
+    let inputs = decode(&blob[i + 1..], frames as usize)?;
+    Ok(Proof { frames: frames as u32, start, inputs })
 }
 
 pub fn pad_bytes(p: &GamePad) -> [u8; 4] {

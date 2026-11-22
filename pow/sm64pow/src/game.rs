@@ -11,7 +11,7 @@ use crate::{Params, Seed};
 use anyhow::Result;
 use crate::rules::RngConfig;
 use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
-pub use sm64coin_perturb::sm64::{Addrs, HEADLESS, VISUAL, View, regions, regions_len, view};
+pub use sm64coin_perturb::sm64::{Addrs, HEADLESS, Progress, VISUAL, View, progress, progress_regions, progress_regions_len, regions, regions_len, view};
 pub use sm64coin_perturb::{Pad, PokeConfig, Perturber};
 
 pub fn to_pad(p: GamePad) -> Pad {
@@ -44,6 +44,18 @@ pub fn read_view(game: &SM64Game) -> Result<View> {
     Ok(view(&bytes))
 }
 
+/// How far into the game a native (headless) game is: stars, Bowser keys,
+/// the Grand Star (see the rules).
+pub fn read_progress(game: &SM64Game) -> Result<Progress> {
+    let mut bytes = vec![0u8; progress_regions_len(&HEADLESS)];
+    let mut o = 0;
+    for (addr, len) in progress_regions(&HEADLESS) {
+        game.read_memory(addr, &mut bytes[o..o + len as usize])?;
+        o += len as usize;
+    }
+    Ok(progress(&bytes))
+}
+
 /// A game with its perturbation: what a miner plays and a verifier replays.
 ///
 /// It is an [`SM64Game`] (it derefs to one, so every `SM64Game` method works
@@ -72,6 +84,17 @@ impl SM64MiningGame {
     /// A fresh game, powered on, with the block's perturbation armed.
     pub fn new(seed: &Seed, p: &Params) -> Result<SM64MiningGame> {
         Ok(SM64MiningGame { game: crate::generator()?.create_game()?, pert: Perturber::new(&seed.0, &poke_config(&p.rng)) })
+    }
+
+    /// `game` (in whatever state, e.g. the parent block's end state) with a
+    /// block's perturbation armed from here on.
+    pub fn from_game(game: SM64Game, seed: &Seed, p: &Params) -> SM64MiningGame {
+        SM64MiningGame { game, pert: Perturber::new(&seed.0, &poke_config(&p.rng)) }
+    }
+
+    /// This game's progress (see [`read_progress`]).
+    pub fn progress(&self) -> Result<Progress> {
+        read_progress(&self.game)
     }
 
     /// Plays one frame, perturbed: `SM64Game::step_game` with the pokes.

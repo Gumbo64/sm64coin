@@ -13,6 +13,8 @@ pub struct Addrs {
     pub gAreaUpdateCounter: u32,
     pub gCurrLevelNum: u32,
     pub gCurrAreaIndex: u32,
+    pub gSaveBuffer: u32,
+    pub gCurrSaveFileNum: u32,
 }
 
 mod addrs {
@@ -81,6 +83,64 @@ pub fn view(bytes: &[u8]) -> View {
 }
 
 
+// --- Progress: what a block must add (a star, a Bowser key, the Grand Star).
+
+// include/sm64.h, src/game/save_file.h (the same in every wasm32 build).
+const ACT_JUMBO_STAR_CUTSCENE: u32 = 0x0000_1909;
+const SAVE_FILE_SIZE: usize = 0x38; // struct SaveFile
+const SAVE_FILES: usize = 4; // NUM_SAVE_FILES, two copies each
+const SAVE_FLAGS: usize = 8; // SaveFile.flags
+const HAVE_KEY_1: u32 = 1 << 4;
+const HAVE_KEY_2: u32 = 1 << 5;
+const UNLOCKED_BASEMENT_DOOR: u32 = 1 << 6;
+const UNLOCKED_UPSTAIRS_DOOR: u32 = 1 << 7;
+/// Stars needed before the Grand Star counts (the 70-star category).
+pub const GRAND_STAR_MIN_STARS: u32 = 70;
+
+/// The regions [`progress`] reads, in order: Mario, the save files (first
+/// copies), the current file's number.
+pub fn progress_regions(a: &Addrs) -> [(u32, u32); 3] {
+    [
+        (a.gMarioStates, MARIO_SIZE),
+        (a.gSaveBuffer, (SAVE_FILE_SIZE * 2 * SAVE_FILES) as u32),
+        (a.gCurrSaveFileNum, 2),
+    ]
+}
+
+pub fn progress_regions_len(a: &Addrs) -> usize {
+    progress_regions(a).iter().map(|r| r.1 as usize).sum()
+}
+
+/// How far into the game a state is: one point per star, per Bowser key
+/// (held, or already used on its door, so it never goes back down) and for
+/// the Grand Star (with at least [`GRAND_STAR_MIN_STARS`] stars). A block's
+/// run must add exactly one point; the Grand Star ends the cycle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub stars: u32,
+    pub keys: u32,
+    pub grand_star: bool,
+}
+
+impl Progress {
+    pub fn points(&self) -> u32 {
+        self.stars + self.keys + self.grand_star as u32
+    }
+}
+
+/// [`Progress`] from the bytes of [`progress_regions`], concatenated.
+pub fn progress(bytes: &[u8]) -> Progress {
+    let u16_at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]) as u32;
+    let u32_at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+    let stars = u16_at(MARIO_NUM_STARS);
+    let action = u32_at(MARIO_ACTION);
+    let saves = MARIO_SIZE as usize;
+    let file = u16_at(saves + SAVE_FILE_SIZE * 2 * SAVE_FILES) as usize;
+    let flags = if (1..=SAVE_FILES).contains(&file) { u32_at(saves + (file - 1) * 2 * SAVE_FILE_SIZE + SAVE_FLAGS) } else { 0 };
+    let keys = (flags & (HAVE_KEY_1 | UNLOCKED_BASEMENT_DOOR) != 0) as u32 + (flags & (HAVE_KEY_2 | UNLOCKED_UPSTAIRS_DOOR) != 0) as u32;
+    Progress { stars, keys, grand_star: action == ACT_JUMBO_STAR_CUTSCENE && stars >= GRAND_STAR_MIN_STARS }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +152,22 @@ mod tests {
             assert_eq!(view(&vec![1u8; n]).clock, 0x0101);
         }
         assert_ne!(HEADLESS, VISUAL, "the two builds lay memory out differently");
+    }
+
+    #[test]
+    fn progress_counts_stars_keys_and_the_grand_star() {
+        let n = progress_regions_len(&HEADLESS);
+        let mut b = vec![0u8; n];
+        assert_eq!(progress(&b).points(), 0);
+        b[MARIO_NUM_STARS] = 3;
+        let file_num = n - 2;
+        b[file_num] = 2; // file 2 (1-based)
+        let flags = MARIO_SIZE as usize + 2 * SAVE_FILE_SIZE + SAVE_FLAGS; // file 2, first copy
+        b[flags] = UNLOCKED_BASEMENT_DOOR as u8 | HAVE_KEY_2 as u8;
+        assert_eq!(progress(&b), Progress { stars: 3, keys: 2, grand_star: false });
+        b[MARIO_ACTION..MARIO_ACTION + 4].copy_from_slice(&ACT_JUMBO_STAR_CUTSCENE.to_le_bytes());
+        assert!(!progress(&b).grand_star, "needs 70 stars");
+        b[MARIO_NUM_STARS] = 70;
+        assert_eq!(progress(&b).points(), 73);
     }
 }

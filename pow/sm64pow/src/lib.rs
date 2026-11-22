@@ -27,6 +27,7 @@ use sm64_binds::{GamePad, SM64GameGenerator};
 use std::sync::OnceLock;
 
 pub mod ffi;
+pub mod chain;
 pub mod game;
 pub mod proof;
 pub mod rules;
@@ -88,8 +89,8 @@ impl Seed {
     }
 }
 
-/// What a block id commits to: Keccak-256 of the decoded proof (frame count
-/// and inputs), so a proof can be re-encoded with another codec without
+/// What a block id commits to: Keccak-256 of the decoded proof (frame count,
+/// start and inputs), so a proof can be re-encoded with another codec without
 /// changing any block id. An undecodable blob gets a hash of its bytes behind
 /// a marker (such a block fails verification anyway).
 pub fn proof_id(blob: &[u8]) -> [u8; 32] {
@@ -98,8 +99,9 @@ pub fn proof_id(blob: &[u8]) -> [u8; 32] {
     // further keeps a tiny compressed blob from costing megabytes here.
     match proof::decode_proof(blob, rules().max_frames_any() as usize) {
         Ok(pr) => {
-            h.update(b"sm64run1");
+            h.update(b"sm64run2");
             h.update(pr.frames.to_le_bytes());
+            h.update([pr.start as u8]);
             for p in &pr.inputs {
                 h.update(proof::pad_bytes(p));
             }
@@ -186,11 +188,19 @@ impl Recorder {
     }
 }
 
+/// A fresh game for a run with `start`: power-on, or loaded from the
+/// parent's end state `parent` (a native save state).
+fn start_game(start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params) -> Result<SM64MiningGame> {
+    Ok(chain::mining_start(start, parent, seed, p)?.0)
+}
+
 /// The proof for a run given as the pads played on every frame (what the
-/// search-based miners keep): replays it and drops the poked frames.
-pub fn proof_from_played(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<proof::Proof> {
-    let mut game = new_mining_game(seed, p)?;
+/// search-based miners keep), starting at `start` (with the parent's end
+/// state for [`proof::Start::Parent`]): replays it and drops the poked frames.
+pub fn proof_from_played_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<proof::Proof> {
+    let mut game = start_game(start, parent, seed, p)?;
     let mut rec = Recorder::default();
+    rec.proof.start = start;
     for pad in played {
         let got = rec.step(&mut game, *pad)?;
         anyhow::ensure!(got == *pad, "frame {}: recorded {pad:?} but the perturbation played {got:?}", rec.proof.frames - 1);
@@ -198,9 +208,15 @@ pub fn proof_from_played(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<
     Ok(rec.proof)
 }
 
-/// The pads played on every frame of a proof's run (pokes regenerated).
-pub fn played_from_proof(seed: &Seed, p: &Params, pr: &proof::Proof) -> Result<Vec<GamePad>> {
-    let mut game = new_mining_game(seed, p)?;
+/// [`proof_from_played_at`] for a run from power-on.
+pub fn proof_from_played(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<proof::Proof> {
+    proof_from_played_at(proof::Start::PowerOn, None, seed, p, played)
+}
+
+/// The pads played on every frame of a proof's run (pokes regenerated),
+/// given the parent's end state for a [`proof::Start::Parent`] proof.
+pub fn played_from_proof_at(parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, pr: &proof::Proof) -> Result<Vec<GamePad>> {
+    let mut game = start_game(pr.start, parent, seed, p)?;
     let mut out = Vec::with_capacity(pr.frames as usize);
     let mut next = 0;
     for f in 0..pr.frames as usize {
@@ -215,9 +231,19 @@ pub fn played_from_proof(seed: &Seed, p: &Params, pr: &proof::Proof) -> Result<V
     Ok(out)
 }
 
+/// [`played_from_proof_at`] for a proof from power-on.
+pub fn played_from_proof(seed: &Seed, p: &Params, pr: &proof::Proof) -> Result<Vec<GamePad>> {
+    played_from_proof_at(None, seed, p, pr)
+}
+
 /// The proof blob for a run given as the pads played on every frame.
+pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Vec<u8>> {
+    Ok(proof::encode_proof(&proof_from_played_at(start, parent, seed, p, played)?))
+}
+
+/// [`seal_proof_at`] for a run from power-on.
 pub fn seal_proof(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Vec<u8>> {
-    Ok(proof::encode_proof(&proof_from_played(seed, p, played)?))
+    seal_proof_at(proof::Start::PowerOn, None, seed, p, played)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -227,64 +253,35 @@ pub enum Verdict {
     Invalid(String),
 }
 
-/// Replays the proof `blob` for a block with `seed` at (effective)
-/// `difficulty`.
-///
-/// Valid when: it decodes, is no longer than the difficulty's time limit,
-/// every pad is the one the perturbation allows on that frame (poked frames
-/// must hold the random pad), and the success condition first holds on
-/// exactly the last frame (so no trailing input can be appended).
-pub fn verify(seed: &Seed, difficulty: u64, blob: &[u8]) -> Result<Verdict> {
-    let r = rules();
-    let p = r.params(difficulty);
-    let pr = match proof::decode_proof(blob, p.max_frames as usize) {
-        Ok(x) => x,
-        Err(e) => return Ok(Verdict::Invalid(format!("bad proof: {e}"))),
-    };
-    verify_proof(seed, &p, &pr)
+impl From<chain::BlockVerdict> for Verdict {
+    fn from(v: chain::BlockVerdict) -> Verdict {
+        match v {
+            chain::BlockVerdict::Valid { frames, .. } => Verdict::Valid { frames },
+            chain::BlockVerdict::Invalid(w) => Verdict::Invalid(w),
+            chain::BlockVerdict::NeedParent => Verdict::Invalid("needs the parent's end state".into()),
+        }
+    }
 }
 
-/// Replays a proof: each frame the next input goes through the perturbation;
-/// on a poked frame the game plays its random pad and the input isn't used.
-/// Valid when the success condition first holds on the last frame, every
-/// input was used, and the run is within the time limit.
+/// Verifies a run from power-on standalone (as the first block of a cycle):
+/// within the difficulty's time limit, every poked frame plays its random
+/// pad, and the success condition first holds on exactly the last frame. For
+/// blocks in a chain (which start from their parent's end state) see
+/// [`chain::verify_block`].
+pub fn verify(seed: &Seed, difficulty: u64, blob: &[u8]) -> Result<Verdict> {
+    Ok(chain::verify_block(&[0xff; 32], chain::Parent::Genesis, seed, difficulty, blob)?.into())
+}
+
+/// [`verify`] for a decoded proof.
 pub fn verify_proof(seed: &Seed, p: &Params, pr: &proof::Proof) -> Result<Verdict> {
-    let r = rules();
-    if pr.frames == 0 {
-        return Ok(Verdict::Invalid("empty proof".into()));
-    }
     if pr.frames > p.max_frames {
         return Ok(Verdict::Invalid(format!("{} frames exceeds the limit of {}", pr.frames, p.max_frames)));
     }
-    if pr.inputs.len() > pr.frames as usize {
-        return Ok(Verdict::Invalid("more inputs than frames".into()));
-    }
-    let mut game = new_mining_game(seed, p)?;
-    let mut next = 0usize;
-    for f in 0..pr.frames as usize {
-        let wanted = pr.inputs.get(next).copied().unwrap_or_default();
-        let (_, poked) = play_frame(&mut game, wanted)?;
-        if !poked {
-            if next >= pr.inputs.len() {
-                return Ok(Verdict::Invalid(format!("frame {f} needs an input but the proof has run out")));
-            }
-            next += 1;
-        }
-        let st = game.state()?;
-        if r.is_success(&game.game, &st) {
-            if f + 1 != pr.frames as usize {
-                return Ok(Verdict::Invalid(format!("success at frame {} but the proof runs to {}", f + 1, pr.frames)));
-            }
-            if next != pr.inputs.len() {
-                return Ok(Verdict::Invalid(format!("{} inputs left over", pr.inputs.len() - next)));
-            }
-            return Ok(Verdict::Valid { frames: pr.frames });
-        }
-    }
-    Ok(Verdict::Invalid("success condition never met".into()))
+    let blob = proof::encode_proof_with(&proof::Raw, pr);
+    Ok(chain::rebuild_block(&[0xff; 32], chain::Parent::Genesis, seed, &blob)?.into())
 }
 
-/// Verifies a run given as the pads played on every frame.
+/// Verifies a run from power-on given as the pads played on every frame.
 pub fn verify_pads(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Verdict> {
     match proof_from_played(seed, p, played) {
         Ok(pr) => verify_proof(seed, p, &pr),
@@ -323,7 +320,7 @@ mod tests {
 
     #[test]
     fn proof_id_ignores_codec() {
-        let pr = proof::Proof { frames: 50, inputs: vec![GamePad::new(0, 0, 0); 40] };
+        let pr = proof::Proof { frames: 50, start: proof::Start::Parent, inputs: vec![GamePad::new(0, 0, 0); 40] };
         let a = proof::encode_proof_with(&proof::Raw, &pr);
         let b = proof::encode_proof_with(&proof::RunLength, &pr);
         let c = proof::encode_proof_with(&proof::Xz, &pr);
@@ -333,5 +330,7 @@ mod tests {
         assert_ne!(proof_id(&a), proof_id(&[0, 1, 2]));
         let other = proof::Proof { frames: 51, ..pr.clone() };
         assert_ne!(proof_id(&a), proof_id(&proof::encode_proof(&other)), "frame count is committed");
+        let power_on = proof::Proof { start: proof::Start::PowerOn, ..pr.clone() };
+        assert_ne!(proof_id(&a), proof_id(&proof::encode_proof(&power_on)), "start is committed");
     }
 }

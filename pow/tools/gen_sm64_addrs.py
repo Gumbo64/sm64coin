@@ -4,7 +4,7 @@ each game build's memory, read from the builds' linker maps.
 
     python3 pow/tools/gen_sm64_addrs.py <sm64-port dir>
 
-Rerun after rebuilding the game (sm64-binds branch sm64coin, `make sm64-build`).
+Rerun after rebuilding the game (sm64-binds `make sm64-build`).
 The headless build is what native nodes and miners run; the visual (rendering)
 build is what the browser runs. Struct offsets are the same in both.
 """
@@ -12,7 +12,7 @@ import os, re, sys
 
 PORT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "..", "..", "sm64-binds", "sm64-port")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "perturb", "src", "sm64_addrs.rs")
-SYMS = ["gMarioStates", "gLakituState", "gGlobalTimer", "gRandomSeed16", "gAreaUpdateCounter", "gCurrLevelNum", "gCurrAreaIndex"]
+SYMS = ["gMarioStates", "gLakituState", "gGlobalTimer", "gRandomSeed16", "gAreaUpdateCounter", "gCurrLevelNum", "gCurrAreaIndex", "gSaveBuffer", "gCurrSaveFileNum"]
 BUILDS = {"HEADLESS": "us_web_headless", "VISUAL": "us_web"}
 
 def addrs(build):

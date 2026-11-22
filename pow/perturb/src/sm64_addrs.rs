@@ -8,6 +8,8 @@ pub const HEADLESS: Addrs = Addrs {
     gAreaUpdateCounter: 0xbb0bc8,
     gCurrLevelNum: 0x7ba0a2,
     gCurrAreaIndex: 0xb09756,
+    gSaveBuffer: 0xbf7b70,
+    gCurrSaveFileNum: 0x7ba0a0,
 };
 
 pub const VISUAL: Addrs = Addrs {
@@ -18,4 +20,6 @@ pub const VISUAL: Addrs = Addrs {
     gAreaUpdateCounter: 0xb44c98,
     gCurrLevelNum: 0x7caa12,
     gCurrAreaIndex: 0xb1d826,
+    gSaveBuffer: 0xb7fc30,
+    gCurrSaveFileNum: 0x7caa10,
 };

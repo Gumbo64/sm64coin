@@ -9,7 +9,7 @@
 //!
 //! Changing the rules is a hard fork: every node must run the same ones.
 
-use sm64_binds::{GameState, SM64Game};
+pub use sm64coin_perturb::sm64::Progress;
 
 /// The perturbation's tuning (was sm64-binds' `RngConfig`, which the stock
 /// game build no longer carries).
@@ -58,40 +58,46 @@ pub struct Params {
 }
 
 pub trait Rules: Sync {
-    /// Shown by the RPC and the explorer.
     fn name(&self) -> &'static str;
-    /// One line for humans: what you have to do.
+    /// One line for humans.
     fn goal(&self) -> &'static str;
-
-    /// What `difficulty` asks of the player.
+    /// The task at (effective) `difficulty`: the time limit and the pokes.
     fn params(&self, difficulty: u64) -> Params;
-
-    /// The longest any task can be (bounds proof decoding everywhere).
+    /// The most frames any difficulty allows (bounds decoding).
     fn max_frames_any(&self) -> u32 {
         self.params(1).max_frames
     }
-
-    /// Checked after every frame, in order, on a fresh game. The first frame
-    /// where it holds must be the solution's last.
-    fn is_success(&self, game: &SM64Game, state: &GameState) -> bool;
-
-    /// Wanted time between blocks, in seconds.
+    /// Whether `now` (the state after a frame) completes a block that started
+    /// at `start`: the success condition. It must first hold on a run's last
+    /// frame.
+    fn is_success(&self, start: &Progress, now: &Progress) -> bool;
+    /// Whether a block ending at `end` ends the cycle: the next block starts
+    /// from power-on.
+    fn ends_cycle(&self, end: &Progress) -> bool;
+    /// After this many seconds without a block, a block may (instead of
+    /// continuing from its parent's end state) start from power-on: the
+    /// escape from a state nobody can make progress from.
+    fn stall_seconds(&self) -> u64;
+    /// Seconds between blocks the retarget aims for.
     fn target_seconds(&self) -> u64;
-
-    /// The difficulty for the next block from the last blocks' timestamps and
-    /// cumulative difficulties (oldest first, at most
-    /// `DIFFICULTY_BLOCKS_COUNT` of them, as gathered by the daemon).
+    /// The next block's difficulty from the recent blocks' timestamps and
+    /// cumulative difficulties (oldest first).
     fn next_difficulty(&self, timestamps: &[u64], cumulative: &[u128]) -> u64;
-
-    /// The difficulty a block actually has to meet, from the retargeted one
-    /// and the seconds between its timestamp and its parent's. Keeps the
-    /// chain alive if nobody can finish the task.
+    /// The difficulty a block actually needs, given how long after its parent
+    /// it is timestamped (`retarget` is [`Rules::next_difficulty`]): what
+    /// counts as the block's work (chain weight).
     fn effective_difficulty(&self, difficulty: u64, elapsed_seconds: u64) -> u64;
+    /// The time limit of a block at retarget `difficulty` timestamped
+    /// `elapsed_seconds` after its parent. Defaults to the limit at the
+    /// effective difficulty; rules may make it continuous in time.
+    fn max_frames(&self, difficulty: u64, elapsed_seconds: u64) -> u32 {
+        self.params(self.effective_difficulty(difficulty, elapsed_seconds)).max_frames
+    }
 }
 
 /// The rules this build runs.
 pub fn active() -> &'static dyn Rules {
-    &ANY_STAR
+    &STAR_CYCLE
 }
 
 /// About `8 * log2(d)` in integer arithmetic: 8 x the exponent plus the next
@@ -138,49 +144,53 @@ pub fn monero_retarget(timestamps: &[u64], cumulative: &[u128], target: u64, win
 /// | 16 | 5:13 | 18 |
 /// | 64 | 3:46 | 22 |
 /// | 256 | 2:43 | 26 |
-pub struct AnyStar {
+/// The 70-star cycle: each block is the game's next bit of progress (a
+/// star, a Bowser key, or the Grand Star after 70 stars), played on from the
+/// previous block's end state; the Grand Star ends the cycle and the next
+/// block starts from power-on. Difficulty is only the time limit; the pokes
+/// are the same at every difficulty, so a block's run never changes meaning
+/// while it is mined (decay only gives it more time).
+pub struct StarCycle {
+    /// Time limit at difficulty 1 (frames, 30 per second).
     pub base_frames: u32,
+    /// The shortest time limit any difficulty sets.
     pub min_frames: u32,
-    /// Per eighth of a doubling, the limit is multiplied by this / 100.
+    /// Each difficulty level (1/8 of a doubling) multiplies the limit by this / 100.
     pub shrink_percent: u64,
-    pub base_random: u32,
-    pub max_random: u32,
+    /// Pokes: bursts per window, window length (game-clock ticks), burst length.
+    pub random: u32,
     pub window: u32,
     pub burst: u32,
     pub target: u64,
-    /// Blocks in the retarget window and outliers cut from each end.
-    pub reseed_frames: u32,
+    /// Retarget window and outliers cut at each end (Monero's algorithm).
     pub retarget_window: usize,
     pub retarget_cut: usize,
-    /// No decay until this many targets have passed since the parent; then
-    /// the difficulty halves every further target.
+    /// Decay: none for this many targets after the parent, then halving per target.
     pub decay_grace_targets: u64,
+    pub stall: u64,
 }
 
-pub const ANY_STAR: AnyStar = AnyStar {
+pub const STAR_CYCLE: StarCycle = StarCycle {
     base_frames: 10 * 60 * 30,
-    min_frames: 60 * 30,
+    min_frames: 20 * 30,
     shrink_percent: 98,
-    base_random: 5,
-    max_random: 40,
+    random: 5,
     window: 100,
     burst: 2,
     target: 300,
-    reseed_frames: 0, // one 256-bit seed per run (the game's generator holds 256 bits)
     retarget_window: 60,
     retarget_cut: 6,
     decay_grace_targets: 2,
+    stall: 3600,
 };
 
-impl Rules for AnyStar {
+impl Rules for StarCycle {
     fn name(&self) -> &'static str {
-        "any-star"
+        "star-cycle-70"
     }
-
     fn goal(&self) -> &'static str {
-        "From power-on, collect any star while the controller is randomly poked."
+        "Make the game's next progress (a star, a Bowser key, or the Grand Star after 70 stars) from the previous block's end state, while the controller is randomly poked. The Grand Star ends the cycle; the next block starts from power-on."
     }
-
     fn params(&self, difficulty: u64) -> Params {
         let l8 = level8(difficulty);
         let mut frames = self.base_frames as u64;
@@ -193,30 +203,25 @@ impl Rules for AnyStar {
         Params {
             level8: l8,
             max_frames: (frames as u32).max(self.min_frames),
-            rng: RngConfig::new(
-                self.window,
-                (self.base_random + l8 / 8).min(self.max_random),
-                self.burst,
-                0.5,
-                0.5,
-                0.2,
-            ),
-            reseed_frames: self.reseed_frames,
+            rng: RngConfig::new(self.window, self.random, self.burst, 0.5, 0.5, 0.2),
+            reseed_frames: 0,
         }
     }
-
-    fn is_success(&self, _game: &SM64Game, state: &GameState) -> bool {
-        state.num_stars > 0
+    fn is_success(&self, start: &Progress, now: &Progress) -> bool {
+        now.points() > start.points()
     }
-
+    fn ends_cycle(&self, end: &Progress) -> bool {
+        end.grand_star
+    }
+    fn stall_seconds(&self) -> u64 {
+        self.stall
+    }
     fn target_seconds(&self) -> u64 {
         self.target
     }
-
     fn next_difficulty(&self, timestamps: &[u64], cumulative: &[u128]) -> u64 {
         monero_retarget(timestamps, cumulative, self.target, self.retarget_window, self.retarget_cut)
     }
-
     fn effective_difficulty(&self, difficulty: u64, elapsed: u64) -> u64 {
         let grace = self.decay_grace_targets * self.target;
         if elapsed <= grace {
@@ -225,35 +230,27 @@ impl Rules for AnyStar {
         let halvings = (elapsed - grace) / self.target;
         if halvings >= 64 { 1 } else { (difficulty >> halvings).max(1) }
     }
-}
-
-/// An example of another success condition: N stars instead of one (say,
-/// for a longer task). Use it by returning it from [`active`].
-pub struct Stars(pub i32);
-
-impl Rules for Stars {
-    fn name(&self) -> &'static str {
-        "n-stars"
-    }
-    fn goal(&self) -> &'static str {
-        "From power-on, collect N stars while the controller is randomly poked."
-    }
-    fn params(&self, difficulty: u64) -> Params {
-        let mut p = ANY_STAR.params(difficulty);
-        p.max_frames = p.max_frames.saturating_mul(self.0.max(1) as u32);
-        p
-    }
-    fn is_success(&self, _game: &SM64Game, state: &GameState) -> bool {
-        state.num_stars >= self.0
-    }
-    fn target_seconds(&self) -> u64 {
-        ANY_STAR.target_seconds() * self.0.max(1) as u64
-    }
-    fn next_difficulty(&self, t: &[u64], c: &[u128]) -> u64 {
-        monero_retarget(t, c, self.target_seconds(), 60, 6)
-    }
-    fn effective_difficulty(&self, d: u64, e: u64) -> u64 {
-        ANY_STAR.effective_difficulty(d, e / self.0.max(1) as u64)
+    /// Continuous in time: after the grace period the limit grows every
+    /// second (one difficulty halving, 8 levels, per target), so runs waiting
+    /// for the limit become valid one by one, the shortest first. Integer
+    /// arithmetic: every node computes the same limit.
+    fn max_frames(&self, difficulty: u64, elapsed: u64) -> u32 {
+        let t = self.target; // level units per level: one level is t/8 seconds of decay
+        let grace = self.decay_grace_targets * t;
+        let decay = elapsed.saturating_sub(grace).saturating_mul(8); // in 1/t levels
+        let level = (level8(difficulty) as u64 * t).saturating_sub(decay); // in 1/t levels
+        let (whole, frac) = (level / t, level % t);
+        let mut frames = self.base_frames as u64;
+        for _ in 0..whole {
+            frames = frames * self.shrink_percent / 100;
+            if frames <= self.min_frames as u64 {
+                return self.min_frames;
+            }
+        }
+        // The fraction of one more level, linearly.
+        let step = 100 - self.shrink_percent; // percent per level
+        frames = frames * (100 * t - step * frac) / (100 * t);
+        (frames as u32).max(self.min_frames)
     }
 }
 
@@ -276,18 +273,18 @@ mod tests {
     }
 
     #[test]
-    fn params_get_harder_monotonically() {
-        let r = &ANY_STAR;
+    fn only_the_time_limit_gets_harder() {
+        let r = &STAR_CYCLE;
         let mut last = r.params(1);
         assert_eq!(last.max_frames, 18000);
         assert_eq!(last.rng.random_amount, 5);
         for d in 2..5000u64 {
             let p = r.params(d);
             assert!(p.max_frames <= last.max_frames);
-            assert!(p.rng.random_amount >= last.rng.random_amount);
+            assert_eq!(p.rng, last.rng, "pokes don't depend on difficulty");
             last = p;
         }
-        assert_eq!(r.params(u64::MAX).max_frames, 1800);
+        assert_eq!(r.params(u64::MAX).max_frames, 600);
     }
 
     #[test]
@@ -301,12 +298,44 @@ mod tests {
 
     #[test]
     fn decay_halves_after_grace() {
-        let r = &ANY_STAR;
+        let r = &STAR_CYCLE;
         assert_eq!(r.effective_difficulty(64, 0), 64);
         assert_eq!(r.effective_difficulty(64, 600), 64);
         assert_eq!(r.effective_difficulty(64, 900), 32);
         assert_eq!(r.effective_difficulty(64, 1200), 16);
         assert_eq!(r.effective_difficulty(64, 1_000_000), 1);
         assert_eq!(r.effective_difficulty(0, 0), 1);
+    }
+
+    #[test]
+    fn time_limit_grows_every_second_after_the_grace() {
+        let r = &STAR_CYCLE;
+        let d = 1 << 10; // level 80
+        assert_eq!(r.max_frames(d, 0), r.params(d).max_frames, "no decay: the plain limit");
+        assert_eq!(r.max_frames(d, 600), r.max_frames(d, 0), "grace");
+        let mut last = r.max_frames(d, 600);
+        let mut grew = 0;
+        for s in 601..600 + 300 * 10 {
+            let m = r.max_frames(d, s);
+            assert!(m >= last, "never shrinks ({s} s)");
+            grew += (m > last) as u32;
+            last = m;
+        }
+        assert!(grew > 2000, "grows (almost) every second: {grew}");
+        // One target of decay is one halving of the difficulty.
+        assert_eq!(r.max_frames(d, 900), r.params(d / 2).max_frames);
+        assert_eq!(r.max_frames(d, 10_000_000), r.params(1).max_frames);
+        assert_eq!(r.max_frames(u64::MAX, 0), r.min_frames);
+    }
+
+    #[test]
+    fn success_is_one_more_point_and_the_grand_star_ends_the_cycle() {
+        let r = &STAR_CYCLE;
+        let s = Progress { stars: 12, keys: 1, grand_star: false };
+        assert!(!r.is_success(&s, &s));
+        assert!(r.is_success(&s, &Progress { stars: 13, ..s }));
+        assert!(r.is_success(&s, &Progress { keys: 2, ..s }));
+        assert!(!r.ends_cycle(&s));
+        assert!(r.ends_cycle(&Progress { stars: 70, keys: 2, grand_star: true }));
     }
 }

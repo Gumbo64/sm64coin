@@ -1,7 +1,7 @@
 //! C ABI used by the daemon (monero fork). See `sm64pow.h`.
 
 use crate::proof::Codec;
-use crate::{Verdict, params, proof_id, rules, seed_from_hash, verify};
+use crate::{params, proof_id, rules, seed_from_hash};
 use std::ffi::{CStr, c_char};
 use std::cell::RefCell;
 
@@ -50,23 +50,52 @@ pub extern "C" fn sm64pow_init(rom_path: *const c_char) -> i32 {
 /// Verifies a proof for the block whose hashing blob hashes to `hash32`
 /// (32 bytes, the perturbation's seed). Returns the number of frames (> 0) when valid, 0 when
 /// invalid, -1 on an internal error. The reason is in `sm64pow_last_error`.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_verify(hash32: *const u8, difficulty: u64, solution: *const u8, len: usize) -> i64 {
-    if hash32.is_null() {
-        set_error("null seed hash".into());
-        return -1;
+unsafe fn id_arg(p: *const u8) -> Option<[u8; 32]> {
+    if p.is_null() { None } else { Some(unsafe { *(p as *const [u8; 32]) }) }
+}
+
+/// The block's parent: `parent32` null means the genesis block.
+unsafe fn parent_arg(parent32: *const u8, gap_seconds: u64) -> crate::chain::Parent {
+    match unsafe { id_arg(parent32) } {
+        None => crate::chain::Parent::Genesis,
+        Some(id) => crate::chain::Parent::Block { id, gap_seconds },
     }
-    let seed = crate::Seed(unsafe { *(hash32 as *const [u8; 32]) });
-    let bytes: &[u8] = if solution.is_null() || len == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(solution, len) }
+}
+
+/// Verifies block `id32` (seed `hash32`, proof) on top of `parent32` (null:
+/// the genesis block) timestamped `gap_seconds` after it, at effective
+/// `difficulty`; 0 difficulty replays an already-accepted block without the
+/// time limit (rebuilding its end state). `difficulty` is the retarget
+/// difficulty: the time limit grows with `gap_seconds`. Caches the end state when valid.
+/// Returns frames (>0) if valid, 0 invalid, -2 when the parent's end state
+/// isn't cached (replay the parent first), -1 internal error; reason in
+/// sm64pow_last_error.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize) -> i64 {
+    let (Some(id), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(hash32) }) else {
+        set_error("null block id or seed hash".into());
+        return -1;
     };
-    match std::panic::catch_unwind(|| verify(&seed, difficulty, bytes)) {
-        Ok(Ok(Verdict::Valid { frames })) => frames as i64,
-        Ok(Ok(Verdict::Invalid(why))) => {
+    let parent = unsafe { parent_arg(parent32, gap_seconds) };
+    let bytes = blob_arg(proof, len);
+    let seed = crate::Seed(seed);
+    let res = std::panic::catch_unwind(|| {
+        if difficulty == 0 {
+            crate::chain::rebuild_block(&id, parent, &seed, bytes)
+        } else {
+            crate::chain::verify_block(&id, parent, &seed, difficulty, bytes)
+        }
+    });
+    use crate::chain::BlockVerdict;
+    match res {
+        Ok(Ok(BlockVerdict::Valid { frames, .. })) => frames as i64,
+        Ok(Ok(BlockVerdict::Invalid(why))) => {
             set_error(why);
             0
+        }
+        Ok(Ok(BlockVerdict::NeedParent)) => {
+            set_error("the parent's end state isn't cached".into());
+            -2
         }
         Ok(Err(e)) => {
             set_error(e.to_string());
@@ -77,6 +106,49 @@ pub extern "C" fn sm64pow_verify(hash32: *const u8, difficulty: u64, solution: *
             -1
         }
     }
+}
+
+/// Whether block `id32`'s end state is cached (1) or not (0).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
+    match unsafe { id_arg(id32) } {
+        Some(id) => crate::chain::cached(&id).is_some() as i32,
+        None => 0,
+    }
+}
+
+/// A cached block's end progress: stars, keys, whether it has the Grand
+/// Star and whether it ends the cycle. 1 if cached, 0 if not.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_block_progress(id32: *const u8, stars: *mut u32, keys: *mut u32, grand_star: *mut i32, ends_cycle: *mut i32) -> i32 {
+    let Some(s) = (unsafe { id_arg(id32) }).and_then(|id| crate::chain::cached(&id)) else { return 0 };
+    unsafe {
+        if !stars.is_null() { *stars = s.progress.stars; }
+        if !keys.is_null() { *keys = s.progress.keys; }
+        if !grand_star.is_null() { *grand_star = s.progress.grand_star as i32; }
+        if !ends_cycle.is_null() { *ends_cycle = s.ends_cycle as i32; }
+    }
+    1
+}
+
+/// A proof's start: 0 from the parent's end state, 1 from power-on, -1 if it
+/// doesn't decode.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_proof_start(proof: *const u8, len: usize) -> i32 {
+    crate::proof::proof_start(blob_arg(proof, len)).map_or(-1, |s| s as i32)
+}
+
+/// The time limit (frames) of a block at retarget `difficulty` timestamped
+/// `elapsed_seconds` after its parent (continuous in time).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_max_frames(difficulty: u64, elapsed_seconds: u64) -> u32 {
+    rules().max_frames(difficulty, elapsed_seconds)
+}
+
+/// Seconds without a block after which a block may start from power-on.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_stall_seconds() -> u64 {
+    rules().stall_seconds()
 }
 
 /// The task at `difficulty`: frame limit, random frames per window, window
@@ -221,24 +293,29 @@ pub extern "C" fn sm64pow_proof_frames(blob: *const u8, len: usize) -> u32 {
     crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize).map_or(0, |pr| pr.frames)
 }
 
-/// The pads played on every frame of a proof's run, pokes regenerated (for
-/// .m64 export). Replays the run. Same return convention as
-/// `sm64pow_decode_raw`.
+/// The pads block `id32`'s run played on every frame, pokes regenerated
+/// (for replays and .m64 export); parent arguments as for
+/// sm64pow_verify_block. Same return convention as `sm64pow_decode_raw`,
+/// plus SIZE_MAX-1 when the parent's end state isn't cached.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_played_raw(hash32: *const u8, difficulty: u64, blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
-    if hash32.is_null() {
-        set_error("null seed hash".into());
+pub extern "C" fn sm64pow_played_block(id32: *const u8, parent32: *const u8, gap_seconds: u64, hash32: *const u8, proof: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
+    let (Some(id), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(hash32) }) else {
+        set_error("null block id or seed hash".into());
         return usize::MAX;
-    }
-    let seed = crate::Seed(unsafe { *(hash32 as *const [u8; 32]) });
-    let bytes = blob_arg(blob, len);
-    let res = std::panic::catch_unwind(|| -> anyhow::Result<Vec<u8>> {
-        let p = params(difficulty);
-        let pr = crate::proof::decode_proof(bytes, p.max_frames as usize)?;
-        Ok(crate::proof::Raw.encode(&crate::played_from_proof(&seed, &p, &pr)?))
-    });
+    };
+    let parent = unsafe { parent_arg(parent32, gap_seconds) };
+    let bytes = blob_arg(proof, len);
+    let res = std::panic::catch_unwind(|| crate::chain::played_block(&id, parent, &crate::Seed(seed), bytes));
     match res {
-        Ok(Ok(b)) => copy_out(&b, out, cap),
+        Ok(Ok(Ok(pads))) => copy_out(&crate::proof::Raw.encode(&pads), out, cap),
+        Ok(Ok(Err(crate::chain::BlockVerdict::NeedParent))) => {
+            set_error("the parent's end state isn't cached".into());
+            usize::MAX - 1
+        }
+        Ok(Ok(Err(v))) => {
+            set_error(format!("{v:?}"));
+            usize::MAX
+        }
         Ok(Err(e)) => {
             set_error(e.to_string());
             usize::MAX
