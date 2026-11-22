@@ -2319,6 +2319,7 @@ dependencies = [
  "clap",
  "hex",
  "obrrt-core",
+ "obrrt-objectives",
  "obrrt-search",
  "obrrt-spec",
  "rand",

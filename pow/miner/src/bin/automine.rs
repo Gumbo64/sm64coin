@@ -11,7 +11,7 @@
 
 use anyhow::{Result, bail};
 use clap::Parser;
-use sm64coin_miner::{beam, rh, routes::Library, rpc};
+use sm64coin_miner::{beam, rh, routes::Library, rpc, rrt};
 use sm64pow::proof::Start;
 use sm64pow::sm64_binds::SaveState;
 use std::sync::Arc;
@@ -39,8 +39,20 @@ struct Args {
     /// the BoB star routes, rh.rs; the only one that continues from a parent's
     /// end state) or `beam` (the old reference-following beam search; first
     /// star from power-on only).
-    #[arg(long, default_value = "rh")]
+    #[arg(long, default_value = "rrt")]
     controller: String,
+    /// rrt: emulated frames (all threads) a castle tree / a course tree may use, wall-clock cap of one tree (s),
+    /// courses tried from the castle per block, scratch directory, ROM path for the tree processes.
+    #[arg(long, default_value_t = 16_000_000)]
+    rrt_hub_frames: u64,
+    #[arg(long, default_value_t = 60_000_000)]
+    rrt_course_frames: u64,
+    #[arg(long, default_value_t = 900.0)]
+    rrt_step_seconds: f64,
+    #[arg(long, default_value_t = 3)]
+    rrt_targets: usize,
+    #[arg(long, default_value = "run/rrt-scratch")]
+    rrt_scratch: String,
     /// rh: population, horizon, frames committed per step, threads.
     #[arg(long, default_value_t = 32)]
     rh_pop: usize,
@@ -142,6 +154,11 @@ fn main() -> Result<()> {
         if lib.routes.is_empty() {
             bail!("no usable reference route");
         }
+    } else if a.controller == "rrt" {
+        println!("rrt coverage:");
+        for (point, how) in rrt::coverage() {
+            println!("  {point}  <-  {how}");
+        }
     } else {
         println!("rh routes:");
         for (point, route) in rh::coverage() {
@@ -236,9 +253,11 @@ fn main() -> Result<()> {
 
         let mut result = None;
         let mut no_route = None;
-        if a.controller == "rh" {
+        if a.controller == "rrt" || a.controller == "rh" {
             let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt, frame_cap: a.rh_frames, max_retries: if t.sm64_start == "either" { 3 } else { 40 }, ..Default::default() };
-            let mut r = rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &stop, |m| println!("  {m}"))?;
+            let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, max_targets: a.rrt_targets, seed: attempt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
+            let use_rrt = a.controller == "rrt";
+            let mut r = if use_rrt { rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &stop, |m| println!("  {m}"))? } else { rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &stop, |m| println!("  {m}"))? };
             let fallback = match &r {
                 rh::Attempt::NoRoute(why) => Some(format!("no route from the parent's end state: {why}")),
                 rh::Attempt::Gave(why) if t.sm64_start == "either" && !stop.load(Ordering::Relaxed) => Some(format!("the parent's end state didn't give progress quickly ({why})")),
@@ -250,7 +269,7 @@ fn main() -> Result<()> {
                     println!("  taking the power-on start");
                     start = Start::PowerOn;
                     parent_state = None;
-                    r = rh::mine(start, None, &seed, &params, &o, &stop, |m| println!("  {m}"))?;
+                    r = if use_rrt { rrt::mine(start, None, &seed, &params, &ro, &stop, |m| println!("  {m}"))? } else { rh::mine(start, None, &seed, &params, &o, &stop, |m| println!("  {m}"))? };
                 }
             }
             match r {

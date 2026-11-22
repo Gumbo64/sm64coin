@@ -4,3 +4,4 @@ pub mod rpc;
 pub mod beam;
 pub mod routes;
 pub mod rh;
+pub mod rrt;

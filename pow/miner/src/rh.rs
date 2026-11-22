@@ -147,7 +147,7 @@ pub use crate::tracker::Mined;
 /// obrrt2's fixed boot: A on alternate frames, Start at 150-160 and 200-300,
 /// 1680 frames; then idle until Mario is controllable and has stood still for
 /// 10 frames. Played through the perturbation like everything else.
-fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
+pub fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
     for i in 0..1680 {
         let mut b = 0;
         if (150..160).contains(&i) || (200..300).contains(&i) {
@@ -177,7 +177,7 @@ fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize)
 /// save menu ("save and continue"). Press A on alternate frames until Mario is
 /// controllable (A confirms the menu's first option), then idle until he has
 /// stood still for 10 frames, and read the state with its objects.
-fn settle(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
+pub fn settle(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
     let mut st = read_state(game, played.len() as u32, false);
     let mut still = 0;
     while still < 10 || !st.controllable() {
