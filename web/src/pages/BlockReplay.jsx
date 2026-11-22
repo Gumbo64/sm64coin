@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { Viewer } from 'sm64-replay-ui';
 import { CyclePlayer } from '../lib/cyclePlayer.js';
 import { eventName } from '../lib/CycleTimeline.jsx';
@@ -16,9 +16,9 @@ const COLORS = ['#f7c948', '#60a5fa', '#4ade80', '#f472b6', '#fb923c', '#a78bfa'
 function activeRun(cycle) {
   let k = 0;
   cycle.blocks.forEach((b, i) => { if (b.power_on) k = i; });
-  if (k === 0) return cycle;
+  if (k === 0) return { ...cycle, skipped: 0 };
   const skipped = cycle.blocks.slice(0, k).reduce((s, x) => s + x.frames, 0);
-  return { ...cycle, blocks: cycle.blocks.slice(k), played_pads: cycle.played_pads.slice(skipped * 8) };
+  return { ...cycle, skipped, blocks: cycle.blocks.slice(k), played_pads: cycle.played_pads.slice(skipped * 8) };
 }
 
 /**
@@ -29,6 +29,8 @@ function activeRun(cycle) {
  */
 export default function BlockReplay({ block, cycle, panel }) {
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  const player = useRef(null);
   const [won, setWon] = useState(null);
   const [err, setErr] = useState(null);
   useEffect(() => {
@@ -51,8 +53,14 @@ export default function BlockReplay({ block, cycle, panel }) {
     });
     const start = regions[regions.length - 1].from;
     const milestones = [...new Set([0, ...regions.flatMap((r) => [r.from, r.to])])].sort((a, b) => a - b);
-    return { pads: rawToPads(c.played_pads), regions, start, milestones, last: c.blocks[c.blocks.length - 1] };
+    return { pads: rawToPads(c.played_pads), regions, start, milestones, skipped: c.skipped, last: c.blocks[c.blocks.length - 1] };
   }, [cycle]);
+
+  // ?f=N: a frame of the cycle (0 = its first frame) to be at instead of the block's start.
+  const want = params.get('f');
+  const wantFrame = want !== null && /^\d+$/.test(want) ? Math.min(run.pads.length, Math.max(0, Number(want) - run.skipped)) : null;
+  const first = wantFrame ?? run.start;
+  useEffect(() => { if (wantFrame !== null) player.current?.seek(wantFrame); }, [wantFrame]);
 
   if (err) return <div className="card error">{err}</div>;
   if (!won) return <div className="card">Loading…</div>;
@@ -62,13 +70,13 @@ export default function BlockReplay({ block, cycle, panel }) {
     <div className="replay-host">
       <Viewer
         replay={replay}
-        initial={{ frame: run.start, speed: 1, playing: true }}
+        initial={{ frame: first, speed: 1, playing: true }}
         onRewind={() => {}}
         onClose={() => nav('/')}
         backLabel="← Explorer"
         milestones={run.milestones}
         /* window.__player: for the e2e scripts */
-        makePlayer={(r, onChange) => (window.__player = new CyclePlayer(r.pads, onChange, { start: run.start, task, won }))}
+        makePlayer={(r, onChange) => (window.__player = player.current = new CyclePlayer(r.pads, onChange, { start: run.start, task, won }))}
         topbarExtra={() => (
           <span className="row tight small">
             <Link to={`/block/${h.height - 1}`} title="Previous block">‹ block {h.height - 1}</Link>

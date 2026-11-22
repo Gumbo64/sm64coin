@@ -15,10 +15,9 @@
 import { Player, Trail } from 'sm64-replay-ui';
 import { Perturbation, perturbReady, readProgress } from './perturb.js';
 import { captureState, restoreState } from './savestate.js';
-import { muteDrawing } from './cycle.js';
 
-const SNAP_EVERY = 240; // 8 s
-const MAX_SNAPS = 200;
+const SNAP_EVERY = 240; // 8 s: about 150 states per 20 minutes of play
+const MAX_SNAPS = 260;
 
 export class CyclePlayer extends Player {
   /** pads: the whole cycle's played pads; start: the frame this block starts at. */
@@ -31,12 +30,12 @@ export class CyclePlayer extends Player {
     this.task = task;
     this.pert = null; // made in attach(), once the WASM is loaded
     this.pertStart = null;
-    this.trail = new Trail(SNAP_EVERY, MAX_SNAPS);
+    this.trail = new Trail(Math.max(SNAP_EVERY, Math.ceil(pads.length / (MAX_SNAPS - 40))), MAX_SNAPS);
+    this.trackEvents = false; // no events list here (the timeline's stars come from the blocks): quiet seeks skip reading the game state
     this.okTo = start; // block frames [start, okTo) verified, contiguously
     this.bad = null; // the first frame that did not match the perturbation
     this.wonEnd = null;
     this.startProgress = null;
-    this.unmute = null;
   }
 
   async attach(container) {
@@ -99,10 +98,6 @@ export class CyclePlayer extends Player {
 
   stepGame(pad) {
     const i = this.frame;
-    // While fast-forwarding, skip the drawing; the last frame is drawn.
-    const quiet = this.seeking && i < this.seekTarget - 1;
-    if (quiet && !this.unmute) this.unmute = muteDrawing(this.engine);
-    else if (!quiet && this.unmute) { this.unmute(); this.unmute = null; }
     if (i < this.S) { this.engine.step_game(pad); return; }
     const [played] = this.pert.step(this.engine, pad);
     if (!played.equals(pad)) {
