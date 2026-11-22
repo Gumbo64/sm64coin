@@ -165,8 +165,12 @@ pub struct StarCycle {
     /// Retarget window and outliers cut at each end (Monero's algorithm).
     pub retarget_window: usize,
     pub retarget_cut: usize,
-    /// Decay: none for this many targets after the parent, then halving per target.
-    pub decay_grace_targets: u64,
+    /// Decay, independent of the difficulty: how much real time miners get.
+    /// For this many seconds after the parent the limit stays put...
+    pub decay_grace: u64,
+    /// ...then every this many seconds it relaxes by one halving of the
+    /// difficulty (continuously, a little every second).
+    pub decay_halving: u64,
     pub stall: u64,
 }
 
@@ -180,7 +184,8 @@ pub const STAR_CYCLE: StarCycle = StarCycle {
     target: 300,
     retarget_window: 60,
     retarget_cut: 6,
-    decay_grace_targets: 2,
+    decay_grace: 600,
+    decay_halving: 300,
     stall: 3600,
 };
 
@@ -223,11 +228,11 @@ impl Rules for StarCycle {
         monero_retarget(timestamps, cumulative, self.target, self.retarget_window, self.retarget_cut)
     }
     fn effective_difficulty(&self, difficulty: u64, elapsed: u64) -> u64 {
-        let grace = self.decay_grace_targets * self.target;
+        let grace = self.decay_grace;
         if elapsed <= grace {
             return difficulty.max(1);
         }
-        let halvings = (elapsed - grace) / self.target;
+        let halvings = (elapsed - grace) / self.decay_halving.max(1);
         if halvings >= 64 { 1 } else { (difficulty >> halvings).max(1) }
     }
     /// Continuous in time: after the grace period the limit grows every
@@ -235,8 +240,8 @@ impl Rules for StarCycle {
     /// for the limit become valid one by one, the shortest first. Integer
     /// arithmetic: every node computes the same limit.
     fn max_frames(&self, difficulty: u64, elapsed: u64) -> u32 {
-        let t = self.target; // level units per level: one level is t/8 seconds of decay
-        let grace = self.decay_grace_targets * t;
+        let t = self.decay_halving.max(1); // level units per level: one level is t/8 seconds of decay
+        let grace = self.decay_grace;
         let decay = elapsed.saturating_sub(grace).saturating_mul(8); // in 1/t levels
         let level = (level8(difficulty) as u64 * t).saturating_sub(decay); // in 1/t levels
         let (whole, frac) = (level / t, level % t);
