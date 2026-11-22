@@ -14,7 +14,7 @@ Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is st
 - **Retarget.** Monero-style, over 60 blocks, targeting 300 s per block.
 - **Liveness: continuous decay.** After a 600 s grace the limit grows every second (one difficulty halving per 300 s), so a run longer than the current limit becomes valid later (`get_block_template` with `sm64_frames: N` returns `sm64_valid_at`); short runs win first. Chain weight counts the effective difficulty and ties are broken by the shorter run (fewer frames). The chain keeps moving if miners disappear.
 - **Block id** commits to the *decoded* proof (frame count and start included), independent of codec. The daemon therefore re-encodes submitted proofs to the smallest codec.
-- **Genesis coinbase** is burned (paid to the RingCT H point). Coinbase unlock window: 10 blocks.
+- **Genesis coinbase** is burned (paid to the RingCT H point). Coinbase unlock window: 4 blocks.
 - The built-in hash miner is disabled.
 
 ## Architecture
