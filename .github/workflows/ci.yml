@@ -1,0 +1,79 @@
+name: CI
+
+# Every push and pull request: the Rust crates build and test, the launcher and the website
+# build. (The C++ daemon and the wallet are built by release.yml, which takes an hour.)
+# ROM-dependent tests skip without a ROM. To run them too, add a repository secret ROM_URL
+# pointing at a US baserom.us.z64 (private storage); the step below fetches it when present.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  HAS_ROM: ${{ secrets.ROM_URL != '' && 'yes' || '' }}
+
+jobs:
+  rust:
+    name: Rust (sm64pow, leaderboard, launcher)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow
+            pow/launcher
+      - name: Prepare the workspace (drops the private-dependency crates)
+        run: scripts/ci-prepare.sh
+      - name: Fetch the ROM (optional)
+        if: ${{ env.HAS_ROM != '' }}
+        run: curl -fsSL --proto '=https' --tlsv1.2 "$ROM_URL" -o baserom.us.z64
+        env:
+          ROM_URL: ${{ secrets.ROM_URL }}
+      - name: Test sm64pow
+        run: cargo test --release -p sm64pow
+        working-directory: pow
+        env:
+          SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
+      - name: Build the leaderboard server
+        run: cargo build --release -p sm64coin-leaderboard
+        working-directory: pow
+      - name: Build and test the launcher
+        run: cargo test --release && cargo build --release
+        working-directory: pow/launcher
+
+  web:
+    name: Website
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fetch the replay player and its dependencies (sibling checkouts)
+        run: scripts/ci-prepare.sh --web
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow/perturb-wasm
+            pow/lb-wasm
+          key: wasm
+      - name: Browser WASM modules (perturbation, leaderboard tag check)
+        run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web

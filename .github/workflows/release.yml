@@ -1,0 +1,189 @@
+name: Release
+
+# Push a tag v<version> (e.g. v0.1.0): builds the bundles, writes SHA256SUMS and publishes a
+# GitHub release. "Run workflow" (workflow_dispatch) is a dry run: it builds everything and
+# keeps the bundles as workflow artifacts, but publishes nothing.
+#
+# Platforms: Linux x86_64 and Linux aarch64 (Raspberry Pi 4/5, 64-bit OS). Windows and macOS
+# are not built yet, see packaging/RELEASING.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version label for the dry-run bundles'
+        default: '0.0.0-dryrun'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+
+jobs:
+  web:
+    name: Website
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fetch the replay player and its dependencies (sibling checkouts)
+        run: scripts/ci-prepare.sh --web
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow/perturb-wasm
+            pow/lb-wasm
+          key: wasm
+      - name: Browser WASM modules (perturbation, leaderboard tag check)
+        run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 (glibc 2.35) so the bundles also run on Raspberry Pi OS Bookworm,
+          # Debian 12, Ubuntu 22.04 and anything newer.
+          - platform: linux-x86_64
+            runner: ubuntu-22.04
+          - platform: linux-aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config ccache git curl ca-certificates patchelf zip \
+            libssl-dev libzmq3-dev libunbound-dev libsodium-dev libunwind-dev liblzma-dev \
+            libreadline-dev libexpat1-dev libpgm-dev libhidapi-dev libusb-1.0-0-dev \
+            libprotobuf-dev protobuf-compiler libudev-dev libboost-all-dev libgcrypt20-dev libgpg-error-dev \
+            qtbase5-dev qtdeclarative5-dev qtbase5-dev-tools qttools5-dev qttools5-dev-tools \
+            libqt5svg5-dev qtmultimedia5-dev libqt5multimedia5-plugins qtquickcontrols2-5-dev \
+            libqt5xmlpatterns5-dev libqt5opengl5-dev \
+            qml-module-qtquick2 qml-module-qtquick-controls qml-module-qtquick-controls2 \
+            qml-module-qtquick-dialogs qml-module-qtquick-layouts qml-module-qtquick-window2 \
+            qml-module-qt-labs-platform qml-module-qt-labs-settings qml-module-qt-labs-folderlistmodel \
+            qml-module-qtgraphicaleffects qml-module-qtmultimedia qml-module-qtqml-models2
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow
+            pow/launcher
+          key: ${{ matrix.platform }}
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.platform }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.platform }}-
+
+      - name: Prepare the workspace (drops the private-dependency crates)
+        run: scripts/ci-prepare.sh
+
+      - name: Launcher and leaderboard server (Rust)
+        run: |
+          (cd pow/launcher && cargo build --release)
+          (cd pow && cargo build --release -p sm64coin-leaderboard)
+
+      # The daemon and wallet CLI/RPC; Monero's CMake builds pow/sm64pow (Rust) itself.
+      - name: Daemon and wallets (C++)
+        run: make build-monero JOBS=$(nproc)
+
+      # See gui/SM64COIN.md: the GUI links libwallet, which it builds (with the daemon) itself.
+      - name: Wallet app (Qt)
+        run: |
+          [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
+          mkdir -p gui/build && cd gui/build
+          cmake -DCMAKE_BUILD_TYPE=Release -DMANUAL_SUBMODULES=1 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF \
+                -DWITH_DESKTOP_ENTRY=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
+          make -j$(nproc)
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Bundle
+        run: scripts/package.sh
+        env:
+          VERSION: ${{ env.VERSION }}
+          PLATFORM: ${{ matrix.platform }}
+
+      - name: Smoke test (the bundle starts and asks for the ROM)
+        run: |
+          mkdir smoke && tar -xzf dist/sm64coin-*-${{ matrix.platform }}.tar.gz -C smoke
+          cd smoke/sm64coin-*/
+          out="$(HOME=$PWD/h ./sm64coin 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q "Could not find your Super Mario 64 ROM"
+          ./sm64coind --version
+          ./sm64coin-wallet-cli --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: dist/sm64coin-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          path: assets
+          merge-multiple: true
+      - name: Checksums
+        run: cd assets && sha256sum sm64coin-* > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes
+        run: sed "s/@TAG@/${GITHUB_REF_NAME}/g; s/@VERSION@/${GITHUB_REF_NAME#v}/g" packaging/release-notes.md > notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          body_path: notes.md
+          draft: true   # review the assets, then press "Publish release"
+          prerelease: ${{ contains(github.ref_name, '-') }}

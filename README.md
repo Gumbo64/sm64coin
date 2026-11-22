@@ -49,6 +49,10 @@ Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is st
 
 Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet RPC 16483; web dev server 5181 (preview 4174).
 
+## Download and run (no build)
+
+Releases (https://github.com/Gumbo64/sm64coin/releases) hold one archive per platform (Linux x86_64, Linux aarch64/Raspberry Pi). Unpack it, copy your US ROM next to it as `baserom.us.z64`, run `./sm64coin`: it finds the ROM, starts the node (data in `~/.sm64coin`), serves the website at http://localhost:5181, opens the browser and the wallet app, and stops everything on Ctrl-C. `sm64coin --help` lists the options. Release process and gaps: `packaging/RELEASING.md`.
+
 ## Requirements
 
 A US SM64 ROM at `./baserom.us.z64` (sha1 `9bef1128717f958171a4afac3ed78ee2bb4e86ce`, git-ignored), the usual Monero build dependencies, Rust, Node.

@@ -5,12 +5,16 @@ resolver = "3"
 
 [workspace.dependencies]
 # The game build is consensus-critical (sm64pow::GAME_BUILD checks it at startup).
-# Until the rng-free sm64-binds is released, build next to a checkout of it:
-# ../../sm64-binds = github.com/Gumbo64/sm64-binds at main.
-sm64-binds = { version = "2.0.1", path = "../../sm64-binds/rust" }
+# sm64-binds 2.1.1 is taken from git (tag v2.1.1) until it is on crates.io; then delete the
+# [patch.crates-io] section below. Local development: the workspace-level .cargo/config.toml
+# patches crates-io to a sibling ../sm64-binds checkout, which takes precedence.
+sm64-binds = { version = "2.1" }
 anyhow = "1"
 
 [profile.release]
 opt-level = 3
 debug = false
 panic = "unwind"
+
+[patch.crates-io]
+sm64-binds = { git = "https://github.com/Gumbo64/sm64-binds", tag = "v2.1.1" }
