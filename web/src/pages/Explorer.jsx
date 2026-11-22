@@ -13,6 +13,13 @@ export default function Explorer() {
   // Proof sizes and run lengths come from get_block (headers don't carry
   // them); blocks never change, so cache them by hash.
   const proofs = useRef({});
+  // Progress after each block, from get_sm64_cycle (blocks never change, so
+  // cached by hash). One call gives the whole cycle's block list (power-on
+  // flags, and the point count after each block: every block adds exactly
+  // one) but the stars/keys split only for the block asked about, so exact
+  // numbers are filled in one block at a time, newest first.
+  const prog = useRef({});
+  const busy = useRef(false);
   const [, bump] = useState(0);
   const [err, setErr] = useState(null);
   const [q, setQ] = useState('');
@@ -27,6 +34,7 @@ export default function Explorer() {
       const r = await daemon('get_block_headers_range', { start_height: start, end_height: top });
       const hs = [...r.headers].reverse();
       setBlocks(hs);
+      fillProgress(hs.filter((h) => h.height > 0));
       const missing = hs.filter((h) => h.height > 0 && !proofs.current[h.hash]);
       Promise.all(missing.map((h) => daemon('get_block', { hash: h.hash })
         .then((b) => { proofs.current[h.hash] = { bytes: b.sm64_proof_bytes, frames: b.sm64_frames }; })
@@ -37,6 +45,31 @@ export default function Explorer() {
       setErr(null);
     } catch (e) { setErr(String(e)); }
   }, 5000);
+
+  async function fillProgress(hs) {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      for (const h of hs) {
+        if (prog.current[h.hash] && prog.current[h.hash].exact) continue;
+        const c = await daemon('get_sm64_cycle', { hash: h.hash });
+        c.blocks.forEach((b, i) => {
+          const old = prog.current[b.hash] || {};
+          prog.current[b.hash] = { ...old, powerOn: b.power_on, points: i + 1, cycleStart: c.start_height };
+        });
+        prog.current[h.hash] = { ...prog.current[h.hash], exact: true, stars: c.stars, keys: c.keys, grand: c.grand_star, ends: c.ends_cycle };
+        bump((x) => x + 1);
+      }
+    } catch { /* the node may be busy: the next refresh retries */ } finally { busy.current = false; }
+  }
+
+  const progressCell = (b) => {
+    if (b.height === 0) return '—';
+    const p = prog.current[b.hash];
+    if (!p) return '…';
+    if (p.exact) return <>{p.stars} ★{p.keys ? ` ${p.keys} 🔑` : ''}{p.grand ? ' · Grand Star, cycle ends' : ''}</>;
+    return <span title="stars and keys are filled in shortly">{p.points} pts</span>;
+  };
 
   const search = (e) => {
     e.preventDefault();
@@ -58,18 +91,18 @@ export default function Explorer() {
           <Stat label="Tx pool" value={info.tx_pool_size} />
         </div>
       )}
-      {task && <p className="muted">Rules <b>{task.sm64_rules}</b>: {task.sm64_goal}
-        {task.sm64_easier_at ? <> Easier task from {new Date(task.sm64_easier_at * 1000).toLocaleTimeString()} if no block is found.</> : null}</p>}
+      {task && <p className="muted">Rules <b>{task.sm64_rules}</b>: {task.sm64_goal}</p>}
       <form onSubmit={search} className="search">
         <input placeholder="Block height or hash" value={q} onChange={(e) => setQ(e.target.value)} />
         <button>Go</button>
       </form>
       <table>
-        <thead><tr><th>Height</th><th>Hash</th><th>Age</th><th>Difficulty</th><th>Reward</th><th>Txs</th><th title="Block weight: transactions and coinbase">Size</th><th title="The proof of play (encoded inputs), stored with the block on top of its size">Proof</th><th title="Length of the run that sealed the block">Run</th></tr></thead>
+        <thead><tr><th>Height</th><th>Hash</th><th>Age</th><th>Difficulty</th><th>Reward</th><th>Txs</th><th title="Block weight: transactions and coinbase">Size</th><th title="The proof of play (encoded inputs), stored with the block on top of its size">Proof</th><th title="Length of the run that sealed the block">Run</th><th title="The game's progress after this block: stars and Bowser keys (the 70-star cycle)">Progress</th></tr></thead>
         <tbody>
           {blocks.map((b) => (
             <tr key={b.hash}>
-              <td><Link to={`/block/${b.height}`}>{b.height}</Link></td>
+              <td><Link to={`/block/${b.height}`}>{b.height}</Link>
+                {b.height > 0 && prog.current[b.hash] && prog.current[b.hash].powerOn && <span className="tag" title="This block started from power-on: the start of a cycle">⏻ cycle start</span>}</td>
               <td className="mono"><Link to={`/block/${b.hash}`}>{short(b.hash, 16)}</Link></td>
               <td>{b.height === 0 ? 'genesis' : ago(b.timestamp)}</td>
               <td>{b.difficulty}</td>
@@ -78,6 +111,7 @@ export default function Explorer() {
               <td>{(b.block_size / 1024).toFixed(1)} kB</td>
               <td>{b.height === 0 ? '—' : proofs.current[b.hash] ? `${(proofs.current[b.hash].bytes / 1024).toFixed(1)} kB` : '…'}</td>
               <td>{b.height === 0 ? '—' : proofs.current[b.hash] ? `${proofs.current[b.hash].frames} frames (${frames(proofs.current[b.hash].frames)})` : '…'}</td>
+              <td>{progressCell(b)}</td>
             </tr>
           ))}
         </tbody>

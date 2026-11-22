@@ -3,7 +3,7 @@
 //! the game before and after each frame and passes the bytes here; everything
 //! else is `sm64coin-perturb`, the same code native nodes run.
 
-use sm64coin_perturb::sm64::{VISUAL, regions, view};
+use sm64coin_perturb::sm64::{VISUAL, progress, progress_regions, regions, view};
 use sm64coin_perturb::{Pad, Perturber, PokeConfig};
 use wasm_bindgen::prelude::*;
 
@@ -32,6 +32,22 @@ impl WasmPerturber {
         vec![p.button as i32, p.stick_x as i32, p.stick_y as i32, poked as i32]
     }
 
+    /// The perturber's state (for save states), as bytes.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, JsError> {
+        serde_json::to_vec(&self.0).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Becomes the perturber saved by [`WasmPerturber::to_bytes`].
+    pub fn load_bytes(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        self.0 = serde_json::from_slice(bytes).map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(())
+    }
+
+    /// A perturber from [`WasmPerturber::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<WasmPerturber, JsError> {
+        Ok(WasmPerturber(serde_json::from_slice(bytes).map_err(|e| JsError::new(&e.to_string()))?))
+    }
+
     /// After stepping: mixes in the state digest if the game simulated.
     pub fn after(&mut self, before: &[u8], after: &[u8]) {
         let (b, a) = (view(before), view(after));
@@ -46,4 +62,20 @@ impl WasmPerturber {
 #[wasm_bindgen]
 pub fn visual_regions() -> Vec<u32> {
     regions(&VISUAL).iter().flat_map(|&(a, l)| [a, l]).collect()
+}
+
+/// The memory regions [`progress_points`] reads from the visual build, as
+/// `[addr0, len0, ...]`, in order.
+#[wasm_bindgen]
+pub fn visual_progress_regions() -> Vec<u32> {
+    progress_regions(&VISUAL).iter().flat_map(|&(a, l)| [a, l]).collect()
+}
+
+/// The game's progress from the bytes of [`visual_progress_regions`]
+/// (concatenated): `[stars, keys, grand_star (0/1), points]`. The same code
+/// nodes use to judge a block.
+#[wasm_bindgen]
+pub fn progress_points(bytes: &[u8]) -> Vec<u32> {
+    let p = progress(bytes);
+    vec![p.stars, p.keys, p.grand_star as u32, p.points()]
 }

@@ -71,3 +71,11 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .mine2 .side .kv { grid-template-columns: 96px 1fr; margin: 10px 0; font-size: 14px; }
 .paysto-row { font-size: 14px; }
 @media (max-width: 900px) { .mine2 { grid-template-columns: 1fr; } .mine2 .side { position: static; } }
+
+.budget { margin-top:8px; display:flex; flex-direction:column; gap:4px; }
+.budget .bar { height:8px; border-radius:4px; background:#2a2f4a; overflow:hidden; }
+.budget .bar .fill { height:100%; background: var(--acc); }
+.budget .bar.over .fill { background:#e5534b; }
+.budget .stat { background:none; border:none; padding:0; font-family: ui-monospace, monospace; font-size:13px; }
+.cyclebox { background:#1b2038; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:13px; margin:8px 0; display:flex; flex-direction:column; gap:4px; }
+.tag { margin-left:6px; font-size:11px; padding:1px 6px; border-radius:8px; background:#2a2f4a; color:var(--acc); white-space:nowrap; }
