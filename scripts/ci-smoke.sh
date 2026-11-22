@@ -28,7 +28,13 @@ case "$OS" in
   linux)
     ldd ./sm64coin-wallet-gui | grep -i 'not found' && bad "wallet app: missing libraries"
     ldd ./sm64coind | grep -i 'not found' && bad "sm64coind: missing libraries"
-    gui=./sm64coin-wallet-gui ;;
+    gui=./sm64coin-wallet-gui
+    # Raspberry Pi OS Bookworm / Debian 12 has glibc 2.36 and libstdc++ 3.4.30: nothing newer may be needed.
+    need="$( { for f in sm64coin sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-wallet-gui sm64coin-leaderboard; do objdump -T "$f"; done; } 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+    needxx="$( { for f in sm64coin sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-wallet-gui sm64coin-leaderboard; do objdump -T "$f"; done; } 2>/dev/null | grep -o 'GLIBCXX_[0-9.]*' | sort -Vu | tail -1)"
+    echo "highest GLIBC needed: $need, highest GLIBCXX needed: $needxx"
+    [ "$(printf '%s\n' "$need" GLIBC_2.36 | sort -V | tail -1)" = GLIBC_2.36 ] || bad "needs $need, Raspberry Pi OS Bookworm has glibc 2.36"
+    [ -z "$needxx" ] || [ "$(printf '%s\n' "$needxx" GLIBCXX_3.4.30 | sort -V | tail -1)" = GLIBCXX_3.4.30 ] || bad "needs $needxx, Bookworm has libstdc++ 3.4.30" ;;
   windows)
     [ -f sm64coin-wallet-gui.exe ] || bad "wallet app missing"
     ls Qt5Core.dll Qt5Qml.dll Qt5Quick.dll platforms/qwindows.dll >/dev/null || bad "Qt files missing"

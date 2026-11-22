@@ -151,7 +151,7 @@ mac_bad_imports() {
   find "$STAGE" -type f | while read -r f; do
     if file "$f" | grep -q 'Mach-O'; then
       id="$(otool -D "$f" 2>/dev/null | tail -n +2)"   # a library's own install name is not an import
-      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' | grep -vxF "$id" | sed "s|^|$f: |" || true
+      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' | grep -vxF "$id" | sed "s|^|${f#$STAGE/}: |" || true
     fi
   done
 }
@@ -163,7 +163,11 @@ bundle_macos_libs() {
   for f in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-leaderboard sm64coin-automine; do
     [ -f "$STAGE/$f" ] && args+=(-x "$STAGE/$f")
   done
-  dylibbundler -od -b "${args[@]}" -d "$STAGE/lib" -p @executable_path/lib/ -s /opt/homebrew/lib -s /usr/local/lib
+  # The deployed app carries its own copy of the daemon (a post-build step of the wallet app); the
+  # bundle's sm64coind replaces it, and it would import Homebrew's libzmq.
+  rm -f "$STAGE/SM64Coin-Wallet.app/Contents/MacOS/monerod"
+  dylibbundler -od -b "${args[@]}" -d "$STAGE/lib" -p @executable_path/lib/ -s /opt/homebrew/lib -s /usr/local/lib > "$OUT/dylibbundler.log" 2>&1 \
+    || { tail -n 25 "$OUT/dylibbundler.log" >&2; exit 1; }
   # Plugins that macdeployqt left pointing at the build machine's Homebrew (libqsvg.dylib among
   # them, Qt's own workaround misses the Cellar path): point them at the app's Frameworks.
   local app="$STAGE/SM64Coin-Wallet.app" dep new
@@ -174,7 +178,7 @@ bundle_macos_libs() {
       otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' | while read -r dep; do
         [ "$dep" = "$id" ] && continue
         case "$dep" in *.framework/*) new="@executable_path/../Frameworks/${dep#*/lib/}" ;; *) new="@executable_path/../Frameworks/$(basename "$dep")" ;; esac
-        if [ -e "$app/Contents/${new#@executable_path/../}" ]; then install_name_tool -change "$dep" "$new" "$f"; else echo "  ! $f needs $dep (not in the app)"; fi
+        if [ -e "$app/Contents/${new#@executable_path/../}" ]; then install_name_tool -change "$dep" "$new" "$f"; else echo "  ! ${f#$STAGE/} needs $dep (not in the app)"; fi
       done
     done
   fi
