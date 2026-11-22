@@ -234,6 +234,7 @@ impl State {
             let a = &p.address;
             json!({
                 "name": p.name,
+                "address": a,
                 "address_short": format!("{}…{}", &a[..8], &a[a.len() - 6..]),
                 "blocks": p.blocks.len(),
                 "reward_atomic": p.blocks.iter().map(|b| b.reward).sum::<u64>(),

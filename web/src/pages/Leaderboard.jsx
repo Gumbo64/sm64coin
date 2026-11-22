@@ -34,7 +34,8 @@ export default function Leaderboard() {
             <tbody>
               {rows.map((r, i) => (
                 <tr key={r.address_short + i}>
-                  <td>{i + 1}</td><td>{r.name}</td><td className="mono">{r.address_short}</td>
+                  <td>{i + 1}</td><td>{r.name}</td>
+                  <td className="mono" title={r.address || r.address_short}>{r.address_short}{r.address && <CopyButton text={r.address} />}</td>
                   <td>{r.blocks}</td><td>{fmt(r.reward_atomic)}</td>
                   <td>{r.last_block_height ?? '-'}</td><td>{r.best_frames ?? '-'}</td>
                 </tr>
@@ -67,4 +68,25 @@ function ServerPicker({ onChange }) {
       <button onClick={save}>Use</button>
     </p>
   );
+}
+
+// Copies `text`; navigator.clipboard needs a secure context (https or
+// localhost), so fall back to a hidden textarea elsewhere (e.g. a LAN address).
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  const t = document.createElement('textarea');
+  t.value = text;
+  t.style.position = 'fixed';
+  t.style.opacity = '0';
+  document.body.appendChild(t);
+  t.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(t);
+  return ok ? Promise.resolve() : Promise.reject(new Error('copy failed'));
+}
+
+function CopyButton({ text }) {
+  const [done, setDone] = useState('');
+  const copy = () => copyText(text).then(() => setDone('✓'), () => setDone('✗')).finally(() => setTimeout(() => setDone(''), 1500));
+  return <button className="copy" title="Copy the full address" onClick={copy}>{done || '⧉'}</button>;
 }

@@ -111,3 +111,5 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 @media (max-width: 900px) { .explorer-grid { grid-template-columns:1fr; } }
 .block-top .cycle { margin-bottom:12px; }
 .block-top .sm64canvas { display:block; margin:0 auto; }
+.copy { margin-left:6px; padding:0 6px; font-size:12px; line-height:18px; background:transparent; border:1px solid var(--line); color:var(--mut); border-radius:4px; cursor:pointer; }
+.copy:hover { color:var(--fg); border-color:var(--mut); }
