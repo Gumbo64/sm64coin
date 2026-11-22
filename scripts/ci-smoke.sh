@@ -58,7 +58,12 @@ qmlcheck() { # qmlcheck LABEL VAR=VALUE...
 }
 case "$OS" in
   windows) qmlcheck "default platform" A=1; qmlcheck "offscreen + software" QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ;;
-  macos) qmlcheck "default platform" A=1 ;;
+  macos)
+    qmlcheck "default platform" QT_DEBUG_PLUGINS=1
+    grep -i -E "cocoa|dlopen|not loaded|reason|image not found|signature" "$H/qml.log" | cut -c1-300 | head -12
+    otool -L SM64Coin-Wallet.app/Contents/PlugIns/platforms/libqcocoa.dylib | cut -c1-160 | head -20
+    ls SM64Coin-Wallet.app/Contents/Frameworks | tr '\n' ' '; echo
+    codesign -vv SM64Coin-Wallet.app 2>&1 | tail -3 ;;
   *) qmlcheck "offscreen" QT_QPA_PLATFORM=offscreen ;;
 esac
 
@@ -91,9 +96,10 @@ if [ "$OS" != linux ]; then
   grep -q "Wallet app started" "$H/plumbing.log" || bad "plumbing: wallet app not started"
   if [ "$OS" = windows ]; then tasklist | grep -i "sm64coin-wallet-gui" > /dev/null && echo "wallet app is running"; else pgrep -f monero-wallet-gui > /dev/null && echo "wallet app is running"; fi
 fi
-if [ "$OS" = windows ]; then kill -f $lpid 2>/dev/null; else kill $lpid 2>/dev/null; fi
+if [ "$OS" = windows ]; then taskkill //F //IM sm64coin.exe; else kill $lpid 2>/dev/null; fi   # Windows: a hard kill, like closing the window
 sleep 6
 if [ "$OS" = windows ]; then
+  tasklist | grep -i "sm64coin"
   tasklist | grep -i "sm64coin-wallet-gui" > /dev/null && bad "plumbing: wallet app still running after the launcher ended"
   taskkill //F //IM sm64coin-wallet-gui.exe >/dev/null 2>&1
 elif [ "$OS" = macos ]; then
