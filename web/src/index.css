@@ -79,3 +79,33 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .budget .stat { background:none; border:none; padding:0; font-family: ui-monospace, monospace; font-size:13px; }
 .cyclebox { background:#1b2038; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:13px; margin:8px 0; display:flex; flex-direction:column; gap:4px; }
 .tag { margin-left:6px; font-size:11px; padding:1px 6px; border-radius:8px; background:#2a2f4a; color:var(--acc); white-space:nowrap; }
+
+/* The cycle timeline (after sm64-viewer's Timeline). */
+.cycle-head { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; margin-bottom:10px; }
+.cycle-reset { margin-left:auto; color:var(--mut); }
+.cycle-reset b { color:var(--fg); }
+.timeline-wrap { display:grid; gap:3px; }
+.region-track { position:relative; height:18px; }
+.region { position:absolute; top:0; bottom:0; min-width:2px; padding:0 4px; border:none; border-left:2px solid var(--region);
+  border-radius:0; background:color-mix(in srgb, var(--region) 18%, transparent); color:var(--mut); font-size:12px; text-align:left; cursor:pointer; overflow:hidden; }
+.region span { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.region-track .region:hover, .region-track .region.current { background:color-mix(in srgb, var(--region) 35%, transparent); color:var(--fg); }
+.region.attempt { cursor:default; border-left-style:dashed; }
+.timeline { position:relative; height:36px; border-radius:6px; background:var(--bg); border:1px solid var(--line); overflow:visible; }
+.timeline .strip { position:absolute; inset:0; border-radius:6px; }
+.timeline .played { position:absolute; top:0; bottom:0; left:0; background:rgba(247,201,72,0.08); pointer-events:none; }
+.timeline .playhead { position:absolute; top:-3px; bottom:-3px; width:2px; margin-left:-1px; background:var(--acc); pointer-events:none; }
+.timeline .marker { position:absolute; top:-6px; width:8px; height:8px; margin-left:-4px; border-radius:50%; background:var(--acc); }
+.timeline .hover { position:absolute; bottom:100%; transform:translateX(-50%); margin-bottom:6px; background:#12162a; border:1px solid var(--line);
+  border-radius:4px; padding:1px 6px; font-size:12px; white-space:nowrap; pointer-events:none; }
+
+/* Explorer: recent cycles beside the block list. */
+.explorer-grid { display:grid; grid-template-columns:210px 1fr; gap:16px; align-items:start; }
+.explorer-grid .blocklist { overflow-x:auto; }
+.cycles h3 { margin:0 0 8px; font-size:15px; }
+.cycles ol { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+.cycles li { padding:8px 10px; border:1px solid var(--line); border-radius:8px; cursor:pointer; font-size:13px; }
+.cycles li:hover { border-color:var(--mut); }
+.cycles li.current { border-color:var(--acc); }
+.cycles .cyc-range { font-weight:600; }
+@media (max-width: 900px) { .explorer-grid { grid-template-columns:1fr; } }

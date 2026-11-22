@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Recorder } from '../lib/recorder.js';
+import CycleTimeline from '../lib/CycleTimeline.jsx';
 import { daemon } from '../lib/rpc.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { createEngine, prepareStart } from '../lib/cycle.js';
@@ -183,6 +184,8 @@ function Miner() {
   const over = lim && used > lim;
 
   return (
+    <>
+    <CycleTimeline attempt={clock ? clock.frame : 0} />
     <div className="mine2">
       <div className="gamecol">
         <canvas ref={canvas} className="sm64canvas" />
@@ -265,6 +268,7 @@ function Miner() {
         <p className="muted links"><a href="/leaderboard">Leaderboard</a></p>
       </aside>
     </div>
+    </>
   );
 }
 

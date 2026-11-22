@@ -18,3 +18,7 @@ export function successFor(rulesName) {
 // The longest run any block can carry (the time limit at difficulty 1:
 // base_frames in rules.rs). Past this a run can never become valid.
 export const MAX_RUN_FRAMES = 10 * 60 * 30;
+
+// After this many seconds without a block, a block may start over from power-on
+// (StarCycle::stall in pow/sm64pow/src/rules.rs; display only).
+export const STALL_SECONDS = 3600;
