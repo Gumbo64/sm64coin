@@ -30,6 +30,7 @@ export class CyclePlayer extends Player {
     this.task = task;
     this.pert = null; // made in attach(), once the WASM is loaded
     this.pertStart = null;
+    this.workerTrail = false; // the headless worker's portable states are not this player's states (memory + perturbation)
     this.trail = new Trail(Math.max(SNAP_EVERY, Math.ceil(pads.length / (MAX_SNAPS - 40))), MAX_SNAPS);
     this.trackEvents = false; // no events list here (the timeline's stars come from the blocks): quiet seeks skip reading the game state
     this.okTo = start; // block frames [start, okTo) verified, contiguously
@@ -51,6 +52,15 @@ export class CyclePlayer extends Player {
   dispose() {
     super.dispose();
     this.pert?.free();
+  }
+
+  // Catching up (the first seek to the block's frame, long seeks) is done by the
+  // headless worker of sm64-binds-frontend >= 2.3.0, but only up to the block's start:
+  // it replays the played pads of the earlier blocks, which are accepted as they are.
+  // The block's own frames are played here, through the perturbation, so the
+  // per-frame check (okTo / bad / wonEnd, the verdict) still runs on every one of them.
+  headlessLimit() {
+    return this.S;
   }
 
   verify() {
