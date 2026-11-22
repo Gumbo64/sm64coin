@@ -144,16 +144,63 @@ bundle_windows_libs() {
   [ -z "$bad" ] || { echo "package.sh: DLLs not bundled: $bad" >&2; exit 1; }
 }
 
-# Imports of the build machine's Homebrew that a macOS binary of the bundle still has (bash 3.2:
-# keep this out of a $( ) with parentheses in it).
+# macOS binaries of the bundle that still import the build machine's Homebrew, or import an
+# @executable_path / @loader_path library that is not there. (bash 3.2: keep this out of a $( )
+# with parentheses in it.)
 mac_bad_imports() {
   set +e +o pipefail
-  local f id
+  local f id dep exe r
   find "$STAGE" -type f | while read -r f; do
     if file "$f" | grep -q 'Mach-O'; then
       id="$(otool -D "$f" 2>/dev/null | tail -n +2)"   # a library's own install name is not an import
-      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' | grep -vxF "$id" | sed "s|^|${f#$STAGE/}: |" || true
+      case "$f" in "$STAGE"/SM64Coin-Wallet.app/*) exe="$STAGE/SM64Coin-Wallet.app/Contents/MacOS" ;; *) exe="$STAGE" ;; esac
+      for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}'); do
+        [ "$dep" = "$id" ] && continue
+        case "$dep" in
+          /opt/homebrew/*|/usr/local/*) echo "${f#$STAGE/}: $dep" ;;
+          @executable_path/*) r="$exe/${dep#@executable_path/}"; [ -e "$r" ] || echo "${f#$STAGE/}: missing $dep" ;;
+          @loader_path/*) r="$(dirname "$f")/${dep#@loader_path/}"; [ -e "$r" ] || echo "${f#$STAGE/}: missing $dep" ;;
+        esac
+      done
     fi
+  done
+}
+
+# macdeployqt leaves some libraries of the app pointing at Homebrew or at a @loader_path that
+# only exists there (libbrotlidec -> libbrotlicommon): copy what is missing into the app's
+# Frameworks and point everything at it.
+mac_fix_app() {
+  local app="$1" fw="$1/Contents/Frameworks" pass changed f id dep base src
+  for pass in 1 2 3 4 5; do
+    changed=0
+    while read -r f; do
+      file "$f" | grep -q 'Mach-O' || continue
+      id="$(otool -D "$f" 2>/dev/null | tail -n +2)"
+      for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}'); do
+        [ "$dep" = "$id" ] && continue
+        base="$(basename "$dep")"; src=""
+        case "$dep" in
+          /opt/homebrew/*|/usr/local/*)
+            case "$dep" in
+              *.framework/*) [ -e "$fw/${dep#*/lib/}" ] && install_name_tool -change "$dep" "@executable_path/../Frameworks/${dep#*/lib/}" "$f" && changed=1; continue ;;
+            esac
+            src="$dep" ;;
+          @loader_path/*|@rpath/*)
+            case "$dep" in *.framework/*) continue ;; esac
+            [ -e "$(dirname "$f")/${dep#@loader_path/}" ] && continue
+            [ -e "$fw/$base" ] || src="$(ls /opt/homebrew/opt/*/lib/"$base" /opt/homebrew/lib/"$base" 2>/dev/null | head -1)" ;;
+          *) continue ;;
+        esac
+        if [ ! -e "$fw/$base" ]; then
+          [ -n "$src" ] && [ -e "$src" ] || { echo "  ! ${f#$app/} needs $dep: not found anywhere"; continue; }
+          cp -L "$src" "$fw/$base"; chmod u+w "$fw/$base"
+          install_name_tool -id "@executable_path/../Frameworks/$base" "$fw/$base" 2>/dev/null
+          echo "  + $base copied into the app (for ${f#$app/})"
+        fi
+        install_name_tool -change "$dep" "@executable_path/../Frameworks/$base" "$f" && changed=1
+      done
+    done < <(find "$app" -type f)
+    [ "$changed" = 1 ] || break
   done
 }
 
@@ -170,20 +217,7 @@ bundle_macos_libs() {
   rm -f "$STAGE/SM64Coin-Wallet.app/Contents/MacOS/monerod"
   dylibbundler -od -b "${args[@]}" -d "$STAGE/lib" -p @executable_path/lib/ -s /opt/homebrew/lib -s /usr/local/lib > "$OUT/dylibbundler.log" 2>&1 \
     || { tail -n 25 "$OUT/dylibbundler.log" >&2; exit 1; }
-  # Plugins that macdeployqt left pointing at the build machine's Homebrew (libqsvg.dylib among
-  # them, Qt's own workaround misses the Cellar path): point them at the app's Frameworks.
-  local app="$STAGE/SM64Coin-Wallet.app" dep new
-  if [ -d "$app" ]; then
-    find "$app" -type f | while read -r f; do
-      file "$f" | grep -q 'Mach-O' || continue
-      id="$(otool -D "$f" 2>/dev/null | tail -n +2)"
-      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' | while read -r dep; do
-        [ "$dep" = "$id" ] && continue
-        case "$dep" in *.framework/*) new="@executable_path/../Frameworks/${dep#*/lib/}" ;; *) new="@executable_path/../Frameworks/$(basename "$dep")" ;; esac
-        if [ -e "$app/Contents/${new#@executable_path/../}" ]; then install_name_tool -change "$dep" "$new" "$f"; else echo "  ! ${f#$STAGE/} needs $dep (not in the app)"; fi
-      done
-    done
-  fi
+  [ -d "$STAGE/SM64Coin-Wallet.app" ] && mac_fix_app "$STAGE/SM64Coin-Wallet.app"
   # install_name_tool invalidated the signatures; Apple Silicon refuses unsigned code.
   find "$STAGE" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
     if file "$f" | grep -q 'Mach-O'; then codesign --force --sign - "$f" 2>/dev/null || echo "codesign failed: $f"; fi
