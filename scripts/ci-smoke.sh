@@ -41,9 +41,19 @@ case "$OS" in
     gui="./$app" ;;
 esac
 # QML loads (headless). Informational: a display-less runner may lack what Qt wants.
-echo "--- wallet app --check-qml (headless, informational)"
-( QT_QPA_PLATFORM=offscreen HOME="$H" USERPROFILE="$H" "$gui" --check-qml > "$H/qml.log" 2>&1 & p=$!; for i in $(seq 40); do sleep 1; kill -0 $p 2>/dev/null || break; done; kill $p 2>/dev/null; wait $p; echo "check-qml exit code $?" ) 
-tail -n 15 "$H/qml.log"
+qmlcheck() { # qmlcheck LABEL VAR=VALUE...
+  local label="$1"; shift
+  echo "--- wallet app --check-qml: $label (informational)"
+  ( env "$@" HOME="$H" USERPROFILE="$H" "$gui" --check-qml > "$H/qml.log" 2>&1 & p=$!
+    for i in $(seq 45); do sleep 1; kill -0 $p 2>/dev/null || break; done
+    if kill -0 $p 2>/dev/null; then echo "still running after 45 s (stopped)"; kill $p 2>/dev/null; fi
+    wait $p; echo "check-qml exit code $?" )
+  tail -n 12 "$H/qml.log" | cut -c1-200
+}
+case "$OS" in
+  windows) qmlcheck "default platform" A=1; qmlcheck "offscreen + software" QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ;;
+  *) qmlcheck "offscreen" QT_QPA_PLATFORM=offscreen ;;
+esac
 
 if [ -n "${SM64COIN_ROM_FILE:-}" ] && [ -f "${SM64COIN_ROM_FILE}" ]; then
   echo "--- full run for 60 s with the ROM"

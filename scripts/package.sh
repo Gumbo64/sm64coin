@@ -152,6 +152,20 @@ bundle_macos_libs() {
     [ -f "$STAGE/$f" ] && args+=(-x "$STAGE/$f")
   done
   dylibbundler -od -b "${args[@]}" -d "$STAGE/lib" -p @executable_path/lib/ -s /opt/homebrew/lib -s /usr/local/lib
+  # Plugins that macdeployqt left pointing at the build machine's Homebrew (libqsvg.dylib among
+  # them, Qt's own workaround misses the Cellar path): point them at the app's Frameworks.
+  local app="$STAGE/SM64Coin-Wallet.app" dep new
+  if [ -d "$app" ]; then
+    find "$app" -type f | while read -r f; do
+      file "$f" | grep -q 'Mach-O' || continue
+      id="$(otool -D "$f" 2>/dev/null | tail -n +2)"
+      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local)/' | while read -r dep; do
+        [ "$dep" = "$id" ] && continue
+        case "$dep" in *.framework/*) new="@executable_path/../Frameworks/${dep#*/lib/}" ;; *) new="@executable_path/../Frameworks/$(basename "$dep")" ;; esac
+        if [ -e "$app/Contents/${new#@executable_path/../}" ]; then install_name_tool -change "$dep" "$new" "$f"; else echo "  ! $f needs $dep (not in the app)"; fi
+      done
+    done
+  fi
   # install_name_tool invalidated the signatures; Apple Silicon refuses unsigned code.
   find "$STAGE" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
     if file "$f" | grep -q 'Mach-O'; then codesign --force --sign - "$f" 2>/dev/null || echo "codesign failed: $f"; fi
@@ -159,7 +173,10 @@ bundle_macos_libs() {
   if [ -d "$STAGE/SM64Coin-Wallet.app" ]; then codesign --force --deep --sign - "$STAGE/SM64Coin-Wallet.app" 2>/dev/null; fi
   local bad
   bad="$(find "$STAGE" -type f | while read -r f; do
-    if file "$f" | grep -q 'Mach-O'; then otool -L "$f" | tail -n +2 | grep -E '/opt/homebrew|/usr/local/' | sed "s|^|$f: |" || true; fi
+    if file "$f" | grep -q 'Mach-O'; then
+      id="$(otool -D "$f" 2>/dev/null | tail -n +2)"   # a library's own install name is not an import
+      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local)/' | grep -vxF "$id" | sed "s|^|$f: |" || true
+    fi
   done)" || true
   [ -z "$bad" ] || { echo "package.sh: binaries still import Homebrew libraries:" >&2; echo "$bad" >&2; exit 1; }
   du -sh "$STAGE/lib" | sed 's/^/  lib: /'
