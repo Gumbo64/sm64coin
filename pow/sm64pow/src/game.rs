@@ -11,7 +11,7 @@ use crate::{Params, Seed};
 use anyhow::Result;
 use crate::rules::RngConfig;
 use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
-pub use sm64coin_perturb::sm64::{Addrs, HEADLESS, Progress, VISUAL, View, progress, progress_regions, progress_regions_len, regions, regions_len, view};
+pub use sm64coin_perturb::sm64::{Addrs, Event, HEADLESS, Progress, VISUAL, event, View, progress, progress_regions, progress_regions_len, regions, regions_len, view};
 pub use sm64coin_perturb::{Pad, PokeConfig, Perturber};
 
 pub fn to_pad(p: GamePad) -> Pad {

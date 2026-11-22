@@ -131,6 +131,23 @@ pub extern "C" fn sm64pow_block_progress(id32: *const u8, stars: *mut u32, keys:
     1
 }
 
+/// What a cached block's run added, as a short name ("c09s1": course 9
+/// star 1, "c00s3": castle secret star, "key1", "grand"); bookkeeping only.
+/// Returns the name's length (0 if not cached or unknown); writes at most `cap`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_block_event(id32: *const u8, out: *mut c_char, cap: usize) -> usize {
+    let Some(s) = (unsafe { id_arg(id32) }).and_then(|id| crate::chain::cached(&id)) else { return 0 };
+    let name = s.event.map(|e| e.name()).unwrap_or_default();
+    if !out.is_null() && cap > 0 {
+        let n = name.len().min(cap - 1);
+        unsafe {
+            std::ptr::copy_nonoverlapping(name.as_ptr(), out as *mut u8, n);
+            *out.add(n) = 0;
+        }
+    }
+    name.len()
+}
+
 /// A proof's start: 0 from the parent's end state, 1 from power-on, -1 if it
 /// doesn't decode.
 #[unsafe(no_mangle)]

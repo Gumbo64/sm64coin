@@ -16,6 +16,7 @@ int64_t sm64pow_verify_block(const uint8_t *id32, const uint8_t *parent32, uint6
                              const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len);
 int32_t sm64pow_has_state(const uint8_t *id32);
 int32_t sm64pow_block_progress(const uint8_t *id32, uint32_t *stars, uint32_t *keys, int32_t *grand_star, int32_t *ends_cycle);
+size_t sm64pow_block_event(const uint8_t *id32, char *out, size_t cap); /* "c09s1", "key1", "grand"; 0 if unknown */
 int32_t sm64pow_proof_start(const uint8_t *proof, size_t len); /* 0 parent, 1 power-on, -1 bad */
 uint64_t sm64pow_stall_seconds(void);
 uint32_t sm64pow_max_frames(uint64_t difficulty, uint64_t elapsed_seconds);

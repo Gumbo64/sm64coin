@@ -90,6 +90,7 @@ const ACT_JUMBO_STAR_CUTSCENE: u32 = 0x0000_1909;
 const SAVE_FILE_SIZE: usize = 0x38; // struct SaveFile
 const SAVE_FILES: usize = 4; // NUM_SAVE_FILES, two copies each
 const SAVE_FLAGS: usize = 8; // SaveFile.flags
+const COURSE_STARS: usize = 12; // SaveFile.courseStars[25]
 const HAVE_KEY_1: u32 = 1 << 4;
 const HAVE_KEY_2: u32 = 1 << 5;
 const UNLOCKED_BASEMENT_DOOR: u32 = 1 << 6;
@@ -120,6 +121,46 @@ pub struct Progress {
     pub stars: u32,
     pub keys: u32,
     pub grand_star: bool,
+    /// Which stars (bookkeeping, not consensus): index 0 the castle's secret
+    /// stars, 1..=25 course N's stars (bit k = star k+1).
+    pub star_flags: [u8; 26],
+}
+
+/// What a block added (see [`event`]): for logging per-star run times.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// Course 0 is the castle (secret stars), 1..=25 the courses; star 1..=7.
+    Star { course: u8, star: u8 },
+    Key(u8),
+    GrandStar,
+}
+
+impl Event {
+    /// A short stable name: "c09s1" (course 9 star 1), "c00s3" (castle), "key1", "grand".
+    pub fn name(&self) -> String {
+        match self {
+            Event::Star { course, star } => format!("c{course:02}s{star}"),
+            Event::Key(k) => format!("key{k}"),
+            Event::GrandStar => "grand".into(),
+        }
+    }
+}
+
+/// The progress made between `before` and `after` (the first difference).
+pub fn event(before: &Progress, after: &Progress) -> Option<Event> {
+    if after.grand_star && !before.grand_star {
+        return Some(Event::GrandStar);
+    }
+    for c in 0..26 {
+        let new = after.star_flags[c] & !before.star_flags[c];
+        if new != 0 {
+            return Some(Event::Star { course: c as u8, star: new.trailing_zeros() as u8 + 1 });
+        }
+    }
+    if after.keys > before.keys {
+        return Some(Event::Key(after.keys as u8));
+    }
+    None
 }
 
 impl Progress {
@@ -138,7 +179,15 @@ pub fn progress(bytes: &[u8]) -> Progress {
     let file = u16_at(saves + SAVE_FILE_SIZE * 2 * SAVE_FILES) as usize;
     let flags = if (1..=SAVE_FILES).contains(&file) { u32_at(saves + (file - 1) * 2 * SAVE_FILE_SIZE + SAVE_FLAGS) } else { 0 };
     let keys = (flags & (HAVE_KEY_1 | UNLOCKED_BASEMENT_DOOR) != 0) as u32 + (flags & (HAVE_KEY_2 | UNLOCKED_UPSTAIRS_DOOR) != 0) as u32;
-    Progress { stars, keys, grand_star: action == ACT_JUMBO_STAR_CUTSCENE && stars >= GRAND_STAR_MIN_STARS }
+    let mut star_flags = [0u8; 26];
+    if (1..=SAVE_FILES).contains(&file) {
+        let f = saves + (file - 1) * 2 * SAVE_FILE_SIZE;
+        star_flags[0] = ((flags >> 24) & 0x7f) as u8;
+        for c in 0..25 {
+            star_flags[c + 1] = bytes[f + COURSE_STARS + c] & 0x7f;
+        }
+    }
+    Progress { stars, keys, grand_star: action == ACT_JUMBO_STAR_CUTSCENE && stars >= GRAND_STAR_MIN_STARS, star_flags }
 }
 
 #[cfg(test)]
@@ -164,7 +213,14 @@ mod tests {
         b[file_num] = 2; // file 2 (1-based)
         let flags = MARIO_SIZE as usize + 2 * SAVE_FILE_SIZE + SAVE_FLAGS; // file 2, first copy
         b[flags] = UNLOCKED_BASEMENT_DOOR as u8 | HAVE_KEY_2 as u8;
-        assert_eq!(progress(&b), Progress { stars: 3, keys: 2, grand_star: false });
+        b[MARIO_SIZE as usize + 2 * SAVE_FILE_SIZE + COURSE_STARS + 8] = 0b101; // course 9: stars 1 and 3
+        let p = progress(&b);
+        assert_eq!((p.stars, p.keys, p.grand_star), (3, 2, false));
+        assert_eq!(p.star_flags[9], 0b101);
+        let mut q = p;
+        q.star_flags[9] |= 0b10;
+        assert_eq!(event(&p, &q), Some(Event::Star { course: 9, star: 2 }));
+        assert_eq!(event(&p, &q).unwrap().name(), "c09s2");
         b[MARIO_ACTION..MARIO_ACTION + 4].copy_from_slice(&ACT_JUMBO_STAR_CUTSCENE.to_le_bytes());
         assert!(!progress(&b).grand_star, "needs 70 stars");
         b[MARIO_NUM_STARS] = 70;

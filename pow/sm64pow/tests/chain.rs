@@ -49,6 +49,9 @@ fn a_chain_of_blocks() {
     let BlockVerdict::Valid { frames: f, progress, ends_cycle } = v else { panic!("{v:?}") };
     assert_eq!(f, frames);
     assert_eq!((progress.stars, progress.keys, ends_cycle), (1, 0, false));
+    // Bookkeeping: which star (Bob-omb Battlefield, star 6: Behind Chain Chomp's Gate).
+    let ev = sm64pow::chain::cached(&id(1)).unwrap().event.map(|e| e.name());
+    assert_eq!(ev.as_deref(), Some("c01s6"));
     // Too tight a time limit (a high difficulty) rejects it.
     assert!(matches!(verify_block(&id(9), Parent::Genesis, &seed, 1 << 20, &blob).unwrap(), BlockVerdict::Invalid(_)));
     // The first block can't claim a parent start.

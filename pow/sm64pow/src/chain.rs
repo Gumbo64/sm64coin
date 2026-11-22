@@ -22,6 +22,8 @@ pub struct EndState {
     pub game: SaveState,
     pub progress: Progress,
     pub ends_cycle: bool,
+    /// What the block's run added (bookkeeping: which star, key...).
+    pub event: Option<crate::game::Event>,
 }
 
 /// How many end states to keep (about 8 MB each).
@@ -181,7 +183,8 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
         Err(why) => Ok(BlockVerdict::Invalid(why)),
         Ok((g, now)) => {
             let ends_cycle = rules().ends_cycle(&now);
-            remember(*id, EndState { game: g.game.save_state(), progress: now, ends_cycle });
+            let event = crate::game::event(&before, &now);
+            remember(*id, EndState { game: g.game.save_state(), progress: now, ends_cycle, event });
             Ok(BlockVerdict::Valid { frames: pr.frames, progress: now, ends_cycle })
         }
     }

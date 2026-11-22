@@ -336,11 +336,11 @@ mod tests {
     #[test]
     fn success_is_one_more_point_and_the_grand_star_ends_the_cycle() {
         let r = &STAR_CYCLE;
-        let s = Progress { stars: 12, keys: 1, grand_star: false };
+        let s = Progress { stars: 12, keys: 1, ..Default::default() };
         assert!(!r.is_success(&s, &s));
         assert!(r.is_success(&s, &Progress { stars: 13, ..s }));
         assert!(r.is_success(&s, &Progress { keys: 2, ..s }));
         assert!(!r.ends_cycle(&s));
-        assert!(r.ends_cycle(&Progress { stars: 70, keys: 2, grand_star: true }));
+        assert!(r.ends_cycle(&Progress { stars: 70, keys: 2, grand_star: true, ..Default::default() }));
     }
 }
