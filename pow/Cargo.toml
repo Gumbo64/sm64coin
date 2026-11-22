@@ -7,7 +7,7 @@ resolver = "3"
 # The game build is consensus-critical (sm64pow::GAME_BUILD checks it at startup).
 # Until the rng-free sm64-binds is released, build next to a checkout of it:
 # ../../sm64-binds = github.com/Gumbo64/sm64-binds at main.
-sm64-binds = { version = "2.0.1", path = "../../sm64-binds/rust" } # resolved to /workspaces/sm64-combined/sm64-binds/rust by the [patch.crates-io] in /workspaces/sm64-combined/.cargo/config.toml (one game build for the miner and the research crates)
+sm64-binds = { version = "2.0.1", path = "../../sm64-binds/rust" }
 anyhow = "1"
 
 [profile.release]
