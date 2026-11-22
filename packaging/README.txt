@@ -71,7 +71,9 @@ Options (sm64coin --help)
   --no-browser          do not open the browser     --no-wallet   do not start the wallet app
   --web-port N          website port (default 5181)
   --data-dir DIR        keep the blockchain and logs somewhere else
-  --leaderboard-port N  also run the leaderboard server (if present in this folder)
+  --leaderboard-port N  port of the leaderboard server run by default (16490); --no-leaderboard turns it off
+  --peer-leaderboard URL  share the leaderboard with this server too (also: leaderboard-peers.txt)
+  --public              website and leaderboard reachable by other computers
   --mine SM64...        also run the automated miner (if present in this folder)
   --solo                first node of a brand-new network (do not use otherwise)
   A path to the ROM can be given too:  sm64coin C:\games\sm64.z64
@@ -79,7 +81,7 @@ Options (sm64coin --help)
 Other programs in this folder
   sm64coind             the node itself            sm64coin-wallet-cli / sm64coin-wallet-rpc   command-line wallet
   sm64coin-wallet-gui   the wallet app (macOS: SM64Coin-Wallet.app)
-  sm64coin-leaderboard  optional leaderboard server
+  sm64coin-leaderboard  leaderboard server (run by sm64coin; shares the top 50 with other servers; joining shares your address + view key with that network, use a dedicated mining address)
 
 Verify your download against SHA256SUMS on the release page.
 Source and issues: https://github.com/Gumbo64/sm64coin

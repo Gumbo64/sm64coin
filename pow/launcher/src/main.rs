@@ -67,12 +67,18 @@ struct Opts {
     /// Do not start the wallet app
     #[arg(long)]
     no_wallet: bool,
-    /// Proxy /leaderboard-api to this leaderboard server (e.g. http://host:16490)
+    /// Use this remote leaderboard server (e.g. http://host:16490) instead of running one here
     #[arg(long, value_name = "URL")]
     leaderboard_url: Option<String>,
-    /// Also run the leaderboard server (sm64coin-leaderboard) on this port
-    #[arg(long, value_name = "PORT")]
-    leaderboard_port: Option<u16>,
+    /// Port of the leaderboard server this program runs (it shares the top 50 with other leaderboard servers)
+    #[arg(long, value_name = "PORT", default_value_t = 16490)]
+    leaderboard_port: u16,
+    /// Do not run a leaderboard server
+    #[arg(long)]
+    no_leaderboard: bool,
+    /// Another leaderboard server to share with (URL or host:port), repeatable; leaderboard-peers.txt is always read
+    #[arg(long = "peer-leaderboard", value_name = "URL")]
+    peer_leaderboards: Vec<String>,
     /// Also run the automated miner (sm64coin-automine), mining to this address
     #[arg(long, value_name = "SM64...")]
     mine: Option<String>,
@@ -390,7 +396,7 @@ fn handle(req: tiny_http::Request, cfg: &WebCfg) {
     if let Some(rest) = path.strip_prefix("/leaderboard-api") {
         return match &cfg.leaderboard {
             Some(base) => proxy(req, base, &format!("{}{}", if rest.is_empty() { "/" } else { rest }, query)),
-            None => respond_text(req, 503, "no leaderboard configured (start sm64coin with --leaderboard-url or --leaderboard-port)"),
+            None => respond_text(req, 503, "no leaderboard configured (start sm64coin without --no-leaderboard, or with --leaderboard-url)"),
         };
     }
     let rel = path.trim_start_matches('/');
@@ -589,19 +595,36 @@ fn run(o: Opts) -> Result<(), String> {
         }
 
         // --- leaderboard ---
+        // Runs by default: it shares the top 50 with other leaderboard servers (pulling works behind NAT;
+        // with --public others can also pull from this one). The website proxies to it.
         let mut lb_url = o.leaderboard_url.clone().map(|u| u.trim_end_matches('/').to_string());
-        if let Some(port) = o.leaderboard_port {
+        if lb_url.is_none() && !o.no_leaderboard {
             let bin = tool("sm64coin-leaderboard");
             if !bin.is_file() {
-                return Err(format!("--leaderboard-port: {} is not in this bundle", bin.display()));
+                println!("(no leaderboard server in this bundle: {} is missing)", bin.display());
+            } else {
+                let bind_host = if o.public { "0.0.0.0" } else { "127.0.0.1" };
+                let port = pick_port(o.leaderboard_port, bind_host, &[o.web_port]);
+                if port != o.leaderboard_port {
+                    println!("Leaderboard port {} is in use by another program: using {port}. (Set the wallet's leaderboard URL to http://127.0.0.1:{port}.)", o.leaderboard_port);
+                }
+                let lb_data = data_dir.join("leaderboard");
+                fs::create_dir_all(&lb_data).map_err(|e| e.to_string())?;
+                let mut cmd = Command::new(bin);
+                cmd.args(["--daemon", &rpc_url, "--bind", &format!("{bind_host}:{port}"), "--poll-secs", "10"]).arg("--data-dir").arg(&lb_data);
+                for u in &o.peer_leaderboards {
+                    cmd.args(["--peer-leaderboard", u]);
+                }
+                for f in [exe_dir.join("leaderboard-peers.txt"), data_dir.join("leaderboard-peers.txt")] {
+                    if f.is_file() {
+                        cmd.arg("--peers-file").arg(f);
+                    }
+                }
+                cmd.args(["--peer-port", &o.leaderboard_port.to_string()]);
+                procs.push(Proc::spawn("leaderboard", cmd, log_dir.join("leaderboard.log"))?);
+                lb_url = Some(format!("http://127.0.0.1:{port}"));
+                println!("Leaderboard server on port {port}{}.", if o.public { " (public: other servers can share with it)" } else { "" });
             }
-            let lb_data = data_dir.join("leaderboard");
-            fs::create_dir_all(&lb_data).map_err(|e| e.to_string())?;
-            let mut cmd = Command::new(bin);
-            cmd.args(["--daemon", &rpc_url, "--bind", &format!("127.0.0.1:{port}"), "--poll-secs", "10"]).arg("--data-dir").arg(&lb_data);
-            procs.push(Proc::spawn("leaderboard", cmd, log_dir.join("leaderboard.log"))?);
-            lb_url = Some(format!("http://127.0.0.1:{port}"));
-            println!("Leaderboard server on port {port}.");
         }
 
         // --- website ---

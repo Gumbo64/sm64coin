@@ -19,6 +19,36 @@ pub struct Participant {
     pub address: String,
     pub view_key: String,
     pub blocks: Vec<Won>,
+    /// "local" (registered here) or "peer" (learned from another leaderboard server).
+    #[serde(default = "local")]
+    pub source: String,
+    #[serde(default)]
+    pub learned_from: Option<String>,
+    /// Unix seconds when first added.
+    #[serde(default)]
+    pub added: u64,
+}
+
+fn local() -> String {
+    "local".into()
+}
+
+/// Most entries a server tracks; peer-learned ones are evicted (lowest score first) to stay under it.
+pub const MAX_TRACKED: usize = 1000;
+/// Size of the shared / displayed board.
+pub const TOP_N: usize = 50;
+/// Most entries taken from one peer response.
+pub const MAX_PER_PULL: usize = 100;
+
+pub fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+#[derive(Default, Debug, PartialEq)]
+pub struct MergeReport {
+    pub added: usize,
+    pub rejected: usize,
+    pub known: usize,
 }
 
 /// What we keep per scanned block (coinbase only).
@@ -34,11 +64,16 @@ pub struct State {
     daemon: String,
     pub participants: Vec<Participant>,
     cache: Vec<CbInfo>, // index = height
+    synced: bool,
+    /// Addresses removed here with /unregister: never re-learned from peers.
+    blocked: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
 struct Disk {
     participants: Vec<Participant>,
+    #[serde(default)]
+    blocked: Vec<String>,
 }
 
 fn rpc(daemon: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -143,11 +178,13 @@ fn rescan(p: &mut Participant, cache: &[CbInfo], from: u64) {
 impl State {
     pub fn load(path: &Path, daemon: &str) -> State {
         let disk: Disk = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        State { daemon: daemon.to_string(), participants: disk.participants, cache: vec![] }
+        // Entries on disk were verified when added; drop any that no longer pass.
+        let participants = disk.participants.into_iter().filter(|p| validate(&p.name, &p.address, &p.view_key).is_ok()).collect();
+        State { daemon: daemon.to_string(), participants, cache: vec![], synced: false, blocked: disk.blocked }
     }
 
     fn save(&self, path: &Path) {
-        let d = Disk { participants: self.participants.clone() };
+        let d = Disk { participants: self.participants.clone(), blocked: self.blocked.clone() };
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, serde_json::to_vec_pretty(&d).unwrap()).is_ok() {
             let _ = std::fs::rename(&tmp, path);
@@ -180,6 +217,7 @@ impl State {
             eprintln!("reorg or rewind: rescanning from height {keep}");
         }
         self.cache.truncate(keep);
+        self.synced = true;
         let from = keep as u64;
         for h in from..tip {
             let cb = self.fetch(h)?;
@@ -195,26 +233,82 @@ impl State {
     }
 
     pub fn register(&mut self, name: &str, address: &str, view_key: &str, path: &Path) -> Result<Value, String> {
-        let name = name.trim();
-        if name.is_empty() || name.chars().count() > 32 || name.chars().any(|c| c.is_control()) {
-            return Err("name must be 1-32 printable characters".into());
-        }
-        let addr = decode_address(address)?;
-        let vk = parse_view_key(view_key)?;
-        if !view_key_matches(&addr, &vk) {
-            return Err("view key does not match the address".into());
-        }
-        let canon = address.trim().to_string();
-        let mut p = Participant { name: name.to_string(), address: canon.clone(), view_key: hex::encode(vk.to_bytes()), blocks: vec![] };
+        let mut p = validate(name, address, view_key)?;
         self.sync()?;
         rescan(&mut p, &self.cache, 0);
         let (n, total) = (p.blocks.len(), p.blocks.iter().map(|b| b.reward).sum::<u64>());
-        match self.participants.iter_mut().find(|q| q.address == canon) {
+        self.blocked.retain(|a| *a != p.address);
+        match self.participants.iter_mut().find(|q| q.address == p.address) {
             Some(q) => *q = p,
             None => self.participants.push(p),
         }
         self.save(path);
         Ok(json!({"ok": true, "blocks": n, "reward_atomic": total}))
+    }
+
+    /// Add entries learned from a peer. Each is verified here (the view key must match the address and
+    /// the blocks are counted by our own chain scan); stats sent by the peer are never used.
+    pub fn merge_peer(&mut self, entries: &[Value], from: &str, path: &Path) -> MergeReport {
+        let mut rep = MergeReport::default();
+        for e in entries.iter().take(MAX_PER_PULL) {
+            let f = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let Ok(mut p) = validate(f("name"), f("address"), f("view_key")) else {
+                rep.rejected += 1;
+                continue;
+            };
+            if self.blocked.contains(&p.address) {
+                rep.rejected += 1;
+                continue;
+            }
+            if self.participants.iter().any(|q| q.address == p.address) {
+                rep.known += 1; // same address means same view key (it is determined by the address); local entry or first-seen name wins
+                continue;
+            }
+            p.source = "peer".into();
+            p.learned_from = Some(from.to_string());
+            rescan(&mut p, &self.cache, 0);
+            if self.participants.len() >= MAX_TRACKED {
+                let worst = self.participants.iter().enumerate().filter(|(_, q)| q.source != "local").min_by_key(|(_, q)| score(q)).map(|(i, q)| (i, score(q)));
+                match worst {
+                    Some((i, w)) if score(&p) > w => {
+                        self.participants.remove(i);
+                    }
+                    _ => {
+                        rep.rejected += 1;
+                        continue;
+                    }
+                }
+            }
+            self.participants.push(p);
+            rep.added += 1;
+        }
+        if rep.added > 0 {
+            self.save(path);
+        }
+        rep
+    }
+
+    pub fn peer_entries(&self) -> usize {
+        self.participants.iter().filter(|p| p.source != "local").count()
+    }
+
+    /// What /share returns: the top entries with everything a peer needs to verify them itself.
+    /// (blocks/reward are for display only; receivers recompute them.)
+    pub fn share(&self) -> Vec<Value> {
+        if !self.synced {
+            return vec![];
+        }
+        self.top().into_iter().map(|p| json!({
+            "name": p.name, "address": p.address, "view_key": p.view_key,
+            "blocks": p.blocks.len(), "reward_atomic": reward(p), "best_frames": p.blocks.iter().filter_map(|b| b.frames).min(),
+        })).collect()
+    }
+
+    fn top(&self) -> Vec<&Participant> {
+        let mut v: Vec<&Participant> = self.participants.iter().collect();
+        v.sort_by(|x, y| score(y).cmp(&score(x)).then(x.address.cmp(&y.address)));
+        v.truncate(TOP_N);
+        v
     }
 
     pub fn unregister(&mut self, address: &str, view_key: &str, path: &Path) -> Result<Value, String> {
@@ -225,24 +319,208 @@ impl State {
             return Err("view key does not match the registration".into());
         }
         self.participants.remove(i);
+        if !self.blocked.iter().any(|a| a == canon) && self.blocked.len() < 10_000 {
+            self.blocked.push(canon.to_string());
+        }
         self.save(path);
         Ok(json!({"ok": true}))
     }
 
+    /// The board: top entries by blocks, then reward. Every entry was verified by this server's own scan.
     pub fn leaderboard(&self) -> Value {
-        let mut rows: Vec<Value> = self.participants.iter().map(|p| {
+        let rows: Vec<Value> = self.top().into_iter().map(|p| {
             let a = &p.address;
             json!({
                 "name": p.name,
                 "address": a,
                 "address_short": format!("{}…{}", &a[..8], &a[a.len() - 6..]),
                 "blocks": p.blocks.len(),
-                "reward_atomic": p.blocks.iter().map(|b| b.reward).sum::<u64>(),
+                "reward_atomic": reward(p),
                 "last_block_height": p.blocks.iter().map(|b| b.height).max(),
                 "best_frames": p.blocks.iter().filter_map(|b| b.frames).min(),
+                "verified": self.synced,
+                "source": p.source,
             })
         }).collect();
-        rows.sort_by(|x, y| y["blocks"].as_u64().cmp(&x["blocks"].as_u64()).then(y["reward_atomic"].as_u64().cmp(&x["reward_atomic"].as_u64())));
         Value::Array(rows)
+    }
+}
+
+fn reward(p: &Participant) -> u64 {
+    p.blocks.iter().map(|b| b.reward).sum()
+}
+
+fn score(p: &Participant) -> (usize, u64) {
+    (p.blocks.len(), reward(p))
+}
+
+/// Check a name / address / view key triple: well formed, and the private view key belongs to the address.
+pub fn validate(name: &str, address: &str, view_key: &str) -> Result<Participant, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 32 || name.chars().any(|c| c.is_control()) {
+        return Err("name must be 1-32 printable characters".into());
+    }
+    if address.len() > 200 || view_key.len() > 80 {
+        return Err("field too long".into());
+    }
+    let addr = decode_address(address)?;
+    let vk = parse_view_key(view_key)?;
+    if !view_key_matches(&addr, &vk) {
+        return Err("view key does not match the address".into());
+    }
+    Ok(Participant { name: name.to_string(), address: address.trim().to_string(), view_key: hex::encode(vk.to_bytes()), blocks: vec![], source: "local".into(), learned_from: None, added: now() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use curve25519_dalek::constants::ED25519_BASEPOINT_POINT as G;
+
+    struct Keys {
+        addr: String,
+        vk: String,
+        a: Scalar,
+        b: Scalar,
+    }
+
+    fn keys(seed: u8) -> Keys {
+        let a = Scalar::from_bytes_mod_order([seed; 32]);
+        let b = Scalar::from_bytes_mod_order([seed.wrapping_add(100); 32]);
+        let addr = encode_address(&Address { prefix: PREFIX_STANDARD, spend: (b * G).compress().to_bytes(), view: (a * G).compress().to_bytes() });
+        Keys { addr, vk: hex::encode(a.to_bytes()), a, b }
+    }
+
+    /// A coinbase paying `k` (one output), the way the node builds it.
+    fn coinbase(k: &Keys, rseed: u8, reward: u64) -> CbInfo {
+        let r = Scalar::from_bytes_mod_order([rseed; 32]);
+        let rp = r * G;
+        let d = (r * (k.a * G)).mul_by_cofactor().compress().to_bytes();
+        let mut m = d.to_vec();
+        m.extend(varint(0));
+        let key = (hash_to_scalar(&m) * G + k.b * G).compress().to_bytes();
+        CbInfo { hash: format!("h{rseed}"), r: Some(rp), outs: vec![(reward, key, None)], frames: Some(100) }
+    }
+
+    fn state(chain: Vec<CbInfo>) -> State {
+        State { daemon: "http://127.0.0.1:1".into(), participants: vec![], cache: chain, synced: true, blocked: vec![] }
+    }
+
+    fn entry(k: &Keys, name: &str) -> Value {
+        json!({"name": name, "address": k.addr, "view_key": k.vk, "blocks": 9999, "reward_atomic": 9999})
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("lbtest-{}-{name}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        d.join("lb.json")
+    }
+
+    fn dummy_chain(k1: &Keys, k2: &Keys) -> Vec<CbInfo> {
+        // height 0 unused, 1..=3 -> k1, 4 -> k2
+        let mut c = vec![coinbase(k1, 200, 1)];
+        c.extend([coinbase(k1, 1, 10), coinbase(k1, 2, 10), coinbase(k1, 3, 10), coinbase(k2, 4, 7)]);
+        c
+    }
+
+    #[test]
+    fn merge_verifies_with_own_scan_and_ignores_peer_stats() {
+        let (k1, k2) = (keys(7), keys(9));
+        let mut st = state(dummy_chain(&k1, &k2));
+        let p = tmp("merge");
+        let rep = st.merge_peer(&[entry(&k1, "one"), entry(&k2, "two")], "http://peer", &p);
+        assert_eq!(rep, MergeReport { added: 2, rejected: 0, known: 0 });
+        let board = st.leaderboard();
+        assert_eq!(board[0]["address"], k1.addr);
+        assert_eq!(board[0]["blocks"], 3); // our scan, not the claimed 9999
+        assert_eq!(board[1]["blocks"], 1);
+        assert_eq!(board[0]["source"], "peer");
+        // persisted and reloadable
+        let again = State::load(&p, "x");
+        assert_eq!(again.participants.len(), 2);
+    }
+
+    #[test]
+    fn forged_entries_rejected() {
+        let (k1, k2) = (keys(7), keys(9));
+        let mut st = state(dummy_chain(&k1, &k2));
+        let p = tmp("forged");
+        // k2's address with k1's view key; garbage; bad name; non-hex key
+        let bad = vec![
+            json!({"name": "x", "address": k2.addr, "view_key": k1.vk}),
+            json!({"name": "x", "address": "SM64nonsense", "view_key": k1.vk}),
+            json!({"name": "", "address": k1.addr, "view_key": k1.vk}),
+            json!({"name": "x", "address": k1.addr, "view_key": "zz"}),
+            json!({"address": k1.addr}),
+            json!(5),
+        ];
+        let rep = st.merge_peer(&bad, "http://peer", &p);
+        assert_eq!((rep.added, rep.rejected), (0, 6));
+        assert!(st.participants.is_empty());
+    }
+
+    #[test]
+    fn local_entry_wins_conflicts_and_blocked_stay_out() {
+        let (k1, k2) = (keys(7), keys(9));
+        let mut st = state(dummy_chain(&k1, &k2));
+        let p = tmp("conflict");
+        let mut mine = validate("mine", &k1.addr, &k1.vk).unwrap();
+        rescan(&mut mine, &st.cache, 0);
+        st.participants.push(mine);
+        let rep = st.merge_peer(&[entry(&k1, "renamed"), json!({"name": "y", "address": k1.addr, "view_key": k2.vk})], "http://peer", &p);
+        assert_eq!((rep.added, rep.known, rep.rejected), (0, 1, 1));
+        assert_eq!(st.participants[0].name, "mine");
+        assert_eq!(st.participants[0].source, "local");
+        // unregistering blocks re-learning
+        st.unregister(&k1.addr, &k1.vk, &p).unwrap();
+        let rep = st.merge_peer(&[entry(&k1, "mine")], "http://peer", &p);
+        assert_eq!((rep.added, rep.rejected), (0, 1));
+        assert_eq!(State::load(&p, "x").blocked.len(), 1);
+    }
+
+    #[test]
+    fn caps_and_eviction() {
+        let (k1, k2) = (keys(7), keys(9));
+        let mut st = state(dummy_chain(&k1, &k2));
+        let p = tmp("caps");
+        // more than MAX_PER_PULL entries in one response: only the first 100 are considered
+        let many: Vec<Value> = (0..150u32).map(|i| { let k = keys((i % 200) as u8 + 20); json!({"name": format!("n{i}"), "address": k.addr, "view_key": k.vk}) }).collect();
+        let rep = st.merge_peer(&many, "http://peer", &p);
+        assert_eq!(rep.added + rep.known, MAX_PER_PULL);
+        // fill to the cap with zero-score peer entries, then a better entry evicts the worst, a worse one is dropped
+        let template = st.participants[0].clone();
+        st.participants.clear();
+        for i in 0..MAX_TRACKED {
+            let mut q = template.clone();
+            q.address = format!("fake{i}");
+            q.source = "peer".into();
+            st.participants.push(q);
+        }
+        assert_eq!(st.merge_peer(&[entry(&keys(7), "one")], "http://peer", &p).added, 1);
+        assert_eq!(st.participants.len(), MAX_TRACKED);
+        assert!(st.participants.iter().any(|q| q.address == k1.addr));
+        assert_eq!(st.merge_peer(&[entry(&keys(8), "zero")], "http://peer", &p).rejected, 1); // no blocks: not better than the worst
+        // local entries are never evicted
+        for q in st.participants.iter_mut() { q.source = "local".into(); }
+        assert_eq!(st.merge_peer(&[entry(&k2, "two")], "http://peer", &p).rejected, 1);
+    }
+
+    #[test]
+    fn share_format_top_n_and_unsynced() {
+        let (k1, k2) = (keys(7), keys(9));
+        let mut st = state(dummy_chain(&k1, &k2));
+        let p = tmp("share");
+        let mut es = vec![entry(&k1, "one"), entry(&k2, "two")];
+        es.extend((0..60u8).map(|i| { let k = keys(30 + i); entry(&k, &format!("z{i}")) }));
+        st.merge_peer(&es, "http://peer", &p);
+        let sh = st.share();
+        assert_eq!(sh.len(), TOP_N);
+        assert_eq!(sh[0]["address"], k1.addr);
+        for k in ["name", "address", "view_key", "blocks", "reward_atomic", "best_frames"] {
+            assert!(sh[0].get(k).is_some(), "missing {k}");
+        }
+        assert_eq!(sh[0]["view_key"], k1.vk);
+        assert_eq!(st.leaderboard().as_array().unwrap().len(), TOP_N);
+        st.synced = false;
+        assert!(st.share().is_empty());
     }
 }

@@ -1,5 +1,6 @@
 mod crypto;
 mod scan;
+mod share;
 
 use clap::Parser;
 use scan::{Participant, State};
@@ -19,6 +20,24 @@ struct Args {
     /// Seconds between chain polls.
     #[arg(long, default_value_t = 10)]
     poll_secs: u64,
+    /// Another leaderboard server to share with (URL or host:port), repeatable
+    #[arg(long = "peer-leaderboard", value_name = "URL")]
+    peer_leaderboard: Vec<String>,
+    /// File of peer leaderboard URLs, one per line, repeatable
+    #[arg(long = "peers-file", value_name = "FILE")]
+    peers_file: Vec<String>,
+    /// Seconds between pulls from peers (jittered +-20%)
+    #[arg(long, default_value_t = 300)]
+    share_secs: u64,
+    /// Do not look for peers among the node's connected peers
+    #[arg(long)]
+    no_discover: bool,
+    /// Leaderboard port tried on the node's connected peers
+    #[arg(long, default_value_t = 16490)]
+    peer_port: u16,
+    /// Public URL of this server, sent to peers we pull from so they can pull from us too
+    #[arg(long, value_name = "URL")]
+    announce_url: Option<String>,
 }
 
 fn respond(req: tiny_http::Request, code: u16, body: Value) {
@@ -46,6 +65,25 @@ fn main() -> anyhow::Result<()> {
             std::thread::sleep(Duration::from_secs(poll));
         });
     }
+    let mut rl = share::RateLimit::default();
+    let peers = Arc::new(Mutex::new(share::Peers::default()));
+    {
+        let mut p = peers.lock().unwrap();
+        let mut urls = args.peer_leaderboard.clone();
+        for f in &args.peers_file {
+            urls.extend(share::read_peers_file(std::path::Path::new(f)));
+        }
+        for u in urls {
+            if !p.add(&u, "config") {
+                eprintln!("ignoring peer {u}");
+            }
+        }
+    }
+    let id = format!("{:016x}{:08x}", scan::now() ^ ((std::process::id() as u64) << 32), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0));
+    share::spawn(state.clone(), peers.clone(), share::Cfg {
+        daemon: args.daemon.clone(), path: path.clone(), id: id.clone(), secs: args.share_secs.max(1),
+        discover: !args.no_discover, peer_port: args.peer_port, announce: args.announce_url.clone(),
+    });
     let server = tiny_http::Server::http(&args.bind).map_err(|e| anyhow::anyhow!("{e}"))?;
     eprintln!("leaderboard listening on http://{} (daemon {})", args.bind, args.daemon);
     for mut req in server.incoming_requests() {
@@ -62,7 +100,25 @@ fn main() -> anyhow::Result<()> {
             ("OPTIONS", _) => respond(req, 204, json!({})),
             ("GET", "/health") => {
                 let s = state.lock().unwrap();
-                respond(req, 200, json!({"ok": true, "scanned_height": s.scanned_height(), "participants": s.participants.len()}));
+                let p = peers.lock().unwrap();
+                respond(req, 200, json!({"ok": true, "scanned_height": s.scanned_height(), "participants": s.participants.len(),
+                    "peer_entries": s.peer_entries(), "peers": p.active(), "known_peers": p.map.len()}));
+            }
+            ("GET", "/peers") => respond(req, 200, peers.lock().unwrap().json()),
+            ("GET", "/share") => {
+                let remote = req.remote_addr().map(|a| a.ip());
+                if let Some(ip) = remote {
+                    if !rl.allow(ip, Duration::from_secs(2)) {
+                        respond(req, 429, json!({"error": "slow down"}));
+                        continue;
+                    }
+                    let ann = req.headers().iter().find(|h| h.field.equiv("X-Leaderboard-Url")).map(|h| h.value.to_string());
+                    if let Some(u) = ann.and_then(|a| share::announce_ok(&a, ip)) {
+                        peers.lock().unwrap().add(&u, "inbound");
+                    }
+                }
+                let entries = state.lock().unwrap().share();
+                respond(req, 200, json!({"version": 1, "id": id, "entries": entries}));
             }
             ("GET", "/leaderboard") => respond(req, 200, state.lock().unwrap().leaderboard()),
             ("POST", "/register") => {
