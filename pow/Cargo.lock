@@ -2358,6 +2358,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+ "serde_json",
  "sha3",
  "sm64-binds",
  "sm64coin-perturb",
