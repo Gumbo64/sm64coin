@@ -161,6 +161,7 @@ jobs:
       - name: Bundle
         run: scripts/ci-run.sh bundle scripts/package.sh
         env:
+          CI_NOTICE: '1'
           VERSION: ${{ env.VERSION }}
           ALLOW_NO_WEB: ${{ github.ref_type != 'tag' && '1' || '' }}
           PLATFORM: ${{ matrix.platform }}
@@ -185,6 +186,8 @@ jobs:
           mkdir smoke && tar -xzf dist/sm64coin-*-${{ matrix.platform }}.tar.gz -C smoke
           scripts/ci-run.sh smoke scripts/ci-smoke.sh smoke/sm64coin-*/
         env:
+          CI_NOTICE: '1'
+          CI_NOTICE_LINES: '70'
           SM64COIN_ROM_FILE: ${{ steps.rom.outputs.file }}
           CI_LOG_DIR: ${{ github.workspace }}/ci-logs
 
@@ -303,6 +306,7 @@ jobs:
       - name: Bundle
         run: scripts/ci-run.sh bundle scripts/package.sh
         env:
+          CI_NOTICE: '1'
           VERSION: ${{ env.VERSION }}
           ALLOW_NO_WEB: ${{ github.ref_type != 'tag' && '1' || '' }}
           PLATFORM: windows-x86_64
@@ -321,6 +325,8 @@ jobs:
           if [ -n "$ROM_URL" ]; then curl -fsSL --proto '=https' --tlsv1.2 "$ROM_URL" -o "$RUNNER_TEMP/baserom.us.z64" && export SM64COIN_ROM_FILE="$RUNNER_TEMP/baserom.us.z64"; fi
           scripts/ci-run.sh smoke scripts/ci-smoke.sh smoke/sm64coin-*/
         env:
+          CI_NOTICE: '1'
+          CI_NOTICE_LINES: '70'
           ROM_URL: ${{ secrets.ROM_URL }}
 
       - uses: actions/upload-artifact@v4
@@ -415,6 +421,7 @@ jobs:
       - name: Bundle
         run: scripts/ci-run.sh bundle scripts/package.sh
         env:
+          CI_NOTICE: '1'
           VERSION: ${{ env.VERSION }}
           ALLOW_NO_WEB: ${{ github.ref_type != 'tag' && '1' || '' }}
           PLATFORM: macos-arm64
@@ -432,6 +439,8 @@ jobs:
           if [ -n "$ROM_URL" ]; then curl -fsSL --proto '=https' --tlsv1.2 "$ROM_URL" -o "$RUNNER_TEMP/baserom.us.z64" && export SM64COIN_ROM_FILE="$RUNNER_TEMP/baserom.us.z64"; fi
           scripts/ci-run.sh smoke scripts/ci-smoke.sh smoke/sm64coin-*/
         env:
+          CI_NOTICE: '1'
+          CI_NOTICE_LINES: '70'
           ROM_URL: ${{ secrets.ROM_URL }}
 
       - uses: actions/upload-artifact@v4

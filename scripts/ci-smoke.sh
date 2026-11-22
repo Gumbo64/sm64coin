@@ -9,6 +9,7 @@ fail=0
 bad() { echo "::error title=smoke test::$*"; fail=1; }
 H="$B/../smoke-home"; mkdir -p "$H"
 
+echo "--- bundle"; ls -la | head -45; du -sh .
 echo "--- launcher without a ROM: must say so and exit 2"
 out="$(HOME="$H" USERPROFILE="$H" SM64COIN_ROM= ./sm64coin$X < /dev/null 2>&1)"; rc=$?
 echo "$out"; echo "exit code $rc"

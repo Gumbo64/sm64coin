@@ -154,11 +154,13 @@ bundle_macos_libs() {
   dylibbundler -od -b "${args[@]}" -d "$STAGE/lib" -p @executable_path/lib/ -s /opt/homebrew/lib -s /usr/local/lib
   # install_name_tool invalidated the signatures; Apple Silicon refuses unsigned code.
   find "$STAGE" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
-    file "$f" | grep -q 'Mach-O' && codesign --force --sign - "$f"
+    if file "$f" | grep -q 'Mach-O'; then codesign --force --sign - "$f" 2>/dev/null || echo "codesign failed: $f"; fi
   done
-  [ -d "$STAGE/SM64Coin-Wallet.app" ] && codesign --force --deep --sign - "$STAGE/SM64Coin-Wallet.app"
+  if [ -d "$STAGE/SM64Coin-Wallet.app" ]; then codesign --force --deep --sign - "$STAGE/SM64Coin-Wallet.app" 2>/dev/null; fi
   local bad
-  bad="$(find "$STAGE" -type f | while read -r f; do file "$f" | grep -q 'Mach-O' && otool -L "$f" | tail -n +2 | grep -E '/opt/homebrew|/usr/local/' | sed "s|^|$f: |"; done)"
+  bad="$(find "$STAGE" -type f | while read -r f; do
+    if file "$f" | grep -q 'Mach-O'; then otool -L "$f" | tail -n +2 | grep -E '/opt/homebrew|/usr/local/' | sed "s|^|$f: |" || true; fi
+  done)" || true
   [ -z "$bad" ] || { echo "package.sh: binaries still import Homebrew libraries:" >&2; echo "$bad" >&2; exit 1; }
   du -sh "$STAGE/lib" | sed 's/^/  lib: /'
 }

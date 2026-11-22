@@ -18,4 +18,8 @@ if [ "$rc" -ne 0 ]; then
   [ -n "$errs" ] && echo "::error title=$label failed ($rc): matching lines::$errs"
   echo "::error title=$label failed ($rc): end of log::$tail"
 fi
+if [ "$rc" -eq 0 ] && [ -n "${CI_NOTICE:-}" ]; then   # also show the end of a good log (job logs need a login)
+  n="$(tail -n "${CI_NOTICE_LINES:-45}" "$log" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-200 | awk 'BEGIN{ORS="%0A"} {print}')"
+  echo "::notice title=$label (ok)::$n"
+fi
 exit "$rc"
