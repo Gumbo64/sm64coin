@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { playRun } from '../lib/recorder.js';
 import { createEngine, reachTip } from '../lib/cycle.js';
+import { CycleStrip } from '../lib/CycleTimeline.jsx';
 import { readProgress } from '../lib/perturb.js';
 import { restoreState } from '../lib/savestate.js';
 import { daemon } from '../lib/rpc.js';
@@ -15,20 +16,29 @@ export default function Block() {
   const { id } = useParams();
   const [b, setB] = useState(null);
   const [err, setErr] = useState(null);
-  const [watch, setWatch] = useState(false);
   const [cycle, setCycle] = useState(null); // get_sm64_cycle up to this block
 
+  const [frame, setFrame] = useState(0); // the replay's frame
+
   useEffect(() => {
-    setB(null); setErr(null); setWatch(false); setCycle(null);
+    // `live`: answers for a block we've since navigated away from are dropped.
+    let live = true;
+    setB(null); setErr(null); setCycle(null); setFrame(0);
     const params = /^\d+$/.test(id) ? { height: Number(id) } : { hash: id };
     // sm64_played: the daemon replays the run and returns every frame's pad
     // (the proof itself leaves out the poked frames).
     daemon('get_block', { ...params, sm64_played: true }).then((blk) => {
+      if (!live) return;
       setB(blk);
       // The cycle this block belongs to, from its first block up to it: where
       // its run starts, and what replaying it from power-on takes.
-      if (blk.block_header.height > 0) daemon('get_sm64_cycle', { hash: blk.block_header.hash }).then(setCycle).catch(() => setCycle(false));
-    }).catch((e) => setErr(String(e)));
+      if (blk.block_header.height > 0) {
+        daemon('get_sm64_cycle', { hash: blk.block_header.hash })
+          .then((c) => live && setCycle({ ...c, blocks: c.blocks || [] }))
+          .catch(() => live && setCycle(false));
+      } else setCycle(false);
+    }).catch((e) => live && setErr(String(e)));
+    return () => { live = false; };
   }, [id]);
 
   if (err) return <div className="card error">{err}</div>;
@@ -41,8 +51,17 @@ export default function Block() {
     const num = (k) => (new RegExp(`"${k}":\\s*(\\d+)`).exec(b.json || '') || [])[1];
     json = { major_version: num('major_version') ?? '?', minor_version: num('minor_version') ?? '?' };
   }
+  // Where this block's run sits in its cycle, for the timeline's playhead.
+  const before = cycle ? cycle.blocks.slice(0, -1).reduce((s, x) => s + x.frames, 0) : 0;
   return (
     <>
+      {h.height > 0 && (
+        <div className="card block-top">
+          {cycle ? <CycleStrip cycle={cycle} highlight={h.hash} playhead={before + frame} />
+            : <p className="muted">{cycle === false ? "The node could not give this block's cycle." : 'Loading the cycle…'}</p>}
+          {cycle && <RomGate><Replay key={h.hash} block={b} cycle={cycle} onFrame={setFrame} /></RomGate>}
+        </div>
+      )}
       <div className="card">
         <h2>Block {h.height}</h2>
         <dl className="kv">
@@ -75,8 +94,6 @@ export default function Block() {
             <button disabled={!cycle} onClick={() => download(`sm64coin-cycle-to-block${h.height}.m64`, toM64(rawToPads(cycle.played_pads)))}>Download .m64: the whole cycle up to this block</button>{' '}
             <span className="muted">{cycle ? `from power-on, ${cycle.played_pads.length / 8} frames over ${cycle.blocks.length} block${cycle.blocks.length === 1 ? '' : 's'}; replays unperturbed (no pokes needed) to the state this block ends in` : 'loading the cycle…'}</span>
           </p>
-          {!watch ? <button disabled={!cycle} onClick={() => setWatch(true)}>▶ Watch the run that sealed this block{cycle && cycle.blocks.length > 1 ? ' (the cycle before it is fast-forwarded first)' : ''}</button>
-            : <RomGate><Replay block={b} cycle={cycle} /></RomGate>}
         </div>
       )}
     </>
@@ -98,13 +115,14 @@ function CycleInfo({ cycle, block }) {
   );
 }
 
-function Replay({ block, cycle }) {
+function Replay({ block, cycle, onFrame = () => {} }) {
   const canvas = useRef(null);
   const [status, setStatus] = useState('starting…');
   const [speed, setSpeed] = useState(1);
   const speedRef = useRef(1);
   speedRef.current = speed;
-  const [frame, setFrame] = useState(0);
+  const [frame, setFrameLocal] = useState(0);
+  const setFrame = (f) => { setFrameLocal(f); onFrame(f); };
   useEffect(() => {
     let killed = false;
     const pads = rawToPads(block.sm64_played_pads);

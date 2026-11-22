@@ -109,3 +109,5 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .cycles li.current { border-color:var(--acc); }
 .cycles .cyc-range { font-weight:600; }
 @media (max-width: 900px) { .explorer-grid { grid-template-columns:1fr; } }
+.block-top .cycle { margin-bottom:12px; }
+.block-top .sm64canvas { display:block; margin:0 auto; }

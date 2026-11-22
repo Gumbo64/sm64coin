@@ -49,6 +49,29 @@ function hexPads(hex) {
   return pads;
 }
 
+/** A get_sm64_cycle reply, with each block's frame span and the pads decoded. */
+export function decodeCycle(c) {
+  let at = 0;
+  const blocks = (c.blocks || []).map((b) => { const r = { ...b, from: at, to: at + b.frames }; at += b.frames; return r; });
+  return { ...c, blocks, pads: hexPads(c.played_pads || '') };
+}
+
+/** One cycle as given (e.g. a block's), with `highlight` (a block hash) marked
+ * and an optional `playhead` (frame within the cycle). */
+export function CycleStrip({ cycle, highlight, playhead }) {
+  const c = useMemo(() => decodeCycle(cycle), [cycle]);
+  return (
+    <div className="cycle">
+      <div className="cycle-head">
+        <b>Cycle from block {c.start_height}</b>
+        <span>{c.stars} ★{c.keys ? ` · ${c.keys} 🔑` : ''}{c.grand_star ? ' · Grand Star' : ''}</span>
+        <span className="muted">{c.blocks.length} block{c.blocks.length === 1 ? '' : 's'} · {fmtTime(c.pads.length)} of play</span>
+      </div>
+      <Strip blocks={c.blocks} pads={c.pads} attempt={0} highlight={highlight} playhead={playhead} />
+    </div>
+  );
+}
+
 /** The current cycle (blocks, pads, tip progress), refreshed when a block lands. */
 export function useCycle() {
   const [cycle, setCycle] = useState(null);
@@ -65,9 +88,7 @@ export function useCycle() {
         ]);
         if (stop) return;
         top = info.top_block_hash;
-        let at = 0;
-        const blocks = (c.blocks || []).map((b) => { const r = { ...b, from: at, to: at + b.frames }; at += b.frames; return r; });
-        setCycle({ ...c, blocks, pads: hexPads(c.played_pads || ''), tipTime: h.block_header.timestamp, tipHeight: h.block_header.height, top });
+        setCycle({ ...decodeCycle(c), tipTime: h.block_header.timestamp, tipHeight: h.block_header.height, top });
         setErr('');
       } catch (e) { setErr(String(e.message || e)); }
     };
@@ -106,7 +127,7 @@ export default function CycleTimeline({ attempt = 0 }) {
   );
 }
 
-function Strip({ blocks, pads, attempt }) {
+function Strip({ blocks, pads, attempt, highlight, playhead }) {
   const nav = useNavigate();
   const wrap = useRef(null);
   const strip = useRef(null);
@@ -176,7 +197,7 @@ function Strip({ blocks, pads, attempt }) {
         {blocks.map((b, i) => (
           <button
             key={b.hash}
-            className="region"
+            className={`region${b.hash === highlight ? ' current' : ''}`}
             style={{ left: pct(b.from), width: pct(b.frames), '--region': COLORS[i % COLORS.length] }}
             title={`Block ${b.height}: ${eventName(b.event)} in ${fmtTime(b.frames)}${b.power_on ? ' (from power-on)' : ''}`}
             onClick={() => nav(`/block/${b.hash}`)}
@@ -197,6 +218,7 @@ function Strip({ blocks, pads, attempt }) {
           <div key={b.hash} className="marker" style={{ left: pct(b.to) }} title={`${eventName(b.event)} (block ${b.height})`} />
         ))}
         {attempt > 0 && <div className="playhead" style={{ left: pct(total) }} />}
+        {playhead != null && <div className="playhead" style={{ left: pct(playhead) }} />}
         {hover !== null && (
           <div className="hover" style={{ left: pct(hover) }}>
             {fmtTime(hover)}{hovered ? ` · block ${hovered.height}: ${eventName(hovered.event)}` : hover >= pads.length && attempt ? ' · your attempt' : ''}
