@@ -150,6 +150,13 @@ impl Task {
     pub fn check(&self, blob: &[u8]) -> Result<Verdict> {
         let pr = match proof::decode_proof(blob, proof::MAX_FRAMES) {
             Ok(p) => p,
+            // State-aware codecs (hard fork) are decoded by replaying the run.
+            Err(_) if proof::split_blob(blob).is_ok_and(|b| sm64pow::statecodec::state_codec(b.2).is_some()) => {
+                match sm64pow::statecodec::decode_proof_state(blob, self.parent.as_deref(), &self.seed, &self.params) {
+                    Ok(p) => p,
+                    Err(e) => return Ok(Verdict::Invalid(format!("bad proof: {e}"))),
+                }
+            }
             Err(e) => return Ok(Verdict::Invalid(format!("bad proof: {e}"))),
         };
         if pr.start != self.start {

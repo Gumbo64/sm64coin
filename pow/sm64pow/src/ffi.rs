@@ -307,7 +307,8 @@ pub extern "C" fn sm64pow_decode_raw(blob: *const u8, len: usize, out: *mut u8, 
 /// How many frames a proof's run lasted (0 if it doesn't decode).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_proof_frames(blob: *const u8, len: usize) -> u32 {
-    crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize).map_or(0, |pr| pr.frames)
+    let b = blob_arg(blob, len);
+    crate::proof::decode_proof(b, rules().max_frames_any() as usize).map_or_else(|_| crate::proof::split_blob(b).map_or(0, |x| if crate::statecodec::state_codec(x.2).is_some() { x.0 } else { 0 }), |pr| pr.frames)
 }
 
 /// The pads block `id32`'s run played on every frame, pokes regenerated
@@ -325,6 +326,40 @@ pub extern "C" fn sm64pow_played_block(id32: *const u8, parent32: *const u8, gap
     let res = std::panic::catch_unwind(|| crate::chain::played_block(&id, parent, &crate::Seed(seed), bytes));
     match res {
         Ok(Ok(Ok(pads))) => copy_out(&crate::proof::Raw.encode(&pads), out, cap),
+        Ok(Ok(Err(crate::chain::BlockVerdict::NeedParent))) => {
+            set_error("the parent's end state isn't cached".into());
+            usize::MAX - 1
+        }
+        Ok(Ok(Err(v))) => {
+            set_error(format!("{v:?}"));
+            usize::MAX
+        }
+        Ok(Err(e)) => {
+            set_error(e.to_string());
+            usize::MAX
+        }
+        Err(_) => {
+            set_error("panic while replaying".into());
+            usize::MAX
+        }
+    }
+}
+
+/// The inputs of block `id32`'s proof, codec-free (the non-poked frames' pads;
+/// replays the run, so state-coded proofs work); parent arguments as for
+/// sm64pow_verify_block. Same return convention as `sm64pow_decode_raw`,
+/// plus SIZE_MAX-1 when the parent's end state isn't cached.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_wanted_block(id32: *const u8, parent32: *const u8, gap_seconds: u64, hash32: *const u8, proof: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
+    let (Some(id), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(hash32) }) else {
+        set_error("null block id or seed hash".into());
+        return usize::MAX;
+    };
+    let parent = unsafe { parent_arg(parent32, gap_seconds) };
+    let bytes = blob_arg(proof, len);
+    let res = std::panic::catch_unwind(|| crate::chain::played_wanted_block(&id, parent, &crate::Seed(seed), bytes));
+    match res {
+        Ok(Ok(Ok(pl))) => copy_out(&crate::proof::Raw.encode(&pl.wanted()), out, cap),
         Ok(Ok(Err(crate::chain::BlockVerdict::NeedParent))) => {
             set_error("the parent's end state isn't cached".into());
             usize::MAX - 1

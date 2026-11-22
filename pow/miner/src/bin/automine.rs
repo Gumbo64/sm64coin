@@ -358,7 +358,7 @@ fn main() -> Result<()> {
         // regenerated from the seed).
         let frames = m.pads.len() as u32;
         let proof = sm64pow::seal_proof_at(start, parent_state.as_ref(), &seed, &params, &m.pads)?;
-        match sm64pow::proof::decode_proof(&proof, sm64pow::proof::MAX_FRAMES) {
+        match sm64pow::decode_proof_any(&proof, parent_state.as_ref(), &seed, &params) {
             Ok(pr) if pr.frames == frames && pr.start == start => {
                 let again = sm64pow::played_from_proof_at(parent_state.as_ref(), &seed, &params, &pr)?;
                 if again != m.pads {

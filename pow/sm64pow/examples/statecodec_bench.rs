@@ -21,7 +21,9 @@ fn main() -> anyhow::Result<()> {
         let seed = sm64pow::Seed::from_hex(j["seed_hash"].as_str().unwrap())?;
         let pr = Proof { frames: j["frames"].as_u64().unwrap() as u32, start, inputs: pads("inputs") };
         let ps = if start == Start::Parent { Some(statecodec::state_after(&pads("parent_played"))?) } else { None };
-        let blob = statecodec::encode_proof_state(&StateCtx1, ps.as_ref(), &seed, &p, &pr)?;
+        let codec = statecodec::state_codec(std::env::var("SC_ID").map(|v| v.parse().unwrap()).unwrap_or(4)).unwrap();
+        let _ = StateCtx1;
+        let blob = statecodec::encode_proof_state(codec, ps.as_ref(), &seed, &p, &pr)?;
         let sizes = [proof::encode_proof_with(&proof::Raw, &pr).len(), proof::encode_proof_with(&proof::RunLength, &pr).len(), proof::encode_proof_with(&proof::Xz, &pr).len(), blob.len()];
         for i in 0..4 {
             tot[i] += sizes[i];
@@ -41,13 +43,13 @@ fn main() -> anyhow::Result<()> {
             let (_, start2, cid, body) = proof::split_blob(&blob)?;
             let (mut g, _) = sm64pow::chain::mining_start(start2, ps.as_ref(), &seed, &p)?;
             let c = statecodec::state_codec(cid).unwrap();
-            let (mut dec, mut enc) = (c.decoder(body), c.encoder());
+            let mut dec = c.decoder(body);
             let t = Instant::now();
             for _ in 0..pr.frames {
-                let (_, poked) = g.step_with(|f| { let x = dec.pad(f); enc.pad(f, x); Ok(x) })?;
-                if poked { dec.poked(); enc.poked(); }
+                let (_, poked) = g.step_with(|f| { Ok(dec.pad(f)) })?;
+                if poked { dec.poked(); }
             }
-            assert_eq!(enc.finish(), body);
+            assert_eq!(dec.finish(), body);
             t_state = t_state.min(t.elapsed().as_secs_f64());
         }
         let b = |x: usize| x as f64 * 8.0 / pr.frames as f64;

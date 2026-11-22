@@ -2,7 +2,9 @@
 // to pow/sm64pow/src/proof.rs: the first byte names the codec. The browser
 // only writes codec 0 (raw, 4 bytes per frame); the daemon re-encodes
 // submitted proofs with its smallest codec (the block id doesn't change).
-// The explorer reads `sm64_pads` from get_block, already decoded to raw.
+// The explorer reads `sm64_pads` from get_block, already decoded to raw. State-aware
+// codecs (3+) cannot be decoded without replaying the run, so get_block fills
+// `sm64_pads` for them only with sm64_played: true (the Block page does).
 import { GamePad } from 'sm64-binds-frontend';
 
 export function hexToBytes(hex) {

@@ -41,6 +41,9 @@ uint32_t sm64pow_proof_frames(const uint8_t *proof, size_t len);
 /* SIZE_MAX error, SIZE_MAX-1 parent state not cached */
 size_t sm64pow_played_block(const uint8_t *id32, const uint8_t *parent32, uint64_t gap_seconds, const uint8_t *hash32,
                             const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
+/* the proof's inputs (non-poked frames, 4 bytes each), codec-free: replays the run */
+size_t sm64pow_wanted_block(const uint8_t *id32, const uint8_t *parent32, uint64_t gap_seconds, const uint8_t *hash32,
+                            const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
 void sm64pow_probs(uint64_t difficulty, float *a_prob, float *b_prob, float *z_prob);
 void sm64pow_rules_info(char *name, size_t name_cap, char *goal, size_t goal_cap);
 #ifdef __cplusplus

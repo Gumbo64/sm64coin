@@ -125,6 +125,21 @@ impl RangeEncoder {
         }
     }
 
+    /// [`encode`](RangeEncoder::encode) with a 16-bit probability `p1` in 1..65536.
+    pub fn encode16(&mut self, bit: bool, p1: u32) {
+        let bound = (self.range >> 16) * p1;
+        if bit {
+            self.range = bound;
+        } else {
+            self.low += bound as u64;
+            self.range -= bound;
+        }
+        while self.range < TOP {
+            self.range <<= 8;
+            self.shift_low();
+        }
+    }
+
     /// Ends the stream: the value in the final interval with the most
     /// trailing zero bits, then every trailing zero byte dropped (the decoder
     /// reads zeros past the end). The leading byte is always 0 and is dropped.
@@ -169,6 +184,22 @@ impl<'a> RangeDecoder<'a> {
         self.pos += 1;
         b
     }
+    pub fn decode16(&mut self, p1: u32) -> bool {
+        let bound = (self.range >> 16) * p1;
+        let bit = if self.code < bound {
+            self.range = bound;
+            true
+        } else {
+            self.code -= bound;
+            self.range -= bound;
+            false
+        };
+        while self.range < TOP {
+            self.code = (self.code << 8) | self.next() as u32;
+            self.range <<= 8;
+        }
+        bit
+    }
     pub fn decode(&mut self, p1: u32) -> bool {
         let bound = (self.range >> PROB_BITS) * p1;
         let bit = if self.code < bound {
@@ -191,6 +222,10 @@ impl<'a> RangeDecoder<'a> {
 /// ignores it and returns what it decodes.
 pub trait BitIo {
     fn bit(&mut self, bit: bool, p1: u32) -> bool;
+    /// The same with a 16-bit probability (codecs from 4 on).
+    fn bit16(&mut self, bit: bool, p1: u32) -> bool {
+        self.bit(bit, (p1 >> 4).clamp(1, 4095))
+    }
 }
 
 impl BitIo for RangeEncoder {
@@ -198,11 +233,18 @@ impl BitIo for RangeEncoder {
         self.encode(bit, p1);
         bit
     }
+    fn bit16(&mut self, bit: bool, p1: u32) -> bool {
+        self.encode16(bit, p1);
+        bit
+    }
 }
 
 impl BitIo for RangeDecoder<'_> {
     fn bit(&mut self, _: bool, p1: u32) -> bool {
         self.decode(p1)
+    }
+    fn bit16(&mut self, _: bool, p1: u32) -> bool {
+        self.decode16(p1)
     }
 }
 
@@ -213,6 +255,11 @@ pub struct CostMeter {
 }
 
 impl BitIo for CostMeter {
+    fn bit16(&mut self, bit: bool, p1: u32) -> bool {
+        let p = if bit { p1 } else { 65536 - p1 } as f64 / 65536.0;
+        self.bits -= p.log2();
+        bit
+    }
     fn bit(&mut self, bit: bool, p1: u32) -> bool {
         let p = if bit { p1 } else { 4096 - p1 } as f64 / 4096.0;
         self.bits -= p.log2();
@@ -228,7 +275,7 @@ const SQUASH_T: [i32; 33] = [
 ];
 
 /// 4096 / (1 + e^-d/256), d in -2047..=2047, by interpolation.
-fn squash(d: i32) -> i32 {
+pub(crate) fn squash(d: i32) -> i32 {
     if d > 2047 {
         return 4095;
     }
@@ -240,7 +287,7 @@ fn squash(d: i32) -> i32 {
     (SQUASH_T[i] * (128 - w) + SQUASH_T[i + 1] * w + 64) >> 7
 }
 
-fn stretch_table() -> Vec<i16> {
+pub(crate) fn stretch_table() -> Vec<i16> {
     let mut t = vec![0i16; 4096];
     let mut pi = 0usize;
     for x in -2047..=2047 {
@@ -616,6 +663,10 @@ pub trait StateEncoder {
 pub trait StateDecoder {
     fn pad(&mut self, f: &Features) -> GamePad;
     fn poked(&mut self);
+    /// The canonical encoding of everything decoded so far (the decoder
+    /// re-encodes alongside), to compare with the body: a run has exactly one
+    /// valid encoding.
+    fn finish(self: Box<Self>) -> Vec<u8>;
 }
 
 /// A codec whose body is decoded frame by frame during the replay. Like
@@ -629,7 +680,10 @@ pub trait StateCodec: Sync {
 
 /// Every state codec this build knows (accepted in blocks only when
 /// [`state_codec_enabled`]).
-pub static STATE_CODECS: &[&dyn StateCodec] = &[&StateCtx1];
+pub static STATE_CODECS: &[&dyn StateCodec] = &[&StateCtx1, &crate::statemix::VARIANTS[0], &crate::statemix::VARIANTS[1]];
+
+/// The codecs sealing tries (the newest family; 3 stays decodable).
+pub static SEAL_CODECS: &[&dyn StateCodec] = &[&crate::statemix::VARIANTS[0], &crate::statemix::VARIANTS[1]];
 
 pub fn state_codec(id: u8) -> Option<&'static dyn StateCodec> {
     STATE_CODECS.iter().copied().find(|c| c.id() == id)
@@ -653,6 +707,7 @@ struct ModelEncoder {
 struct ModelDecoder<'a> {
     m: Model,
     d: RangeDecoder<'a>,
+    re: ModelEncoder,
 }
 
 impl StateEncoder for ModelEncoder {
@@ -669,10 +724,16 @@ impl StateEncoder for ModelEncoder {
 
 impl StateDecoder for ModelDecoder<'_> {
     fn pad(&mut self, f: &Features) -> GamePad {
-        self.m.code_pad(&mut self.d, f, GamePad::default())
+        let p = self.m.code_pad(&mut self.d, f, GamePad::default());
+        self.re.pad(f, p);
+        p
     }
     fn poked(&mut self) {
         self.m.poked();
+        self.re.poked();
+    }
+    fn finish(self: Box<Self>) -> Vec<u8> {
+        Box::new(self.re).finish()
     }
 }
 
@@ -687,7 +748,7 @@ impl StateCodec for StateCtx1 {
         Box::new(ModelEncoder { m: Model::new(), e: RangeEncoder::default() })
     }
     fn decoder<'a>(&self, body: &'a [u8]) -> Box<dyn StateDecoder + 'a> {
-        Box::new(ModelDecoder { m: Model::new(), d: RangeDecoder::new(body) })
+        Box::new(ModelDecoder { m: Model::new(), d: RangeDecoder::new(body), re: ModelEncoder { m: Model::new(), e: RangeEncoder::default() } })
     }
 }
 
@@ -718,6 +779,30 @@ pub fn encode_proof_state(c: &dyn StateCodec, parent: Option<&SaveState>, seed: 
     out.push(c.id());
     out.extend(enc.finish());
     Ok(out)
+}
+
+/// Decodes a state-coded proof blob to its codec-free [`Proof`] by replaying
+/// the run from `parent` (the parent's end state, for a parent start): the
+/// inputs are decoded frame by frame in the states they are played in, and
+/// the body must be the canonical encoding. Does not check that the run
+/// succeeds. For tools (SDK, explorers); the verifier does this inside
+/// [`crate::chain`]'s replay.
+pub fn decode_proof_state(blob: &[u8], parent: Option<&SaveState>, seed: &Seed, p: &crate::Params) -> Result<Proof> {
+    let (frames, start, id, body) = crate::proof::split_blob(blob)?;
+    let c = state_codec(id).ok_or_else(|| anyhow::anyhow!("unknown proof codec {id}"))?;
+    let (mut g, _) = crate::chain::mining_start(start, parent, seed, p)?;
+    let mut dec = c.decoder(body);
+    let mut inputs = Vec::new();
+    for _ in 0..frames {
+        let (pad, poked) = g.step_with(|ft| Ok(dec.pad(ft)))?;
+        if poked {
+            dec.poked();
+        } else {
+            inputs.push(pad);
+        }
+    }
+    anyhow::ensure!(dec.finish() == body, "state-coded proof is not the canonical encoding");
+    Ok(Proof { frames, start, inputs })
 }
 
 /// proof_id of a state-coded blob: it commits to the encoded bytes (decoding

@@ -118,7 +118,7 @@ fn start_game(start: Start, parent: &Parent) -> Result<Option<std::result::Resul
 /// Replays `pr` from `game` (progress `before`): Valid when the success
 /// condition first holds on exactly the last frame with every input used.
 /// `max_frames` None skips the time limit (rebuilding accepted blocks).
-fn replay(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params, pr: &Proof, max_frames: Option<u32>, played: Option<&mut Vec<GamePad>>) -> Result<std::result::Result<(SM64MiningGame, Progress), String>> {
+fn replay(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params, pr: &Proof, max_frames: Option<u32>, played: Option<&mut Played>) -> Result<std::result::Result<(SM64MiningGame, Progress), String>> {
     let r = rules();
     if pr.frames == 0 {
         return Ok(Err("empty proof".into()));
@@ -138,7 +138,8 @@ fn replay(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params,
         let wanted = pr.inputs.get(next).copied().unwrap_or_default();
         let (pad, poked) = g.step(wanted)?;
         if let Some(o) = out.as_deref_mut() {
-            o.push(pad);
+            o.pads.push(pad);
+            o.poked.push(poked);
         }
         if !poked {
             if next >= pr.inputs.len() {
@@ -165,7 +166,7 @@ fn replay(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params,
 /// conditions the body must be exactly the canonical encoding of the decoded
 /// inputs (re-encoded alongside), so a run has one valid encoding.
 #[allow(clippy::too_many_arguments)]
-fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params, frames: u32, codec: &dyn crate::statecodec::StateCodec, body: &[u8], max_frames: Option<u32>, played: Option<&mut Vec<GamePad>>) -> Result<std::result::Result<(SM64MiningGame, Progress), String>> {
+fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params, frames: u32, codec: &dyn crate::statecodec::StateCodec, body: &[u8], max_frames: Option<u32>, played: Option<&mut Played>) -> Result<std::result::Result<(SM64MiningGame, Progress), String>> {
     let r = rules();
     if frames == 0 {
         return Ok(Err("empty proof".into()));
@@ -178,27 +179,24 @@ fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &P
     // Never more inputs than frames: one decode per non-poked frame, at most `frames` frames.
     let mut g = SM64MiningGame::from_game(game, seed, p);
     let mut dec = codec.decoder(body);
-    let mut enc = codec.encoder();
     let mut out = played;
     for f in 0..frames as usize {
         let (pad, poked) = g.step_with(|ft| {
-            let pad = dec.pad(ft);
-            enc.pad(ft, pad);
-            Ok(pad)
+            Ok(dec.pad(ft))
         })?;
         if poked {
             dec.poked();
-            enc.poked();
         }
         if let Some(o) = out.as_deref_mut() {
-            o.push(pad);
+            o.pads.push(pad);
+            o.poked.push(poked);
         }
         let now = g.progress()?;
         if r.is_success(&before, &now) {
             if f + 1 != frames as usize {
                 return Ok(Err(format!("success at frame {} but the proof runs to {frames}", f + 1)));
             }
-            if enc.finish() != body {
+            if dec.finish() != body {
                 return Ok(Err("state-coded proof is not the canonical encoding".into()));
             }
             return Ok(Ok((g, now)));
@@ -207,7 +205,7 @@ fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &P
     Ok(Err("no progress was made (no new star, key or Grand Star)".into()))
 }
 
-fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Vec<GamePad>>, state_ok: bool) -> Result<BlockVerdict> {
+fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Played>, state_ok: bool) -> Result<BlockVerdict> {
     let p = params(difficulty.unwrap_or(1));
     let elapsed = match parent {
         Parent::Block { gap_seconds, .. } => *gap_seconds,
@@ -280,9 +278,32 @@ pub fn played_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> 
 }
 
 pub fn played_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8], state_ok: bool) -> Result<std::result::Result<Vec<GamePad>, BlockVerdict>> {
-    let mut pads = Vec::new();
-    match check(id, &parent, seed, None, blob, Some(&mut pads), state_ok)? {
-        BlockVerdict::Valid { .. } => Ok(Ok(pads)),
+    Ok(played_wanted_block_opts(id, parent, seed, blob, state_ok)?.map(|p| p.pads))
+}
+
+/// What a replay saw: the pad played on every frame and whether the frame
+/// was poked (the pads of the other frames are the proof's inputs).
+#[derive(Default, Clone, Debug)]
+pub struct Played {
+    pub pads: Vec<GamePad>,
+    pub poked: Vec<bool>,
+}
+
+impl Played {
+    /// The proof's inputs, whatever codec stored them (codec-free).
+    pub fn wanted(&self) -> Vec<GamePad> {
+        self.pads.iter().zip(&self.poked).filter(|(_, k)| !**k).map(|(p, _)| *p).collect()
+    }
+}
+
+pub fn played_wanted_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> Result<std::result::Result<Played, BlockVerdict>> {
+    played_wanted_block_opts(id, parent, seed, blob, crate::statecodec::state_codec_enabled())
+}
+
+pub fn played_wanted_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8], state_ok: bool) -> Result<std::result::Result<Played, BlockVerdict>> {
+    let mut pl = Played::default();
+    match check(id, &parent, seed, None, blob, Some(&mut pl), state_ok)? {
+        BlockVerdict::Valid { .. } => Ok(Ok(pl)),
         v => Ok(Err(v)),
     }
 }

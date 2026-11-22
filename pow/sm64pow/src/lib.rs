@@ -32,6 +32,8 @@ pub mod game;
 pub mod proof;
 pub mod rules;
 pub mod statecodec;
+pub mod statemix;
+mod trig;
 
 pub use game::{SM64MiningGame, SM64MiningSave};
 
@@ -268,7 +270,7 @@ pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>
     if statecodec::state_codec_enabled() {
         // Hard fork switch: a state codec may win.
         let mut best = best;
-        for c in statecodec::STATE_CODECS {
+        for c in statecodec::SEAL_CODECS {
             let b = statecodec::encode_proof_state(*c, parent, seed, p, &pr)?;
             if b.len() < best.len() {
                 best = b;
@@ -277,6 +279,16 @@ pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>
         return Ok(best);
     }
     Ok(best)
+}
+
+/// A proof blob in any codec to its codec-free [`proof::Proof`]; state-aware
+/// codecs are decoded by replaying the run from `parent` (see
+/// [`statecodec::decode_proof_state`]).
+pub fn decode_proof_any(blob: &[u8], parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params) -> Result<proof::Proof> {
+    if statecodec::state_codec_enabled() && proof::split_blob(blob).is_ok_and(|b| statecodec::state_codec(b.2).is_some()) {
+        return statecodec::decode_proof_state(blob, parent, seed, p);
+    }
+    proof::decode_proof(blob, proof::MAX_FRAMES)
 }
 
 /// The proof blob in a state-aware codec (see [`statecodec`]): the same run,

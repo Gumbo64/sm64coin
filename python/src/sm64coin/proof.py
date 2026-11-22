@@ -108,6 +108,11 @@ def decode_inputs(blob: bytes, max_frames: int):
         raise ValueError("empty proof")
     dec = {0: _raw_decode, 1: _rle_decode, 2: _xz_decode}.get(blob[0])
     if dec is None:
+        if blob[0] >= 3:
+            # State-aware codecs (3, 4, 5, ...) are decoded frame by frame while replaying the game
+            # with a context-mixing model (pow/sm64pow/src/statecodec.rs, statemix.rs); this SDK does
+            # not port it. Ask the daemon (get_block with sm64_played) or use the Rust SDK.
+            raise ValueError(f"proof codec {blob[0]} is state-aware: it can only be decoded by replaying the run (use the daemon's get_block sm64_played, or the Rust SDK)")
         raise ValueError(f"unknown proof codec {blob[0]}")
     return dec(blob[1:], min(max_frames, MAX_FRAMES))
 
