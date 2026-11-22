@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 
 pub struct Daemon {
     url: String,
+    /// Leaderboard tag (sm64lb) written into the coinbase's extra nonce of every template:
+    /// part of the hashing blob, hence of the seed, so it is there before the run is played.
+    extra_nonce: Option<Vec<u8>>,
     agent: ureq::Agent,
 }
 
@@ -72,7 +75,26 @@ pub struct CycleBlock {
 impl Daemon {
     pub fn new(url: &str) -> Daemon {
         let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(60)).build();
-        Daemon { url: url.trim_end_matches('/').to_string(), agent }
+        Daemon { url: url.trim_end_matches('/').to_string(), extra_nonce: None, agent }
+    }
+
+    /// Put `tag` (an encoded `sm64lb::tag::Tag`) into every template's coinbase extra nonce.
+    pub fn with_extra_nonce(mut self, tag: Vec<u8>) -> Daemon {
+        self.extra_nonce = Some(tag);
+        self
+    }
+
+    /// `get_block_template` params: the reserve (none) or the extra nonce, and `more`.
+    fn template_params(&self, address: &str, more: Value) -> Value {
+        let mut p = json!({"wallet_address": address});
+        match &self.extra_nonce {
+            Some(t) => p["extra_nonce"] = json!(hex::encode(t)),
+            None => p["reserve_size"] = json!(0),
+        }
+        if let (Some(m), Some(o)) = (more.as_object(), p.as_object_mut()) {
+            o.extend(m.clone());
+        }
+        p
     }
 
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
@@ -85,7 +107,7 @@ impl Daemon {
     }
 
     pub fn template(&self, address: &str) -> Result<Template> {
-        let r = self.call("get_block_template", json!({"wallet_address": address, "reserve_size": 0}))?;
+        let r = self.call("get_block_template", self.template_params(address, json!({})))?;
         Ok(serde_json::from_value(r)?)
     }
 
@@ -93,7 +115,7 @@ impl Daemon {
     /// (`sm64_valid_at`). Only that field is meant to be used: a fresh template
     /// may carry new mempool transactions, i.e. another seed.
     pub fn template_valid_at(&self, address: &str, frames: u32) -> Result<Template> {
-        let r = self.call("get_block_template", json!({"wallet_address": address, "reserve_size": 0, "sm64_frames": frames}))?;
+        let r = self.call("get_block_template", self.template_params(address, json!({"sm64_frames": frames})))?;
         Ok(serde_json::from_value(r)?)
     }
 

@@ -9,6 +9,7 @@ import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
+import { templateParams, adoptTagFromUrl, getTagSettings, setTagSettings, tagHex } from '../lib/lbTag.js';
 
 // The manual miner: play Super Mario 64 yourself. A block is the game's next
 // progress point (a star, a Bowser key, the Grand Star after 70 stars), played
@@ -26,6 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 function Miner() {
+  useState(adoptTagFromUrl); // the wallet link's ?lbname=&lbkey= (once, before the first template)
   const canvas = useRef(null);
   // ?address= (the GUI wallet's "Play to mine" link) beats the stored address.
   const [address, setAddress] = useState(() => {
@@ -76,7 +78,7 @@ function Miner() {
     const refresh = setInterval(async () => {
       if (!head || !isAddress(addr.current)) return;
       try {
-        const t = await daemon('get_block_template', { wallet_address: addr.current, reserve_size: 0 });
+        const t = await daemon('get_block_template', await templateParams(addr.current));
         if (t.prev_hash !== head) return;
         c.tipTemplate = t;
         setLim(t.sm64_max_frames);
@@ -95,7 +97,9 @@ function Miner() {
         let t;
         try {
           const paysTo = addr.current;
-          t = await daemon('get_block_template', { wallet_address: paysTo, reserve_size: 0 });
+          const tp = await templateParams(paysTo, {}, (m) => say(`leaderboard tag not used: ${m}`));
+          t = await daemon('get_block_template', tp);
+          t.tagged = !!tp.extra_nonce;
           t.paysTo = paysTo; // the template's coinbase pays this address
         } catch (e) { say(String(e)); await sleep(3000); continue; }
         const won = successFor(t.sm64_rules);
@@ -133,7 +137,7 @@ function Miner() {
         // When does a run this long become valid? (The limit grows with time.)
         let validAt = 0;
         try {
-          const q = await daemon('get_block_template', { wallet_address: t.paysTo, reserve_size: 0, sm64_frames: nFrames });
+          const q = await daemon('get_block_template', await templateParams(t.paysTo, { sm64_frames: nFrames }));
           validAt = q.sm64_valid_at || 0;
         } catch (e) { say(`could not ask when the run is valid: ${e}`); }
         let superseded = false;
@@ -227,6 +231,7 @@ function Miner() {
             <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the attempt)</button>
           </div>
         )}
+        <LeaderboardOptIn address={address} task={task} onSkip={() => rec.current && rec.current.skip()} />
         {task && start ? <CyclePanel task={task} start={start} /> : null}
         {start && start.kind === 'parent' && startMode === 'either' && (
           <div className="notice">
@@ -269,6 +274,46 @@ function Miner() {
       </aside>
     </div>
     </>
+  );
+}
+
+// The optional on-chain leaderboard opt-in: name + the address's private view key go into
+// the coinbase of every template this page mines (lib/lbTag.js). Stored in this browser only.
+function LeaderboardOptIn({ address, task, onSkip }) {
+  const [saved, setSaved] = useState(getTagSettings);
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(saved ? saved.name : '');
+  const [key, setKey] = useState('');
+  const [msg, setMsg] = useState('');
+  const apply = async (k) => {
+    try {
+      setTagSettings({ name, viewKey: k });
+      await tagHex(address); // throws when the view key does not match the address
+      setSaved(getTagSettings()); setKey(''); setMsg('Saved. It applies to the next template (restart the attempt to use it now).');
+    } catch (e) { setTagSettings(saved); setMsg(String(e.message || e)); }
+  };
+  const off = () => { setTagSettings(null); setSaved(null); setName(''); setKey(''); setMsg(''); };
+  return (
+    <details className="sec" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>Show me on the leaderboard{saved ? ` (on: ${saved.name}${task && task.tagged ? '' : ', next template'})` : ''}</summary>
+      <div className="help muted">
+        <p>Optional. Your blocks then carry your name and view key in their coinbase, and the
+          {' '}<a href="/leaderboard">Leaderboard</a> (computed from the chain alone) lists you. <b>Privacy:</b> a view key
+          shows every payment to this address, to everyone, <b>forever</b> (it is written into the blocks; this cannot be
+          undone). It can't spend your coins. Use a dedicated mining address.</p>
+        <input value={name} maxLength={24} onChange={(e) => setName(e.target.value)} placeholder="Display name (max 24 bytes)" />
+        <input className="mono wide" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value.trim())}
+          placeholder={saved ? 'view key saved (paste to replace)' : 'private view key (64 hex characters)'} />
+        <p>
+          <button disabled={!name.trim() || !/^[0-9a-fA-F]{64}$/.test(key || (saved ? saved.viewKey : ''))}
+            onClick={() => apply(key || (saved ? saved.viewKey : ''))}>{saved ? 'Update' : 'Show me'}</button>{' '}
+          {saved && <button onClick={off}>Stop (new blocks only)</button>}{' '}
+          {saved && <button onClick={onSkip} title="New template with the tag">Restart attempt</button>}
+        </p>
+        {msg && <p>{msg}</p>}
+        <p>In the wallet: Mining &rarr; Leaderboard &rarr; On the chain fills this in. Needs a standard address.</p>
+      </div>
+    </details>
   );
 }
 

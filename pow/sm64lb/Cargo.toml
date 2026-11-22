@@ -1,0 +1,10 @@
+[package]
+name = "sm64lb"
+version = "0.1.0"
+edition = "2024"
+description = "SM64Coin on-chain leaderboard: the coinbase tag codec and the view-key ownership check (native and WASM)"
+
+[dependencies]
+curve25519-dalek = "4"
+sha3 = "0.10"
+hex = "0.4"

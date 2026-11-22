@@ -26,6 +26,19 @@ struct Args {
     address: String,
     #[arg(long, default_value = "http://127.0.0.1:16481")]
     daemon: String,
+    /// On-chain leaderboard opt-in: a display name (max 24 bytes), written with the address's
+    /// private view key into the coinbase of every block this miner mines. The explorer then
+    /// lists you from the chain alone. The view key is PUBLIC from then on (it shows all payments
+    /// to this address forever): use a dedicated mining address.
+    #[arg(long)]
+    leaderboard_name: Option<String>,
+    /// The address's private view key (64 hex). Prefer --leaderboard-view-key-file or the env
+    /// variable: command lines are visible to other users.
+    #[arg(long)]
+    leaderboard_view_key: Option<String>,
+    /// File holding the private view key (hex).
+    #[arg(long)]
+    leaderboard_view_key_file: Option<String>,
     /// US Super Mario 64 ROM.
     #[arg(long, default_value = "baserom.us.z64")]
     rom: String,
@@ -137,7 +150,20 @@ fn main() -> Result<()> {
         bail!("{} does not look like an SM64Coin address", a.address);
     }
     sm64pow::init(std::fs::read(&a.rom)?)?;
-    let daemon = rpc::Daemon::new(&a.daemon);
+    let mut daemon = rpc::Daemon::new(&a.daemon);
+    if let Some(name) = &a.leaderboard_name {
+        let vk = match (&a.leaderboard_view_key_file, &a.leaderboard_view_key) {
+            (Some(f), _) => std::fs::read_to_string(f)?,
+            (None, Some(k)) => k.clone(),
+            _ => std::env::var("SM64_LEADERBOARD_VIEW_KEY").map_err(|_| anyhow::anyhow!("--leaderboard-name needs --leaderboard-view-key-file (or the SM64_LEADERBOARD_VIEW_KEY variable)"))?,
+        };
+        // checks that the view key belongs to the address (A = a*G)
+        let tag = sm64lb::tag::Tag::new(name, &a.address, &vk).map_err(|e| anyhow::anyhow!("leaderboard tag: {e}"))?;
+        println!("on-chain leaderboard: blocks carry the name {:?} (view key published in each block)", tag.name);
+        daemon = daemon.with_extra_nonce(tag.encode());
+    } else if a.leaderboard_view_key_file.is_some() || a.leaderboard_view_key.is_some() {
+        bail!("a leaderboard view key without --leaderboard-name");
+    }
     let mut lib = Library::new(Some(a.route_stats.clone()));
     if a.controller == "beam" {
         for r in &a.route {

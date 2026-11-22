@@ -1,0 +1,16 @@
+{
+  "name": "sm64lb-wasm",
+  "type": "module",
+  "description": "The on-chain leaderboard check (sm64lb) for the browser: the same code as the leaderboard server",
+  "version": "0.1.0",
+  "files": [
+    "sm64lb_wasm_bg.wasm",
+    "sm64lb_wasm.js",
+    "sm64lb_wasm.d.ts"
+  ],
+  "main": "sm64lb_wasm.js",
+  "types": "sm64lb_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

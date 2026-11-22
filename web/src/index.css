@@ -126,3 +126,4 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .replay-info .verdict.bad { color: #ff6b6b; }
 .replay-info a { color: var(--acc); }
 .timeline.clickable { cursor:pointer; }
+.tabs button.on { background: var(--acc); color:#1a1a1a; }

@@ -1,6 +1,6 @@
 [workspace]
-members = ["sm64pow", "perturb", "miner", "leaderboard", "sdk"]
-exclude = ["perturb-wasm"]
+members = ["sm64pow", "perturb", "miner", "leaderboard", "sdk", "sm64lb"]
+exclude = ["perturb-wasm", "lb-wasm"]
 resolver = "3"
 
 [workspace.dependencies]
