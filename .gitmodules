@@ -1,0 +1,8 @@
+[submodule "monero"]
+	path = monero
+	url = https://github.com/Gumbo64/sm64coin-monero.git
+	branch = sm64coin
+[submodule "gui"]
+	path = gui
+	url = https://github.com/Gumbo64/sm64coin-gui.git
+	branch = sm64coin
