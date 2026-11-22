@@ -1,12 +1,20 @@
-import { GameConfig, RngConfig } from 'sm64-binds-frontend';
+import { GameConfig } from 'sm64-binds-frontend';
 
-// A GameConfig for a task as the daemon reports it (get_info,
-// get_block_template and get_block all carry these sm64_* fields).
+// A GameConfig-like object for a task as the daemon reports it (get_info,
+// get_block_template and get_block all carry these sm64_* fields). The
+// perturbation's parameters (`random_config`) are SM64Coin's own: the game
+// bindings no longer know about them (sm64-binds 2.1), lib/perturb.js reads them.
 export function gameConfig(t) {
-  return new GameConfig(
-    t.sm64_max_frames,
-    new RngConfig(t.sm64_window_length, t.sm64_random_amount, t.sm64_burst_length, t.sm64_a_prob, t.sm64_b_prob, t.sm64_z_prob),
-  );
+  const c = new GameConfig(t.sm64_max_frames);
+  c.random_config = {
+    window_length: t.sm64_window_length,
+    random_amount: t.sm64_random_amount,
+    random_burst_length: t.sm64_burst_length,
+    A_prob: t.sm64_a_prob,
+    B_prob: t.sm64_b_prob,
+    Z_prob: t.sm64_z_prob,
+  };
+  return c;
 }
 
 /** A daemon task result with its GameConfig attached, for recordRun/playRun. */

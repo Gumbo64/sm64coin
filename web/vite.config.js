@@ -3,13 +3,12 @@ import react from '@vitejs/plugin-react'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// The replay viewer (player UI, controls, timeline, resolution options, MP4
-// export) is sm64-viewer's: one copy, imported as 'sm64-replay-ui' (its
-// src/replay-ui.js). Its own imports of react and the game bindings must
-// resolve to this app's copies (two Reacts break hooks, two engines are two
-// games), hence the aliases; mp4-muxer comes from the viewer's install.
+// The replay player (UI, controls, timeline, MP4 export) is sm64-binds-frontend's
+// `/replay` subpath. The package is a file: dependency for now (a symlink to
+// sm64-binds/javascript), so its own React must resolve to this app's copy
+// (two Reacts break hooks): see `dedupe`.
 const here = path.dirname(fileURLToPath(import.meta.url))
-const viewer = process.env.SM64_VIEWER || path.resolve(here, '../../sm64-viewer/frontend')
+const binds = path.resolve(here, '../../sm64-binds/javascript')
 
 // The daemon RPC doesn't send CORS headers, so the dev/preview server
 // proxies it: /json_rpc -> sm64coin daemon (and /leaderboard-api -> a
@@ -25,13 +24,8 @@ const proxy = {
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      'sm64-replay-ui': path.join(viewer, 'src/replay-ui.js'),
-      'sm64-binds-frontend': path.join(here, 'node_modules/sm64-binds-frontend'),
-      'mp4-muxer': path.join(viewer, 'node_modules/mp4-muxer'),
-    },
     dedupe: ['react', 'react-dom'],
   },
-  server: { proxy, port: 5181, host: true, fs: { allow: [here, viewer] } },
+  server: { proxy, port: 5181, host: true, fs: { allow: [here, binds] } },
   preview: { proxy, port: 4174 },
 })

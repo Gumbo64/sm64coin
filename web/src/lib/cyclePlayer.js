@@ -1,5 +1,5 @@
 // Plays a whole cycle (up to and including one block) in the visual engine, as
-// a subclass of sm64-viewer's Player (shared through sm64-replay-ui): the
+// a subclass of sm64-binds-frontend's replay Player (`sm64-binds-frontend/replay`): the
 // viewer's real-time play, speeds, frame steps, resolution control, picture
 // freeze, MP4 export all come from there. What this adds:
 //
@@ -12,7 +12,7 @@
 //   played; seeking restores the nearest earlier one and the viewer's
 //   fast-forward replays from there. A state inside the block restores the
 //   perturbation too, so seeking into the block still verifies.
-import { Player, Trail } from 'sm64-replay-ui';
+import { Player, Trail } from 'sm64-binds-frontend/replay';
 import { Perturbation, perturbReady, readProgress } from './perturb.js';
 import { captureState, restoreState } from './savestate.js';
 
@@ -63,8 +63,7 @@ export class CyclePlayer extends Player {
   }
 
   // --- save states ---
-  // The viewer's Player keeps a Trail of states by frame (lib/trail.js, shared
-  // with sm64-viewer, which keeps portable states there) and seeks both ways
+  // The viewer's Player keeps a Trail of states by frame (lib/trail.js, from sm64-binds-frontend/replay, which keeps portable states there) and seeks both ways
   // through it. Here a state is {mem (lib/savestate.js: the engine's memory,
   // unchanged pages shared between states), pert (the perturbation)}.
   // Swap captureState/restoreState for the binds engine's save_state /

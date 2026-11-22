@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
-import { Viewer } from 'sm64-replay-ui';
+import { Viewer } from 'sm64-binds-frontend/replay';
+import 'sm64-binds-frontend/replay.css';
 import { CyclePlayer } from '../lib/cyclePlayer.js';
 import { eventName } from '../lib/CycleTimeline.jsx';
 import { daemon } from '../lib/rpc.js';

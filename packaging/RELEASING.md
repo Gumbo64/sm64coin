@@ -28,7 +28,7 @@ through RPATH. The ROM is never shipped.
 - **sm64coin-automine** is not in the bundle: `pow/miner` depends on the private research crates in
   Gumbo64/sm64-AI-binds (`objective-rrt-v2`, not pushed). Once those are published (or the miner
   stops needing them) drop the `miner`/`sdk` removal in `scripts/ci-prepare.sh`.
-- `scripts/ci-prepare.sh --web` checks out sm64-viewer and sm64-binds next to the repo for the
-  shared replay player; remove it when the player ships in the sm64-binds npm package.
+- The website gets the shared replay player from the `sm64-binds-frontend` npm package (>= 2.2.0,
+  `sm64-binds-frontend/replay`); no sibling checkouts (`ci-prepare.sh --web` is a no-op).
 - `sm64-binds` comes from git (tag v2.1.1) via `[patch.crates-io]` in `pow/Cargo.toml` until it is on
   crates.io; delete that section then.
