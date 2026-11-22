@@ -144,6 +144,18 @@ bundle_windows_libs() {
   [ -z "$bad" ] || { echo "package.sh: DLLs not bundled: $bad" >&2; exit 1; }
 }
 
+# Imports of the build machine's Homebrew that a macOS binary of the bundle still has (bash 3.2:
+# keep this out of a $( ) with parentheses in it).
+mac_bad_imports() {
+  local f id
+  find "$STAGE" -type f | while read -r f; do
+    if file "$f" | grep -q 'Mach-O'; then
+      id="$(otool -D "$f" 2>/dev/null | tail -n +2)"   # a library's own install name is not an import
+      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' | grep -vxF "$id" | sed "s|^|$f: |" || true
+    fi
+  done
+}
+
 # ---- macOS: Homebrew dylibs of the command-line programs; ad-hoc signatures -----------------
 bundle_macos_libs() {
   command -v dylibbundler >/dev/null || { echo "package.sh: dylibbundler is required (brew install dylibbundler)" >&2; exit 1; }
@@ -159,7 +171,7 @@ bundle_macos_libs() {
     find "$app" -type f | while read -r f; do
       file "$f" | grep -q 'Mach-O' || continue
       id="$(otool -D "$f" 2>/dev/null | tail -n +2)"
-      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local)/' | while read -r dep; do
+      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' | while read -r dep; do
         [ "$dep" = "$id" ] && continue
         case "$dep" in *.framework/*) new="@executable_path/../Frameworks/${dep#*/lib/}" ;; *) new="@executable_path/../Frameworks/$(basename "$dep")" ;; esac
         if [ -e "$app/Contents/${new#@executable_path/../}" ]; then install_name_tool -change "$dep" "$new" "$f"; else echo "  ! $f needs $dep (not in the app)"; fi
@@ -172,12 +184,7 @@ bundle_macos_libs() {
   done
   if [ -d "$STAGE/SM64Coin-Wallet.app" ]; then codesign --force --deep --sign - "$STAGE/SM64Coin-Wallet.app" 2>/dev/null; fi
   local bad
-  bad="$(find "$STAGE" -type f | while read -r f; do
-    if file "$f" | grep -q 'Mach-O'; then
-      id="$(otool -D "$f" 2>/dev/null | tail -n +2)"   # a library's own install name is not an import
-      otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local)/' | grep -vxF "$id" | sed "s|^|$f: |" || true
-    fi
-  done)" || true
+  bad="$(mac_bad_imports)" || true
   [ -z "$bad" ] || { echo "package.sh: binaries still import Homebrew libraries:" >&2; echo "$bad" >&2; exit 1; }
   du -sh "$STAGE/lib" | sed 's/^/  lib: /'
 }
