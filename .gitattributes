@@ -1,0 +1,5 @@
+# Shell scripts and workflows must keep Unix line endings even with core.autocrlf=true (Windows clones).
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+seeds.txt text eol=lf
