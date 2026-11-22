@@ -55,7 +55,7 @@ export default function Explorer() {
         const c = await daemon('get_sm64_cycle', { hash: h.hash });
         c.blocks.forEach((b, i) => {
           const old = prog.current[b.hash] || {};
-          prog.current[b.hash] = { ...old, powerOn: b.power_on, points: i + 1, cycleStart: c.start_height };
+          prog.current[b.hash] = { ...old, powerOn: b.power_on, points: i + 1, cycleStart: c.start_height, event: b.event };
         });
         prog.current[h.hash] = { ...prog.current[h.hash], exact: true, stars: c.stars, keys: c.keys, grand: c.grand_star, ends: c.ends_cycle };
         bump((x) => x + 1);
@@ -67,8 +67,9 @@ export default function Explorer() {
     if (b.height === 0) return '—';
     const p = prog.current[b.hash];
     if (!p) return '…';
-    if (p.exact) return <>{p.stars} ★{p.keys ? ` ${p.keys} 🔑` : ''}{p.grand ? ' · Grand Star, cycle ends' : ''}</>;
-    return <span title="stars and keys are filled in shortly">{p.points} pts</span>;
+    const got = p.event ? <span className="muted" title="What this block added: cNNsK = course NN star K (c00 = castle secret star), key1/key2 = Bowser keys"> · {eventName(p.event)}</span> : null;
+    if (p.exact) return <>{p.stars} ★{p.keys ? ` ${p.keys} 🔑` : ''}{p.grand ? ' · Grand Star, cycle ends' : ''}{got}</>;
+    return <span title="stars and keys are filled in shortly">{p.points} pts{got}</span>;
   };
 
   const search = (e) => {
@@ -122,4 +123,15 @@ export default function Explorer() {
 
 function Stat({ label, value }) {
   return <div className="stat"><div className="label">{label}</div><div className="value">{value}</div></div>;
+}
+
+// "c01s6" -> "BoB star 6", "key1" -> "Bowser key 1", "grand" -> "Grand Star".
+const COURSES = ['Castle', 'BoB', 'WF', 'JRB', 'CCM', 'BBH', 'HMC', 'LLL', 'SSL', 'DDD', 'SL', 'WDW', 'TTM', 'THI', 'TTC', 'RR',
+  'BitDW', 'BitFS', 'BitS', 'PSS', 'CotMC', 'TotWC', 'VCutM', 'WMotR', 'SA', 'Cake'];
+export function eventName(e) {
+  const m = /^c(\d\d)s(\d)$/.exec(e);
+  if (m) return `${COURSES[Number(m[1])] || 'course ' + Number(m[1])} star ${m[2]}`;
+  if (e.startsWith('key')) return `Bowser key ${e.slice(3)}`;
+  if (e === 'grand') return 'Grand Star';
+  return e;
 }
