@@ -113,3 +113,15 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .block-top .sm64canvas { display:block; margin:0 auto; }
 .copy { margin-left:6px; padding:0 6px; font-size:12px; line-height:18px; background:transparent; border:1px solid var(--line); color:var(--mut); border-radius:4px; cursor:pointer; }
 .copy:hover { color:var(--fg); border-color:var(--mut); }
+
+/* The block page is the shared replay viewer (sm64-viewer), full width and
+   height under the nav; its own styles are scoped to .sm64-replay. */
+.replay-host { width: 100vw; margin: -20px 0 -20px calc(50% - 50vw); height: calc(100vh - 49px); min-height: 560px; }
+.replay-host .viewer { height: 100%; }
+.replay-host .panel { width: 21rem; }
+.replay-info .kv { grid-template-columns: 5.5rem 1fr; gap: 3px 10px; margin: 0 0 6px; }
+.replay-info .kv dt { color: var(--mut); }
+.replay-info p { margin: 4px 0; }
+.replay-info .verdict.good { color: #4ade80; }
+.replay-info .verdict.bad { color: #ff6b6b; }
+.replay-info a { color: var(--acc); }

@@ -26,7 +26,7 @@ export async function createEngine(canvas) {
 
 // Skips the GL draw calls while fast-forwarding (state and textures still
 // update; only the pixels aren't drawn).
-function muteDrawing(engine) {
+export function muteDrawing(engine) {
   let gl = null;
   try { gl = engine.canvas.getContext('webgl2') || engine.canvas.getContext('webgl'); } catch { /* no context */ }
   if (!gl) return () => {};

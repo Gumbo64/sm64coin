@@ -1,16 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
-import { playRun } from '../lib/recorder.js';
-import { createEngine, reachTip } from '../lib/cycle.js';
 import { CycleStrip } from '../lib/CycleTimeline.jsx';
-import { readProgress } from '../lib/perturb.js';
-import { restoreState } from '../lib/savestate.js';
 import { daemon } from '../lib/rpc.js';
 import { rawToPads, toM64, download } from '../lib/proof.js';
-import { withConfig } from '../lib/task.js';
-import { successFor } from '../lib/rules.js';
 import { coins, short, when, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
+import BlockReplay from './BlockReplay.jsx';
 
 export default function Block() {
   const { id } = useParams();
@@ -18,12 +13,10 @@ export default function Block() {
   const [err, setErr] = useState(null);
   const [cycle, setCycle] = useState(null); // get_sm64_cycle up to this block
 
-  const [frame, setFrame] = useState(0); // the replay's frame
-
   useEffect(() => {
     // `live`: answers for a block we've since navigated away from are dropped.
     let live = true;
-    setB(null); setErr(null); setCycle(null); setFrame(0);
+    setB(null); setErr(null); setCycle(null);
     const params = /^\d+$/.test(id) ? { height: Number(id) } : { hash: id };
     // sm64_played: the daemon replays the run and returns every frame's pad
     // (the proof itself leaves out the poked frames).
@@ -51,15 +44,12 @@ export default function Block() {
     const num = (k) => (new RegExp(`"${k}":\\s*(\\d+)`).exec(b.json || '') || [])[1];
     json = { major_version: num('major_version') ?? '?', minor_version: num('minor_version') ?? '?' };
   }
-  // Where this block's run sits in its cycle, for the timeline's playhead.
-  const before = cycle ? cycle.blocks.slice(0, -1).reduce((s, x) => s + x.frames, 0) : 0;
-  return (
+  const classic = (
     <>
       {h.height > 0 && (
         <div className="card block-top">
-          {cycle ? <CycleStrip cycle={cycle} highlight={h.hash} playhead={before + frame} />
+          {cycle ? <CycleStrip cycle={cycle} highlight={h.hash} />
             : <p className="muted">{cycle === false ? "The node could not give this block's cycle." : 'Loading the cycle…'}</p>}
-          {cycle && <RomGate><Replay key={h.hash} block={b} cycle={cycle} onFrame={setFrame} /></RomGate>}
         </div>
       )}
       <div className="card">
@@ -98,6 +88,16 @@ export default function Block() {
       )}
     </>
   );
+  // With the cycle and a ROM the whole page is the replay viewer, and what the
+  // cards show goes into its side panel.
+  if (h.height > 0 && cycle) {
+    return (
+      <RomGate fallback={classic}>
+        <BlockReplay key={h.hash} block={b} cycle={cycle} panel={(view) => <BlockPanel b={b} cycle={cycle} json={json} view={view} />} />
+      </RomGate>
+    );
+  }
+  return classic;
 }
 
 function CycleInfo({ cycle, block }) {
@@ -115,55 +115,48 @@ function CycleInfo({ cycle, block }) {
   );
 }
 
-function Replay({ block, cycle, onFrame = () => {} }) {
-  const canvas = useRef(null);
-  const [status, setStatus] = useState('starting…');
-  const [speed, setSpeed] = useState(1);
-  const speedRef = useRef(1);
-  speedRef.current = speed;
-  const [frame, setFrameLocal] = useState(0);
-  const setFrame = (f) => { setFrameLocal(f); onFrame(f); };
-  useEffect(() => {
-    let killed = false;
-    const pads = rawToPads(block.sm64_played_pads);
-    let engine = null;
-    daemon('get_info')
-      .then(async (info) => {
-        const won = successFor(info.sm64_rules);
-        if (!won) throw new Error(`this page doesn't know the success condition of rules "${info.sm64_rules}" (see web/src/lib/rules.js)`);
-        engine = await createEngine(canvas.current);
-        // The block's start: power-on, or the end of the cycle up to its parent.
-        const n = cycle.blocks.length;
-        const mine = cycle.blocks[n - 1];
-        if (n === 1 || mine.power_on) {
-          restoreState(engine, null, engine.powerOn);
-        } else {
-          setStatus('fast-forwarding the cycle to where this block starts…');
-          const parentFrames = cycle.blocks.slice(0, n - 1).reduce((s, x) => s + x.frames, 0);
-          const upTo = { hash: cycle.blocks[n - 2].hash, blocks: cycle.blocks.slice(0, n - 1), played_pads: cycle.played_pads.slice(0, parentFrames * 8) };
-          const r = await reachTip(engine, upTo, (d, t) => !killed && setStatus(`fast-forwarding the cycle to where this block starts: ${Math.floor((d / t) * 100)}%`), () => killed);
-          if (!r) return null;
-        }
-        if (killed) return null;
-        const startProgress = readProgress(engine);
-        setStatus(`replaying ${pads.length} frames from ${startProgress.stars} ★ ${startProgress.keys} keys; the perturbation is re-derived and checked on every frame`);
-        return playRun(engine, withConfig(block), startProgress, pads, won, async () => killed, () => speedRef.current, setFrame);
-      })
-      .then((o) => {
-        if (killed || o == null) return;
-        if (o === 'won') setStatus('★ Success condition met on the last frame: the proof replays.');
-        else if (o.startsWith('mismatch')) setStatus(`✗ Frame ${o.split(':')[1]} does not match the perturbation.`);
-        else setStatus('The replay ended without success.');
-      })
-      .catch((e) => !killed && setStatus(`Replay failed: ${e}`));
-    return () => { killed = true; if (engine) engine.set_audio_enabled(0); };
-  }, [block, cycle]);
+// The block's details for the viewer's side panel (where the viewer lists regions).
+function BlockPanel({ b, cycle, json, view }) {
+  const h = b.block_header;
+  const v = view?.verify;
+  let verdict = 'starting…';
+  if (v) {
+    if (v.bad !== null) verdict = `✗ Frame ${v.bad - v.start} of the block does not match the perturbation.`;
+    else if (v.okTo === v.total) verdict = v.wonEnd ? '★ ✓ Success condition met on the last frame: the proof replays.' : 'The replay ended without success.';
+    else verdict = `checking every frame: ${v.okTo - v.start} / ${v.total - v.start} of the block's frames verified`;
+  }
   return (
-    <>
-      <canvas ref={canvas} className="sm64canvas" />
-      <p className="muted">{status} · frame {frame}/{block.sm64_frames} ·{' '}
-        {[1, 2, 4, 8].map((s) => <button key={s} disabled={s === speed} onClick={() => setSpeed(s)}>{s}×</button>)}
+    <div className="replay-info">
+      <h3>Block {h.height}</h3>
+      <p className={`verdict small${v && v.bad !== null ? ' bad' : v && v.okTo === v.total && v.wonEnd ? ' good' : ''}`}>{verdict}</p>
+      <dl className="kv small">
+        <dt>Hash</dt><dd className="mono">{h.hash}</dd>
+        <dt>Previous</dt><dd className="mono"><Link to={`/block/${h.prev_hash}`}>{short(h.prev_hash, 16)}</Link></dd>
+        <dt>Next</dt><dd><Link to={`/block/${h.height + 1}`}>block {h.height + 1}</Link></dd>
+        <dt>Time</dt><dd>{when(h.timestamp)}</dd>
+        <dt>Difficulty</dt><dd>{h.difficulty} (cumulative {h.cumulative_difficulty})</dd>
+        <dt>Reward</dt><dd>{coins(h.reward)} SM64</dd>
+        <dt>Size</dt><dd>{h.block_size} bytes + a {b.sm64_proof_bytes}-byte proof of play</dd>
+        <dt>Transactions</dt><dd>{h.num_txes} + coinbase <span className="mono">{short(b.miner_tx_hash, 16)}</span></dd>
+        <dt>Version</dt><dd>{json.major_version}.{json.minor_version}</dd>
+      </dl>
+      <h3>Proof of play</h3>
+      <dl className="kv small">
+        <dt>Run length</dt><dd>{b.sm64_frames} frames ({frames(b.sm64_frames)}), limit {b.sm64_max_frames} ({frames(b.sm64_max_frames)})</dd>
+        <dt>Perturbation</dt><dd>{b.sm64_random_amount} poke(s) of {b.sm64_burst_length} frames per {b.sm64_window_length}, reseeded every {b.sm64_reseed_frames} frames</dd>
+        <dt>Seed hash</dt><dd className="mono">{b.sm64_seed_hash}</dd>
+      </dl>
+      <h3>Cycle</h3>
+      <CycleInfo cycle={cycle} block={b} />
+      <h3>Downloads</h3>
+      <p className="small">
+        <button onClick={() => download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)))}>.m64: this block's run</button>
+        <br /><span className="muted">every frame as played, pokes included</span>
       </p>
-    </>
+      <p className="small">
+        <button onClick={() => download(`sm64coin-cycle-to-block${h.height}.m64`, toM64(rawToPads(cycle.played_pads)))}>.m64: the whole cycle</button>
+        <br /><span className="muted">{cycle.played_pads.length / 8} frames over {cycle.blocks.length} block{cycle.blocks.length === 1 ? '' : 's'}, unperturbed</span>
+      </p>
+    </div>
   );
 }
