@@ -9,7 +9,8 @@
 
 use crate::{Params, Seed};
 use anyhow::Result;
-use sm64_binds::{GamePad, GameState, RngConfig, SM64Game, SaveState};
+use crate::rules::RngConfig;
+use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
 pub use sm64coin_perturb::sm64::{Addrs, HEADLESS, VISUAL, View, regions, regions_len, view};
 pub use sm64coin_perturb::{Pad, PokeConfig, Perturber};
 

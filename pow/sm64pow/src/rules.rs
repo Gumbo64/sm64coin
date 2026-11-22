@@ -9,7 +9,39 @@
 //!
 //! Changing the rules is a hard fork: every node must run the same ones.
 
-use sm64_binds::{GameState, RngConfig, SM64Game};
+use sm64_binds::{GameState, SM64Game};
+
+/// The perturbation's tuning (was sm64-binds' `RngConfig`, which the stock
+/// game build no longer carries).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RngConfig {
+    pub window_length: u32,
+    pub random_amount: u32,
+    pub random_burst_length: u32,
+    pub a_prob: f32,
+    pub b_prob: f32,
+    pub z_prob: f32,
+}
+
+impl RngConfig {
+    pub const fn new(
+        window_length: u32,
+        random_amount: u32,
+        random_burst_length: u32,
+        a_prob: f32,
+        b_prob: f32,
+        z_prob: f32,
+    ) -> Self {
+        RngConfig {
+            window_length,
+            random_amount,
+            random_burst_length,
+            a_prob,
+            b_prob,
+            z_prob,
+        }
+    }
+}
 
 /// What the network asks of a miner at some difficulty.
 #[derive(Debug, Clone, Copy, PartialEq)]
