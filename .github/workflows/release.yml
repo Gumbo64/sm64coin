@@ -137,7 +137,7 @@ jobs:
           mkdir -p gui/build && cd gui/build
           ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 \
                 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_DESKTOP_ENTRY=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
-          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server
+          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server -- -k 0
           ls -la bin
         env:
           CI_LOG_DIR: ${{ github.workspace }}/ci-logs
@@ -266,11 +266,12 @@ jobs:
 
       - name: Daemon, wallets and wallet app (C++, Qt)
         run: |
+          cp -f "$MSYSTEM_PREFIX/bin/lrelease-qt5.exe" "$MSYSTEM_PREFIX/bin/lrelease.exe" || true
           [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
           mkdir -p gui/build && cd gui/build
           ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DSTATIC=OFF -DCMAKE_BUILD_TYPE=Release -DARCH=x86-64 -DBUILD_64=ON -DBUILD_TAG=win-x64 \
                 -DMANUAL_SUBMODULES=1 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
-          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server
+          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server -- -k 0
           ls -la bin
 
       - name: Save caches
@@ -385,7 +386,7 @@ jobs:
           ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 \
                 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF \
                 -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" ..
-          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server
+          ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server -- -k 0
           ls -la bin
 
       - name: ccache statistics
