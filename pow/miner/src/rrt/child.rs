@@ -128,6 +128,10 @@ pub struct StepOut {
     pub exits: usize,
     pub note: String,
     pub checkpoint: Option<Cp>,
+    /// The keys of the objectives whose attempts made the winner's path (root first; nodes
+    /// without an attempt event, e.g. dense adds, are skipped), for the next search's guide.
+    #[serde(default)]
+    pub path_keys: Vec<String>,
 }
 
 /// In control: not in the cutscene action group, controllable, no menu.
@@ -187,7 +191,7 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     println!("root: frame {} level {} course {} area {} act_select {} act_init {} cursor {} action {:#x} play_mode {} pos {:?}; goal {:?} target {:?} need {:#x}", root.frame, root.level, root.course, root.area, root.act_select, root.act_init, root.act_cursor, root.action, root.play_mode, root.pos, job.goal, job.target, job.need_flags);
     obrrt_search::envconfig::after_root(&root);
 
-    let generator = obrrt_spec::wrap(Arc::new(Registry))?;
+    let generator = guide::wrap(obrrt_spec::wrap(Arc::new(Registry))?)?;
     let save = game.save_state();
     let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator)?;
     engine.run()?;
@@ -232,7 +236,102 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     out.stars = n.st.stars;
     out.keys = n.st.keys;
     out.pos = n.st.pos;
+    out.path_keys = path_keys(tree, b as u32, &job.out_dir);
     Ok(out)
+}
+
+/// The objective keys along the path to node `i`, from the run's events.jsonl.
+fn path_keys(tree: &obrrt_search::tree::Tree, i: u32, out_dir: &str) -> Vec<String> {
+    let mut made: HashMap<u64, String> = HashMap::new();
+    if let Ok(text) = std::fs::read_to_string(std::path::Path::new(out_dir).join("events.jsonl")) {
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            if let (Some(n), Some(k)) = (v["added"].as_u64(), v["key"].as_str()) {
+                made.insert(n, k.to_string());
+            }
+        }
+    }
+    let mut chain = Vec::new();
+    let mut at = Some(i);
+    while let Some(n) = at {
+        chain.push(n);
+        at = tree.nodes[n as usize].parent;
+    }
+    chain.iter().rev().filter_map(|n| made.get(&(*n as u64)).cloned()).collect()
+}
+
+/// Goal bias from the best run so far: `OBRRT_GUIDE_KEYS=<file>` (one objective key per
+/// line, from the run's `path_keys`) and `OBRRT_GUIDE_WEIGHT` (×, default 20). Every generated
+/// objective with one of those keys gets its pool weight × the weight and its kinship waived
+/// (any state in the tree may start it, not only near relatives of the state it was generated
+/// from), as RRT samples its goal at a fixed rate among random targets.
+mod guide {
+    use anyhow::Result;
+    use obrrt_core::{Arrival, Budget, DenseKeep, Eta, GaBudget, Generator, Mem, Objective, PadOverlay, Precision, St};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    struct Guided {
+        inner: Arc<dyn Objective>,
+        weight: f64,
+    }
+
+    impl Objective for Guided {
+        fn kind(&self) -> &'static str { self.inner.kind() }
+        fn key(&self) -> String { self.inner.key() }
+        fn obj_weight(&self, b: &St) -> f64 { self.inner.obj_weight(b) * self.weight }
+        fn base_criteria(&self, s: &St) -> bool { self.inner.base_criteria(s) }
+        fn eta(&self, s: &St, start: &St, mem: &mut Mem) -> Eta { self.inner.eta(s, start, mem) }
+        fn fixed(&self) -> Option<Budget> { self.inner.fixed() }
+        fn ga_budget(&self) -> Option<GaBudget> { self.inner.ga_budget() }
+        fn precision(&self) -> Precision { self.inner.precision() }
+        fn kinship(&self) -> u32 { 1000 }
+        fn dense_keep(&self) -> DenseKeep { self.inner.dense_keep() }
+        fn start_bias(&self, s: &St) -> f64 { self.inner.start_bias(s) }
+        fn done_frames(&self, s: &St, mem: &Mem) -> f64 { self.inner.done_frames(s, mem) }
+        fn temperature(&self) -> f64 { self.inner.temperature() }
+        fn needs_objects(&self) -> bool { self.inner.needs_objects() }
+        fn steer_target(&self, s: &St) -> Option<[f32; 3]> { self.inner.steer_target(s) }
+        fn success_value(&self) -> f64 { self.inner.success_value() }
+        fn diag_tag(&self) -> Option<String> { self.inner.diag_tag() }
+        fn note_result(&self, success: bool, frames: usize, end_fv: Option<f32>) { self.inner.note_result(success, frames, end_fv) }
+        fn steer_button(&self, s: &St) -> u16 { self.inner.steer_button(s) }
+        fn arrival(&self, s: &St) -> Arrival { self.inner.arrival(s) }
+        fn pad_overlay(&self) -> Option<PadOverlay> { self.inner.pad_overlay() }
+        fn modal(&self) -> bool { self.inner.modal() }
+        fn exists_in(&self, s: &St) -> bool { self.inner.exists_in(s) }
+    }
+
+    struct WithGuide {
+        inner: Arc<dyn Generator>,
+        keys: HashSet<String>,
+        weight: f64,
+    }
+
+    impl Generator for WithGuide {
+        fn generate(&self, b: &St, rng: &mut rand::rngs::SmallRng) -> Vec<Arc<dyn Objective>> {
+            self.inner
+                .generate(b, rng)
+                .into_iter()
+                .map(|o| if self.keys.contains(&o.key()) { Arc::new(Guided { inner: o, weight: self.weight }) as Arc<dyn Objective> } else { o })
+                .collect()
+        }
+        fn wants_records(&self) -> bool { self.inner.wants_records() }
+        fn summary_blocks(&self) -> Vec<(String, String)> {
+            let mut v = self.inner.summary_blocks();
+            v.push(("guide".into(), format!("{{\"keys\": {}, \"weight\": {}}}", self.keys.len(), self.weight)));
+            v
+        }
+        fn report(&self, out_dir: &str) { self.inner.report(out_dir) }
+    }
+
+    pub fn wrap(inner: Arc<dyn Generator>) -> Result<Arc<dyn Generator>> {
+        let Ok(path) = std::env::var("OBRRT_GUIDE_KEYS") else { return Ok(inner) };
+        let keys: HashSet<String> = std::fs::read_to_string(&path)?.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+        let weight = std::env::var("OBRRT_GUIDE_WEIGHT").ok().map(|w| w.parse()).transpose()?.unwrap_or(20.0);
+        println!("guide: {} objective keys from the best run, weight x{weight}, kinship waived", keys.len());
+        Ok(Arc::new(WithGuide { inner, keys, weight }))
+    }
 }
 
 /// The wanted pads from the root to node `i`.

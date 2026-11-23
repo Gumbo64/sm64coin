@@ -421,7 +421,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             log(format!("resuming this block's search at frame {} (level {})", played.len(), name(read_state(&game, played.len() as u32, false).level)));
         }
     }
-    let finish = |played: Vec<GamePad>, sim: u64| Attempt::Found(Mined { pads: played, seconds: t0.elapsed().as_secs_f64(), sim_frames: sim });
+    // The objectives along the stages' winning paths (the guide for the next search).
+    let mut keys: Vec<String> = Vec::new();
+    let finish = |played: Vec<GamePad>, sim: u64, keys: Vec<String>| Attempt::Found(Mined { pads: played, seconds: t0.elapsed().as_secs_f64(), sim_frames: sim, keys });
     let mut step = 0usize;
     let result = loop {
         if stop.load(Ordering::Relaxed) {
@@ -525,8 +527,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                 continue;
             }
             log(format!("  {} at frame {} (+{}), {:.1} M frames, {} nodes ({:.0} s)", name(out.level), out.frame, out.pads.len(), out.emulated as f64 / 1e6, out.nodes, t0.elapsed().as_secs_f64()));
+            keys.extend(out.path_keys.iter().cloned());
             if replay(&mut game, &mut played, &child::pads_of(&out.pads), &before)? {
-                break finish(played, sim);
+                break finish(played, sim, keys);
             }
             guard(&game, &played, out.level, out.frame, out.pos)?;
             if job.goal == Goal::Flag {
@@ -537,7 +540,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                 bail!("the castle tree's winner is in the castle without progress");
             }
             if idle_until_controllable(&mut game, &mut played, max, &before)? {
-                break finish(played, sim);
+                break finish(played, sim, keys);
             }
             *mem.been.entry(out.level).or_default() += 1;
             hub = Some(ckpt);
@@ -582,15 +585,16 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         sim += out.emulated;
         if out.found {
             log(format!("  progress at frame {} (+{}), {:.1} M frames, {} nodes ({:.0} s)", out.frame, out.pads.len(), out.emulated as f64 / 1e6, out.nodes, t0.elapsed().as_secs_f64()));
+            keys.extend(out.path_keys.iter().cloned());
             if replay(&mut game, &mut played, &child::pads_of(&out.pads), &before)? {
-                break finish(played, sim);
+                break finish(played, sim, keys);
             }
             bail!("the course tree's winner made progress but the perturbed replay did not (frame {}): a game was stepped unperturbed", played.len());
         }
         if let Some(cp) = out.checkpoint {
             // No progress, but further along a goal: a fresh tree goes on from there.
             if replay(&mut game, &mut played, &child::pads_of(&cp.pads), &before)? {
-                break finish(played, sim);
+                break finish(played, sim, keys);
             }
             guard(&game, &played, cp.level, cp.frame, cp.pos)?;
             cp_n += 1;
@@ -647,4 +651,38 @@ impl GameView for SM64MiningSave {
         g.load_state(&self.game)?;
         Ok(SM64MiningGame { game: g, pert: self.pert.clone() })
     }
+}
+
+/// Goal bias from the best run so far (the anytime miner's later searches): the
+/// run's path as waypoint objectives for the tree (an `OBRRT_SPEC` file), as
+/// RRT samples its goal at a fixed rate among random targets. Mario's position
+/// every `every` frames in the run's courses (not the castle) becomes a spec
+/// "reach this point" with pool weight `weight` (the bias: the sampler picks
+/// objectives in proportion to their weights; kinship is waived). `pads` are the run's played pads
+/// from the block's start. Returns how many waypoints were written.
+pub fn write_guide(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Params, pads: &[GamePad], every: usize, weight: f64, path: &std::path::Path) -> Result<usize> {
+    let (mut game, _) = sm64pow::chain::mining_start(start, parent, seed, params)?;
+    let mut specs = Vec::new();
+    for (f, p) in pads.iter().enumerate() {
+        game.game.step_game(*p)?; // played pads: the pokes are in them already
+        if f % every != every - 1 {
+            continue;
+        }
+        let st = read_state(&game.game, (f + 1) as u32, false);
+        if is_hub_level(st.level) || !st.controllable() {
+            continue;
+        }
+        let pos = [st.pos[0].round(), st.pos[1].round(), st.pos[2].round()];
+        specs.push(serde_json::json!({
+            "name": format!("guide_{}", specs.len()),
+            "zone": [st.level, st.area],
+            "phases": [{ "target": pos, "done": { "in_sphere": { "center": pos, "r": 200 } } }],
+            // Kinship waived: any state in the tree may start toward a waypoint (not only
+            // b's near relatives), so the best-placed one is picked by its ETA.
+            "hints": { "obj_weight": weight, "kinship": 1000 },
+        }));
+    }
+    let n = specs.len();
+    std::fs::write(path, serde_json::to_string_pretty(&serde_json::json!({ "specs": specs }))?)?;
+    Ok(n)
 }

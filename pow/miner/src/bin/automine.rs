@@ -127,6 +127,29 @@ struct Args {
     /// Added to every search's seed (different runs from the same template, e.g. for tests).
     #[arg(long, default_value_t = 0)]
     salt: u64,
+    /// Anytime mining (rrt): a run over the current limit waits for it, and meanwhile fresh
+    /// searches from the same start look for a shorter one; the shortest is sent this many
+    /// seconds before it is valid (nodes hold it until then; at most the 120 s future limit).
+    /// 0: wait idle, the old way.
+    #[arg(long, default_value_t = 100)]
+    anytime_ahead: u64,
+    /// Goal bias for those searches, as RRT samples its goal among random targets: `keys` the
+    /// objectives that made the best run's path (their pool weight x --guide-weight, kinship
+    /// waived), `points` the best run's positions as waypoint objectives (rrt::write_guide),
+    /// `off`. Bench (one block, 5 guided searches paired by seed with unguided ones): keys
+    /// 2109/2258/3249/2256/1706 frames vs 2104/2703/4064/2731/2460 unguided; points worse.
+    #[arg(long, default_value = "keys")]
+    guide: String,
+    /// The guide's pool weight (a multiplier for `keys`).
+    #[arg(long, default_value_t = 20.0)]
+    guide_weight: f64,
+    /// Frames between the `points` guide's waypoints.
+    #[arg(long, default_value_t = 60)]
+    guide_every: usize,
+    /// Experiment: N searches on the first template, nothing submitted (each its own tree, the
+    /// guide from the best so far when --guide-weight > 0); prints each run's length and the best.
+    #[arg(long, default_value_t = 0)]
+    anytime_bench: usize,
 }
 
 /// A sealed block kept for the hold test (--save-block).
@@ -306,6 +329,10 @@ fn main() -> Result<()> {
             parent_state = parent_cache.as_ref().map(|c| c.state.clone());
         }
 
+        if a.anytime_bench > 0 {
+            return anytime_bench(&a, start, parent_state.as_ref(), &seed, &params, attempt);
+        }
+
         // Watch for a new block while playing.
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
@@ -447,6 +474,16 @@ fn main() -> Result<()> {
             println!("  saved block {} ({frames} frames) to {f}, not submitted", t.height);
             return Ok(());
         }
+        // Anytime mining: over the limit now, so search again (fresh trees, the guide from the
+        // best run) until shortly before the best run is valid; keep the shortest.
+        let (m, proof, frames) = if a.controller == "rrt" && a.anytime_ahead > 0 && a.stamp_ahead == 0 {
+            match improve(&a, &daemon, &t, start, parent_state.as_ref(), &seed, &params, attempt, m, proof)? {
+                Some(x) => x,
+                None => continue, // a new block landed: the run is void
+            }
+        } else {
+            (m, proof, frames)
+        };
         // Within the time limit now? Otherwise wait until it has grown to
         // this run's length (the tip changing abandons it).
         let retarget = t.sm64_retarget_difficulty.max(1);
@@ -464,7 +501,8 @@ fn main() -> Result<()> {
             if a.stamp_ahead > 0 {
                 println!("  test: submitting {} s early, stamped {ts}", a.stamp_ahead.min(ts.saturating_sub(now())));
             }
-            while now() + a.stamp_ahead < ts {
+            let ahead = if a.stamp_ahead > 0 { a.stamp_ahead } else if a.controller == "rrt" { a.anytime_ahead.min(110) } else { 0 };
+            while now() + ahead < ts {
                 std::thread::sleep(Duration::from_secs(1));
                 if now() % 3 == 0 && daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
                     println!("  new block on the network: abandoning the waiting run");
@@ -475,7 +513,7 @@ fn main() -> Result<()> {
             if abandoned {
                 continue;
             }
-            if a.stamp_ahead == 0 {
+            if ahead == 0 {
                 ts = ts.max(now());
             }
         } else {
@@ -484,9 +522,12 @@ fn main() -> Result<()> {
         match daemon.submit(&rpc::seal(&t.blocktemplate_blob, &proof, Some(ts))?) {
             Ok(()) => {
                 mined += 1;
+                // Stamped ahead of the clock: the node holds it until its run fits.
+                let held = ts > now();
                 println!(
-                    "  BLOCK {} ACCEPTED ({:.6} SM64 reward, {} frames = {:.1} s of play, {:.0} s to find)",
+                    "  BLOCK {} {} ({:.6} SM64 reward, {} frames = {:.1} s of play, {:.0} s to find)",
                     t.height,
+                    if held { format!("SENT, held by the node for {} s until it fits", ts - now()) } else { "ACCEPTED".into() },
                     t.expected_reward as f64 / 1e12,
                     m.pads.len(),
                     m.pads.len() as f64 / 30.0,
@@ -499,4 +540,151 @@ fn main() -> Result<()> {
             Err(e) => println!("  block rejected: {e}"),
         }
     }
+}
+
+/// The rrt options for search `k` of a block (its seed), with the guide file if any.
+fn rrt_options(a: &Args, attempt: u64, k: u64, guide: Option<&str>) -> rrt::RrtOptions {
+    let mut env = a.rrt_env.clone();
+    if let Some(g) = guide {
+        env = format!("{env} {g}");
+    }
+    rrt::RrtOptions {
+        threads: a.rh_threads,
+        hub_frames: a.rrt_hub_frames,
+        course_frames: a.rrt_course_frames,
+        step_seconds: a.rrt_step_seconds,
+        checkpoints: a.rrt_checkpoints,
+        stall: a.rrt_stall,
+        extra_env: env,
+        seed: attempt.wrapping_mul(7919).wrapping_add(k.wrapping_mul(104729)) + a.salt,
+        frame_cap: a.rh_frames,
+        scratch: a.rrt_scratch.clone().into(),
+        rom: Some(a.rom.clone()),
+        ..Default::default()
+    }
+}
+
+/// Writes the guide from the best run `m` (--guide) and returns the search's env for it.
+fn guide_from(a: &Args, start: Start, parent: Option<&SaveState>, seed: &sm64pow::Seed, params: &sm64pow::Params, m: &rh::Mined) -> Option<String> {
+    if a.guide_weight <= 0.0 || a.guide == "off" {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(&a.rrt_scratch);
+    let dir = std::path::Path::new(&a.rrt_scratch);
+    if a.guide == "keys" {
+        if m.keys.is_empty() {
+            return None;
+        }
+        let path = dir.join("guide_keys.txt");
+        let mut uniq = m.keys.clone();
+        uniq.sort();
+        uniq.dedup();
+        std::fs::write(&path, uniq.join("\n")).ok()?;
+        println!("  guide: {} objectives from the best run's path (weight x{}, kinship waived)", uniq.len(), a.guide_weight);
+        return Some(format!("OBRRT_GUIDE_KEYS={} OBRRT_GUIDE_WEIGHT={}", path.display(), a.guide_weight));
+    }
+    let path = dir.join("guide.json");
+    match rrt::write_guide(start, parent, seed, params, &m.pads, a.guide_every.max(1), a.guide_weight, &path) {
+        Ok(n) if n > 0 => {
+            println!("  guide: {n} waypoints from the best run (weight {})", a.guide_weight);
+            Some(format!("OBRRT_SPEC={}", path.display()))
+        }
+        Ok(_) => None,
+        Err(e) => {
+            println!("  guide: {e:#}");
+            None
+        }
+    }
+}
+
+/// Anytime mining for a run `m` (sealed as `proof`) that is over the current limit: fresh
+/// searches from the same start until `anytime_ahead` s before the best run is valid. A shorter
+/// run replaces the best (it is valid sooner); one valid now ends the search. Returns the best
+/// (run, proof, frames), or None if a new block landed (the run is void).
+#[allow(clippy::too_many_arguments)]
+fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, parent: Option<&SaveState>, seed: &sm64pow::Seed, params: &sm64pow::Params, attempt: u64, m: rh::Mined, proof: Vec<u8>) -> Result<Option<(rh::Mined, Vec<u8>, u32)>> {
+    let retarget = t.sm64_retarget_difficulty.max(1);
+    let restart = start == Start::PowerOn && t.sm64_start == "either";
+    let delay = if restart { t.sm64_restart_delay } else { 0 };
+    let valid = |frames: u32| valid_from(retarget, t.sm64_parent_timestamp + delay, frames, now());
+    let mut best = (m, proof);
+    let mut best_frames = best.0.pads.len() as u32;
+    let mut k = 1u64;
+    let ahead = a.anytime_ahead.min(110);
+    while valid(best_frames) > now() + ahead {
+        let deadline = valid(best_frames) - ahead;
+        println!("  anytime: best {best_frames} frames, valid in {} s; search {k} for a shorter run until then", valid(best_frames).saturating_sub(now()));
+        let guide = guide_from(a, start, parent, seed, params, &best.0);
+        let ro = rrt_options(a, attempt, k, guide.as_deref());
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let new_tip = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (stop, done, new_tip) = (stop.clone(), done.clone(), new_tip.clone());
+            let (url, prev) = (a.daemon.clone(), t.prev_hash.clone());
+            std::thread::spawn(move || {
+                let d = rpc::Daemon::new(&url);
+                while !done.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if now() >= deadline {
+                        stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    if d.top_hash().map(|h| h != prev).unwrap_or(false) {
+                        new_tip.store(true, Ordering::Relaxed);
+                        stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            })
+        };
+        let r = rrt::mine(start, parent, seed, params, &ro, &stop, |m| println!("    {m}"));
+        done.store(true, Ordering::Relaxed);
+        let _ = watcher.join();
+        if new_tip.load(Ordering::Relaxed) {
+            println!("  anytime: a new block landed: the run is void");
+            return Ok(None);
+        }
+        match r? {
+            rh::Attempt::Found(m2) if (m2.pads.len() as u32) < best_frames => {
+                let f2 = m2.pads.len() as u32;
+                let p2 = sm64pow::seal_proof_at(start, parent, seed, params, &m2.pads)?;
+                println!("  anytime: search {k} found {f2} frames (was {best_frames}): valid {} s sooner", valid(best_frames).saturating_sub(valid(f2)));
+                best = (m2, p2);
+                best_frames = f2;
+            }
+            rh::Attempt::Found(m2) => println!("  anytime: search {k} found {} frames, not shorter", m2.pads.len()),
+            _ => {}
+        }
+        if stop.load(Ordering::Relaxed) {
+            break; // the deadline
+        }
+        k += 1;
+    }
+    Ok(Some((best.0, best.1, best_frames)))
+}
+
+/// --anytime-bench: N searches on this template, nothing submitted.
+fn anytime_bench(a: &Args, start: Start, parent: Option<&SaveState>, seed: &sm64pow::Seed, params: &sm64pow::Params, attempt: u64) -> Result<()> {
+    let never = Arc::new(AtomicBool::new(false));
+    let mut best: Option<rh::Mined> = None;
+    let t0 = std::time::Instant::now();
+    for k in 0..a.anytime_bench as u64 {
+        let guide = best.as_ref().and_then(|m| guide_from(a, start, parent, seed, params, m));
+        let ro = rrt_options(a, attempt, k, guide.as_deref());
+        let t1 = std::time::Instant::now();
+        let r = rrt::mine(start, parent, seed, params, &ro, &never, |m| println!("    {m}"))?;
+        let secs = t1.elapsed().as_secs_f64();
+        match r {
+            rh::Attempt::Found(m) => {
+                let f = m.pads.len();
+                println!("bench search {k}: {f} frames in {secs:.0} s; best {} (total {:.0} s, guide {}, {} path objectives)", best.as_ref().map_or(f, |b: &rh::Mined| b.pads.len().min(f)), t0.elapsed().as_secs_f64(), if guide.is_some() { a.guide.as_str() } else { "none" }, m.keys.len());
+                if best.as_ref().is_none_or(|b| f < b.pads.len()) {
+                    best = Some(m);
+                }
+            }
+            other => println!("bench search {k}: no run ({}) in {secs:.0} s", match other { rh::Attempt::Gave(w) | rh::Attempt::NoRoute(w) => w, _ => String::new() }),
+        }
+    }
+    Ok(())
 }

@@ -268,7 +268,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             played.push(shadow.step(*p)?.0);
             if rules.is_success(&before, &shadow.progress()?) {
                 let seconds = t0.elapsed().as_secs_f64();
-                return Ok(Attempt::Found(Mined { pads: played, seconds, sim_frames: ctl.frames }));
+                return Ok(Attempt::Found(Mined { pads: played, seconds, sim_frames: ctl.frames, keys: Vec::new() }));
             }
         }
         // Guard: the controller's committed state must be the shadow's.

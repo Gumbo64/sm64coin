@@ -148,7 +148,7 @@ pub fn mine(
                     sim_frames as f64 / 1e6,
                     t0.elapsed().as_secs_f64()
                 ));
-                return Ok(Some(Mined { pads, sim_frames, seconds: t0.elapsed().as_secs_f64() }));
+                return Ok(Some(Mined { pads, sim_frames, seconds: t0.elapsed().as_secs_f64(), keys: Vec::new() }));
             }
         }
 
