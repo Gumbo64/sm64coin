@@ -1,19 +1,19 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { daemon } from '../lib/rpc.js';
 
-// Any leaderboard server can be used (anyone can run one: scripts/leaderboard.sh);
-// '' means this site's own proxy.
-const apiBase = () => localStorage.getItem('sm64coin.leaderboard') || '/leaderboard-api';
+// The board every node keeps and shares with its peers over p2p (the node's
+// sm64_board RPC): the top 50 addresses by blocks mined, each counted by the
+// node itself with the entry's view key.
 const fmt = (a) => (a / 1e12).toLocaleString(undefined, { maximumFractionDigits: 6 });
+const short = (a) => a.slice(0, 8) + '…' + a.slice(-6);
 
 export default function Leaderboard() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [health, setHealth] = useState(null);
 
   const load = useCallback(() => {
-    fetch(apiBase() + '/leaderboard').then((r) => r.json()).then((j) => { setRows(j); setErr(''); })
-      .catch((e) => setErr('Leaderboard service unreachable: ' + e.message));
-    fetch(apiBase() + '/health').then((r) => r.json()).then(setHealth).catch(() => setHealth(null));
+    daemon('sm64_board').then((r) => { setRows(r.entries || []); setErr(''); })
+      .catch((e) => setErr('Node unreachable: ' + e.message));
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
 
@@ -23,27 +23,23 @@ export default function Leaderboard() {
     <div>
       <div className="card">
         <h2>Leaderboard</h2>
-        <ServerPicker onChange={load} />
         <div className="stats">
-          <div className="stat"><div className="muted">Participants</div><div>{rows ? rows.length : '-'}</div></div>
+          <div className="stat"><div className="muted">Miners</div><div>{rows ? rows.length : '-'}</div></div>
           <div className="stat"><div className="muted">Blocks counted</div><div>{rows ? totalBlocks : '-'}</div></div>
-          <div className="stat"><div className="muted">Peer servers</div><div>{health ? `${health.peers} of ${health.known_peers}` : '-'}</div></div>
         </div>
-        <p className="muted">The top 50, shared between leaderboard servers (off-chain). This server checks every entry itself
-          with the entry's view key against the blockchain; blocks and rewards are never taken from other servers.</p>
+        <p className="muted">The top 50 miners by blocks mined. Every node keeps this board and shares it with its peers;
+          each node counts the blocks itself from the blockchain, with each entry's view key.</p>
         {err && <p className="muted">{err}</p>}
         {rows && rows.length === 0 && <p className="muted">Nobody has joined yet.</p>}
         {rows && rows.length > 0 && (
           <table>
-            <thead><tr><th>#</th><th>Name</th><th>Address</th><th>Blocks</th><th>Rewards (SM64)</th><th>Last block</th><th>Best frames</th><th>Source</th></tr></thead>
+            <thead><tr><th>#</th><th>Name</th><th>Address</th><th>Blocks</th><th>Rewards (SM64)</th><th>Last block</th></tr></thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={r.address_short + i}>
+                <tr key={r.address}>
                   <td>{i + 1}</td><td>{r.name}</td>
-                  <td className="mono" title={r.address || r.address_short}>{r.address_short}{r.address && <CopyButton text={r.address} />}</td>
-                  <td>{r.blocks}</td><td>{fmt(r.reward_atomic)}</td>
-                  <td>{r.last_block_height ?? '-'}</td><td>{r.best_frames ?? '-'}</td>
-                  <td className="muted" title="Every row is verified by this server's own chain scan">{r.verified ? '✓ ' : ''}{r.source === 'peer' ? 'from peers' : r.source === 'local' ? 'joined here' : ''}</td>
+                  <td className="mono" title={r.address}>{short(r.address)}<CopyButton text={r.address} /></td>
+                  <td>{r.blocks}</td><td>{fmt(r.reward)}</td><td>{r.last_height || '-'}</td>
                 </tr>
               ))}
             </tbody>
@@ -54,26 +50,14 @@ export default function Leaderboard() {
       <div className="card">
         <h2>Join the leaderboard</h2>
         <p>
-          Joining is opt-in and done from the <b>SM64Coin wallet</b> app: <b>Advanced → Leaderboard</b>. It shares your
-          address and private view key with your leaderboard server, so it can count the blocks your wallet received.
-          If you rank in the top 50, your entry is shared with the other leaderboard servers (not on the blockchain), so everyone who
-          runs one can see all of your incoming payments (a view key can't spend). Use a dedicated mining address.
+          Joining is opt-in and done from the <b>SM64Coin wallet</b> app, once your address has mined a block. The wallet
+          signs your name with its spend key and sends it, with the address and private view key, to your node, which
+          shares it with the network. Everyone can then see all of your incoming payments (a view key can't spend), so use
+          a dedicated mining address. An entry can be renamed but not removed.
         </p>
-        <p className="muted">This website never asks for your keys. The sm64coin launcher runs a leaderboard server by default
-          (port 16490); to use another one, point this page at it above.</p>
+        <p className="muted">This website never asks for your keys.</p>
       </div>
     </div>
-  );
-}
-
-function ServerPicker({ onChange }) {
-  const [v, setV] = React.useState(localStorage.getItem('sm64coin.leaderboard') || '');
-  const save = () => { if (v) localStorage.setItem('sm64coin.leaderboard', v.replace(/\/$/, '')); else localStorage.removeItem('sm64coin.leaderboard'); onChange(); };
-  return (
-    <p className="muted">Leaderboard server:{' '}
-      <input className="mono" style={{ width: 320 }} value={v} placeholder="this site (default) or http://host:16490" onChange={(e) => setV(e.target.value.trim())} />{' '}
-      <button onClick={save}>Use</button>
-    </p>
   );
 }
 

@@ -10,7 +10,7 @@ build-monero:
 	cd monero/build/release && cmake -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTS=OFF -D USE_DEVICE_TREZOR=OFF -D MANUAL_SUBMODULES=1 ../.. && $(MAKE) -j$(JOBS) daemon simplewallet wallet_rpc_server
 
 build-pow:
-	cd pow && cargo build --release -j$(JOBS) -p sm64coin-miner --bin automine
+	cd pow && cargo build --release -j$(JOBS) -p sm64coin-miner --bin automine --bin rrtrun
 
 build-web:
 	cd web && npm install && npm run build

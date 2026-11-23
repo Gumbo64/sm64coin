@@ -17,8 +17,16 @@ export function successFor(rulesName) {
 
 // The longest run any block can carry (the time limit at difficulty 1:
 // base_frames in rules.rs). Past this a run can never become valid.
-export const MAX_RUN_FRAMES = 10 * 60 * 30;
+export const MAX_RUN_FRAMES = 20 * 60 * 30;
 
-// After this many seconds without a block, a block may start over from power-on
-// (StarCycle::stall in pow/sm64pow/src/rules.rs; display only).
-export const STALL_SECONDS = 3600;
+// A power-on restart (starting over when no miner can do the next star yet)
+// is judged against the limit this many seconds earlier, so it is allowed
+// that long after the parent: a base plus a price per progress point thrown
+// away, capped (StarCycle::restart_delay in pow/sm64pow/src/rules.rs; display
+// only, the template's sm64_power_on_at is authoritative).
+export const RESTART_BASE_SECONDS = 3600;
+export const RESTART_POINT_SECONDS = 60;
+export const RESTART_MAX_SECONDS = 2 * 3600;
+export function restartDelay(points) {
+  return Math.min(RESTART_BASE_SECONDS + points * RESTART_POINT_SECONDS, Math.max(RESTART_MAX_SECONDS, RESTART_BASE_SECONDS));
+}

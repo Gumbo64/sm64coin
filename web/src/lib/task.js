@@ -13,6 +13,9 @@ export function gameConfig(t) {
     A_prob: t.sm64_a_prob,
     B_prob: t.sm64_b_prob,
     Z_prob: t.sm64_z_prob,
+    // Frames between state mixes into the poke timing / pad streams (0: never).
+    timing_mix: t.sm64_timing_mix ?? 1,
+    pad_mix: t.sm64_pad_mix ?? 1,
   };
   return c;
 }

@@ -67,15 +67,23 @@ fn a_chain_of_blocks() {
     let unknown = Parent::Block { id: id(77), gap_seconds: 100 };
     assert_eq!(verify_block(&id(2), unknown, &seed, 1, &idle(Start::Parent)).unwrap(), BlockVerdict::NeedParent);
 
-    // Starting over from power-on: not while the parent continues the cycle...
+    // Starting over from power-on (a restart): not until the restart delay,
+    // which grows with the progress thrown away (block 1 has one star)...
+    let delay = sm64pow::rules().restart_delay(&progress).unwrap();
     match verify_block(&id(3), b1, &seed, 1, &blob).unwrap() {
-        BlockVerdict::Invalid(why) => assert!(why.contains("power-on"), "{why}"),
+        BlockVerdict::Invalid(why) => assert!(why.contains("restart"), "{why}"),
         v => panic!("{v:?}"),
     }
-    // ...but allowed once the chain has stalled for an hour, without needing
-    // the parent's state.
-    let stalled = Parent::Block { id: id(77), gap_seconds: 3601 };
-    assert!(matches!(verify_block(&id(3), stalled, &seed, 1, &blob).unwrap(), BlockVerdict::Valid { .. }));
+    // ...and then judged against the limit that many seconds earlier.
+    let later = Parent::Block { id: id(1), gap_seconds: delay };
+    assert!(matches!(verify_block(&id(3), later, &seed, 1, &blob).unwrap(), BlockVerdict::Valid { .. }));
+    let hard = 1 << 20; // the run is far over this difficulty's limit at 0 s
+    assert!(matches!(verify_block(&id(3), later, &seed, hard, &blob).unwrap(), BlockVerdict::Invalid(_)));
+    // The delay needs the parent's progress: an unknown parent is replayed first.
+    let unknown_later = Parent::Block { id: id(77), gap_seconds: delay };
+    assert_eq!(verify_block(&id(3), unknown_later, &seed, 1, &blob).unwrap(), BlockVerdict::NeedParent);
+    // Rebuilding an accepted restart needs no parent state.
+    assert!(matches!(rebuild_block(&id(3), unknown_later, &seed, &blob).unwrap(), BlockVerdict::Valid { .. }));
 
     // Played pads (for replays) agree with the standalone replay.
     let played = played_block(&id(1), Parent::Genesis, &seed, &blob).unwrap().unwrap();

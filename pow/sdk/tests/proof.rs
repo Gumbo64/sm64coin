@@ -157,6 +157,6 @@ fn practice_report_and_task_params() {
         }
     }
     let r = practice(&mut Idle, 4, 1, &|| false).unwrap();
-    assert_eq!((r.frames, r.success, r.max_frames), (350, false, 18000));
+    assert_eq!((r.frames, r.success, r.max_frames), (350, false, 36000));
     assert!(r.verdict.is_none());
 }

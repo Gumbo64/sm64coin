@@ -68,35 +68,35 @@ def test_params_and_limits_match_rust_tests():
     assert (rules.level8(0), rules.level8(1), rules.level8(2), rules.level8(3), rules.level8(4), rules.level8(256)) == (0, 0, 8, 12, 16, 64)
     assert rules.level8(2**64 - 1) == 63 * 8 + 7
     last = params(1)
-    assert (last.max_frames, last.random_amount) == (18000, 5)
+    assert (last.max_frames, last.random_amount) == (36000, 5)
     for d in range(2, 5000):
         p = params(d)
         assert p.max_frames <= last.max_frames
         assert (p.random_amount, p.window, p.burst) == (5, 100, 2), "pokes don't depend on difficulty"
         last = p
     assert params(2**64 - 1).max_frames == 600
-    # effective difficulty (decay_halves_after_grace)
+    # weight_is_the_retarget_difficulty_whatever_the_timestamp
     e = rules.effective_difficulty
-    assert (e(64, 0), e(64, 600), e(64, 900), e(64, 1200), e(64, 1_000_000), e(0, 0)) == (64, 64, 32, 16, 1, 1)
-    # time_limit_grows_every_second_after_the_grace
-    d = 1 << 10
-    assert max_frames(d, 0) == params(d).max_frames and max_frames(d, 600) == max_frames(d, 0)
-    last, grew = max_frames(d, 600), 0
-    for s in range(601, 600 + 300 * 10):
+    assert (e(64, 0), e(64, 600), e(64, 900), e(64, 1_000_000), e(0, 0)) == (64, 64, 64, 64, 1)
+    # time_limit_grows_every_second_from_the_parent (no grace)
+    d, h = 1 << 10, rules.DECAY_HALVING
+    assert max_frames(d, 0) == params(d).max_frames
+    last, grew = max_frames(d, 0), 0
+    for s in range(1, h * 10):
         m = max_frames(d, s)
         assert m >= last
         grew += m > last
         last = m
-    assert grew > 2000
-    assert max_frames(d, 900) == params(d // 2).max_frames
+    assert grew > h * 10 * 9 // 10
+    assert max_frames(d, h) == params(d // 2).max_frames
     assert max_frames(d, 10_000_000) == params(1).max_frames
     assert max_frames(2**64 - 1, 0) == rules.MIN_FRAMES == 600
     assert max_frames(2**64 - 1, 2**64 - 1) == params(1).max_frames or max_frames(2**64 - 1, 2**64 - 1) >= 600
     # valid_after inverts it
-    for frames in (5000, 12000, 18000):
+    for frames in (5000, 12000, 36000):
         s = rules.valid_after(d, frames)
         assert max_frames(d, s) >= frames and (s == 0 or max_frames(d, s - 1) < frames)
-    assert rules.valid_after(d, 18001) is None
+    assert rules.valid_after(d, 36001) is None
 
 
 def test_success_and_cycle_end():
@@ -104,7 +104,11 @@ def test_success_and_cycle_end():
     assert not rules.is_success(s, s)
     assert rules.is_success(s, Progress(13, 1, False)) and rules.is_success(s, Progress(12, 2, False))
     assert not rules.ends_cycle(s) and rules.ends_cycle(Progress(70, 2, True))
-    assert (rules.stall_seconds(), rules.target_seconds()) == (3600, 300)
+    assert rules.target_seconds() == 300
+    # restart_waits_a_base_plus_the_progress_thrown_away
+    assert rules.restart_delay(Progress(0, 0, False)) == 3600
+    assert rules.restart_delay(Progress(10, 0, False)) == 3600 + 600
+    assert rules.restart_delay(Progress(69, 0, False)) == 7200
 
 
 def test_progress_counts_stars_keys_and_the_grand_star():
@@ -268,7 +272,7 @@ def test_winning_fixture_verifies():
     j = json.load(open(FIXTURE))
     task = Task(Seed.from_hex(j["seed_hash"]), 1)
     blob = bytes.fromhex(j["proof_hex"])
-    assert task.start == "power-on" and task.max_frames == 18000
+    assert task.start == "power-on" and task.max_frames == 36000
     pr = decode_proof(blob, 18000)
     assert (pr.frames, pr.start) == (j["frames"], 1)
     ok, info = verify(task, blob)
@@ -286,7 +290,7 @@ def test_winning_fixture_verifies():
     with pytest.raises(RuntimeError):
         env.step(GamePad())
     ok, why = verify(task, blob, max_frames=j["frames"] - 1)
-    assert not ok and "3850" in why
+    assert not ok and str(j["frames"] - 1) in why
     parent = Task(Seed.from_hex(j["seed_hash"]), 1, start="parent", start_game=load_rom().create_game())
     ok, why = verify(parent, blob)
     assert not ok and "starts from" in why

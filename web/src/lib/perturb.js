@@ -52,7 +52,7 @@ export function readProgress(engine) {
 export class Perturbation {
   constructor(task) {
     const c = task.config.random_config;
-    this.p = new WasmPerturber(task.sm64_seed_hash, c.window_length, c.random_amount, c.random_burst_length, c.A_prob, c.B_prob, c.Z_prob);
+    this.p = new WasmPerturber(task.sm64_seed_hash, c.window_length, c.random_amount, c.random_burst_length, c.A_prob, c.B_prob, c.Z_prob, c.timing_mix ?? 1, c.pad_mix ?? 1);
   }
 
   /** Plays one frame: returns [the pad played, whether it was poked]. */

@@ -55,7 +55,7 @@ def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_fram
     """Mines with `bot`: template -> bot -> submit, restarting on a new block. The block is
     played from the parent's end state (rebuilt from the daemon's cycle) or power-on, and stamped
     with the time of submission. `play_frames` lets the bot play past the template's limit
-    (e.g. 18000, the most any difficulty ever allows): a winning run over the limit waits until the
+    (e.g. 36000, the most any difficulty ever allows): a winning run over the limit waits until the
     limit has grown to it (the time limit grows every second after a grace period), if no block
     arrives meanwhile."""
     load_rom(rom)

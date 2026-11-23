@@ -42,10 +42,31 @@ class PokeConfig:
     a_prob: float = 0.5
     b_prob: float = 0.5
     z_prob: float = 0.2
+    timing_mix: int = 100  # simulated frames between state mixes into the timing stream (0: never)
+    pad_mix: int = 100     # the same for the pad stream
+
+
+def _xoshiro(s) -> int:
+    result = (_rotl((s[1] * 5) & M64, 7) * 9) & M64
+    t = (s[1] << 17) & M64
+    s[2] ^= s[0]
+    s[3] ^= s[1]
+    s[1] ^= s[2]
+    s[0] ^= s[3]
+    s[2] ^= t
+    s[3] = _rotl(s[3], 45)
+    return result
+
+
+def _mix_into(s, digest) -> None:
+    for w in digest:
+        s[0] ^= splitmix64((w ^ s[3]) & M64)
+        _xoshiro(s)
 
 
 class Perturber:
-    """xoshiro256** seeded from the whole block hash; see the module docs of lib.rs."""
+    """Two xoshiro256** streams seeded from the whole block hash (timing: when pokes land; pad:
+    what they press); see the module docs of lib.rs."""
 
     def __init__(self, seed_hash: bytes, cfg: PokeConfig):
         if len(seed_hash) != 32:
@@ -54,6 +75,13 @@ class Perturber:
         self.s = [w[0] | w[1] << 32, w[2] | w[3] << 32, w[4] | w[5] << 32, w[6] | w[7] << 32]
         if self.s == [0, 0, 0, 0]:
             self.s[0] = 1
+        tag = 0x7061645F73747265  # "pad_stre"
+        self.ps = [splitmix64(self.s[k] ^ tag ^ ((k * 0x9E3779B97F4A7C15) & M64)) for k in range(4)]
+        if self.ps == [0, 0, 0, 0]:
+            self.ps[0] = 1
+        self.timing_mix, self.pad_mix = cfg.timing_mix, cfg.pad_mix
+        self.ticks = 0
+        self.undo = None
         self.window_length = max(cfg.window_length, 1)
         self.random_amount = cfg.random_amount
         self.burst_length = max(cfg.burst_length, 1)
@@ -67,19 +95,11 @@ class Perturber:
         c = Perturber.__new__(Perturber)
         c.__dict__.update(self.__dict__)
         c.s = list(self.s)
+        c.ps = list(self.ps)
         return c
 
     def _next64(self) -> int:
-        s = self.s
-        result = (_rotl((s[1] * 5) & M64, 7) * 9) & M64
-        t = (s[1] << 17) & M64
-        s[2] ^= s[0]
-        s[3] ^= s[1]
-        s[1] ^= s[2]
-        s[0] ^= s[3]
-        s[2] ^= t
-        s[3] = _rotl(s[3], 45)
-        return result
+        return _xoshiro(self.s)
 
     def _next32(self) -> int:
         return self._next64() >> 32
@@ -88,8 +108,11 @@ class Perturber:
         """Uniform in [0, 1) from 24 bits."""
         return (self._next32() >> 8) / float(1 << 24)
 
+    def _pad_prob(self) -> float:
+        return ((_xoshiro(self.ps) >> 32) >> 8) / float(1 << 24)
+
     def _stick(self) -> int:
-        return self._next32() % 161 - 80
+        return (_xoshiro(self.ps) >> 32) % 161 - 80
 
     def _is_poke(self) -> bool:
         if self.cur_burst > 0:
@@ -110,24 +133,41 @@ class Perturber:
         """(pad to play, poked) given the game's clock before the frame."""
         ticking = self.last_clock is not None and self.last_clock != clock
         self.last_clock = clock
-        if not ticking or not self._is_poke():
+        self.undo = None
+        if not ticking:
             return wanted, False
+        undo = (list(self.s), list(self.ps), self.cur_window, self.cur_amount, self.cur_burst)
+        if not self._is_poke():
+            return wanted, False
+        self.undo = undo
         b = 0
-        if self._prob() < self.a_prob:
+        if self._pad_prob() < self.a_prob:
             b |= A_BUTTON
-        if self._prob() < self.b_prob:
+        if self._pad_prob() < self.b_prob:
             b |= B_BUTTON
-        if self._prob() < self.z_prob:
+        if self._pad_prob() < self.z_prob:
             b |= Z_TRIG
         x = self._stick()
         y = self._stick()
         return GamePad(b, x, y), True
 
+    def settle(self, simulated: bool, digest) -> None:
+        """After the frame: mixes the digest into each stream on its interval if the game
+        simulated; refunds the frame's poke if it didn't (it comes again next simulated frame)."""
+        undo, self.undo = self.undo, None
+        if simulated:
+            self.ticks += 1
+            if self.timing_mix > 0 and self.ticks % self.timing_mix == 0:
+                _mix_into(self.s, digest)
+            if self.pad_mix > 0 and self.ticks % self.pad_mix == 0:
+                _mix_into(self.ps, digest)
+        elif undo is not None:
+            self.s, self.ps, self.cur_window, self.cur_amount, self.cur_burst = undo
+
     def mix(self, digest) -> None:
-        """Folds the state digest in (after a frame on which the clock moved)."""
-        for w in digest:
-            self.s[0] ^= splitmix64((w ^ self.s[3]) & M64)
-            self._next64()
+        """Folds a digest into both streams now (experiments; consensus uses settle)."""
+        _mix_into(self.s, digest)
+        _mix_into(self.ps, digest)
 
 
 # ---- the Super Mario 64 adapter (pow/perturb/src/sm64.rs, headless build) ----
@@ -170,7 +210,7 @@ def view(b: bytes):
         u32(m + MARIO_VEL) << 32 | u32(m + MARIO_VEL + 4),
         u32(m + MARIO_VEL + 8) << 32 | u32(m + MARIO_ACTION),
         u16(m + MARIO_FACE_ANGLE) << 48 | u16(m + MARIO_FACE_ANGLE + 2) << 32 | u16(m + MARIO_HEALTH) << 16 | u16(m + MARIO_NUM_COINS),
-        u32(rest) << 32 | u16(rest + 4) << 16 | u16(rest + 6),
+        u16(rest + 4) << 16 | u16(rest + 6),  # not gGlobalTimer (at rest): it counts paused frames
         u16(l + LAKITU_YAW) << 48 | u16(rest + 8) << 16 | u16(m + MARIO_NUM_STARS),
     ]
     return clock, digest

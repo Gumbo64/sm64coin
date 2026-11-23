@@ -17,7 +17,7 @@
 #   OUT       (dist)                MONERO_BIN (monero/build/release/bin: monerod, monero-wallet-cli/-rpc)
 #   GUI_BIN   (gui/build/bin/monero-wallet-gui; skipped if missing)
 #   GUI_APP   (macOS: gui/build/bin/monero-wallet-gui.app, the deployed app bundle)
-#   POW_TARGET (pow/target/release: sm64coin-leaderboard, automine; each skipped if missing)
+#   POW_TARGET (pow/target/release: sm64coin-leaderboard, automine and its rrtrun; each skipped if missing)
 #   ALLOW_NO_WEB=1  dry runs: a placeholder page when there is no website build
 #   LAUNCHER  (pow/launcher/target/release/sm64coin)       WEB_DIST (web/dist)
 set -euo pipefail
@@ -63,6 +63,7 @@ case "$PLATFORM" in
 esac
 put "$POW_TARGET/sm64coin-leaderboard$X"   "sm64coin-leaderboard$X"
 put "$POW_TARGET/automine$X"               "sm64coin-automine$X"
+put "$POW_TARGET/rrtrun$X"                 "rrtrun$X"   # the miner's tree-search child, found next to it
 if [ ! -f "$WEB_DIST/index.html" ] && [ -n "${ALLOW_NO_WEB:-}" ]; then   # dry runs only
   echo "package.sh: WARNING no website build, using a placeholder page"
   mkdir -p "$WEB_DIST"; echo '<!doctype html><title>SM64Coin</title><p>placeholder website (dry run)</p>' > "$WEB_DIST/index.html"
@@ -209,7 +210,7 @@ bundle_macos_libs() {
   command -v dylibbundler >/dev/null || { echo "package.sh: dylibbundler is required (brew install dylibbundler)" >&2; exit 1; }
   set +e +o pipefail   # the loops below probe files with commands that may fail; errors are checked explicitly
   local args=() f
-  for f in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-leaderboard sm64coin-automine; do
+  for f in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-leaderboard sm64coin-automine rrtrun; do
     [ -f "$STAGE/$f" ] && args+=(-x "$STAGE/$f")
   done
   # The deployed app carries its own copy of the daemon (a post-build step of the wallet app); the

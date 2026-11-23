@@ -33,9 +33,12 @@ pub struct Template {
     /// Where this block's run may start: "parent", "power-on" or "either".
     #[serde(default)]
     pub sm64_start: String,
-    /// Unix time from which a power-on start is allowed (stall escape).
+    /// Unix time from which a power-on restart is allowed (parent + restart delay).
     #[serde(default)]
     pub sm64_power_on_at: u64,
+    /// A restart's limit is the limit this many seconds earlier (0: none).
+    #[serde(default)]
+    pub sm64_restart_delay: u64,
     #[serde(default)]
     pub sm64_parent_timestamp: u64,
     #[serde(default)]

@@ -135,7 +135,7 @@ class Task:
         if start == "parent" and allowed == "power-on":
             raise ValueError("this block must start from power-on")
         if start == "power-on" and allowed == "parent":
-            raise ValueError("this block must start from the parent (power-on is allowed only after a stall)")
+            raise ValueError("this block must start from the parent (a power-on restart is allowed only after the restart delay)")
         seed = Seed.from_hex(t.seed_hash)
         if start == "power-on":
             return cls(seed, d, p, t, max_frames=t.max_frames, play_frames=play_frames)
@@ -188,8 +188,7 @@ class MiningEnv:
         played, poked = self.pert.pad(before, wanted)
         self.game.step_game(played)
         after, digest = read_view(self.game)
-        if after != before:
-            self.pert.mix(digest)
+        self.pert.settle(after != before, digest)
         self.pads.append(played)
         if not poked:
             self.inputs.append(wanted)

@@ -213,7 +213,8 @@ impl State {
             }
             keep -= 1;
         }
-        if keep < self.cache.len() {
+        let rewound = keep < self.cache.len();
+        if rewound {
             eprintln!("reorg or rewind: rescanning from height {keep}");
         }
         self.cache.truncate(keep);
@@ -223,7 +224,9 @@ impl State {
             let cb = self.fetch(h)?;
             self.cache.push(cb);
         }
-        if from < tip {
+        // A rewind with nothing new on top (a chain restarted from genesis)
+        // still drops the blocks above `from`.
+        if from < tip || rewound {
             for p in &mut self.participants {
                 rescan(p, &self.cache, from);
             }
@@ -260,8 +263,15 @@ impl State {
                 rep.rejected += 1;
                 continue;
             }
-            if self.participants.iter().any(|q| q.address == p.address) {
-                rep.known += 1; // same address means same view key (it is determined by the address); local entry or first-seen name wins
+            if let Some(q) = self.participants.iter_mut().find(|q| q.address == p.address) {
+                // Same address means same view key (it is determined by the address). The node's
+                // board has the owner's latest signed name; otherwise the local or first-seen name wins.
+                if from == "node" && q.name != p.name {
+                    q.name = p.name.clone();
+                    rep.added += 1;
+                } else {
+                    rep.known += 1;
+                }
                 continue;
             }
             p.source = "peer".into();

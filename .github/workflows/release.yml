@@ -118,7 +118,7 @@ jobs:
           key: ccache-${{ matrix.platform }}-${{ github.run_id }}
           restore-keys: ccache-${{ matrix.platform }}-
 
-      - name: Prepare the workspace (drops the private-dependency crates)
+      - name: Prepare the workspace
         run: scripts/ci-prepare.sh
 
       - name: Launcher (Rust)
@@ -126,6 +126,9 @@ jobs:
 
       - name: Leaderboard server (Rust)
         run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
+        run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
 
       # One CMake tree builds everything: the wallet app's tree contains the daemon (monerod) and
       # libwallet (gui/SM64COIN.md), so the wallet CLI and RPC server are just two more targets
@@ -257,7 +260,7 @@ jobs:
         run: |
           gcc --version | head -1; cmake --version | head -1; cargo --version; rustc -vV | grep host; qmake-qt5 -v | tail -1 || true; ccache --version | head -1
 
-      - name: Prepare the workspace (drops the private-dependency crates)
+      - name: Prepare the workspace
         run: scripts/ci-prepare.sh
 
       - name: Launcher (Rust)
@@ -265,6 +268,9 @@ jobs:
 
       - name: Leaderboard server (Rust)
         run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
+        run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
 
       - name: Daemon, wallets and wallet app (C++, Qt)
         run: |
@@ -375,7 +381,7 @@ jobs:
           key: ccache-macos-arm64-${{ github.run_id }}
           restore-keys: ccache-macos-arm64-
 
-      - name: Prepare the workspace (drops the private-dependency crates)
+      - name: Prepare the workspace
         run: scripts/ci-prepare.sh
 
       - name: Launcher (Rust)
@@ -383,6 +389,9 @@ jobs:
 
       - name: Leaderboard server (Rust)
         run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
+        run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
 
       - name: Daemon, wallets and wallet app (C++, Qt)
         run: |

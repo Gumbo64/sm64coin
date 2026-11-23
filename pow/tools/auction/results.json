@@ -1,0 +1,722 @@
+[
+ {
+  "rules": "current",
+  "halving": 300.0,
+  "scenario": "honest, FTL 15 s",
+  "mean_s": 292.3,
+  "p50_s": 55.8,
+  "p90_s": 866.6,
+  "p99_s": 2483.3,
+  "cv": 1.726,
+  "restarts": 12.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.42,
+   "quick bot": 0.57,
+   "restart": 0.01
+  }
+ },
+ {
+  "rules": "current",
+  "halving": 300.0,
+  "scenario": "hold policy",
+  "mean_s": 290.0,
+  "p50_s": 58.7,
+  "p90_s": 824.0,
+  "p99_s": 3029.1,
+  "cv": 1.7,
+  "restarts": 12.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.426,
+   "quick bot": 0.564,
+   "restart": 0.01
+  }
+ },
+ {
+  "rules": "current",
+  "halving": 300.0,
+  "scenario": "quick bot stamps +120 s",
+  "mean_s": 292.3,
+  "p50_s": 55.8,
+  "p90_s": 866.6,
+  "p99_s": 2483.3,
+  "cv": 1.726,
+  "restarts": 12.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.42,
+   "quick bot": 0.57,
+   "restart": 0.01
+  }
+ },
+ {
+  "rules": "current",
+  "halving": 300.0,
+  "scenario": "quick bot stamps +120 s, hold",
+  "mean_s": 290.0,
+  "p50_s": 58.7,
+  "p90_s": 824.0,
+  "p99_s": 3029.1,
+  "cv": 1.7,
+  "restarts": 12.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.426,
+   "quick bot": 0.564,
+   "restart": 0.01
+  }
+ },
+ {
+  "rules": "current",
+  "halving": 300.0,
+  "scenario": "withhold 120 s",
+  "mean_s": 296.8,
+  "p50_s": 110.7,
+  "p90_s": 835.6,
+  "p99_s": 2559.7,
+  "cv": 1.624,
+  "restarts": 12.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.551,
+   "quick bot": 0.439,
+   "restart": 0.01
+  }
+ },
+ {
+  "rules": "current",
+  "halving": 300.0,
+  "scenario": "withhold 120 s + stale 20 s",
+  "mean_s": 294.0,
+  "p50_s": 47.0,
+  "p90_s": 861.9,
+  "p99_s": 3025.2,
+  "cv": 1.75,
+  "restarts": 13.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.356,
+   "quick bot": 0.633,
+   "restart": 0.011
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 15.0,
+  "scenario": "honest, FTL 15 s",
+  "mean_s": 268.4,
+  "p50_s": 270.5,
+  "p90_s": 336.1,
+  "p99_s": 385.3,
+  "cv": 0.202,
+  "restarts": 28.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.882,
+   "quick bot": 0.097,
+   "restart": 0.021
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 15.0,
+  "scenario": "hold policy",
+  "mean_s": 269.0,
+  "p50_s": 269.7,
+  "p90_s": 335.7,
+  "p99_s": 387.8,
+  "cv": 0.196,
+  "restarts": 33.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.885,
+   "quick bot": 0.093,
+   "restart": 0.022
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 15.0,
+  "scenario": "quick bot stamps +120 s",
+  "mean_s": 268.8,
+  "p50_s": 267.4,
+  "p90_s": 330.9,
+  "p99_s": 429.5,
+  "cv": 0.201,
+  "restarts": 12.7,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.005,
+   "quick bot": 0.984,
+   "restart": 0.01
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 15.0,
+  "scenario": "quick bot stamps +120 s, hold",
+  "mean_s": 269.0,
+  "p50_s": 269.7,
+  "p90_s": 335.7,
+  "p99_s": 387.8,
+  "cv": 0.196,
+  "restarts": 33.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.885,
+   "quick bot": 0.093,
+   "restart": 0.022
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 15.0,
+  "scenario": "withhold 120 s",
+  "mean_s": 268.7,
+  "p50_s": 270.3,
+  "p90_s": 334.8,
+  "p99_s": 380.8,
+  "cv": 0.196,
+  "restarts": 30.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.552,
+   "quick bot": 0.424,
+   "restart": 0.024
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 15.0,
+  "scenario": "withhold 120 s + stale 20 s",
+  "mean_s": 268.8,
+  "p50_s": 269.7,
+  "p90_s": 333.2,
+  "p99_s": 379.3,
+  "cv": 0.19,
+  "restarts": 31.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.558,
+   "quick bot": 0.418,
+   "restart": 0.025
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 30.0,
+  "scenario": "honest, FTL 15 s",
+  "mean_s": 290.5,
+  "p50_s": 287.3,
+  "p90_s": 410.5,
+  "p99_s": 496.4,
+  "cv": 0.312,
+  "restarts": 29.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.927,
+   "quick bot": 0.051,
+   "restart": 0.022
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 30.0,
+  "scenario": "hold policy",
+  "mean_s": 290.1,
+  "p50_s": 287.6,
+  "p90_s": 407.9,
+  "p99_s": 506.2,
+  "cv": 0.316,
+  "restarts": 26.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.927,
+   "quick bot": 0.055,
+   "restart": 0.018
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 30.0,
+  "scenario": "quick bot stamps +120 s",
+  "mean_s": 292.8,
+  "p50_s": 287.5,
+  "p90_s": 403.1,
+  "p99_s": 555.9,
+  "cv": 0.309,
+  "restarts": 12.7,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.0,
+   "quick bot": 0.989,
+   "restart": 0.01
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 30.0,
+  "scenario": "quick bot stamps +120 s, hold",
+  "mean_s": 290.1,
+  "p50_s": 287.6,
+  "p90_s": 407.9,
+  "p99_s": 506.2,
+  "cv": 0.316,
+  "restarts": 26.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.927,
+   "quick bot": 0.055,
+   "restart": 0.018
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 30.0,
+  "scenario": "withhold 120 s",
+  "mean_s": 290.8,
+  "p50_s": 290.2,
+  "p90_s": 408.6,
+  "p99_s": 496.0,
+  "cv": 0.312,
+  "restarts": 37.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.567,
+   "quick bot": 0.405,
+   "restart": 0.028
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 30.0,
+  "scenario": "withhold 120 s + stale 20 s",
+  "mean_s": 291.5,
+  "p50_s": 290.3,
+  "p90_s": 405.3,
+  "p99_s": 488.2,
+  "cv": 0.302,
+  "restarts": 34.7,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.566,
+   "quick bot": 0.409,
+   "restart": 0.026
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 60.0,
+  "scenario": "honest, FTL 15 s",
+  "mean_s": 297.9,
+  "p50_s": 282.1,
+  "p90_s": 508.4,
+  "p99_s": 703.1,
+  "cv": 0.526,
+  "restarts": 26.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.899,
+   "quick bot": 0.08,
+   "restart": 0.021
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 60.0,
+  "scenario": "hold policy",
+  "mean_s": 296.2,
+  "p50_s": 283.8,
+  "p90_s": 494.0,
+  "p99_s": 689.3,
+  "cv": 0.519,
+  "restarts": 20.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.899,
+   "quick bot": 0.088,
+   "restart": 0.013
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 60.0,
+  "scenario": "quick bot stamps +120 s",
+  "mean_s": 300.9,
+  "p50_s": 287.6,
+  "p90_s": 509.2,
+  "p99_s": 736.6,
+  "cv": 0.534,
+  "restarts": 14.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.021,
+   "quick bot": 0.967,
+   "restart": 0.012
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 60.0,
+  "scenario": "quick bot stamps +120 s, hold",
+  "mean_s": 296.2,
+  "p50_s": 283.8,
+  "p90_s": 494.0,
+  "p99_s": 689.3,
+  "cv": 0.519,
+  "restarts": 20.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.899,
+   "quick bot": 0.088,
+   "restart": 0.013
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 60.0,
+  "scenario": "withhold 120 s",
+  "mean_s": 298.4,
+  "p50_s": 284.2,
+  "p90_s": 504.9,
+  "p99_s": 698.2,
+  "cv": 0.518,
+  "restarts": 30.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.558,
+   "quick bot": 0.418,
+   "restart": 0.024
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 60.0,
+  "scenario": "withhold 120 s + stale 20 s",
+  "mean_s": 299.0,
+  "p50_s": 292.7,
+  "p90_s": 509.2,
+  "p99_s": 682.4,
+  "cv": 0.525,
+  "restarts": 27.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.557,
+   "quick bot": 0.422,
+   "restart": 0.021
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 120.0,
+  "scenario": "honest, FTL 15 s",
+  "mean_s": 303.4,
+  "p50_s": 248.8,
+  "p90_s": 648.3,
+  "p99_s": 1047.9,
+  "cv": 0.816,
+  "restarts": 25.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.765,
+   "quick bot": 0.216,
+   "restart": 0.019
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 120.0,
+  "scenario": "hold policy",
+  "mean_s": 302.0,
+  "p50_s": 255.8,
+  "p90_s": 628.3,
+  "p99_s": 1037.2,
+  "cv": 0.793,
+  "restarts": 17.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.779,
+   "quick bot": 0.208,
+   "restart": 0.013
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 120.0,
+  "scenario": "quick bot stamps +120 s",
+  "mean_s": 303.6,
+  "p50_s": 250.1,
+  "p90_s": 658.0,
+  "p99_s": 1076.4,
+  "cv": 0.839,
+  "restarts": 17.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.28,
+   "quick bot": 0.706,
+   "restart": 0.014
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 120.0,
+  "scenario": "quick bot stamps +120 s, hold",
+  "mean_s": 302.0,
+  "p50_s": 255.8,
+  "p90_s": 628.3,
+  "p99_s": 1037.2,
+  "cv": 0.793,
+  "restarts": 17.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.779,
+   "quick bot": 0.208,
+   "restart": 0.013
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 120.0,
+  "scenario": "withhold 120 s",
+  "mean_s": 301.4,
+  "p50_s": 260.3,
+  "p90_s": 621.8,
+  "p99_s": 1033.0,
+  "cv": 0.798,
+  "restarts": 27.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.571,
+   "quick bot": 0.407,
+   "restart": 0.022
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 120.0,
+  "scenario": "withhold 120 s + stale 20 s",
+  "mean_s": 303.4,
+  "p50_s": 250.7,
+  "p90_s": 655.4,
+  "p99_s": 976.0,
+  "cv": 0.811,
+  "restarts": 21.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.503,
+   "quick bot": 0.479,
+   "restart": 0.018
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 300.0,
+  "scenario": "honest, FTL 15 s",
+  "mean_s": 308.8,
+  "p50_s": 170.5,
+  "p90_s": 799.3,
+  "p99_s": 1847.8,
+  "cv": 1.257,
+  "restarts": 15.7,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.582,
+   "quick bot": 0.404,
+   "restart": 0.014
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 300.0,
+  "scenario": "hold policy",
+  "mean_s": 302.4,
+  "p50_s": 165.1,
+  "p90_s": 758.1,
+  "p99_s": 1867.6,
+  "cv": 1.276,
+  "restarts": 17.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.579,
+   "quick bot": 0.408,
+   "restart": 0.013
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 300.0,
+  "scenario": "quick bot stamps +120 s",
+  "mean_s": 310.0,
+  "p50_s": 165.3,
+  "p90_s": 818.1,
+  "p99_s": 1834.1,
+  "cv": 1.259,
+  "restarts": 14.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.474,
+   "quick bot": 0.515,
+   "restart": 0.011
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 300.0,
+  "scenario": "quick bot stamps +120 s, hold",
+  "mean_s": 302.4,
+  "p50_s": 165.1,
+  "p90_s": 758.1,
+  "p99_s": 1867.6,
+  "cv": 1.276,
+  "restarts": 17.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.579,
+   "quick bot": 0.408,
+   "restart": 0.013
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 300.0,
+  "scenario": "withhold 120 s",
+  "mean_s": 302.6,
+  "p50_s": 162.3,
+  "p90_s": 750.6,
+  "p99_s": 1737.8,
+  "cv": 1.213,
+  "restarts": 16.3,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.601,
+   "quick bot": 0.385,
+   "restart": 0.014
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 300.0,
+  "scenario": "withhold 120 s + stale 20 s",
+  "mean_s": 305.4,
+  "p50_s": 141.7,
+  "p90_s": 790.0,
+  "p99_s": 1687.2,
+  "cv": 1.237,
+  "restarts": 18.0,
+  "stalls": 0.0,
+  "share": {
+   "optimizer bot": 0.446,
+   "quick bot": 0.541,
+   "restart": 0.013
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 1200.0,
+  "scenario": "honest, FTL 15 s",
+  "mean_s": 323.0,
+  "p50_s": 49.0,
+  "p90_s": 845.1,
+  "p99_s": 4045.7,
+  "cv": 2.386,
+  "restarts": 9.0,
+  "stalls": 3.3,
+  "share": {
+   "optimizer bot": 0.387,
+   "quick bot": 0.603,
+   "restart": 0.007,
+   "stall": 0.003
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 1200.0,
+  "scenario": "hold policy",
+  "mean_s": 321.0,
+  "p50_s": 45.3,
+  "p90_s": 784.5,
+  "p99_s": 4357.1,
+  "cv": 2.429,
+  "restarts": 9.0,
+  "stalls": 4.7,
+  "share": {
+   "optimizer bot": 0.379,
+   "quick bot": 0.61,
+   "restart": 0.007,
+   "stall": 0.004
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 1200.0,
+  "scenario": "quick bot stamps +120 s",
+  "mean_s": 326.9,
+  "p50_s": 39.2,
+  "p90_s": 867.2,
+  "p99_s": 4464.1,
+  "cv": 2.374,
+  "restarts": 7.3,
+  "stalls": 4.3,
+  "share": {
+   "optimizer bot": 0.36,
+   "quick bot": 0.63,
+   "restart": 0.006,
+   "stall": 0.004
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 1200.0,
+  "scenario": "quick bot stamps +120 s, hold",
+  "mean_s": 321.0,
+  "p50_s": 45.3,
+  "p90_s": 784.5,
+  "p99_s": 4357.1,
+  "cv": 2.429,
+  "restarts": 9.0,
+  "stalls": 4.7,
+  "share": {
+   "optimizer bot": 0.379,
+   "quick bot": 0.61,
+   "restart": 0.007,
+   "stall": 0.004
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 1200.0,
+  "scenario": "withhold 120 s",
+  "mean_s": 324.6,
+  "p50_s": 104.6,
+  "p90_s": 767.6,
+  "p99_s": 3568.7,
+  "cv": 2.192,
+  "restarts": 10.0,
+  "stalls": 1.7,
+  "share": {
+   "optimizer bot": 0.487,
+   "quick bot": 0.503,
+   "restart": 0.008,
+   "stall": 0.001
+  }
+ },
+ {
+  "rules": "auction",
+  "halving": 1200.0,
+  "scenario": "withhold 120 s + stale 20 s",
+  "mean_s": 333.0,
+  "p50_s": 39.2,
+  "p90_s": 829.1,
+  "p99_s": 4430.7,
+  "cv": 2.372,
+  "restarts": 9.3,
+  "stalls": 3.3,
+  "share": {
+   "optimizer bot": 0.316,
+   "quick bot": 0.673,
+   "restart": 0.009,
+   "stall": 0.002
+  }
+ }
+]

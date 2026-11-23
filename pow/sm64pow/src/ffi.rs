@@ -162,10 +162,46 @@ pub extern "C" fn sm64pow_max_frames(difficulty: u64, elapsed_seconds: u64) -> u
     rules().max_frames(difficulty, elapsed_seconds)
 }
 
-/// Seconds without a block after which a block may start from power-on.
+/// The hold policy (`chain::hold_until`): 0 to process the block now, else
+/// the unix second until which to hold it. `restart_delay` 0 for no restart.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_stall_seconds() -> u64 {
-    rules().stall_seconds()
+pub extern "C" fn sm64pow_hold_until(difficulty: u64, parent_ts: u64, block_ts: u64, now: u64, frames: u32, restart_delay: u64) -> u64 {
+    crate::chain::hold_until(difficulty, parent_ts, block_ts, now, frames, restart_delay).unwrap_or(0)
+}
+
+/// Whether fork choice counts blocks (`Rules::weigh_by_blocks`).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_weigh_by_blocks() -> bool {
+    rules().weigh_by_blocks()
+}
+
+/// No block but the genesis block may be timestamped before this.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_launch_timestamp() -> u64 {
+    rules().launch_timestamp()
+}
+
+/// How many seconds earlier a power-on restart on top of a parent with this
+/// progress takes its limit (`Rules::restart_delay`); -1: not allowed.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_restart_delay(stars: u32, keys: u32, grand_star: bool) -> i64 {
+    let p = crate::rules::Progress { stars, keys, grand_star, star_flags: [0; 26] };
+    rules().restart_delay(&p).map_or(-1, |c| c.min(i64::MAX as u64) as i64)
+}
+
+/// The poke streams' mix intervals at `difficulty` (simulated frames between
+/// mixes of the game state into the timing and pad streams; 0: never).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_mix(difficulty: u64, timing_mix: *mut u32, pad_mix: *mut u32) {
+    let p = params(difficulty);
+    unsafe {
+        if !timing_mix.is_null() {
+            *timing_mix = p.rng.timing_mix;
+        }
+        if !pad_mix.is_null() {
+            *pad_mix = p.rng.pad_mix;
+        }
+    }
 }
 
 /// The task at `difficulty`: frame limit, random frames per window, window

@@ -115,8 +115,23 @@ fn get_share(url: &str, cfg: &Cfg) -> Result<Value, String> {
 }
 use std::io::Read;
 
-/// One round: discover peers, pull from each that is due, merge what they share.
+/// One round: the node's own board first (nodes share it over p2p:
+/// sm64_board), then discover peers, pull from each that is due, merge what
+/// they share.
 pub fn round(state: &Mutex<State>, peers: &Mutex<Peers>, cfg: &Cfg) {
+    let board: Result<Value, String> = ureq::post(&format!("{}/json_rpc", cfg.daemon))
+        .timeout(Duration::from_secs(10))
+        .send_json(json!({"jsonrpc":"2.0","id":"0","method":"sm64_board"}))
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.into_json().map_err(|e| e.to_string()));
+    if let Ok(v) = board {
+        if let Some(entries) = v["result"]["entries"].as_array() {
+            let rep = state.lock().unwrap().merge_peer(entries, "node", &cfg.path);
+            if rep.added > 0 {
+                eprintln!("node board: {} added, {} known", rep.added, rep.known);
+            }
+        }
+    }
     if cfg.discover {
         let r: Result<Value, String> = ureq::post(&format!("{}/json_rpc", cfg.daemon))
             .timeout(Duration::from_secs(10))

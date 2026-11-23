@@ -63,7 +63,7 @@ pub enum Start {
     #[default]
     Parent = 0,
     /// From power-on: the first block of a cycle (after the genesis block or
-    /// a cycle-ending block), or any block once the chain has stalled.
+    /// a cycle-ending block), or a restart (see `Rules::restart_cost`).
     PowerOn = 1,
 }
 

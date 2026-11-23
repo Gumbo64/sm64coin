@@ -76,7 +76,9 @@ pub fn view(bytes: &[u8]) -> View {
         u32_at(m + MARIO_VEL) << 32 | u32_at(m + MARIO_VEL + 4),
         u32_at(m + MARIO_VEL + 8) << 32 | u32_at(m + MARIO_ACTION),
         u16_at(m + MARIO_FACE_ANGLE) << 48 | u16_at(m + MARIO_FACE_ANGLE + 2) << 32 | u16_at(m + MARIO_HEALTH) << 16 | u16_at(m + MARIO_NUM_COINS),
-        u32_at(rest) << 32 | u16_at(rest + 4) << 16 | u16_at(rest + 6),
+        // Not gGlobalTimer (at `rest`): it counts paused frames too, so it
+        // would let a pause of any length reroll every later poke.
+        u16_at(rest + 4) << 16 | u16_at(rest + 6),
         u16_at(l + LAKITU_YAW) << 48 | u16_at(rest + 8) << 16 | u16_at(m + MARIO_NUM_STARS),
     ];
     View { clock, digest }

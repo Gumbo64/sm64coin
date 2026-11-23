@@ -829,4 +829,20 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[patch.unused]]
 name = "sm64-binds"
-version = "2.2.0"
+version = "2.3.0"
+
+[[patch.unused]]
+name = "obrrt-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "obrrt-objectives"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "obrrt-search"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "obrrt-spec"
+version = "0.1.0"

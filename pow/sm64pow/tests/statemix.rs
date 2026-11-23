@@ -153,10 +153,19 @@ fn chain_of_state_coded_blocks_and_canonical_encoding() {
     let mut extra = b1.clone();
     extra.push(0x5a);
     assert!(!valid(&verify_block_opts(&id(23), Parent::Genesis, &seed, 1, &extra, true).unwrap()));
-    for pos in [4, b1.len() / 3, b1.len() / 2, b1.len() - 1] {
+    for pos in [4, b1.len() / 3, b1.len() / 2] {
         let mut t = b1.clone();
         t[pos] ^= 0x01;
         assert!(!valid(&verify_block_opts(&id(24), Parent::Genesis, &seed, 1, &t, true).unwrap()), "flip at {pos}");
+    }
+    // A flip in the last byte only changes the last inputs: either no run, or
+    // a different run (still reaching the star) whose canonical encoding it
+    // is: a distinct proof with its own id, never the same run twice.
+    let mut t = b1.clone();
+    let last = t.len() - 1;
+    t[last] ^= 0x01;
+    if valid(&verify_block_opts(&id(25), Parent::Genesis, &seed, 1, &t, true).unwrap()) {
+        assert_ne!(sm64pow::decode_proof_any(&t, None, &seed, &params(1)).unwrap(), pr, "a different byte string must be a different run");
     }
     // A truncated body decodes to another run (the last inputs differ): at most a different
     // valid proof, with its own id and its own canonical bytes. Half a body is no run at all.
@@ -235,7 +244,7 @@ fn deterministic_across_runs_and_threads() {
     assert_eq!(digest, GOLDEN_POWER_ON, "statemix output changed (new model = new codec id)");
 }
 
-const GOLDEN_POWER_ON: &str = "512370b71a3651e5f84c161309d21c5ca49ff572f2c251223c5a823f6d08a26f";
+const GOLDEN_POWER_ON: &str = "a99fd134db31c5b3faa87e2ee2b6f75609a81bce338375900e797385a9d2016f"; // fixture re-mined 2026-11-23 (two-stream perturbation)
 
 #[test]
 fn variant_5_and_decode_proof_state() {
@@ -258,4 +267,4 @@ fn variant_5_and_decode_proof_state() {
     assert_eq!(digest, GOLDEN_V5);
 }
 
-const GOLDEN_V5: &str = "981f7eadfc23b1b31ad21ef3467ca471983d535b0952c69203666d0d224f69f6";
+const GOLDEN_V5: &str = "5b1af79d0e6f879cc358ca5ab6535dd73a462cd403d144133d6b75c26a90a25b"; // fixture re-mined 2026-11-23

@@ -670,6 +670,11 @@ fn run(o: Opts) -> Result<(), String> {
             }
             let mut cmd = Command::new(bin);
             cmd.args(["--address", addr, "--daemon", &rpc_url]).arg("--rom").arg(&rom);
+            // The campaign's scratch (step files, its memory across blocks, its roadmap) lasts
+            // between runs; threads: all but one core.
+            cmd.arg("--rrt-scratch").arg(data_dir.join("miner"));
+            let threads = std::thread::available_parallelism().map_or(2, |n| n.get()).saturating_sub(1).max(1);
+            cmd.arg("--rh-threads").arg(threads.to_string());
             let route = exe_dir.join("routes").join("block1-human.m64");
             if route.is_file() {
                 cmd.arg("--route").arg(route);

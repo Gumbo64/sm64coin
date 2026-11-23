@@ -3,6 +3,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,7 +19,16 @@ int32_t sm64pow_has_state(const uint8_t *id32);
 int32_t sm64pow_block_progress(const uint8_t *id32, uint32_t *stars, uint32_t *keys, int32_t *grand_star, int32_t *ends_cycle);
 size_t sm64pow_block_event(const uint8_t *id32, char *out, size_t cap); /* "c09s1", "key1", "grand"; 0 if unknown */
 int32_t sm64pow_proof_start(const uint8_t *proof, size_t len); /* 0 parent, 1 power-on, -1 bad */
-uint64_t sm64pow_stall_seconds(void);
+/* Seconds earlier a power-on restart on top of a parent with this progress takes its limit; -1: not allowed. */
+/* Whether fork choice counts blocks instead of cumulative difficulty (Rules::weigh_by_blocks). */
+bool sm64pow_weigh_by_blocks(void);
+/* The hold policy: 0 to process the block now, else the unix second until which to hold it. */
+uint64_t sm64pow_hold_until(uint64_t difficulty, uint64_t parent_ts, uint64_t block_ts, uint64_t now, uint32_t frames, uint64_t restart_delay);
+/* The poke streams' mix intervals (simulated frames; 0: never mixed). */
+void sm64pow_mix(uint64_t difficulty, uint32_t *timing_mix, uint32_t *pad_mix);
+/* No block but the genesis block may be timestamped before this (unix seconds). */
+uint64_t sm64pow_launch_timestamp(void);
+int64_t sm64pow_restart_delay(uint32_t stars, uint32_t keys, bool grand_star);
 uint32_t sm64pow_max_frames(uint64_t difficulty, uint64_t elapsed_seconds);
 uint32_t sm64pow_reseed_frames(uint64_t difficulty);
 size_t sm64pow_last_error(char *buf, size_t cap);

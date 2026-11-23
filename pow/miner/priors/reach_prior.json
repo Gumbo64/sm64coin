@@ -1,0 +1,22 @@
+{
+ "BlueCoinSwitch::Press": 153.3,
+ "Boss::Hit": 186.2,
+ "Cannon::Enter": 171.7,
+ "Chest::Open": 129.8,
+ "CrazyBox::Bounce": 251.4,
+ "Heart::Spin": 131.5,
+ "Mission::ReachBox": 126.0,
+ "Mission::ReachStar": 132.2,
+ "Object::Grab": 222.3,
+ "OneUp::Collect": 130.2,
+ "Painting::Enter": 301.9,
+ "Pole::Climb": 366.7,
+ "Post::Circle": 355.4,
+ "PurpleSwitch::Press": 173.5,
+ "Sign::Read": 142.4,
+ "Tech::HyperClimb": 75.4,
+ "WallKick::Chain": 90.0,
+ "WarpFloor::Enter": 75.0,
+ "Whomp::GroundPound": 261.9,
+ "WhompKing::Pound": 607.9
+}

@@ -229,7 +229,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
     let objs: Vec<Arc<dyn Objective>> = plan.legs[first..].to_vec();
     let cfg = RhConfig { pop: o.pop, h: o.horizon, k: o.commit, g: o.gens, seed: o.seed, ..Default::default() };
     // The workers are forks of `game`: mining games, perturbation included.
-    let mut ctl = RhController::new(&game, o.threads, &game.save_state(), st.clone(), cfg.clone())?;
+    let mut ctl = RhController::new(&crate::hook::hooked(&game)?, o.threads, &crate::hook::hooked_save(&game.save_state()), st.clone(), cfg.clone())?;
     // Rewind point: the state where the current objective became the front.
     let mut ckpt = (game.save_state(), st, played.len());
     let mut retries = 0u64;
@@ -260,7 +260,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             log(format!("{} at frame {} on {}: rewind to frame {} (retry {retries})", if out.stuck { "stuck" } else { "stalled" }, ctl.state().frame, objs[next].key(), ckpt.2));
             shadow.load_state(&ckpt.0)?;
             played.truncate(ckpt.2);
-            ctl.load(&ckpt.0, ckpt.1.clone(), true)?;
+            ctl.load(&crate::hook::hooked_save(&ckpt.0), ckpt.1.clone(), true)?;
             ctl.set_config(RhConfig { salt: retries, ..cfg.clone() });
             continue;
         }

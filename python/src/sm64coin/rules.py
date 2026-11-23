@@ -14,15 +14,20 @@ from dataclasses import dataclass
 from .perturb import PokeConfig, Progress
 
 NAME = "star-cycle-70"
-BASE_FRAMES = 10 * 60 * 30
+BASE_FRAMES = 20 * 60 * 30
 MIN_FRAMES = 20 * 30
 SHRINK_PERCENT = 98
 RANDOM = 5  # pokes: bursts per window
 WINDOW = 100
 BURST = 2
 TARGET = 300  # seconds between blocks the retarget aims for
-DECAY_GRACE_TARGETS = 2
-STALL_SECONDS = 3600  # after this long without a block a block may start from power-on
+DECAY_GRACE = 0  # seconds the limit stays flat after the parent (0: the frame-length auction)
+DECAY_HALVING = 60  # seconds per difficulty halving of the limit's growth
+RESTART_BASE_SECONDS = 3600  # a restart's limit is the limit this much earlier...
+RESTART_POINT_SECONDS = 60  # ...plus this per progress point thrown away...
+RESTART_MAX_SECONDS = 2 * 3600  # ...at most this
+TIMING_MIX = 1  # simulated frames between state mixes into the poke timing stream (0: never)
+PAD_MIX = 1     # the same for the pad stream
 RESEED_FRAMES = 0  # one 256-bit seed per run (the perturbation is seeded once, from the whole hash)
 U64 = (1 << 64) - 1
 
@@ -46,7 +51,7 @@ class Params:
     reseed_frames: int
 
     def poke_config(self) -> PokeConfig:
-        return PokeConfig(self.window, self.random_amount, self.burst, 0.5, 0.5, 0.2)
+        return PokeConfig(self.window, self.random_amount, self.burst, 0.5, 0.5, 0.2, TIMING_MIX, PAD_MIX)
 
 
 def params(difficulty: int) -> Params:
@@ -67,20 +72,16 @@ def max_frames_any() -> int:
 
 
 def effective_difficulty(difficulty: int, elapsed_seconds: int) -> int:
-    """The difficulty a block actually needs, given how long after its parent it is timestamped."""
-    grace = DECAY_GRACE_TARGETS * TARGET
-    if elapsed_seconds <= grace:
-        return max(difficulty, 1)
-    halvings = (elapsed_seconds - grace) // TARGET
-    return 1 if halvings >= 64 else max(difficulty >> halvings, 1)
+    """A block's weight: its retarget difficulty, whatever its timestamp."""
+    return max(difficulty, 1)
 
 
 def max_frames(difficulty: int, elapsed_seconds: int) -> int:
     """The time limit of a block at retarget `difficulty` timestamped `elapsed_seconds` after its
-    parent. Continuous in time: after the grace period the limit grows every second (one
-    difficulty halving, 8 levels, per target)."""
-    t = TARGET
-    grace = DECAY_GRACE_TARGETS * t
+    parent. Continuous in time: after the grace period (none) the limit grows every second (one
+    difficulty halving, 8 levels, per DECAY_HALVING seconds)."""
+    t = DECAY_HALVING
+    grace = DECAY_GRACE
     decay = min(max(elapsed_seconds - grace, 0) * 8, U64)  # in 1/t levels
     level = max(level8(difficulty) * t - decay, 0)         # in 1/t levels
     whole, frac = divmod(level, t)
@@ -119,8 +120,11 @@ def ends_cycle(end: Progress) -> bool:
     return end.grand_star
 
 
-def stall_seconds() -> int:
-    return STALL_SECONDS
+def restart_delay(parent: Progress):
+    """How many seconds earlier a power-on restart on top of `parent` takes its limit (it is
+    valid only that long after the parent). Mirrors StarCycle::restart_delay."""
+    return min(RESTART_BASE_SECONDS + parent.points() * RESTART_POINT_SECONDS,
+               max(RESTART_MAX_SECONDS, RESTART_BASE_SECONDS))
 
 
 def target_seconds() -> int:

@@ -29,8 +29,6 @@ struct Args {
     course_frames: u64,
     #[arg(long, default_value_t = 900.0)]
     step_seconds: f64,
-    #[arg(long, default_value_t = 3)]
-    max_targets: usize,
     #[arg(long)]
     fixture: Option<String>,
     /// Further blocks after block 1.
@@ -77,7 +75,6 @@ fn main() -> Result<()> {
                 hub_frames: a.hub_frames,
                 course_frames: a.course_frames,
                 step_seconds: a.step_seconds,
-                max_targets: a.max_targets,
                 seed: n as u64,
                 rom: Some(a.rom.clone()),
                 keep: a.keep,

@@ -28,7 +28,8 @@ class Template:
     timestamp: int = 0              # the template's own timestamp (sm64_timestamp)
     retarget_difficulty: int = 0    # the difficulty the time limit derives from
     start: str = "parent"           # where the run may start: "parent", "power-on" or "either"
-    power_on_at: int = 0            # unix time from which a power-on start is allowed (stall escape)
+    power_on_at: int = 0            # unix time from which a power-on restart is allowed (parent + restart delay)
+    restart_delay: int = 0          # a restart's limit is the limit this many seconds earlier
     parent_timestamp: int = 0
     parent_stars: int = 0
     parent_keys: int = 0
@@ -85,7 +86,7 @@ class Daemon:
             rules=r.get("sm64_rules", ""), goal=r.get("sm64_goal", ""),
             window_length=r.get("sm64_window_length", 0), burst_length=r.get("sm64_burst_length", 0),
             timestamp=r.get("sm64_timestamp", 0), retarget_difficulty=r.get("sm64_retarget_difficulty", 0),
-            start=r.get("sm64_start", "parent"), power_on_at=r.get("sm64_power_on_at", 0),
+            start=r.get("sm64_start", "parent"), power_on_at=r.get("sm64_power_on_at", 0), restart_delay=r.get("sm64_restart_delay", 0),
             parent_timestamp=r.get("sm64_parent_timestamp", 0), parent_stars=r.get("sm64_parent_stars", 0),
             parent_keys=r.get("sm64_parent_keys", 0), cycle_start_height=r.get("sm64_cycle_start_height", 0),
             valid_at=r.get("sm64_valid_at", 0))

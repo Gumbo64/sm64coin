@@ -105,7 +105,7 @@ function Miner() {
         c.tipTemplate = t;
         setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start);
         const power = c.forcePower && t.sm64_start === 'either';
-        say(`block ${t.height}: seed ${t.sm64_seed}, limit ${frames(t.sm64_max_frames)}, ${t.sm64_random_amount} pokes/${t.sm64_window_length}, start ${power ? 'power-on (stall escape)' : t.sm64_start}`);
+        say(`block ${t.height}: seed ${t.sm64_seed}, limit ${frames(t.sm64_max_frames)}, ${t.sm64_random_amount} pokes/${t.sm64_window_length}, start ${power ? 'power-on (restart)' : t.sm64_start}`);
 
         // The start state: power-on, or the parent block's end (fast-forward the cycle).
         setPhase({ kind: 'ff', done: 0, total: 0 });
@@ -266,6 +266,7 @@ function Miner() {
           <pre className="log">{log.join('\n')}</pre>
         </details>
         <p className="muted links"><a href="/leaderboard">Leaderboard</a></p>
+        <p className="muted">Rather not play by hand? <a href="/bots">Build a bot</a> to mine for you.</p>
       </aside>
     </div>
     </>
@@ -343,9 +344,9 @@ function Help() {
         your block from there. <b>Goal: get your next star or key</b> within the time limit.</p>
       <p>The controller is randomly poked while you play (the pokes come from the block template's seed and Mario's
         position and speed), so every attempt is different. The pokes are the same at every difficulty.</p>
-      <p><b>The time limit decays continuously.</b> Difficulty is only the time limit. After a grace period without a
-        block (10 minutes) the limit grows <i>every second</i>, so runs never have to restart because the difficulty
-        changed. You can keep playing past the limit (the bar turns red): if you reach the goal over budget, the run
+      <p><b>The time limit grows continuously.</b> Difficulty is only the time limit. From the moment the last block
+        was found the limit grows <i>every second</i>, so the shortest run becomes valid first and runs never have to
+        restart because the difficulty changed. You can keep playing past the limit (the bar turns red): if you reach the goal over budget, the run
         isn't lost, it just has to <b>wait</b> until the limit has grown to its length, shown as "valid in mm:ss", and
         is submitted automatically then, unless another block lands first (a run is for one parent block; then you
         start the next block from that one). Ties go to the shorter run: of several runs waiting, the shortest

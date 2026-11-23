@@ -41,16 +41,23 @@ struct Args {
     /// star from power-on only).
     #[arg(long, default_value = "rrt")]
     controller: String,
-    /// rrt: emulated frames (all threads) a castle tree / a course tree may use, wall-clock cap of one tree (s),
-    /// courses tried from the castle per block, scratch directory, ROM path for the tree processes.
-    #[arg(long, default_value_t = 16_000_000)]
-    rrt_hub_frames: u64,
+    /// rrt (the seg120 campaign per block): emulated frames (all threads) a castle tree / a course tree may use
+    /// before the budget multiplier (campaign.py --hub, --course), a wall-clock cap of one tree (s, 0: none),
+    /// checkpoints in a row before a course is given up (--checkpoints), the course trees' stall stop in frames
+    /// (--stall, 0: off), more tree settings "VAR=value ..." (--env), scratch directory (also the campaign's
+    /// memory across blocks and its roadmap).
     #[arg(long, default_value_t = 60_000_000)]
+    rrt_hub_frames: u64,
+    #[arg(long, default_value_t = 150_000_000)]
     rrt_course_frames: u64,
-    #[arg(long, default_value_t = 900.0)]
+    #[arg(long, default_value_t = 0.0)]
     rrt_step_seconds: f64,
-    #[arg(long, default_value_t = 3)]
-    rrt_targets: usize,
+    #[arg(long, default_value_t = 8)]
+    rrt_checkpoints: usize,
+    #[arg(long, default_value_t = 0)]
+    rrt_stall: u64,
+    #[arg(long, default_value = "")]
+    rrt_env: String,
     #[arg(long, default_value = "run/rrt-scratch")]
     rrt_scratch: String,
     /// rh: population, horizon, frames committed per step, threads.
@@ -88,12 +95,46 @@ struct Args {
     /// Routes tried per block template (best-ranked first).
     #[arg(long, default_value_t = 3)]
     routes_per_template: usize,
-    /// rh: frames a run may take (0: the most any difficulty allows, 18000).
+    /// rh: frames a run may take (0: the most any difficulty allows, 36000).
     #[arg(long, default_value_t = 0)]
     rh_frames: usize,
     /// Save each sealed proof's pads here as <height>.m64 (from the block's start state, not from power-on).
     #[arg(long)]
     save_dir: Option<String>,
+    /// Testing the hold policy: submit a run that waits for the limit this
+    /// many seconds early, timestamped when it becomes valid (nodes accept
+    /// stamps up to 120 s ahead; an honest node holds the block until its
+    /// own clock lets the run fit). 0: off.
+    #[arg(long, default_value_t = 0)]
+    stamp_ahead: u64,
+    /// Testing the hold policy deterministically: seal the first block and
+    /// save it here (JSON) instead of submitting it, then exit.
+    #[arg(long)]
+    save_block: Option<String>,
+    /// With --save-block's file: print the fixed difficulty at which its run
+    /// becomes valid `--hold-in` seconds from now (restart the test node with
+    /// it), then exit.
+    #[arg(long)]
+    pick_difficulty: Option<String>,
+    /// Seconds from now for --pick-difficulty.
+    #[arg(long, default_value_t = 160)]
+    hold_in: u64,
+    /// With --save-block's file: stamp the block at the time its run fits the
+    /// daemon's current limit and submit it now (early, if that is ahead),
+    /// then exit.
+    #[arg(long)]
+    submit_saved: Option<String>,
+}
+
+/// A sealed block kept for the hold test (--save-block).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedBlock {
+    template_blob: String,
+    proof: String,
+    frames: u32,
+    parent_ts: u64,
+    prev_hash: String,
+    height: u64,
 }
 
 fn now() -> u64 {
@@ -138,6 +179,45 @@ fn main() -> Result<()> {
     }
     sm64pow::init(std::fs::read(&a.rom)?)?;
     let daemon = rpc::Daemon::new(&a.daemon);
+    if let Some(f) = &a.pick_difficulty {
+        let b: SavedBlock = serde_json::from_str(&std::fs::read_to_string(f)?)?;
+        let r = sm64pow::rules();
+        let at = now() + a.hold_in;
+        // The largest difficulty whose limit still lets the run in at `at`
+        // (the limit grows with elapsed time and shrinks with difficulty).
+        let fits = |d: u64| r.max_frames(d, at.saturating_sub(b.parent_ts)) >= b.frames;
+        let (mut lo, mut hi) = (1u64, u64::MAX);
+        if !fits(lo) {
+            bail!("{} frames don't fit even at difficulty 1 at +{} s", b.frames, a.hold_in);
+        }
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if fits(mid) { lo = mid } else { hi = mid }
+        }
+        let from = valid_from(lo, b.parent_ts, b.frames, b.parent_ts);
+        println!("{lo}");
+        eprintln!("difficulty {lo}: {} frames valid at {from} (now +{}), limit now {}", b.frames, from as i64 - now() as i64, r.max_frames(lo, now().saturating_sub(b.parent_ts)));
+        return Ok(());
+    }
+    if let Some(f) = &a.submit_saved {
+        let b: SavedBlock = serde_json::from_str(&std::fs::read_to_string(f)?)?;
+        let t = daemon.template(&a.address)?;
+        if t.prev_hash != b.prev_hash {
+            bail!("the tip moved: the saved block is on {}, the daemon's tip is {}", b.prev_hash, t.prev_hash);
+        }
+        let retarget = t.sm64_retarget_difficulty.max(1);
+        let ts = valid_from(retarget, b.parent_ts, b.frames, now());
+        let r = sm64pow::rules();
+        println!(
+            "saved block {}: {} frames; difficulty {retarget}, limit now {}; stamped {ts} = now +{} s",
+            b.height, b.frames, r.max_frames(retarget, now().saturating_sub(b.parent_ts)), ts as i64 - now() as i64
+        );
+        match daemon.submit(&rpc::seal(&b.template_blob, &hex::decode(&b.proof)?, Some(ts))?) {
+            Ok(()) => println!("submitted"),
+            Err(e) => println!("submit failed: {e}"),
+        }
+        return Ok(());
+    }
     let mut lib = Library::new(Some(a.route_stats.clone()));
     if a.controller == "beam" {
         for r in &a.route {
@@ -255,7 +335,7 @@ fn main() -> Result<()> {
         let mut no_route = None;
         if a.controller == "rrt" || a.controller == "rh" {
             let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt, frame_cap: a.rh_frames, max_retries: if t.sm64_start == "either" { 3 } else { 40 }, ..Default::default() };
-            let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, max_targets: a.rrt_targets, seed: attempt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
+            let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
             let use_rrt = a.controller == "rrt";
             let mut r = if use_rrt { rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &stop, |m| println!("  {m}"))? } else { rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &stop, |m| println!("  {m}"))? };
             let fallback = match &r {
@@ -311,8 +391,8 @@ fn main() -> Result<()> {
         let _ = watcher.join();
         let Some(m) = result else {
             if let Some(why) = no_route {
-                // Nothing to play from here: wait for a new tip or the stall
-                // time (after which the template allows the power-on start).
+                // Nothing to play from here: wait for a new tip or the restart
+                // delay (after which the template allows the power-on start).
                 let wake = if t.sm64_power_on_at > now() { t.sm64_power_on_at } else { now() + 5 };
                 println!("  nothing to try ({why}); power-on start allowed at {} (in {} s)", t.sm64_power_on_at, wake.saturating_sub(now()));
                 while now() < wake.min(now() + 3600) {
@@ -358,16 +438,30 @@ fn main() -> Result<()> {
             std::fs::write(format!("{dir}/{}.m64", t.height), m64)?;
         }
 
+        if let Some(f) = &a.save_block {
+            let b = SavedBlock { template_blob: t.blocktemplate_blob.clone(), proof: hex::encode(&proof), frames, parent_ts: t.sm64_parent_timestamp, prev_hash: t.prev_hash.clone(), height: t.height };
+            std::fs::write(f, serde_json::to_string(&b)?)?;
+            println!("  saved block {} ({frames} frames) to {f}, not submitted", t.height);
+            return Ok(());
+        }
         // Within the time limit now? Otherwise wait until it has grown to
         // this run's length (the tip changing abandons it).
         let retarget = t.sm64_retarget_difficulty.max(1);
-        let mut ts = valid_from(retarget, t.sm64_parent_timestamp, frames, now());
+        // A restart (power-on start on a parent that didn't end the cycle) is
+        // judged against the limit `sm64_restart_delay` seconds earlier.
+        let restart = start == Start::PowerOn && t.sm64_start == "either";
+        let delay = if restart { t.sm64_restart_delay } else { 0 };
+        let mut ts = valid_from(retarget, t.sm64_parent_timestamp + delay, frames, now());
         if ts > now() {
             let asked = daemon.template_valid_at(&a.address, frames).map(|x| x.sm64_valid_at).unwrap_or(0);
+            let asked = if asked == 0 { 0 } else { asked + delay };
             ts = ts.max(asked);
             println!("  {frames} frames is over the current limit ({}); valid at {ts} (in {} s, daemon says {asked})", sm64pow::rules().max_frames(retarget, now().saturating_sub(t.sm64_parent_timestamp)), ts.saturating_sub(now()));
             let mut abandoned = false;
-            while now() < ts {
+            if a.stamp_ahead > 0 {
+                println!("  test: submitting {} s early, stamped {ts}", a.stamp_ahead.min(ts.saturating_sub(now())));
+            }
+            while now() + a.stamp_ahead < ts {
                 std::thread::sleep(Duration::from_secs(1));
                 if now() % 3 == 0 && daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
                     println!("  new block on the network: abandoning the waiting run");
@@ -378,7 +472,9 @@ fn main() -> Result<()> {
             if abandoned {
                 continue;
             }
-            ts = ts.max(now());
+            if a.stamp_ahead == 0 {
+                ts = ts.max(now());
+            }
         } else {
             ts = now();
         }

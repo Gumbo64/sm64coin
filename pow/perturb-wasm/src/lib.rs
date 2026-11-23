@@ -13,7 +13,7 @@ pub struct WasmPerturber(Perturber);
 #[wasm_bindgen]
 impl WasmPerturber {
     #[wasm_bindgen(constructor)]
-    pub fn new(seed_hex: &str, window_length: u32, random_amount: u32, burst_length: u32, a_prob: f32, b_prob: f32, z_prob: f32) -> Result<WasmPerturber, JsError> {
+    pub fn new(seed_hex: &str, window_length: u32, random_amount: u32, burst_length: u32, a_prob: f32, b_prob: f32, z_prob: f32, timing_mix: u32, pad_mix: u32) -> Result<WasmPerturber, JsError> {
         if seed_hex.len() != 64 {
             return Err(JsError::new("seed hash must be 64 hex characters"));
         }
@@ -21,7 +21,7 @@ impl WasmPerturber {
         for (i, b) in seed.iter_mut().enumerate() {
             *b = u8::from_str_radix(&seed_hex[2 * i..2 * i + 2], 16).map_err(|e| JsError::new(&e.to_string()))?;
         }
-        let cfg = PokeConfig { window_length, random_amount, burst_length, a_prob, b_prob, z_prob };
+        let cfg = PokeConfig { window_length, random_amount, burst_length, a_prob, b_prob, z_prob, timing_mix, pad_mix };
         Ok(WasmPerturber(Perturber::new(&seed, &cfg)))
     }
 
@@ -48,12 +48,11 @@ impl WasmPerturber {
         Ok(WasmPerturber(serde_json::from_slice(bytes).map_err(|e| JsError::new(&e.to_string()))?))
     }
 
-    /// After stepping: mixes in the state digest if the game simulated.
+    /// After stepping: mixes in the state digest if the game simulated,
+    /// refunds the frame's poke if it didn't.
     pub fn after(&mut self, before: &[u8], after: &[u8]) {
         let (b, a) = (view(before), view(after));
-        if a.clock != b.clock {
-            self.0.mix(&a.digest);
-        }
+        self.0.settle(a.clock != b.clock, &a.digest);
     }
 }
 

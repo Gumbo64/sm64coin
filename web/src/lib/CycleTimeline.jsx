@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { daemon } from './rpc.js';
-import { STALL_SECONDS } from './rules.js';
+import { restartDelay } from './rules.js';
 
 // The current cycle as a timeline, after sm64-viewer's (frontend/src/components/
 // Timeline.jsx): the strip shows the cycle's played inputs (stick in grey,
@@ -107,17 +107,18 @@ export default function CycleTimeline({ attempt = 0 }) {
   if (!cycle) return <div className="card muted">Loading the cycle…</div>;
 
   const newCycle = cycle.ends_cycle || cycle.blocks.length === 0;
-  const resetIn = Math.ceil(cycle.tipTime + STALL_SECONDS + 1 - now);
+  const delay = restartDelay(cycle.stars + cycle.keys + (cycle.grand_star ? 1 : 0));
+  const resetIn = Math.ceil(cycle.tipTime + delay - now);
   return (
     <div className="card cycle">
       <div className="cycle-head">
         <b>Current cycle</b>
         <span>{cycle.stars} ★{cycle.keys ? ` · ${cycle.keys} 🔑` : ''}{cycle.grand_star ? ' · Grand Star' : ''}</span>
         <span className="muted">{cycle.blocks.length ? `from block ${cycle.start_height} · ${cycle.blocks.length} block${cycle.blocks.length > 1 ? 's' : ''} · ${fmtTime(cycle.pads.length)} of play` : 'no blocks yet'}</span>
-        <span className="cycle-reset" title={`After ${STALL_SECONDS / 60} minutes without a block, a block may start over from power-on (the escape from a stuck game).`}>
+        <span className="cycle-reset" title={`${Math.round(delay / 60)} minutes after the last block, a block may start over from power-on (the escape for when no miner can do the next star yet; it grows with the progress thrown away).`}>
           {newCycle
             ? 'Next block starts a new cycle from power-on'
-            : resetIn > 0 ? <>Reset to power-on allowed in <b>{fmtCountdown(resetIn)}</b></> : <>Reset to power-on <b>allowed now</b> (the chain has stalled)</>}
+            : resetIn > 0 ? <>Reset to power-on allowed in <b>{fmtCountdown(resetIn)}</b></> : <>Reset to power-on <b>allowed now</b> (no block for {Math.round(delay / 60)} min)</>}
         </span>
       </div>
       {cycle.blocks.length > 0 || attempt > 0
@@ -296,7 +297,7 @@ export function RecentCycles() {
             <li key={c.first} className={c.current ? 'current' : ''} onClick={() => nav(`/block/${c.first}`)} title="Open the cycle's first block">
               <div className="cyc-range">Blocks {c.start}–{c.end} <span className="muted">· {c.blocks}</span></div>
               <div>{c.stars} ★{c.keys ? ` · ${c.keys} 🔑` : ''} <span className="muted">· {fmtTime(c.frames)}</span></div>
-              <div className="muted">{c.current && !c.ends ? 'in progress' : c.grand || c.ends ? '★ Grand Star: game beaten' : 'reset after a stall'}</div>
+              <div className="muted">{c.current && !c.ends ? 'in progress' : c.grand || c.ends ? '★ Grand Star: game beaten' : 'restarted from power-on'}</div>
             </li>
           ))}
         </ol>

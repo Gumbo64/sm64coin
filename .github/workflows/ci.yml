@@ -29,7 +29,7 @@ jobs:
           workspaces: |
             pow
             pow/launcher
-      - name: Prepare the workspace (drops the private-dependency crates)
+      - name: Prepare the workspace
         run: scripts/ci-prepare.sh
       - name: Fetch the ROM (optional)
         if: ${{ env.HAS_ROM != '' }}
@@ -44,6 +44,11 @@ jobs:
       - name: Build the leaderboard server
         run: cargo build --release -p sm64coin-leaderboard
         working-directory: pow
+      - name: Build and test the AutoMiner (tests that need a ROM skip without one)
+        run: cargo build --release -p sm64coin-miner --bin automine --bin rrtrun && cargo test --release -p sm64coin-miner
+        working-directory: pow
+        env:
+          SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
       - name: Build and test the launcher
         run: cargo test --release && cargo build --release
         working-directory: pow/launcher

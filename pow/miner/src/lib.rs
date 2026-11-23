@@ -3,5 +3,6 @@ pub mod tracker;
 pub mod rpc;
 pub mod beam;
 pub mod routes;
+pub mod hook;
 pub mod rh;
 pub mod rrt;

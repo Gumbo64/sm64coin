@@ -11,7 +11,7 @@ BINARY="$ROOT/pow/target/release/automine"
 # Routes from files; the chain's own winning runs are added automatically.
 ROUTE="${ROUTE:-$ROOT/pow/miner/routes/block1-human.m64}"
 # Always (re)build: a stale miner with other rules would waste its runs.
-(cd "$ROOT/pow" && cargo build --release -q -p sm64coin-miner --bin automine)
+(cd "$ROOT/pow" && cargo build --release -q -p sm64coin-miner --bin automine --bin rrtrun) # rrtrun: the tree search child automine spawns
 [ -f "$ROM" ] || { echo "missing ROM $ROM" >&2; exit 1; }
 if [ $# -ge 1 ] && [[ "$1" == SM64* ]]; then
   ADDR="$1"; shift

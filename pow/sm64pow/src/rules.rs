@@ -21,6 +21,10 @@ pub struct RngConfig {
     pub a_prob: f32,
     pub b_prob: f32,
     pub z_prob: f32,
+    /// Simulated frames between mixes of the game state into the timing
+    /// (when pokes land) and pad (what they press) streams; 0: never.
+    pub timing_mix: u32,
+    pub pad_mix: u32,
 }
 
 impl RngConfig {
@@ -39,7 +43,14 @@ impl RngConfig {
             a_prob,
             b_prob,
             z_prob,
+            timing_mix: window_length,
+            pad_mix: window_length,
         }
+    }
+
+    /// The same with these mix intervals (see [`RngConfig::timing_mix`]).
+    pub const fn with_mix(self, timing_mix: u32, pad_mix: u32) -> Self {
+        RngConfig { timing_mix, pad_mix, ..self }
     }
 }
 
@@ -74,18 +85,45 @@ pub trait Rules: Sync {
     /// Whether a block ending at `end` ends the cycle: the next block starts
     /// from power-on.
     fn ends_cycle(&self, end: &Progress) -> bool;
-    /// After this many seconds without a block, a block may (instead of
-    /// continuing from its parent's end state) start from power-on: the
-    /// escape from a state nobody can make progress from.
-    fn stall_seconds(&self) -> u64;
+    /// Whether a block may start from power-on instead of its parent's end
+    /// state (the escape from a state nobody can make progress from yet), and
+    /// at what price: a restart is judged against the limit as it stood this
+    /// many seconds earlier, so it is valid only `delay` seconds after the
+    /// parent and then with the limit of `gap - delay`. That bounds the time
+    /// any one star can hold the chain up, at every difficulty (a frame cost
+    /// would cost nothing once the limit is at its maximum). `parent` is the
+    /// parent's end progress. None: not allowed. Not asked when the parent
+    /// ends the cycle (then power-on is the only start, at no cost).
+    fn restart_delay(&self, parent: &Progress) -> Option<u64> {
+        let _ = parent;
+        None
+    }
+    /// Fork choice by the number of blocks (every block weighs the same) in
+    /// place of the cumulative difficulty; ties keep the chain seen first.
+    /// The difficulty here is only a time limit, and a run of L frames fits
+    /// every difficulty whose limit is at least L at the gap the miner
+    /// declares: weighing blocks by difficulty would let a private chain
+    /// stamped as fast as its runs allow pump its weight (time warp). The
+    /// retarget still reads the cumulative difficulty.
+    fn weigh_by_blocks(&self) -> bool {
+        false
+    }
+    /// No block but the genesis block may be timestamped before this (unix
+    /// seconds): without a floor a fork from the genesis block (timestamp 0)
+    /// could declare years of time it never spent (restarts, low limits).
+    fn launch_timestamp(&self) -> u64 {
+        0
+    }
     /// Seconds between blocks the retarget aims for.
     fn target_seconds(&self) -> u64;
     /// The next block's difficulty from the recent blocks' timestamps and
     /// cumulative difficulties (oldest first).
     fn next_difficulty(&self, timestamps: &[u64], cumulative: &[u128]) -> u64;
-    /// The difficulty a block actually needs, given how long after its parent
-    /// it is timestamped (`retarget` is [`Rules::next_difficulty`]): what
-    /// counts as the block's work (chain weight).
+    /// What a block at retarget `difficulty` adds to the retarget's cumulative
+    /// difficulty (and, unless [`Rules::weigh_by_blocks`], to the chain
+    /// weight), given how long after its parent it is timestamped. Rules
+    /// whose weight reads the timestamp let anyone who restamps a block
+    /// change its weight; [`StarCycle`] does not.
     fn effective_difficulty(&self, difficulty: u64, elapsed_seconds: u64) -> u64;
     /// The time limit of a block at retarget `difficulty` timestamped
     /// `elapsed_seconds` after its parent. Defaults to the limit at the
@@ -133,23 +171,35 @@ pub fn monero_retarget(timestamps: &[u64], cumulative: &[u128], target: u64, win
     d.clamp(1, u64::MAX as u128) as u64
 }
 
-/// The original sm64-crypto game: from power-on, get any star while the
-/// controller is poked. Difficulty is hardness: each doubling cuts the time
-/// limit by about 15% and adds one poke per 100 frames.
+/// The limit in minutes of play at a few difficulties, by seconds since the
+/// parent's timestamp (20 min at most, 20 s at least; 5 bursts of 2 poked
+/// frames per 100 at every difficulty):
 ///
-/// | difficulty | time limit | random frames / 100 |
-/// |---|---|---|
-/// | 1 | 10:00 | 10 (5 bursts of 2) |
-/// | 4 | 7:13 | 14 |
-/// | 16 | 5:13 | 18 |
-/// | 64 | 3:46 | 22 |
-/// | 256 | 2:43 | 26 |
+/// | difficulty | +0 s | +60 s | +300 s | +600 s |
+/// |---|---|---|---|---|
+/// | 1 | 20.0 | 20.0 | 20.0 | 20.0 |
+/// | 2^8 | 5.5 | 6.4 | 12.3 | 20.0 |
+/// | 2^16 | 1.5 | 1.8 | 3.4 | 7.6 |
+/// | 2^24 | 0.4 | 0.5 | 0.9 | 2.1 |
+///
 /// The 70-star cycle: each block is the game's next bit of progress (a
 /// star, a Bowser key, or the Grand Star after 70 stars), played on from the
 /// previous block's end state; the Grand Star ends the cycle and the next
 /// block starts from power-on. Difficulty is only the time limit; the pokes
 /// are the same at every difficulty, so a block's run never changes meaning
-/// while it is mined (decay only gives it more time).
+/// while it is mined (the limit only grows).
+///
+/// The frame-length auction: the limit starts at the retarget difficulty's
+/// limit the moment the parent is timestamped and grows every second (no
+/// grace), so the shortest run anyone holds becomes valid first. A block's
+/// weight in fork choice is one block (the chain with more blocks wins,
+/// the first seen on a tie), whatever its difficulty or timestamp; the
+/// retarget still reads the difficulties. A power-on
+/// restart is judged against the limit `restart_base_seconds` plus
+/// `restart_point_seconds` per progress point thrown away (capped) earlier:
+/// the escape for when no miner can do the next star yet, an upper bound on
+/// how long one star can hold the chain up. Set `restart_base_seconds` to
+/// `u64::MAX` to turn restarts off. Modelled in pow/tools/auction.
 pub struct StarCycle {
     /// Time limit at difficulty 1 (frames, 30 per second).
     pub base_frames: u32,
@@ -161,32 +211,58 @@ pub struct StarCycle {
     pub random: u32,
     pub window: u32,
     pub burst: u32,
+    /// Simulated frames between mixes of the game state into the poke
+    /// timing and pad streams (0: never). Every frame: a compute-normalised
+    /// comparison (pow/perturb/DESIGN.md) found that with per-frame mixing
+    /// honest search is already the best use of compute (a dedicated
+    /// reroller gains nothing, the GA's own variation rerolls), while
+    /// per-window mixing let targeted rerolls beat honest search by ~250
+    /// frames and per-game let nonce screening against a route's harm map
+    /// erase the pokes (~414 frames) for ~1% of a run's compute.
+    pub timing_mix: u32,
+    pub pad_mix: u32,
     pub target: u64,
     /// Retarget window and outliers cut at each end (Monero's algorithm).
     pub retarget_window: usize,
     pub retarget_cut: usize,
     /// Decay, independent of the difficulty: how much real time miners get.
-    /// For this many seconds after the parent the limit stays put...
+    /// For this many seconds after the parent the limit stays put (0: the
+    /// auction, it grows from the start)...
     pub decay_grace: u64,
     /// ...then every this many seconds it relaxes by one halving of the
-    /// difficulty (continuously, a little every second).
+    /// difficulty (continuously, a little every second). The slope: steep
+    /// rewards the shortest run near the block time and keeps block times
+    /// tight; shallow behaves like a fixed threshold (first run in wins).
     pub decay_halving: u64,
-    pub stall: u64,
+    /// A power-on restart is judged against the limit this many seconds
+    /// earlier...
+    pub restart_base_seconds: u64,
+    /// ...plus this many per progress point the restart throws away...
+    pub restart_point_seconds: u64,
+    /// ...at most this many in all.
+    pub restart_max_seconds: u64,
+    /// See [`Rules::launch_timestamp`]; set it to the new network's launch.
+    pub launch_timestamp: u64,
 }
 
 pub const STAR_CYCLE: StarCycle = StarCycle {
-    base_frames: 10 * 60 * 30,
+    base_frames: 20 * 60 * 30, // 20 min: the longest star of a real 120-star route (t1) is 9.8 min, and pokes lengthen runs
     min_frames: 20 * 30,
     shrink_percent: 98,
     random: 5,
     window: 100,
     burst: 2,
+    timing_mix: 1,
+    pad_mix: 1,
     target: 300,
     retarget_window: 60,
     retarget_cut: 6,
-    decay_grace: 600,
-    decay_halving: 300,
-    stall: 3600,
+    decay_grace: 0,
+    decay_halving: 60,
+    restart_base_seconds: 3600,
+    restart_point_seconds: 60,
+    restart_max_seconds: 2 * 3600,
+    launch_timestamp: 1_795_380_000, // 2026-11-22 (the frame-length auction's network)
 };
 
 impl Rules for StarCycle {
@@ -208,7 +284,7 @@ impl Rules for StarCycle {
         Params {
             level8: l8,
             max_frames: (frames as u32).max(self.min_frames),
-            rng: RngConfig::new(self.window, self.random, self.burst, 0.5, 0.5, 0.2),
+            rng: RngConfig::new(self.window, self.random, self.burst, 0.5, 0.5, 0.2).with_mix(self.timing_mix, self.pad_mix),
             reseed_frames: 0,
         }
     }
@@ -218,8 +294,18 @@ impl Rules for StarCycle {
     fn ends_cycle(&self, end: &Progress) -> bool {
         end.grand_star
     }
-    fn stall_seconds(&self) -> u64 {
-        self.stall
+    fn weigh_by_blocks(&self) -> bool {
+        true
+    }
+    fn launch_timestamp(&self) -> u64 {
+        self.launch_timestamp
+    }
+    fn restart_delay(&self, parent: &Progress) -> Option<u64> {
+        if self.restart_base_seconds == u64::MAX {
+            return None;
+        }
+        let lost = (parent.points() as u64).saturating_mul(self.restart_point_seconds);
+        Some(self.restart_base_seconds.saturating_add(lost).min(self.restart_max_seconds.max(self.restart_base_seconds)))
     }
     fn target_seconds(&self) -> u64 {
         self.target
@@ -227,13 +313,10 @@ impl Rules for StarCycle {
     fn next_difficulty(&self, timestamps: &[u64], cumulative: &[u128]) -> u64 {
         monero_retarget(timestamps, cumulative, self.target, self.retarget_window, self.retarget_cut)
     }
-    fn effective_difficulty(&self, difficulty: u64, elapsed: u64) -> u64 {
-        let grace = self.decay_grace;
-        if elapsed <= grace {
-            return difficulty.max(1);
-        }
-        let halvings = (elapsed - grace) / self.decay_halving.max(1);
-        if halvings >= 64 { 1 } else { (difficulty >> halvings).max(1) }
+    /// The weight is the retarget difficulty: the timestamp only decides
+    /// when a run fits the limit, never what the block is worth.
+    fn effective_difficulty(&self, difficulty: u64, _elapsed: u64) -> u64 {
+        difficulty.max(1)
     }
     /// Continuous in time: after the grace period the limit grows every
     /// second (one difficulty halving, 8 levels, per target), so runs waiting
@@ -281,7 +364,7 @@ mod tests {
     fn only_the_time_limit_gets_harder() {
         let r = &STAR_CYCLE;
         let mut last = r.params(1);
-        assert_eq!(last.max_frames, 18000);
+        assert_eq!(last.max_frames, 36000);
         assert_eq!(last.rng.random_amount, 5);
         for d in 2..5000u64 {
             let p = r.params(d);
@@ -302,35 +385,45 @@ mod tests {
     }
 
     #[test]
-    fn decay_halves_after_grace() {
+    fn weight_is_the_retarget_difficulty_whatever_the_timestamp() {
         let r = &STAR_CYCLE;
-        assert_eq!(r.effective_difficulty(64, 0), 64);
-        assert_eq!(r.effective_difficulty(64, 600), 64);
-        assert_eq!(r.effective_difficulty(64, 900), 32);
-        assert_eq!(r.effective_difficulty(64, 1200), 16);
-        assert_eq!(r.effective_difficulty(64, 1_000_000), 1);
+        for e in [0, 1, 600, 900, 1_000_000] {
+            assert_eq!(r.effective_difficulty(64, e), 64);
+        }
         assert_eq!(r.effective_difficulty(0, 0), 1);
     }
 
     #[test]
-    fn time_limit_grows_every_second_after_the_grace() {
+    fn time_limit_grows_every_second_from_the_parent() {
         let r = &STAR_CYCLE;
+        assert_eq!(r.decay_grace, 0, "the auction: no grace");
         let d = 1 << 10; // level 80
-        assert_eq!(r.max_frames(d, 0), r.params(d).max_frames, "no decay: the plain limit");
-        assert_eq!(r.max_frames(d, 600), r.max_frames(d, 0), "grace");
-        let mut last = r.max_frames(d, 600);
+        let h = r.decay_halving;
+        assert_eq!(r.max_frames(d, 0), r.params(d).max_frames, "at the parent's timestamp: the plain limit");
+        let mut last = r.max_frames(d, 0);
         let mut grew = 0;
-        for s in 601..600 + 300 * 10 {
+        for s in 1..h * 10 {
             let m = r.max_frames(d, s);
             assert!(m >= last, "never shrinks ({s} s)");
             grew += (m > last) as u32;
             last = m;
         }
-        assert!(grew > 2000, "grows (almost) every second: {grew}");
-        // One target of decay is one halving of the difficulty.
-        assert_eq!(r.max_frames(d, 900), r.params(d / 2).max_frames);
+        assert!(grew as u64 > h * 10 * 9 / 10, "grows (almost) every second: {grew}");
+        // One halving of decay is one halving of the difficulty.
+        assert_eq!(r.max_frames(d, h), r.params(d / 2).max_frames);
         assert_eq!(r.max_frames(d, 10_000_000), r.params(1).max_frames);
         assert_eq!(r.max_frames(u64::MAX, 0), r.min_frames);
+    }
+
+    #[test]
+    fn restart_waits_a_base_plus_the_progress_thrown_away() {
+        let r = &STAR_CYCLE;
+        let p = |stars| Progress { stars, keys: 0, grand_star: false, star_flags: [0; 26] };
+        assert_eq!(r.restart_delay(&p(0)), Some(r.restart_base_seconds));
+        assert_eq!(r.restart_delay(&p(10)), Some(r.restart_base_seconds + 10 * r.restart_point_seconds));
+        assert_eq!(r.restart_delay(&p(69)), Some(r.restart_max_seconds), "capped");
+        let off = StarCycle { restart_base_seconds: u64::MAX, ..STAR_CYCLE };
+        assert_eq!(off.restart_delay(&p(3)), None, "restarts can be turned off");
     }
 
     #[test]

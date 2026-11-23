@@ -244,4 +244,4 @@ fn deterministic_across_runs_and_threads() {
     assert_eq!(digest, GOLDEN_POWER_ON, "statectx1 output changed (new model = new codec id)");
 }
 
-const GOLDEN_POWER_ON: &str = "eab7ebd215bd687fecf9f48f3a6622db14873445f9f941a4094f5ac0066df4a6";
+const GOLDEN_POWER_ON: &str = "271e1e147843ada55eb4c70d2956df623da76012774352c1e0afa4b0b56444be";

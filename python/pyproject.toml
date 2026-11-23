@@ -3,7 +3,7 @@ name = "sm64coin"
 version = "0.1.0"
 description = "Write Super Mario 64 bots that mine SM64Coin: the perturbation contract, a daemon client and offline practice"
 requires-python = ">=3.9"
-dependencies = ["sm64-binds==2.0.1"]
+dependencies = ["sm64-binds>=2.1.0"]  # read_memory (the perturbation reads game memory) arrived in 2.1.0
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

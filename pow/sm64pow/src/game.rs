@@ -30,6 +30,8 @@ pub fn poke_config(r: &RngConfig) -> PokeConfig {
         a_prob: r.a_prob,
         b_prob: r.b_prob,
         z_prob: r.z_prob,
+        timing_mix: r.timing_mix,
+        pad_mix: r.pad_mix,
     }
 }
 
@@ -91,6 +93,21 @@ pub struct SM64MiningSave {
     pub pert: Perturber,
 }
 
+/// One perturbed frame of `game` under `pert`, as the verifier plays it: the
+/// perturbation may replace `wanted` with a random pad (a poke). Returns the
+/// pad played and whether it was a poke. [`SM64MiningGame::step`] is this;
+/// a search that keeps the game and the perturbation apart (e.g. behind a
+/// step hook) must call it too, never `SM64Game::step_game` directly.
+pub fn perturbed_step(game: &mut SM64Game, pert: &mut Perturber, wanted: GamePad) -> Result<(GamePad, bool)> {
+    let before = read_view(game)?.clock;
+    let (played, poked) = pert.pad(before, to_pad(wanted));
+    let played = from_pad(played);
+    game.step_game(played)?;
+    let after = read_view(game)?;
+    pert.settle(after.clock != before, &after.digest);
+    Ok((played, poked))
+}
+
 impl SM64MiningGame {
     /// A fresh game, powered on, with the block's perturbation armed.
     pub fn new(seed: &Seed, p: &Params) -> Result<SM64MiningGame> {
@@ -116,15 +133,7 @@ impl SM64MiningGame {
     /// Plays one frame: the perturbation may replace `wanted` with a random
     /// pad (a poke). Returns the pad played and whether it was a poke.
     pub fn step(&mut self, wanted: GamePad) -> Result<(GamePad, bool)> {
-        let before = read_view(&self.game)?.clock;
-        let (played, poked) = self.pert.pad(before, to_pad(wanted));
-        let played = from_pad(played);
-        self.game.step_game(played)?;
-        let after = read_view(&self.game)?;
-        if after.clock != before {
-            self.pert.mix(&after.digest);
-        }
-        Ok((played, poked))
+        perturbed_step(&mut self.game, &mut self.pert, wanted)
     }
 
     /// [`step`](SM64MiningGame::step) for a codec that decodes the input from
@@ -138,9 +147,7 @@ impl SM64MiningGame {
         let played = if poked { from_pad(played) } else { wanted(&features(&bytes))? };
         self.game.step_game(played)?;
         let after = read_view(&self.game)?;
-        if after.clock != before {
-            self.pert.mix(&after.digest);
-        }
+        self.pert.settle(after.clock != before, &after.digest);
         Ok((played, poked))
     }
 
