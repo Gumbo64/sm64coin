@@ -74,3 +74,24 @@ Two generators: timing (when pokes land) and pad (what they press). Each is mixe
 
 **Open:**
 - At today's strength, the poke tax on this hard stretch is mostly failures (per frame: 3/5 failed, sd about 190 frames). Tune the rate and strength with this metric, over more start states.
+
+## Rate and strength sweep (2026-11-23): 5 bursts of 2 kept
+
+Route-imitating RHEA (pop 32, horizon 300, one thread, cap = 600 + 400 frames) from 600 frames before the star, per-frame mixing, settings by `POKE_AMOUNT` (bursts per 100-tick window) and `POKE_BURST` (frames per burst). Data: `pow/target/pokesweep{,2}/sweep.csv`.
+
+Round 2, 7 starts x 5 seeds (found / runs, all starts; king-bobomb fails without pokes too):
+
+| setting | poked frames / 100 | found |
+|---|---|---|
+| no pokes | 0 | 26/35 |
+| 2 x 2 | 4 | 5/35 |
+| 3 x 2 | 6 | 4/35 |
+| 5 x 2 (current) | 10 | 4/35 |
+
+Round 1 (3 starts x 3 seeds) also had 8 x 2: 0/9, 10 x 1: 0/9, 3 x 4: 1/9, and the same picture.
+
+- Pokes cost a weak search success, not length: runs that do reach the star are 1-47 frames longer than unpoked ones.
+- Between 4 and 10 poked frames per 100 the success rate is the same within noise, so a lower rate buys little and gives up anti-replay margin (recorded routes survive 0/12 at any rate).
+- A real miner absorbs it: the campaign miner (pow/miner/src/rrt) mined 11+ main-chain blocks at 5 x 2.
+
+**Decision:** keep 5 bursts of 2 frames per 100 ticks, both streams mixed every frame.
