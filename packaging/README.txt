@@ -58,8 +58,8 @@ Where things are (your user folder = C:\Users\<you> on Windows, /Users/<you> on 
   <user folder>/.sm64coin/logs     log files (node.log, node-daemon.log, wallet-gui.log); look here
                                    first when something does not work
   <user folder>/SM64Coin/wallets   your wallets. KEEP A BACKUP of your 25 words.
-  seeds.txt (this folder)          more nodes to join through, one host:port per line, edit freely
-                                   (the node also knows the network's seed nodes by itself)
+  seeds.txt (this folder)          nodes to join through (the network's seed nodes); one host:port
+                                   per line, edit freely
   Nothing is written inside this folder except by you.
 
 Troubleshooting

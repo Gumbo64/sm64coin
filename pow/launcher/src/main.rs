@@ -616,7 +616,6 @@ fn run(o: Opts) -> Result<(), String> {
                 return Err(format!("{} is missing", daemon_bin.display()));
             }
             let mut peers: Vec<String> = Vec::new();
-            // The daemon also has built-in seeds (monero/src/sm64coin/seeds.h); seeds.txt adds to them.
             let seed_files = match &o.seeds {
                 Some(f) => vec![f.clone()],
                 None => vec![exe_dir.join("seeds.txt"), data_dir.join("seeds.txt")],
@@ -651,6 +650,11 @@ fn run(o: Opts) -> Result<(), String> {
             // The website on GitHub Pages calls this node from the visitor's browser (RPC stays on 127.0.0.1).
             if !o.daemon_args.iter().any(|x| x.starts_with("--rpc-access-control-origins")) {
                 cmd.args(["--rpc-access-control-origins", SITE_ORIGIN]);
+            }
+            // Monero allows one inbound connection per IP; with few seeds that locks out a second node
+            // behind the same home router or carrier NAT. A flag, not a code change.
+            if !o.daemon_args.iter().any(|x| x.starts_with("--max-connections-per-ip")) {
+                cmd.arg("--max-connections-per-ip=16");
             }
             cmd.arg("--non-interactive").arg("--log-file").arg(log_dir.join("node-daemon.log"));
             if o.solo {
@@ -825,6 +829,8 @@ fn run(o: Opts) -> Result<(), String> {
                 if synced && !synced_said {
                     println!("Node is synchronized at block {h}.");
                     synced_said = true;
+                } else if synced && h > last_h.0 {
+                    println!("Block {h}.");
                 } else if !synced && ((h, target) != last_h && last_print.elapsed() > Duration::from_secs(10)) {
                     println!("Syncing: block {h} of {}", if target > h { target.to_string() } else { "?".into() });
                     last_print = Instant::now();
