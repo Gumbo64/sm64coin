@@ -37,7 +37,7 @@ jobs:
         env:
           ROM_URL: ${{ secrets.ROM_URL }}
       - name: Test sm64pow
-        run: cargo test --release -p sm64pow
+        run: ../scripts/ci-run.sh test-sm64pow cargo test --release -p sm64pow
         working-directory: pow
         env:
           SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
@@ -45,7 +45,7 @@ jobs:
         run: cargo build --release -p sm64coin-leaderboard
         working-directory: pow
       - name: Build and test the AutoMiner (tests that need a ROM skip without one)
-        run: cargo build --release -p sm64coin-miner --bin automine --bin rrtrun && cargo test --release -p sm64coin-miner
+        run: ../scripts/ci-run.sh miner bash -c 'cargo build --release -p sm64coin-miner --bin automine --bin rrtrun && cargo test --release -p sm64coin-miner'
         working-directory: pow
         env:
           SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
