@@ -460,7 +460,9 @@ jobs:
 
   publish:
     name: Publish release
-    if: github.ref_type == 'tag'
+    # The draft is made whenever Linux built, with whatever bundles exist: one platform without
+    # a runner (macOS capacity) doesn't block the rest. "Re-run failed jobs" adds it later.
+    if: ${{ always() && github.ref_type == 'tag' && needs.build-linux.result == 'success' }}
     needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-22.04
     steps:
@@ -475,7 +477,11 @@ jobs:
       - name: Checksums
         run: cd assets && sha256sum sm64coin-* > SHA256SUMS && cat SHA256SUMS
       - name: Release notes
-        run: sed "s/@TAG@/${GITHUB_REF_NAME}/g; s/@VERSION@/${GITHUB_REF_NAME#v}/g" packaging/release-notes.md > notes.md
+        env:
+          MISSING: ${{ needs.build-windows.result != 'success' && 'Windows ' || '' }}${{ needs.build-macos.result != 'success' && 'macOS' || '' }}
+        run: |
+          sed "s/@TAG@/${GITHUB_REF_NAME}/g; s/@VERSION@/${GITHUB_REF_NAME#v}/g" packaging/release-notes.md > notes.md
+          if [ -n "$MISSING" ]; then printf '\n**Not built this time:** %s (no runner or a failed build; re-run the failed jobs to add it).\n' "$MISSING" >> notes.md; fi
       - uses: softprops/action-gh-release@v2
         with:
           files: assets/*
