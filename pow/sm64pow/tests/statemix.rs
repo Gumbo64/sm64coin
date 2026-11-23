@@ -100,7 +100,7 @@ fn parent_start_round_trip() {
     eprintln!("parent start: state codec {} bytes, xz {xz}, best stateless {}", blob.len(), proof::encode_proof(&pr).len());
     assert!(blob.len() < xz);
     // Verified through the chain, on top of the cached parent.
-    let parent = Parent::Block { id: id(41), gap_seconds: 100 };
+    let parent = Parent::Block { id: id(41), gap_seconds: 1300 }; // past the limit's start offset (rules.rs start_halvings): the cap
     let v = verify_block_opts(&id(42), parent, &seed, 1, &blob, true).unwrap();
     let BlockVerdict::Valid { frames, progress, .. } = v else { panic!("{v:?}") };
     assert_eq!((frames, progress.stars), (pr.frames, 2));
@@ -113,7 +113,7 @@ fn parent_start_round_trip() {
     longer.push(0);
     invalid_with(verify_block_opts(&id(43), parent, &seed, 1, &longer, true).unwrap(), "canonical");
     // Without the parent's state the verdict is NeedParent, as for any codec.
-    let unknown = Parent::Block { id: id(78), gap_seconds: 100 };
+    let unknown = Parent::Block { id: id(78), gap_seconds: 1300 }; // past the limit's start offset (rules.rs start_halvings): the cap
     assert_eq!(verify_block_opts(&id(44), unknown, &seed, 1, &blob, true).unwrap(), BlockVerdict::NeedParent);
 }
 

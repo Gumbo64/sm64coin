@@ -23,6 +23,7 @@ BURST = 2
 TARGET = 300  # seconds between blocks the retarget aims for
 DECAY_GRACE = 0  # seconds the limit stays flat after the parent (0: the frame-length auction)
 DECAY_HALVING = 60  # seconds per difficulty halving of the limit's growth
+START_HALVINGS = 20  # the limit starts this many halvings below the retarget's (StarCycle::start_halvings)
 RESTART_BASE_SECONDS = 3600  # a restart's limit is the limit this much earlier...
 RESTART_POINT_SECONDS = 60  # ...plus this per progress point thrown away...
 RESTART_MAX_SECONDS = 2 * 3600  # ...at most this
@@ -83,7 +84,7 @@ def max_frames(difficulty: int, elapsed_seconds: int) -> int:
     t = DECAY_HALVING
     grace = DECAY_GRACE
     decay = min(max(elapsed_seconds - grace, 0) * 8, U64)  # in 1/t levels
-    level = max(level8(difficulty) * t - decay, 0)         # in 1/t levels
+    level = max((level8(difficulty) + 8 * START_HALVINGS) * t - decay, 0)  # in 1/t levels
     whole, frac = divmod(level, t)
     frames = BASE_FRAMES
     for _ in range(whole):

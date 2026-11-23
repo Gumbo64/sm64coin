@@ -49,19 +49,18 @@ fn restamped_variants_are_not_replayed_and_do_not_thrash_the_cache() {
     }
     assert_eq!(sm64pow::chain::replays(), before, "variants of a verified run are not replayed");
     assert!(sm64pow::chain::cached(&base).is_some(), "variants do not evict other states");
-    // The timestamp-dependent rules still apply to every variant: the time limit...
-    let mut vid = [0xc0; 32];
-    vid[0] = 1;
-    assert!(matches!(verify_block(&vid, Parent::Genesis, &seed, 1 << 20, &blob).unwrap(), BlockVerdict::Invalid(_)));
-    // ...and the power-on start (a restart: only after the restart delay,
-    // which depends on the parent's progress).
+    // The timestamp-dependent rules still apply to every variant: the power-on start (a
+    // restart: only after the restart delay, which depends on the parent's progress)...
     let b1 = Parent::Block { id: base, gap_seconds: 100 };
     match verify_block(&[0xc1; 32], b1, &seed, 1, &blob).unwrap() {
-        BlockVerdict::Invalid(why) => assert!(why.contains("restart"), "{why}"),
+        BlockVerdict::Invalid(why) => assert!(why.contains("restart") || why.contains("over"), "{why}"),
         v => panic!("{v:?}"),
     }
     let delay = sm64pow::rules().restart_delay(&sm64pow::chain::cached(&base).unwrap().progress).unwrap();
-    let later = Parent::Block { id: base, gap_seconds: delay };
+    let o = sm64pow::rules::STAR_CYCLE.start_halvings * sm64pow::rules::STAR_CYCLE.decay_halving;
+    let later = Parent::Block { id: base, gap_seconds: delay + o };
     assert!(matches!(verify_block(&[0xc2; 32], later, &seed, 1, &blob).unwrap(), BlockVerdict::Valid { .. }));
+    // ...and the time limit (a hard difficulty's limit then is far below the run).
+    assert!(matches!(verify_block(&[0xc3; 32], later, &seed, 1 << 20, &blob).unwrap(), BlockVerdict::Invalid(_)));
     assert_eq!(sm64pow::chain::replays(), before);
 }

@@ -48,7 +48,9 @@ impl std::fmt::Debug for Task {
 impl Task {
     /// A power-on task from explicit consensus inputs (seed hash and difficulty).
     pub fn new(seed: Seed, difficulty: u64) -> Task {
-        let max = sm64pow::rules().max_frames(difficulty.max(1), 0);
+        // Offline (no parent block): the difficulty's limit once grown, as on a parent long
+        // past (the limit starts lower and grows, see rules.rs start_halvings).
+        let max = sm64pow::params(difficulty.max(1)).max_frames;
         Task {
             seed,
             difficulty,

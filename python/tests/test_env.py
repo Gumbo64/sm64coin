@@ -80,15 +80,17 @@ def test_params_and_limits_match_rust_tests():
     assert (e(64, 0), e(64, 600), e(64, 900), e(64, 1_000_000), e(0, 0)) == (64, 64, 64, 64, 1)
     # time_limit_grows_every_second_from_the_parent (no grace)
     d, h = 1 << 10, rules.DECAY_HALVING
-    assert max_frames(d, 0) == params(d).max_frames
-    last, grew = max_frames(d, 0), 0
-    for s in range(1, h * 10):
+    k = rules.START_HALVINGS * h  # the start offset, in seconds of growth
+    assert max_frames(d, k) == params(d).max_frames
+    assert max_frames(1, 0) < params(1).max_frames // 10 and max_frames(1, k) == params(1).max_frames
+    last, grew = max_frames(d, k), 0
+    for s in range(k + 1, k + h * 10):
         m = max_frames(d, s)
         assert m >= last
         grew += m > last
         last = m
     assert grew > h * 10 * 9 // 10
-    assert max_frames(d, h) == params(d // 2).max_frames
+    assert max_frames(d, k + h) == params(d // 2).max_frames
     assert max_frames(d, 10_000_000) == params(1).max_frames
     assert max_frames(2**64 - 1, 0) == rules.MIN_FRAMES == 600
     assert max_frames(2**64 - 1, 2**64 - 1) == params(1).max_frames or max_frames(2**64 - 1, 2**64 - 1) >= 600
@@ -330,8 +332,8 @@ def _template(**kw):
     from sm64coin import Template
     d = 1 << 10
     base = dict(blocktemplate_blob="00", difficulty=d, height=5, prev_hash="aa" * 32, expected_reward=1,
-                seed_hash="11" * 32, reseed_frames=0, max_frames=max_frames(d, 700), random_amount=5,
-                window_length=100, burst_length=2, timestamp=10_700, retarget_difficulty=d, start="parent",
+                seed_hash="11" * 32, reseed_frames=0, max_frames=max_frames(d, 1900), random_amount=5,
+                window_length=100, burst_length=2, timestamp=11_900, retarget_difficulty=d, start="parent",
                 parent_timestamp=10_000)
     base.update(kw)
     return Template(**base)
@@ -342,7 +344,7 @@ def test_task_from_template_builds_the_start_from_the_cycle():
     cyc = Cycle(pads=[GamePad()] * 25, stars=0, keys=0)
     t = _template()
     task = Task.from_template(t, cyc)
-    assert task.start == "parent" and task.max_frames == max_frames(1 << 10, 700) > params(1 << 10).max_frames
+    assert task.start == "parent" and task.max_frames == max_frames(1 << 10, 1900) > params(1 << 10).max_frames
     assert task.start_progress == Progress(0, 0, False) and task.play_frames == task.max_frames
     assert Task.from_template(t, cyc, play_frames=18000).play_frames == 18000
     with pytest.raises(ValueError):

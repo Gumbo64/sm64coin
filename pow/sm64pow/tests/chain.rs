@@ -52,8 +52,9 @@ fn a_chain_of_blocks() {
     // Bookkeeping: which star (Bob-omb Battlefield, star 6: Behind Chain Chomp's Gate).
     let ev = sm64pow::chain::cached(&id(1)).unwrap().event.map(|e| e.name());
     assert_eq!(ev.as_deref(), Some("c01s6"));
-    // Too tight a time limit (a high difficulty) rejects it.
-    assert!(matches!(verify_block(&id(9), Parent::Genesis, &seed, 1 << 20, &blob).unwrap(), BlockVerdict::Invalid(_)));
+    // On the genesis block (built long before) the limit is at its cap, at any difficulty
+    // (the time limit itself: rules.rs and chain.rs's hold tests).
+    assert!(matches!(verify_block(&id(9), Parent::Genesis, &seed, 1 << 20, &blob).unwrap(), BlockVerdict::Valid { .. }));
     // The first block can't claim a parent start.
     assert!(matches!(verify_block(&id(9), Parent::Genesis, &seed, 1, &idle(Start::Parent)).unwrap(), BlockVerdict::Invalid(_)));
 
@@ -71,16 +72,19 @@ fn a_chain_of_blocks() {
     // which grows with the progress thrown away (block 1 has one star)...
     let delay = sm64pow::rules().restart_delay(&progress).unwrap();
     match verify_block(&id(3), b1, &seed, 1, &blob).unwrap() {
-        BlockVerdict::Invalid(why) => assert!(why.contains("restart"), "{why}"),
+        // (or, with the start offset, already over the limit 100 s after the parent)
+        BlockVerdict::Invalid(why) => assert!(why.contains("restart") || why.contains("over"), "{why}"),
         v => panic!("{v:?}"),
     }
-    // ...and then judged against the limit that many seconds earlier.
-    let later = Parent::Block { id: id(1), gap_seconds: delay };
+    // ...and then judged against the limit that many seconds earlier (here once that limit,
+    // start offset included, has grown to its cap).
+    let o = sm64pow::rules::STAR_CYCLE.start_halvings * sm64pow::rules::STAR_CYCLE.decay_halving;
+    let later = Parent::Block { id: id(1), gap_seconds: delay + o };
     assert!(matches!(verify_block(&id(3), later, &seed, 1, &blob).unwrap(), BlockVerdict::Valid { .. }));
-    let hard = 1 << 20; // the run is far over this difficulty's limit at 0 s
+    let hard = 1 << 20; // the run is far over this difficulty's limit then
     assert!(matches!(verify_block(&id(3), later, &seed, hard, &blob).unwrap(), BlockVerdict::Invalid(_)));
     // The delay needs the parent's progress: an unknown parent is replayed first.
-    let unknown_later = Parent::Block { id: id(77), gap_seconds: delay };
+    let unknown_later = Parent::Block { id: id(77), gap_seconds: delay + o };
     assert_eq!(verify_block(&id(3), unknown_later, &seed, 1, &blob).unwrap(), BlockVerdict::NeedParent);
     // Rebuilding an accepted restart needs no parent state.
     assert!(matches!(rebuild_block(&id(3), unknown_later, &seed, &blob).unwrap(), BlockVerdict::Valid { .. }));

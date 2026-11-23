@@ -319,7 +319,9 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
     let p = params(difficulty.unwrap_or(1));
     let elapsed = match parent {
         Parent::Block { gap_seconds, .. } => *gap_seconds,
-        Parent::Genesis => 0,
+        // The genesis block is built from config, long before the first block: the limit
+        // has long grown to its cap (with the start offset, 0 would leave it at ~47 s).
+        Parent::Genesis => u64::MAX / 2,
     };
     let mut limit = match difficulty {
         Some(d) => rules().max_frames(d, elapsed),
@@ -663,21 +665,25 @@ mod hold_tests {
         let r = rules();
         let d = 1u64 << 12; // a difficulty whose limit is still growing
         let parent = 1_000_000u64;
-        // A run that fits the limit 30 s after the parent, not before.
-        let frames = r.max_frames(d, 30);
-        assert!(frames > r.max_frames(d, 29));
-        // Stamped 30 s after the parent but arriving 10 s after it: held until the node's clock says 30 s.
-        assert_eq!(hold_until(d, parent, parent + 30, parent + 10, frames, 0), Some(parent + 30));
-        // Stamped 120 s ahead (40 s after the parent's 30): still only valid from 30 s on.
-        assert_eq!(hold_until(d, parent, parent + 150, parent + 10, frames, 0), Some(parent + 30));
+        // Past the start offset (crate::rules::STAR_CYCLE.start_halvings), where the limit grows every second.
+        let o = crate::rules::STAR_CYCLE.start_halvings * crate::rules::STAR_CYCLE.decay_halving;
+        // A run that fits the limit o + 30 s after the parent, not before.
+        let frames = r.max_frames(d, o + 30);
+        assert!(frames > r.max_frames(d, o + 29));
+        // Stamped o + 30 s after the parent but arriving at o + 10: held until the node's clock says o + 30.
+        assert_eq!(hold_until(d, parent, parent + o + 30, parent + o + 10, frames, 0), Some(parent + o + 30));
+        // Stamped further ahead: still only valid from o + 30 on.
+        assert_eq!(hold_until(d, parent, parent + o + 150, parent + o + 10, frames, 0), Some(parent + o + 30));
         // Arriving when it already fits: processed now.
-        assert_eq!(hold_until(d, parent, parent + 30, parent + 31, frames, 0), None);
+        assert_eq!(hold_until(d, parent, parent + o + 30, parent + o + 31, frames, 0), None);
         // Too long even at its own timestamp: not held (the normal path rejects it).
-        assert_eq!(hold_until(d, parent, parent + 20, parent + 10, frames, 0), None);
+        assert_eq!(hold_until(d, parent, parent + o + 20, parent + o + 10, frames, 0), None);
         // A restart: the limit is the limit `delay` seconds earlier.
-        assert_eq!(hold_until(d, parent, parent + 3700, parent + 3610, frames, 3600), Some(parent + 3630));
-        // At difficulty 1 the limit starts at its maximum: nothing is ever held.
-        assert_eq!(hold_until(1, parent, parent + 100, parent, r.max_frames(1, 0), 0), None);
+        assert_eq!(hold_until(d, parent, parent + 3600 + o + 100, parent + 3600 + o + 10, frames, 3600), Some(parent + 3600 + o + 30));
+        // At difficulty 1 the limit grows too (the start offset): a 2-minute run waits until it fits.
+        let two_min = 2 * 60 * 30;
+        let due = hold_until(1, parent, parent + o, parent, two_min, 0).expect("held at difficulty 1");
+        assert!(r.max_frames(1, due - parent) >= two_min && r.max_frames(1, due - parent - 1) < two_min);
     }
 }
 

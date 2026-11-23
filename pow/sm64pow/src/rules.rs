@@ -172,15 +172,16 @@ pub fn monero_retarget(timestamps: &[u64], cumulative: &[u128], target: u64, win
 }
 
 /// The limit in minutes of play at a few difficulties, by seconds since the
-/// parent's timestamp (20 min at most, 20 s at least; 5 bursts of 2 poked
-/// frames per 100 at every difficulty):
+/// parent's timestamp (20 min at most, 20 s at least; it starts
+/// `start_halvings` = 20 halvings below the difficulty's and grows one halving
+/// a minute; 5 bursts of 2 poked frames per 100 at every difficulty):
 ///
-/// | difficulty | +0 s | +60 s | +300 s | +600 s |
-/// |---|---|---|---|---|
-/// | 1 | 20.0 | 20.0 | 20.0 | 20.0 |
-/// | 2^8 | 5.5 | 6.4 | 12.3 | 20.0 |
-/// | 2^16 | 1.5 | 1.8 | 3.4 | 7.6 |
-/// | 2^24 | 0.4 | 0.5 | 0.9 | 2.1 |
+/// | difficulty | +0 s | +5 min | +10 min | +20 min | +30 min | +40 min |
+/// |---|---|---|---|---|---|---|
+/// | 1 | 0.8 | 1.8 | 4.0 | 20.0 | 20.0 | 20.0 |
+/// | 2^8 | 0.3 | 0.5 | 1.1 | 5.5 | 20.0 | 20.0 |
+/// | 2^16 | 0.3 | 0.3 | 0.3 | 1.5 | 7.6 | 20.0 |
+/// | 2^24 | 0.3 | 0.3 | 0.3 | 0.4 | 2.1 | 10.5 |
 ///
 /// The 70-star cycle: each block is the game's next bit of progress (a
 /// star, a Bowser key, or the Grand Star after 70 stars), played on from the
@@ -234,6 +235,14 @@ pub struct StarCycle {
     /// rewards the shortest run near the block time and keeps block times
     /// tight; shallow behaves like a fixed threshold (first run in wins).
     pub decay_halving: u64,
+    /// The limit starts this many difficulty halvings below the retarget's
+    /// (and grows back at one per `decay_halving` seconds), so even at the
+    /// lowest difficulty a run waits for the limit and the shortest run is
+    /// valid first: the auction works when miners are slower than the target
+    /// (the retarget then sits at 1, whose plain limit is the cap). 20: at
+    /// difficulty 1 the limit starts at about 47 s of play and reaches the
+    /// 20-minute cap 20 minutes after the parent.
+    pub start_halvings: u64,
     /// A power-on restart is judged against the limit this many seconds
     /// earlier...
     pub restart_base_seconds: u64,
@@ -259,6 +268,7 @@ pub const STAR_CYCLE: StarCycle = StarCycle {
     retarget_cut: 6,
     decay_grace: 0,
     decay_halving: 60,
+    start_halvings: 20,
     restart_base_seconds: 3600,
     restart_point_seconds: 60,
     restart_max_seconds: 2 * 3600,
@@ -326,7 +336,7 @@ impl Rules for StarCycle {
         let t = self.decay_halving.max(1); // level units per level: one level is t/8 seconds of decay
         let grace = self.decay_grace;
         let decay = elapsed.saturating_sub(grace).saturating_mul(8); // in 1/t levels
-        let level = (level8(difficulty) as u64 * t).saturating_sub(decay); // in 1/t levels
+        let level = ((level8(difficulty) as u64 + 8 * self.start_halvings) * t).saturating_sub(decay); // in 1/t levels
         let (whole, frac) = (level / t, level % t);
         let mut frames = self.base_frames as u64;
         for _ in 0..whole {
@@ -399,10 +409,13 @@ mod tests {
         assert_eq!(r.decay_grace, 0, "the auction: no grace");
         let d = 1 << 10; // level 80
         let h = r.decay_halving;
-        assert_eq!(r.max_frames(d, 0), r.params(d).max_frames, "at the parent's timestamp: the plain limit");
-        let mut last = r.max_frames(d, 0);
+        let k = r.start_halvings * h; // the start offset, in seconds of growth
+        assert_eq!(r.max_frames(d, k), r.params(d).max_frames, "start_halvings later: the plain limit");
+        assert!(r.max_frames(1, 0) < r.params(1).max_frames / 10, "even at difficulty 1 the limit starts low");
+        assert_eq!(r.max_frames(1, k), r.params(1).max_frames, "and reaches the cap start_halvings later");
+        let mut last = r.max_frames(d, k);
         let mut grew = 0;
-        for s in 1..h * 10 {
+        for s in k + 1..k + h * 10 {
             let m = r.max_frames(d, s);
             assert!(m >= last, "never shrinks ({s} s)");
             grew += (m > last) as u32;
@@ -410,7 +423,7 @@ mod tests {
         }
         assert!(grew as u64 > h * 10 * 9 / 10, "grows (almost) every second: {grew}");
         // One halving of decay is one halving of the difficulty.
-        assert_eq!(r.max_frames(d, h), r.params(d / 2).max_frames);
+        assert_eq!(r.max_frames(d, k + h), r.params(d / 2).max_frames);
         assert_eq!(r.max_frames(d, 10_000_000), r.params(1).max_frames);
         assert_eq!(r.max_frames(u64::MAX, 0), r.min_frames);
     }
