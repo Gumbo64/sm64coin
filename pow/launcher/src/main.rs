@@ -25,10 +25,18 @@ const ROM_SHA1: &str = "9bef1128717f958171a4afac3ed78ee2bb4e86ce";
 const ROM_NAME: &str = "baserom.us.z64";
 const EXE: &str = if cfg!(windows) { ".exe" } else { "" };
 
+/// The release's version: the tag CI builds (`VERSION`, e.g. v0.2.2), else Cargo's.
+fn version() -> &'static str {
+    match option_env!("VERSION") {
+        Some(v) if !v.is_empty() => v.trim_start_matches('v'),
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "sm64coin",
-    version,
+    version = version(),
     about = "Runs an SM64Coin node, the website and the wallet, with one command.",
     after_help = "You need your own US Super Mario 64 ROM (baserom.us.z64, SHA-1 9bef1128717f958171a4afac3ed78ee2bb4e86ce). \
 It is searched for next to this program, in the current directory and in ~/.sm64coin/."
@@ -337,6 +345,23 @@ fn rpc_get_info(rpc_port: u16) -> Option<serde_json::Value> {
     v.get("result").cloned()
 }
 
+/// The peers the node has finished a handshake with ("a.b.c.d:16480", " in" if they connected to
+/// us); None if the RPC doesn't answer (a restricted RPC lists none).
+fn peers(rpc_port: u16) -> Option<Vec<String>> {
+    let r = ureq::post(&format!("http://127.0.0.1:{rpc_port}/json_rpc"))
+        .timeout(Duration::from_secs(3))
+        .send_string(r#"{"jsonrpc":"2.0","id":0,"method":"get_connections"}"#)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_reader(r.into_reader()).ok()?;
+    let list = v["result"]["connections"].as_array().cloned().unwrap_or_default();
+    Some(
+        list.iter()
+            .filter(|c| c["state"].as_str().is_some_and(|s| s != "before_handshake"))
+            .filter_map(|c| c["address"].as_str().map(|a| format!("{a}{}", if c["incoming"].as_bool() == Some(true) { " in" } else { "" })))
+            .collect(),
+    )
+}
+
 fn port_free(port: u16, host: &str) -> bool {
     std::net::TcpListener::bind((host, port)).is_ok()
 }
@@ -541,7 +566,7 @@ fn run(o: Opts) -> Result<(), String> {
     let data_dir = o.data_dir.clone().unwrap_or_else(|| home().join(".sm64coin"));
     let tool = |n: &str| -> PathBuf { exe_dir.join(format!("{n}{EXE}")) };
 
-    println!("SM64Coin {}", env!("CARGO_PKG_VERSION"));
+    println!("SM64Coin {}", version());
     // CI only: SM64COIN_TEST_NO_ROM=1 skips the ROM search so the launcher's own plumbing (website,
     // /json_rpc proxy, child processes, shutdown) can be tested against a stand-in node.
     let rom = if std::env::var_os("SM64COIN_TEST_NO_ROM").is_some() { PathBuf::from("no-rom-test") } else { find_rom(o.rom.as_deref(), &exe_dir, &data_dir)? };
@@ -591,6 +616,7 @@ fn run(o: Opts) -> Result<(), String> {
                 return Err(format!("{} is missing", daemon_bin.display()));
             }
             let mut peers: Vec<String> = Vec::new();
+            // The daemon also has built-in seeds (monero/src/sm64coin/seeds.h); seeds.txt adds to them.
             let seed_files = match &o.seeds {
                 Some(f) => vec![f.clone()],
                 None => vec![exe_dir.join("seeds.txt"), data_dir.join("seeds.txt")],
@@ -601,9 +627,15 @@ fn run(o: Opts) -> Result<(), String> {
             peers.extend(o.peers.iter().cloned());
             // Hostnames resolved here; one that doesn't resolve is skipped (the daemon refuses
             // to start on an --add-peer it can't resolve).
+            let named = peers.clone();
             let mut peers: Vec<String> = peers.iter().filter_map(|p| resolve_peer(p)).collect();
             peers.sort();
             peers.dedup();
+            if !named.is_empty() {
+                let mut n = named.clone();
+                n.dedup();
+                println!("Joining through: {}", n.join(", "));
+            }
             // Nodes announced in the Mainline DHT (dht.rs): plain --add-peer, the node's own peer
             // exchange does the rest.
             let mut dht_peers: Vec<String> = Vec::new();
@@ -636,30 +668,14 @@ fn run(o: Opts) -> Result<(), String> {
                 dht::announce_forever(o.p2p_port);
             }
             if peers.is_empty() && dht_peers.is_empty() && !o.solo {
-                println!("Note: no peers are known (none in seeds.txt or the DHT). Pass --peer HOST:PORT to join a network.");
+                println!("Note: no seed node resolved and the DHT found none. Is this computer online? Pass --peer HOST:PORT to join through a node you know.");
             }
             println!("Starting the node (data in {}) ...", node_dir.display());
+            // The rest starts now, not when the node answers: the site and the wallet wait for it.
             let mut node = Proc::spawn("node", cmd, log_dir.join("node.log"))?;
             node.stop_url = Some(format!("{rpc_url}/stop_daemon"));
             procs.push(node);
             started_node = true;
-            let t = Instant::now();
-            loop {
-                if stop.load(Ordering::SeqCst) {
-                    return Ok(());
-                }
-                if !procs[0].alive() {
-                    return Err(format!("the node stopped right after starting. Its log ({}):\n{}", procs[0].log.display(), procs[0].tail()));
-                }
-                if rpc_get_info(o.rpc_port).is_some() {
-                    break;
-                }
-                if t.elapsed() > Duration::from_secs(180) {
-                    return Err("the node did not start answering within 3 minutes".into());
-                }
-                thread::sleep(Duration::from_millis(500));
-            }
-            println!("Node is up (RPC {rpc_url}).");
         }
 
         // --- leaderboard ---
@@ -716,11 +732,15 @@ fn run(o: Opts) -> Result<(), String> {
         };
         if !o.no_wallet {
             if gui.is_file() {
-                let cmd = Command::new(&gui);
+                let mut cmd = Command::new(&gui);
+                // Its Mining page and the node it may start find the same ROM and data folder.
+                cmd.env("SM64COIN_ROM", &rom).env("SM64COIN_DATA_DIR", &data_dir);
+                // "Play to mine" opens this site (it uses this node), not the GitHub Pages one.
+                cmd.env("SM64COIN_WEB_URL", format!("http://localhost:{web_port}"));
                 seed_wallet_settings(o.rpc_port);
                 match Proc::spawn("wallet", cmd, log_dir.join("wallet-gui.log")) {
                     Ok(p) => {
-                        println!("Wallet app started.");
+                        println!("Wallet app started (connect it to the node 127.0.0.1:{}).", o.rpc_port);
                         procs.push(p);
                     }
                     Err(e) => println!("Could not start the wallet app: {e}"),
@@ -728,6 +748,29 @@ fn run(o: Opts) -> Result<(), String> {
             } else {
                 println!("(no wallet app in this bundle; use sm64coin-wallet-cli)");
             }
+        }
+
+        // --- wait for the node ---
+        // The website, browser and wallet are up already (they show "connecting" until the node
+        // answers: loading a long chain can take a while).
+        if started_node {
+            let t = Instant::now();
+            loop {
+                if stop.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                if !procs[0].alive() {
+                    return Err(format!("the node stopped right after starting. Its log ({}):\n{}", procs[0].log.display(), procs[0].tail()));
+                }
+                if rpc_get_info(o.rpc_port).is_some() {
+                    break;
+                }
+                if t.elapsed() > Duration::from_secs(180) {
+                    return Err("the node did not start answering within 3 minutes".into());
+                }
+                thread::sleep(Duration::from_millis(500));
+            }
+            println!("Node is up (RPC {rpc_url}).");
         }
 
         // --- automated miner ---
@@ -757,6 +800,10 @@ fn run(o: Opts) -> Result<(), String> {
         let mut last_print = Instant::now() - Duration::from_secs(60);
         let mut last_h = (0u64, 0u64);
         let mut synced_said = false;
+        let mut last_peers: Option<u64> = None;
+        let mut alone_since = Instant::now();
+        let mut alone_said = false;
+        let mut dead_said: BTreeSet<&'static str> = BTreeSet::new();
         loop {
             if stop.load(Ordering::SeqCst) {
                 println!("\nShutting down ...");
@@ -764,6 +811,12 @@ fn run(o: Opts) -> Result<(), String> {
             }
             if started_node && !procs[0].alive() {
                 return Err(format!("the node stopped. Its log ({}):\n{}", procs[0].log.display(), procs[0].tail()));
+            }
+            // The wallet app, leaderboard or miner quit (a wallet without a display, a crash): say so once.
+            for p in procs.iter_mut().skip(if started_node { 1 } else { 0 }) {
+                if !p.alive() && dead_said.insert(p.name) {
+                    println!("The {} stopped. The end of its log ({}):\n{}", p.name, p.log.display(), p.tail());
+                }
             }
             if let Some(i) = rpc_get_info(o.rpc_port) {
                 let h = i["height"].as_u64().unwrap_or(0);
@@ -778,6 +831,25 @@ fn run(o: Opts) -> Result<(), String> {
                     synced_said = false;
                 }
                 last_h = (h, target);
+                // Who the node is talking to: a new user's first question when it doesn't sync.
+                let list = peers(o.rpc_port).unwrap_or_default();
+                let n = list.len() as u64;
+                if last_peers != Some(n) {
+                    if n > 0 {
+                        println!("Connected to {n} peer{}: {}.", if n == 1 { "" } else { "s" }, list.join(", "));
+                        alone_said = false;
+                    } else if last_peers.is_some() {
+                        println!("No peers connected (the node keeps trying).");
+                    }
+                    if n == 0 {
+                        alone_since = Instant::now();
+                    }
+                    last_peers = Some(n);
+                }
+                if n == 0 && !o.solo && !alone_said && alone_since.elapsed() > Duration::from_secs(60) {
+                    println!("Still no peers after a minute: the seed nodes can't be reached from here. Check the internet connection and that a firewall lets sm64coind connect out (TCP 16480), or pass --peer HOST:PORT. Details: {}", log_dir.join("node-daemon.log").display());
+                    alone_said = true;
+                }
             }
             for _ in 0..4 {
                 if stop.load(Ordering::SeqCst) {

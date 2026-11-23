@@ -37,7 +37,8 @@ Start it (3 steps)
 
 What you will see
   * A window (terminal) with log lines: the ROM is checked, then "Starting the node",
-    "Node is up", and "Syncing: block N of M" until the node has caught up with the network.
+    "Node is up", "Connected to N peers: ..." (the nodes it talks to), and "Syncing: block N of M"
+    until the node has caught up with the network.
   * Your web browser opens the SM64Coin website at http://localhost:5181/ (blocks,
     leaderboard, and the page where you play to mine). It talks to your own node.
   * The wallet app (SM64Coin Wallet) opens. On its first start it asks you to create
@@ -57,13 +58,17 @@ Where things are (your user folder = C:\Users\<you> on Windows, /Users/<you> on 
   <user folder>/.sm64coin/logs     log files (node.log, node-daemon.log, wallet-gui.log); look here
                                    first when something does not work
   <user folder>/SM64Coin/wallets   your wallets. KEEP A BACKUP of your 25 words.
-  seeds.txt (this folder)          addresses of known nodes; one host:port per line, edit freely
+  seeds.txt (this folder)          more nodes to join through, one host:port per line, edit freely
+                                   (the node also knows the network's seed nodes by itself)
   Nothing is written inside this folder except by you.
 
 Troubleshooting
   "Could not find your Super Mario 64 ROM"  -> step 2 above; the message lists what was found.
   "port ... is in use"  -> another copy is running (close it) or use --p2p-port / --rpc-port / --web-port.
   The node says "Syncing" for a long time at first: that is normal, leave it running.
+  "Still no peers after a minute": the node can't reach the seed nodes. Check the internet
+  connection and that a firewall lets sm64coind connect out (TCP port 16480), or ask someone
+  for a node's address and start with  --peer HOST:16480
   Send the files in .sm64coin/logs when you ask for help.
 
 Options (sm64coin --help)

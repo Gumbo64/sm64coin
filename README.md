@@ -157,7 +157,7 @@ There is no central server: every node is equal, validates each block by replayi
 
 ### Seeds (`seeds.txt`)
 
-`seeds.txt` at the project root lists well-known peers, one `host:port` (p2p port, default 16480) per line; `#` comments and blank lines are ignored. `scripts/start-node.sh` passes each entry as `--add-peer` (set `SEEDS_FILE` to use another file, `PEERS="h:p h:p"` to add more from the environment). It is empty now: whoever runs a long-lived node can add it with a pull request. The first node of a brand new network starts with `SOLO=1 scripts/start-node.sh` (`--sm64-solo`, counts as synced without peers); every other node must not.
+Every node has built-in seed nodes (`monero/src/sm64coin/seeds.h`, today `p2p.eboy.au:16480`): it keeps them connected as priority peers, so a node finds the network whoever starts it (the launcher, the wallet app's local node, the scripts). A seed hostname that doesn't resolve is skipped; `--add-exclusive-node` or `SM64COIN_NO_SEEDS=1` turns them off. `seeds.txt` at the project root lists more peers, one `host:port` (p2p port, default 16480) per line; `#` comments and blank lines are ignored. `scripts/start-node.sh` and the launcher pass each entry as `--add-peer` (set `SEEDS_FILE` to use another file, `PEERS="h:p h:p"` to add more from the environment). Whoever runs a long-lived node that accepts connections can add it with a pull request. The first node of a brand new network starts with `SOLO=1 scripts/start-node.sh` (`--sm64-solo`, counts as synced without peers); every other node must not.
 
 ### Joining
 
@@ -202,7 +202,7 @@ Upload `web/dist` to any static host (GitHub Pages, Netlify, S3, nginx). Serve i
 
 ### What is still centralised
 
-- No seed nodes exist yet: until someone publishes addresses in `seeds.txt`, you need to be told a peer.
+- One seed node (`p2p.eboy.au`) so far: if it is down, a new node needs to be told a peer (`--peer HOST:PORT`).
 - Public nodes are trusted by the browsers that use them (a lying node can show a false chain); run your own for anything that matters. The wallet RPC trusts its daemon the same way.
 - The mining reward and difficulty rules are fixed in the daemon (hard fork to change); there is no on-chain governance.
 - The leaderboard service and the project's own web hosting are single servers; they do not affect consensus.

@@ -806,7 +806,7 @@ checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 
 [[package]]
 name = "sm64coin-launcher"
-version = "0.1.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "ctrlc",
