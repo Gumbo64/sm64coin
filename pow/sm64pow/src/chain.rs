@@ -46,21 +46,72 @@ struct Run {
     start: Start,
 }
 
+/// A verified run without its end state: what the parallel pre-pass
+/// ([`preverify`]) keeps for every block it replays (thousands fit), so the
+/// sequential check only re-checks the timestamp-dependent rules.
+#[derive(Clone, Copy)]
+struct Summary {
+    frames: u32,
+    start: Start,
+    progress: Progress,
+    ends_cycle: bool,
+    event: Option<crate::game::Event>,
+}
+
+/// How many run summaries to keep.
+const SUMS: usize = 16384;
+
 struct Cache {
     runs: HashMap<RunKey, Run>,
     order: VecDeque<RunKey>,
     ids: HashMap<[u8; 32], RunKey>,
     id_order: VecDeque<[u8; 32]>,
+    sums: HashMap<RunKey, Summary>,
+    sum_order: VecDeque<RunKey>,
 }
 
 fn cache() -> &'static Mutex<Cache> {
     static C: OnceLock<Mutex<Cache>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(Cache { runs: HashMap::new(), order: VecDeque::new(), ids: HashMap::new(), id_order: VecDeque::new() }))
+    C.get_or_init(|| Mutex::new(Cache { runs: HashMap::new(), order: VecDeque::new(), ids: HashMap::new(), id_order: VecDeque::new(), sums: HashMap::new(), sum_order: VecDeque::new() }))
 }
 
 pub fn cached(id: &[u8; 32]) -> Option<Arc<EndState>> {
     let c = cache().lock().unwrap();
     c.ids.get(id).and_then(|k| c.runs.get(k)).map(|r| r.state.clone())
+}
+
+/// A block's end progress, whether it ends the cycle, and its event: from its
+/// cached end state or its run summary.
+pub fn info(id: &[u8; 32]) -> Option<(Progress, bool, Option<crate::game::Event>)> {
+    let c = cache().lock().unwrap();
+    let k = c.ids.get(id)?;
+    if let Some(r) = c.runs.get(k) {
+        return Some((r.state.progress, r.state.ends_cycle, r.state.event));
+    }
+    c.sums.get(k).map(|s| (s.progress, s.ends_cycle, s.event))
+}
+
+fn known_summary(key: &RunKey) -> Option<Summary> {
+    let c = cache().lock().unwrap();
+    if let Some(r) = c.runs.get(key) {
+        return Some(Summary { frames: r.frames, start: r.start, progress: r.state.progress, ends_cycle: r.state.ends_cycle, event: r.state.event });
+    }
+    c.sums.get(key).copied()
+}
+
+fn remember_summary(id: [u8; 32], key: RunKey, sum: Summary) {
+    {
+        let mut c = cache().lock().unwrap();
+        if c.sums.insert(key, sum).is_none() {
+            c.sum_order.push_back(key);
+        }
+        while c.sum_order.len() > SUMS {
+            if let Some(old) = c.sum_order.pop_front() {
+                c.sums.remove(&old);
+            }
+        }
+    }
+    alias(id, key);
 }
 
 fn run_key(parent: &Parent, start: Start, seed: &Seed, blob: &[u8]) -> RunKey {
@@ -78,10 +129,6 @@ fn run_key(parent: &Parent, start: Start, seed: &Seed, blob: &[u8]) -> RunKey {
     h.finalize().into()
 }
 
-fn known_run(key: &RunKey) -> Option<(Arc<EndState>, u32, Start)> {
-    cache().lock().unwrap().runs.get(key).map(|r| (r.state.clone(), r.frames, r.start))
-}
-
 fn alias(id: [u8; 32], key: RunKey) {
     let mut c = cache().lock().unwrap();
     if c.ids.insert(id, key).is_none() {
@@ -95,6 +142,7 @@ fn alias(id: [u8; 32], key: RunKey) {
 }
 
 fn remember(id: [u8; 32], key: RunKey, s: EndState, frames: u32, start: Start) {
+    persist(&id, &key, &s, frames, start);
     {
         let mut c = cache().lock().unwrap();
         if c.runs.insert(key, Run { state: Arc::new(s), frames, start }).is_none() {
@@ -289,6 +337,51 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
             Err(e) => return Ok(BlockVerdict::Invalid(format!("bad proof: {e}"))),
         },
     };
+    // The same run already verified (a re-stamped copy of a block, or the
+    // parallel pre-pass, see [`preverify`]): only the rules that depend on the
+    // timestamp and the parent (the start, the restart delay, the time limit)
+    // are checked again; the replay itself is not repeated. Not for `played`
+    // (that wants the pads).
+    if played.is_none() {
+        let key = run_key(parent, start, seed, blob);
+        if let Some(sum) = known_summary(&key) {
+            if sum.start == start {
+                let mut delay = 0;
+                match (start, parent) {
+                    (Start::PowerOn, Parent::Genesis) => {}
+                    (Start::Parent, Parent::Genesis) => return Ok(BlockVerdict::Invalid("the first block starts from power-on".into())),
+                    (Start::PowerOn, Parent::Block { id: pid, .. }) => {
+                        if difficulty.is_some() {
+                            match info(pid) {
+                                None => return Ok(BlockVerdict::NeedParent),
+                                Some((pp, false, _)) => match rules().restart_delay(&pp) {
+                                    Some(c) => delay = c,
+                                    None => return Ok(BlockVerdict::Invalid("a power-on start needs a cycle-ending parent (restarts are off)".into())),
+                                },
+                                Some(_) => {}
+                            }
+                        }
+                    }
+                    (Start::Parent, Parent::Block { id: pid, .. }) => match info(pid) {
+                        None => return Ok(BlockVerdict::NeedParent),
+                        Some((_, true, _)) => return Ok(BlockVerdict::Invalid("the parent ended the cycle: start from power-on".into())),
+                        Some(_) => {}
+                    },
+                }
+                if let (Some(d), true) = (difficulty, delay > 0) {
+                    if elapsed < delay {
+                        return Ok(BlockVerdict::Invalid(format!("a restart is allowed {delay} s after the parent, this block is {elapsed} s after it")));
+                    }
+                    limit = rules().max_frames(d, elapsed - delay);
+                }
+                if difficulty.is_some() && sum.frames > limit {
+                    return Ok(BlockVerdict::Invalid(format!("{} frames exceeds the limit of {limit}", sum.frames)));
+                }
+                alias(*id, key);
+                return Ok(BlockVerdict::Valid { frames: sum.frames, progress: sum.progress, ends_cycle: sum.ends_cycle });
+            }
+        }
+    }
     let (game, before) = match start_game(start, parent, difficulty.is_some())? {
         None => return Ok(BlockVerdict::NeedParent),
         Some(Err(why)) => return Ok(BlockVerdict::Invalid(why)),
@@ -307,22 +400,7 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
             (g, p)
         }
     };
-    // The same run already verified (e.g. a re-stamped copy of a block): only
-    // the timestamp-dependent rules (start, above; time limit, here) can
-    // differ, so don't replay it. Not for `played` (that wants the pads).
     let key = run_key(parent, start, seed, blob);
-    if played.is_none() {
-        if let Some((state, frames, s)) = known_run(&key) {
-            if s == start {
-                if difficulty.is_some() && frames > limit {
-                    return Ok(BlockVerdict::Invalid(format!("{frames} frames exceeds the limit of {limit}")));
-                }
-                let (progress, ends_cycle) = (state.progress, state.ends_cycle);
-                alias(*id, key);
-                return Ok(BlockVerdict::Valid { frames, progress, ends_cycle });
-            }
-        }
-    }
     REPLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (frames, result) = match (&state, &pr) {
         (Some((frames, _, c, body)), _) => (*frames, replay_state(game, before, seed, &p, *frames, *c, body, difficulty.map(|_| limit), played)?),
@@ -338,6 +416,142 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
             Ok(BlockVerdict::Valid { frames, progress: now, ends_cycle })
         }
     }
+}
+
+/// One block of a batch for [`preverify`].
+pub struct BatchBlock {
+    pub id: [u8; 32],
+    pub parent: Parent,
+    pub seed: Seed,
+    pub blob: Vec<u8>,
+}
+
+/// Replays a proof blob from `game` with no time limit (the rules that depend
+/// on the timestamp are checked later, by [`verify_block`]).
+fn replay_blob(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, blob: &[u8], state_ok: bool) -> Result<std::result::Result<(SM64MiningGame, Progress, u32), String>> {
+    let p = params(1);
+    if state_ok {
+        if let Ok((frames, _, cid, body)) = proof::split_blob(blob) {
+            if let Some(c) = crate::statecodec::state_codec(cid) {
+                return Ok(replay_state(game, before, seed, &p, frames, c, body, None, None)?.map(|(g, now)| (g, now, frames)));
+            }
+        }
+    }
+    let pr = match proof::decode_proof(blob, proof::MAX_FRAMES) {
+        Ok(x) => x,
+        Err(e) => return Ok(Err(format!("bad proof: {e}"))),
+    };
+    let frames = pr.frames;
+    Ok(replay(game, before, seed, &p, &pr, None, None)?.map(|(g, now)| (g, now, frames)))
+}
+
+/// The parallel pre-pass of a batch of blocks in chain order (a sync batch):
+/// it splits the batch into chains that can be replayed on their own (from a
+/// power-on start, the genesis block, or a parent whose end state is cached)
+/// and replays the chains on up to `threads` threads at once, keeping a
+/// [`Summary`] of every run and the full end state of each chain's last block.
+/// [`verify_block`] then finds each run and only re-checks the rules that
+/// depend on the timestamp and the parent, so a batch spanning several cycles
+/// verifies in parallel. Nothing here decides validity: an invalid run is just
+/// not summarized (and the chain stops there), and the sequential check
+/// replays and rejects it as before. Returns how many runs it replayed.
+pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
+    let state_ok = crate::statecodec::state_codec_enabled();
+    // Chains: each block continues the previous one when it starts from its end state.
+    let mut chains: Vec<Vec<&BatchBlock>> = Vec::new();
+    for b in batch {
+        let start = match proof::proof_start(&b.blob) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let parent_id = match b.parent {
+            Parent::Block { id, .. } => Some(id),
+            Parent::Genesis => None,
+        };
+        let continues = start == Start::Parent && chains.last().and_then(|c| c.last()).is_some_and(|l| Some(l.id) == parent_id);
+        if continues {
+            chains.last_mut().unwrap().push(b);
+        } else if start == Start::PowerOn || parent_id.is_none() || parent_id.is_some_and(|p| cached(&p).is_some()) {
+            chains.push(vec![b]);
+        } else if start == Start::Parent {
+            // Not startable here (no cached parent): the sequential check rebuilds it.
+            chains.push(Vec::new());
+        }
+    }
+    chains.retain(|c| !c.is_empty());
+    let replayed = std::sync::atomic::AtomicUsize::new(0);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|sc| {
+        for _ in 0..threads.max(1).min(chains.len()) {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(chain) = chains.get(i) else { break };
+                let _ = replay_chain(chain, state_ok, &replayed);
+            });
+        }
+    });
+    replayed.into_inner()
+}
+
+fn replay_chain(chain: &[&BatchBlock], state_ok: bool, replayed: &std::sync::atomic::AtomicUsize) -> Result<()> {
+    let mut prev: Option<(SaveState, Progress, bool)> = None;
+    for (k, b) in chain.iter().enumerate() {
+        let start = proof::proof_start(&b.blob)?;
+        let key = run_key(&b.parent, start, &b.seed, &b.blob);
+        let last = k + 1 == chain.len();
+        if let Some(sum) = known_summary(&key) {
+            // Already known: continue from its state if this chain needs it.
+            if last {
+                alias(b.id, key);
+                return Ok(());
+            }
+            match cached(&b.id).or_else(|| { alias(b.id, key); cached(&b.id) }) {
+                Some(s) => {
+                    prev = Some((s.game.clone(), s.progress, s.ends_cycle));
+                    continue;
+                }
+                None => {
+                    let _ = sum;
+                    // Its state is gone: replay it below like any other.
+                }
+            }
+        }
+        let (game, before) = match (start, &prev) {
+            (Start::PowerOn, _) => {
+                let g = generator()?.create_game()?;
+                let p = read_progress(&g)?;
+                (g, p)
+            }
+            (Start::Parent, Some((st, p, ends))) => {
+                if *ends {
+                    return Ok(());
+                }
+                let mut g = generator()?.create_game()?;
+                g.load_state(st)?;
+                (g, *p)
+            }
+            (Start::Parent, None) => match start_game(start, &b.parent, false)? {
+                Some(Ok((g, p, _))) => (g, p),
+                _ => return Ok(()),
+            },
+        };
+        replayed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        REPLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (g, now, frames) = match replay_blob(game, before, &b.seed, &b.blob, state_ok)? {
+            Ok(x) => x,
+            Err(_) => return Ok(()), // the sequential check rejects it
+        };
+        let ends_cycle = rules().ends_cycle(&now);
+        let event = crate::game::event(&before, &now);
+        let state = g.game.save_state();
+        if last {
+            remember(b.id, key, EndState { game: state, progress: now, ends_cycle, event }, frames, start);
+        } else {
+            remember_summary(b.id, key, Summary { frames, start, progress: now, ends_cycle, event });
+            prev = Some((state, now, ends_cycle));
+        }
+    }
+    Ok(())
 }
 
 /// Verifies block `id` (its proof `blob`, seed and retarget difficulty: the
@@ -465,4 +679,129 @@ mod hold_tests {
         // At difficulty 1 the limit starts at its maximum: nothing is ever held.
         assert_eq!(hold_until(1, parent, parent + 100, parent, r.max_frames(1, 0), 0), None);
     }
+}
+
+// ---- End states on disk: the last few blocks' states survive a restart -----
+
+/// How many end states to keep on disk (the newest).
+const DISK_STATES: usize = 8;
+
+static STATE_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// Keeps end states in `dir` from now on (the newest [`DISK_STATES`]), and loads
+/// the ones already there, newest first. Returns how many were loaded. A node
+/// that restarts then needs no replay of the cycle to verify the next block.
+pub fn set_state_dir(dir: &std::path::Path) -> usize {
+    let _ = std::fs::create_dir_all(dir);
+    let _ = STATE_DIR.set(dir.to_path_buf());
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "state"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    files.sort();
+    let mut n = 0;
+    // Oldest first, so the newest end up last in the cache's order.
+    for (_, f) in files.iter().rev().take(DISK_STATES).rev() {
+        if load_state_file(f).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
+fn event_bytes(e: Option<crate::game::Event>) -> [u8; 3] {
+    match e {
+        None => [0, 0, 0],
+        Some(crate::game::Event::Star { course, star }) => [1, course, star],
+        Some(crate::game::Event::Key(k)) => [2, k, 0],
+        Some(crate::game::Event::GrandStar) => [3, 0, 0],
+    }
+}
+
+fn event_from(b: [u8; 3]) -> Option<crate::game::Event> {
+    match b[0] {
+        1 => Some(crate::game::Event::Star { course: b[1], star: b[2] }),
+        2 => Some(crate::game::Event::Key(b[1])),
+        3 => Some(crate::game::Event::GrandStar),
+        _ => None,
+    }
+}
+
+const MAGIC: &[u8; 8] = b"SM64END1";
+
+/// `<dir>/<id hex>.state`: magic, id, run key, frames, start, ends_cycle,
+/// event, then the save state (xz).
+fn persist(id: &[u8; 32], key: &RunKey, s: &EndState, frames: u32, start: Start) {
+    let Some(dir) = STATE_DIR.get() else { return };
+    let mut out = Vec::with_capacity(1 << 20);
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(id);
+    out.extend_from_slice(key);
+    out.extend_from_slice(&frames.to_le_bytes());
+    out.push(start as u8);
+    out.push(s.ends_cycle as u8);
+    out.extend_from_slice(&event_bytes(s.event));
+    {
+        use std::io::Write;
+        let mut enc = xz2::write::XzEncoder::new(&mut out, 1);
+        if enc.write_all(s.game.as_bytes()).is_err() || enc.finish().is_err() {
+            return;
+        }
+    }
+    let hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    let path = dir.join(format!("{hex}.state"));
+    let tmp = dir.join(format!("{hex}.tmp"));
+    if std::fs::write(&tmp, &out).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
+        // Keep the newest few.
+        let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "state"))
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        files.sort();
+        while files.len() > DISK_STATES {
+            let _ = std::fs::remove_file(&files.remove(0).1);
+        }
+    }
+}
+
+fn load_state_file(path: &std::path::Path) -> Result<()> {
+    use std::io::Read;
+    let bytes = std::fs::read(path)?;
+    anyhow::ensure!(bytes.len() > 8 + 32 + 32 + 4 + 2 + 3 && &bytes[..8] == MAGIC, "not an end-state file");
+    let id: [u8; 32] = bytes[8..40].try_into()?;
+    let key: RunKey = bytes[40..72].try_into()?;
+    let frames = u32::from_le_bytes(bytes[72..76].try_into()?);
+    let start = match bytes[76] {
+        0 => Start::Parent,
+        1 => Start::PowerOn,
+        x => anyhow::bail!("bad start {x}"),
+    };
+    let ends_cycle = bytes[77] != 0;
+    let event = event_from(bytes[78..81].try_into()?);
+    let mut raw = Vec::new();
+    xz2::read::XzDecoder::new(&bytes[81..]).read_to_end(&mut raw)?;
+    let game = SaveState::from_bytes(raw)?;
+    // The progress is read from the state itself.
+    let mut g = generator()?.create_game()?;
+    g.load_state(&game)?;
+    let progress = read_progress(&g)?;
+    {
+        let mut c = cache().lock().unwrap();
+        if c.runs.insert(key, Run { state: Arc::new(EndState { game, progress, ends_cycle, event }), frames, start }).is_none() {
+            c.order.push_back(key);
+        }
+        while c.order.len() > CACHE {
+            if let Some(old) = c.order.pop_front() {
+                c.runs.remove(&old);
+            }
+        }
+    }
+    alias(id, key);
+    Ok(())
 }

@@ -56,6 +56,12 @@ size_t sm64pow_wanted_block(const uint8_t *id32, const uint8_t *parent32, uint64
                             const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
 void sm64pow_probs(uint64_t difficulty, float *a_prob, float *b_prob, float *z_prob);
 void sm64pow_rules_info(char *name, size_t name_cap, char *goal, size_t goal_cap);
+/* SM64COIN: the last few blocks' end states on disk (loaded now; returns how
+ * many), and the parallel pre-pass of a sync batch (chain::preverify). */
+int32_t sm64pow_set_state_dir(const char *path);
+uint64_t sm64pow_preverify(size_t n, const uint8_t *ids, const uint8_t *parents, const uint8_t *seeds,
+                           const uint8_t *blobs, const uint64_t *offsets, uint32_t threads);
+
 #ifdef __cplusplus
 }
 #endif

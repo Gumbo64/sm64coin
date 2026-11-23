@@ -108,6 +108,51 @@ pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap
     }
 }
 
+/// Keeps the last few blocks' end states in directory `path` (NUL-terminated)
+/// and loads those already there. Returns how many were loaded, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_set_state_dir(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    let Ok(p) = (unsafe { std::ffi::CStr::from_ptr(path) }).to_str() else { return -1 };
+    std::panic::catch_unwind(|| crate::chain::set_state_dir(std::path::Path::new(p)) as i32).unwrap_or(-1)
+}
+
+/// The parallel pre-pass of `n` blocks in chain order (a sync batch, see
+/// chain::preverify): `ids`, `parents` (`n` x 32 bytes; a parent of all zero
+/// bytes is the genesis block), `seeds` (`n` x 32), the proofs concatenated in
+/// `blobs` with `offsets` (`n + 1` entries). Returns how many runs it replayed.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8, seeds: *const u8, blobs: *const u8, offsets: *const u64, threads: u32) -> u64 {
+    if n == 0 || ids.is_null() || parents.is_null() || seeds.is_null() || offsets.is_null() {
+        return 0;
+    }
+    let (ids, parents, seeds, offsets) = unsafe {
+        (
+            std::slice::from_raw_parts(ids, n * 32),
+            std::slice::from_raw_parts(parents, n * 32),
+            std::slice::from_raw_parts(seeds, n * 32),
+            std::slice::from_raw_parts(offsets, n + 1),
+        )
+    };
+    let total = offsets[n] as usize;
+    let blobs: &[u8] = if total == 0 || blobs.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(blobs, total) } };
+    let mut batch = Vec::with_capacity(n);
+    for i in 0..n {
+        let id: [u8; 32] = ids[32 * i..32 * i + 32].try_into().unwrap();
+        let p: [u8; 32] = parents[32 * i..32 * i + 32].try_into().unwrap();
+        let seed: [u8; 32] = seeds[32 * i..32 * i + 32].try_into().unwrap();
+        let (a, b) = (offsets[i] as usize, offsets[i + 1] as usize);
+        if a > b || b > blobs.len() {
+            return 0;
+        }
+        let parent = if p == [0u8; 32] { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: p, gap_seconds: 0 } };
+        batch.push(crate::chain::BatchBlock { id, parent, seed: crate::Seed(seed), blob: blobs[a..b].to_vec() });
+    }
+    std::panic::catch_unwind(|| crate::chain::preverify(&batch, threads as usize)).unwrap_or(0) as u64
+}
+
 /// Whether block `id32`'s end state is cached (1) or not (0).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
@@ -121,12 +166,13 @@ pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
 /// Star and whether it ends the cycle. 1 if cached, 0 if not.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_block_progress(id32: *const u8, stars: *mut u32, keys: *mut u32, grand_star: *mut i32, ends_cycle: *mut i32) -> i32 {
-    let Some(s) = (unsafe { id_arg(id32) }).and_then(|id| crate::chain::cached(&id)) else { return 0 };
+    // From the end state, or the run's summary (the parallel pre-pass keeps only those).
+    let Some((progress, ends, _)) = (unsafe { id_arg(id32) }).and_then(|id| crate::chain::info(&id)) else { return 0 };
     unsafe {
-        if !stars.is_null() { *stars = s.progress.stars; }
-        if !keys.is_null() { *keys = s.progress.keys; }
-        if !grand_star.is_null() { *grand_star = s.progress.grand_star as i32; }
-        if !ends_cycle.is_null() { *ends_cycle = s.ends_cycle as i32; }
+        if !stars.is_null() { *stars = progress.stars; }
+        if !keys.is_null() { *keys = progress.keys; }
+        if !grand_star.is_null() { *grand_star = progress.grand_star as i32; }
+        if !ends_cycle.is_null() { *ends_cycle = ends as i32; }
     }
     1
 }
@@ -136,8 +182,8 @@ pub extern "C" fn sm64pow_block_progress(id32: *const u8, stars: *mut u32, keys:
 /// Returns the name's length (0 if not cached or unknown); writes at most `cap`.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_block_event(id32: *const u8, out: *mut c_char, cap: usize) -> usize {
-    let Some(s) = (unsafe { id_arg(id32) }).and_then(|id| crate::chain::cached(&id)) else { return 0 };
-    let name = s.event.map(|e| e.name()).unwrap_or_default();
+    let Some((_, _, event)) = (unsafe { id_arg(id32) }).and_then(|id| crate::chain::info(&id)) else { return 0 };
+    let name = event.map(|e| e.name()).unwrap_or_default();
     if !out.is_null() && cap > 0 {
         let n = name.len().min(cap - 1);
         unsafe {
