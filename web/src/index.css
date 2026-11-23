@@ -128,7 +128,7 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .timeline.clickable { cursor:pointer; }
 
 /* The time-limit chart on the Mine page (lib/LimitChart.jsx). */
-.limitchart { margin-top: 12px; background: #12162a; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.limitchart { margin: 0 0 12px; background: #12162a; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .limitchart svg { width: 100%; height: auto; display: block; }
 .limitchart .grid { stroke: var(--line); stroke-width: 1; }
 .limitchart .tick { fill: var(--mut); font-size: 10px; }

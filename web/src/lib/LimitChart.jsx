@@ -5,7 +5,8 @@ import { maxFrames, MAX_RUN_FRAMES, MIN_RUN_FRAMES } from './rules.js';
 // from the parent's timestamp (the valid region under it), now, the run in
 // progress, and the runs you finished (dots) with their envelope (the best so
 // far). A block is valid where the envelope meets the limit.
-const W = 560, H = 190, L = 52, R = 12, T = 10, B = 28;
+// Drawn for the Mine page's side column (about 310 px wide), so text stays at its size.
+const W = 320, H = 180, L = 44, R = 8, T = 8, B = 24;
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const fmin = (f) => `${(f / 1800).toFixed(f < 1800 ? 1 : 0)} min`;
 
@@ -34,7 +35,7 @@ export default function LimitChart({ difficulty, parentTs, now, used, runs }) {
   }
   if (best !== Infinity) env += `L${x(Math.min(elapsed, tMax))},${y(best)}`;
   const yTicks = [600, 1800, 5400, 18000, 36000];
-  const xStep = tMax > 3600 ? 900 : tMax > 900 ? 300 : tMax > 300 ? 60 : 30;
+  const xStep = tMax > 3600 ? 1200 : tMax > 1500 ? 600 : tMax > 600 ? 300 : tMax > 240 ? 120 : 60;
   const xTicks = Array.from({ length: Math.floor(tMax / xStep) + 1 }, (_, i) => i * xStep);
   const limitNow = maxFrames(difficulty, elapsed);
   const onMove = (e) => {
@@ -46,7 +47,7 @@ export default function LimitChart({ difficulty, parentTs, now, used, runs }) {
   return (
     <div className="limitchart">
       <div className="lc-head">
-        <b>Time limit</b> <span className="muted">(grows from the last block: the shortest run becomes valid first)</span>
+        <b>Time limit</b> <span className="muted">(the shortest run is valid first)</span>
         <span className="lc-legend">
           <span><i className="sw lim" />limit</span>
           <span><i className="sw run" />your finished runs</span>

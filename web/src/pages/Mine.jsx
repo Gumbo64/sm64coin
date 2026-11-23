@@ -234,10 +234,10 @@ function Miner() {
           {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
         </div>
         <Controls rec={rec} />
-        {task && <LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={used} runs={runs} />}
       </div>
 
       <aside className="card side">
+        {task && <LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={used} runs={runs} />}
         <div className="paysto-row">
           Mining for {isAddress(paying || '') ? <span className="mono paysto" title={paying}>{short(paying)}</span> : <em>no address</em>}{' '}
           <button className="linkish" title="Change the reward address" onClick={() => setEditing((e) => !e)}>✎ change</button>
