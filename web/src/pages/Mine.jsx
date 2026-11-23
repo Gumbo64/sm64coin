@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { Recorder } from '../lib/recorder.js';
 import CycleTimeline from '../lib/CycleTimeline.jsx';
+import LimitChart from '../lib/LimitChart.jsx';
 import { daemon } from '../lib/rpc.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { createEngine, prepareStart } from '../lib/cycle.js';
@@ -47,6 +48,8 @@ function Miner() {
   const [start, setStart] = useState(null);
   const [startMode, setStartMode] = useState('parent');
   const [limit, setLimit] = useState(null);
+  // Runs finished on this tip (the limit chart's dots): {t: seconds after the parent, frames}.
+  const [runs, setRuns] = useState([]);
   const [tick, setTick] = useState(0);
   const rec = useRef(null);
   const ctl = useRef({ restart: false, forcePower: false, discard: false });
@@ -71,7 +74,7 @@ function Miner() {
         if (head && i.top_block_hash !== head) { c.restart = true; say(`new block ${i.height - 1} on the chain: new template; your cycle continues from its end`); }
       } catch { /* daemon hiccup */ }
     }, 2000);
-    // The time limit grows every second once the grace is over, and the chain
+    // The time limit grows every second from the parent's timestamp, and the chain
     // may become stalled: re-read both from a fresh template every ~5 s while
     // the tip is unchanged (only these fields: this attempt keeps its own template).
     const refresh = setInterval(async () => {
@@ -101,7 +104,7 @@ function Miner() {
         } catch (e) { say(String(e)); await sleep(3000); continue; }
         const won = successFor(t.sm64_rules);
         if (!won) { say(`unknown rules "${t.sm64_rules}": update web/src/lib/rules.js`); return; }
-        if (head !== t.prev_hash) c.forcePower = false;
+        if (head !== t.prev_hash) { c.forcePower = false; setRuns([]); }
         head = t.prev_hash;
         c.tipTemplate = t;
         setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start);
@@ -130,6 +133,7 @@ function Miner() {
         if (!done) { if (!c.restart && !r.skipped) say('ran past the longest possible time limit: new attempt'); continue; }
         const nFrames = done.pads.length;
         say(`goal reached after ${nFrames} frames (${frames(nFrames)})`);
+        setRuns((rs) => [...rs, { t: Date.now() / 1000 - t.sm64_parent_timestamp, frames: nFrames }]);
 
         // When does a run this long become valid? (The limit grows with time.)
         let validAt = 0;
@@ -190,7 +194,7 @@ function Miner() {
     <div className="mine2">
       <div className="gamecol">
         <canvas ref={canvas} className="sm64canvas" />
-        <div className="budget" title="Frames you have used of the current time limit. The limit grows every second once the grace period is over; you can play past it and wait for it to catch up.">
+        <div className="budget" title="Frames you have used of the current time limit. The limit grows from the last block's timestamp up to 20 minutes; you can play past it and wait for it to catch up.">
           <div className={`bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
           <span className="stat">{lim ? `${used} / ${lim} frames (${frames(used)} / ${frames(lim)})` : '—'}{over ? ` — ${used - lim} over: it becomes valid when the limit has grown to your run` : ''}</span>
         </div>
@@ -207,6 +211,7 @@ function Miner() {
           {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
         </div>
         <Controls rec={rec} />
+        {task && <LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={used} runs={runs} />}
       </div>
 
       <aside className="card side">

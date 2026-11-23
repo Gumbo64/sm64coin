@@ -30,3 +30,34 @@ export const RESTART_MAX_SECONDS = 2 * 3600;
 export function restartDelay(points) {
   return Math.min(RESTART_BASE_SECONDS + points * RESTART_POINT_SECONDS, Math.max(RESTART_MAX_SECONDS, RESTART_BASE_SECONDS));
 }
+
+// The time limit (StarCycle::max_frames in pow/sm64pow/src/rules.rs, the same
+// integer arithmetic; display only, the template's sm64_max_frames is
+// authoritative): at retarget difficulty `d`, `elapsed` seconds after the
+// parent's timestamp. One difficulty halving (8 levels of 2%) per 60 s.
+export const MIN_RUN_FRAMES = 20 * 30;
+const SHRINK_PERCENT = 98n, DECAY_HALVING = 60n, DECAY_GRACE = 0n;
+export function level8(d) {
+  let v = BigInt(d);
+  if (v <= 1n) return 0n;
+  let msb = 0n;
+  while ((v >> (msb + 1n)) > 0n) msb += 1n;
+  const frac = msb >= 3n ? (v >> (msb - 3n)) & 7n : (v << (3n - msb)) & 7n;
+  return msb * 8n + frac;
+}
+export function maxFrames(d, elapsed) {
+  const t = DECAY_HALVING;
+  const e = BigInt(Math.max(0, Math.floor(elapsed)));
+  const decay = (e > DECAY_GRACE ? e - DECAY_GRACE : 0n) * 8n;
+  let level = level8(d) * t - decay;
+  if (level < 0n) level = 0n;
+  const whole = level / t, frac = level % t;
+  let frames = BigInt(MAX_RUN_FRAMES);
+  const min = BigInt(MIN_RUN_FRAMES);
+  for (let i = 0n; i < whole; i++) {
+    frames = (frames * SHRINK_PERCENT) / 100n;
+    if (frames <= min) return MIN_RUN_FRAMES;
+  }
+  frames = (frames * (100n * t - (100n - SHRINK_PERCENT) * frac)) / (100n * t);
+  return Number(frames > min ? frames : min);
+}

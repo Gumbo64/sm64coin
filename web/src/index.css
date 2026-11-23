@@ -126,3 +126,22 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .replay-info .verdict.bad { color: #ff6b6b; }
 .replay-info a { color: var(--acc); }
 .timeline.clickable { cursor:pointer; }
+
+/* The time-limit chart on the Mine page (lib/LimitChart.jsx). */
+.limitchart { margin-top: 12px; background: #12162a; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.limitchart svg { width: 100%; height: auto; display: block; }
+.limitchart .grid { stroke: var(--line); stroke-width: 1; }
+.limitchart .tick { fill: var(--mut); font-size: 10px; }
+.limitchart .valid { fill: #6ea8fe; opacity: 0.10; }
+.limitchart .lim { fill: none; stroke: #6ea8fe; stroke-width: 2; }
+.limitchart .lim-pt { fill: #6ea8fe; stroke: var(--card); stroke-width: 2; }
+.limitchart .now { stroke: var(--mut); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.limitchart .cross { stroke: var(--mut); stroke-width: 1; opacity: 0.5; }
+.limitchart .cur { stroke: var(--fg); stroke-width: 2.5; }
+.limitchart .env { fill: none; stroke: var(--acc); stroke-width: 2; }
+.limitchart .dot { fill: var(--acc); stroke: #12162a; stroke-width: 2; }
+.limitchart .lc-head { font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.limitchart .lc-legend { margin-left: auto; display: flex; gap: 12px; color: var(--mut); font-size: 12px; }
+.limitchart .sw { display: inline-block; width: 12px; height: 3px; margin-right: 5px; vertical-align: middle; border-radius: 2px; }
+.limitchart .sw.lim { background: #6ea8fe; } .limitchart .sw.run { background: var(--acc); height: 8px; width: 8px; border-radius: 50%; } .limitchart .sw.now { background: var(--mut); }
+.limitchart .lc-foot { font-size: 12px; margin-top: 4px; }
