@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the SM64Coin daemon in the background.
-# Env: SOLO=1 (first node of a new network), GATEWAY="host:16480" (talk only to your own gateway; see docs/gateway.md), PEERS="host:port host:port" (added to the peers in seeds.txt; SEEDS_FILE overrides the file), NODE_DATA, ROM, P2P_PORT, RPC_PORT, ZMQ_PORT, RUN_DIR, EXTRA_ARGS
+# Env: SOLO=1 (first node of a new network), GATEWAY="host:16480" (talk only to your own gateway; see docs/gateway.md), NO_DHT=1 (no Mainline DHT lookup), PEERS="host:port host:port" (added to the peers in seeds.txt; SEEDS_FILE overrides the file), NODE_DATA, ROM, P2P_PORT, RPC_PORT, ZMQ_PORT, RUN_DIR, EXTRA_ARGS
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 [ -x "$BIN/sm64coind" ] || { echo "missing $BIN/sm64coind (run: make build)" >&2; exit 1; }
@@ -19,6 +19,11 @@ if [ -n "${GATEWAY:-}" ]; then
   args+=(--hide-my-port --no-igd)
 else
   for p in $(seed_peers) ${PEERS:-}; do args+=(--add-peer "$p"); done
+  # Nodes announced in BitTorrent's Mainline DHT (the launcher's dht.rs); NO_DHT=1 skips it.
+  LAUNCHER="$ROOT/pow/launcher/target/release/sm64coin"
+  if [ "${NO_DHT:-0}" != 1 ] && [ -x "$LAUNCHER" ]; then
+    for p in $(timeout 40 "$LAUNCHER" --dht-lookup 2>/dev/null | grep -E '^[0-9.]+:[0-9]+$' | head -24); do args+=(--add-peer "$p"); done
+  fi
 fi
 # shellcheck disable=SC2206
 set -f  # no globbing: EXTRA_ARGS may contain *

@@ -73,7 +73,7 @@ make stop                 # stops node and wallet RPC (pid files only)
 
 Manual mining: open `/mine` in the web UI, upload the ROM once (it stays in the browser), and play. Explore blocks at `/`, replay any block's proof at `/block/:id`. Funds, mining controls and joining the leaderboard are in the wallet app (`bin/sm64coin-wallet-gui`); its Mining → Play to mine opens `/mine` with your address.
 
-Joining an existing network: there are no public seed nodes. Run `PEERS="host:16480 host2:16480" make node` (do not set `SOLO`).
+Joining an existing network: nodes find each other through BitTorrent's Mainline DHT (the launcher looks up the network key `sm64coin-mainnet-1` and passes what it finds as `--add-peer`; `--dht-lookup` prints them, `--no-dht` skips it), plus `seeds.txt`. To point at a node you know: `PEERS="host:16480 host2:16480" make node` (do not set `SOLO`). A node that accepts connections can list itself with the launcher's `--dht-announce`; that publishes its IP to anyone who looks the network up.
 
 For an interactive wallet: `scripts/wallet-cli.sh`.
 

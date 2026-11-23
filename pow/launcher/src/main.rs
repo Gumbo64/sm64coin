@@ -8,6 +8,8 @@
 //! 5. on Ctrl-C (or when the node dies) stops everything it started.
 
 use clap::Parser;
+
+mod dht;
 use sha1::{Digest, Sha1};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
@@ -46,6 +48,16 @@ struct Opts {
     /// First node of a brand-new network (counts as synchronized without peers)
     #[arg(long)]
     solo: bool,
+    /// Don't look for nodes in the BitTorrent Mainline DHT (seeds.txt and --peer only)
+    #[arg(long)]
+    no_dht: bool,
+    /// Announce this node in the DHT so others find it (it must accept connections on the p2p port;
+    /// your IP is then listed for anyone who looks the network up)
+    #[arg(long)]
+    dht_announce: bool,
+    /// Print the nodes the DHT knows and exit
+    #[arg(long)]
+    dht_lookup: bool,
     #[arg(long, default_value_t = 16480)]
     p2p_port: u16,
     #[arg(long, default_value_t = 16481)]
@@ -493,6 +505,18 @@ fn open_browser(url: &str) {
 }
 
 fn run(o: Opts) -> Result<(), String> {
+    if o.dht_lookup {
+        if std::env::var_os("SM64COIN_DHT_ANNOUNCE_TEST").is_some() {
+            dht::announce_forever(o.p2p_port);
+            std::thread::sleep(Duration::from_secs(90));
+            return Ok(());
+        }
+        println!("DHT key {} ({}):", std::env::var("SM64COIN_DHT_NETWORK").unwrap_or_else(|_| dht::NETWORK.into()), dht::info_hash());
+        for a in dht::lookup(Duration::from_secs(30), 200) {
+            println!("{a}");
+        }
+        return Ok(());
+    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_dir = plain(fs::canonicalize(&exe).unwrap_or(exe)).parent().map(Path::to_path_buf).unwrap_or_default();
     let data_dir = o.data_dir.clone().unwrap_or_else(|| home().join(".sm64coin"));
@@ -558,6 +582,15 @@ fn run(o: Opts) -> Result<(), String> {
             peers.extend(o.peers.iter().cloned());
             peers.sort();
             peers.dedup();
+            // Nodes announced in the Mainline DHT (dht.rs): plain --add-peer, the node's own peer
+            // exchange does the rest.
+            let mut dht_peers: Vec<String> = Vec::new();
+            if !o.no_dht {
+                print!("Looking for nodes in the DHT ... ");
+                let _ = std::io::stdout().flush();
+                dht_peers = dht::lookup(Duration::from_secs(20), 24).iter().map(|a| a.to_string()).filter(|a| !peers.contains(a)).collect();
+                println!("{} found.", dht_peers.len());
+            }
             let mut cmd = Command::new(&daemon_bin);
             cmd.arg("--data-dir").arg(&node_dir).arg("--sm64-rom").arg(&rom);
             cmd.args(["--p2p-bind-port", &o.p2p_port.to_string(), "--rpc-bind-port", &o.rpc_port.to_string(), "--zmq-rpc-bind-port", &o.zmq_port.to_string()]);
@@ -573,9 +606,15 @@ fn run(o: Opts) -> Result<(), String> {
                 // In the peer list, and kept connected (a node alone on a new network has nothing else to find).
                 cmd.args(["--add-peer", p, "--add-priority-node", p]);
             }
+            for p in &dht_peers {
+                cmd.args(["--add-peer", p]);
+            }
             cmd.args(&o.daemon_args);
-            if peers.is_empty() && !o.solo {
-                println!("Note: no peers are known (seeds.txt is empty). Pass --peer HOST:PORT to join a network.");
+            if o.dht_announce {
+                dht::announce_forever(o.p2p_port);
+            }
+            if peers.is_empty() && dht_peers.is_empty() && !o.solo {
+                println!("Note: no peers are known (none in seeds.txt or the DHT). Pass --peer HOST:PORT to join a network.");
             }
             println!("Starting the node (data in {}) ...", node_dir.display());
             let mut node = Proc::spawn("node", cmd, log_dir.join("node.log"))?;
