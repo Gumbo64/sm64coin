@@ -18,6 +18,7 @@ export default function App() {
         <NavLink to="/leaderboard">Leaderboard</NavLink>
         <NavLink to="/bots">Build a bot</NavLink>
         <NavLink to="/network">Network</NavLink>
+        <a href="https://github.com/Gumbo64/sm64coin/releases/latest" target="_blank" rel="noreferrer">Download</a>
       </header>
       <NewBlockBanner />
       <main>

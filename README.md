@@ -1,5 +1,7 @@
 # SM64Coin
 
+**[⬇ Download the latest release](https://github.com/Gumbo64/sm64coin/releases/latest)** (node, wallet app and AutoMiner for Linux, Windows and macOS) · [Website](https://gumbo64.github.io/sm64coin/)
+
 A Monero fork (v0.18.5.4, git branch `sm64coin`) whose proof of work is **playing Super Mario 64**. A block is sealed by a controller input sequence that, replayed on an emulated N64 from the previous block's end state, makes the game's next progress point (a star, a Bowser key, the Grand Star). Every node verifies a block by replaying the proof in an emulator.
 
 Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is stock Monero.
