@@ -15,6 +15,8 @@ args=(--data-dir "$NODE_DATA" --sm64-rom "$ROM"
 for p in $(seed_peers) ${PEERS:-}; do args+=(--add-peer "$p"); done
 # shellcheck disable=SC2206
 set -f  # no globbing: EXTRA_ARGS may contain *
+# The website on GitHub Pages calls the node from the visitor's browser (SITE_ORIGIN; RPC stays local).
+case " ${EXTRA_ARGS:-} " in *--rpc-access-control-origins*) ;; *) args+=(--rpc-access-control-origins "${SITE_ORIGIN:-https://gumbo64.github.io}") ;; esac
 args+=(${EXTRA_ARGS:-})
 set +f
 setsid "$BIN/sm64coind" "${args[@]}" </dev/null >"$RUN_DIR/node.log" 2>&1 &

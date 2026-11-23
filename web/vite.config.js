@@ -19,7 +19,9 @@ const proxy = {
   '/json_rpc': { target: daemon, changeOrigin: true },
 }
 
+// SM64COIN_BASE: the path the site is served under (GitHub Pages: /<repo>/).
 export default defineConfig({
+  base: process.env.SM64COIN_BASE || '/',
   plugins: [react()],
   resolve: {
     dedupe: ['react', 'react-dom'],

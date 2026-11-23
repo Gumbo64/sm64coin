@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { Recorder } from '../lib/recorder.js';
 import CycleTimeline from '../lib/CycleTimeline.jsx';
 import { daemon } from '../lib/rpc.js';
@@ -265,8 +266,8 @@ function Miner() {
           )}
           <pre className="log">{log.join('\n')}</pre>
         </details>
-        <p className="muted links"><a href="/leaderboard">Leaderboard</a></p>
-        <p className="muted">Rather not play by hand? <a href="/bots">Build a bot</a> to mine for you.</p>
+        <p className="muted links"><Link to="/leaderboard">Leaderboard</Link></p>
+        <p className="muted">Rather not play by hand? <Link to="/bots">Build a bot</Link> to mine for you.</p>
       </aside>
     </div>
     </>

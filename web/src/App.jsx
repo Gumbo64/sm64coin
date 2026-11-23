@@ -10,7 +10,7 @@ import NewBlockBanner from './lib/NewBlockBanner.jsx';
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '')}>
       <header className="nav">
         <span className="brand">★ SM64Coin</span>
         <NavLink to="/" end>Explorer</NavLink>

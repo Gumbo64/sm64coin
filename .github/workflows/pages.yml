@@ -1,0 +1,64 @@
+# The website on GitHub Pages (https://<owner>.github.io/<repo>/). It is static: the pages
+# call a node's RPC from the visitor's browser, by default the visitor's own node at
+# http://127.0.0.1:16481 (start it with --rpc-access-control-origins https://<owner>.github.io;
+# see README "Website on GitHub Pages"). One-time setup: Settings -> Pages -> Source: GitHub Actions.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'scripts/build-wasm.sh', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow/perturb-wasm
+          key: wasm
+      - name: Browser WASM module (perturbation)
+        run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - run: npm ci
+        working-directory: web
+      - name: Build for /<repo>/, the visitor's own node by default
+        run: npm run build && cp dist/index.html dist/404.html   # 404.html: deep links fall back to the app
+        working-directory: web
+        env:
+          SM64COIN_BASE: /${{ github.event.repository.name }}/
+          VITE_DEFAULT_NODE: http://127.0.0.1:16481
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

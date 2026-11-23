@@ -7,8 +7,11 @@
 // Wallet RPC always goes through the proxy.
 const KEY = 'sm64coin.node';
 
+// A build for a static host (GitHub Pages) has no proxy: VITE_DEFAULT_NODE (e.g. the
+// visitor's own node, http://127.0.0.1:16481) is the node until one is chosen.
+const DEFAULT_NODE = (import.meta.env.VITE_DEFAULT_NODE || '').replace(/\/+$/, '');
 export const getNode = () => {
-  try { return (localStorage.getItem(KEY) || '').trim().replace(/\/+$/, ''); } catch { return ''; }
+  try { return (localStorage.getItem(KEY) || DEFAULT_NODE).trim().replace(/\/+$/, ''); } catch { return DEFAULT_NODE; }
 };
 export const setNode = (url) => {
   try {

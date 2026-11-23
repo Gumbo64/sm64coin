@@ -87,6 +87,9 @@ struct Opts {
     daemon_args: Vec<String>,
 }
 
+/// The website's origin (GitHub Pages), allowed to call the local node's RPC.
+const SITE_ORIGIN: &str = "https://gumbo64.github.io";
+
 fn main() {
     let code = match run(Opts::parse()) {
         Ok(()) => 0,
@@ -558,6 +561,10 @@ fn run(o: Opts) -> Result<(), String> {
             let mut cmd = Command::new(&daemon_bin);
             cmd.arg("--data-dir").arg(&node_dir).arg("--sm64-rom").arg(&rom);
             cmd.args(["--p2p-bind-port", &o.p2p_port.to_string(), "--rpc-bind-port", &o.rpc_port.to_string(), "--zmq-rpc-bind-port", &o.zmq_port.to_string()]);
+            // The website on GitHub Pages calls this node from the visitor's browser (RPC stays on 127.0.0.1).
+            if !o.daemon_args.iter().any(|x| x.starts_with("--rpc-access-control-origins")) {
+                cmd.args(["--rpc-access-control-origins", SITE_ORIGIN]);
+            }
             cmd.arg("--non-interactive").arg("--log-file").arg(log_dir.join("node-daemon.log"));
             if o.solo {
                 cmd.arg("--sm64-solo");

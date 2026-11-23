@@ -169,6 +169,17 @@ Sync verifies every block by replay (about 0.1 to 1 s per block). Notes from tes
 
 `scripts/public-node.sh` runs a node others and browsers can use: `--rpc-bind-ip 0.0.0.0 --restricted-rpc --confirm-external-bind --rpc-access-control-origins '*'` (set `ORIGINS=https://my.site` to restrict, comma separated). Restricted RPC serves the public calls (`get_info`, `get_block`, `get_block_template`, `submit_block`, ...) and hides node-admin ones (`stop_daemon`, `pop_blocks`, `get_connections`, ...). Open p2p 16480 and RPC 16481 in the firewall. CORS check: `curl -i -H 'Origin: http://example.com' http://HOST:16481/json_rpc -d '{"jsonrpc":"2.0","id":0,"method":"get_info"}'` must show `Access-Control-Allow-Origin`. A page served over https can only call https nodes: put a TLS reverse proxy (nginx, Caddy) in front of the RPC port.
 
+### Website on GitHub Pages
+
+`.github/workflows/pages.yml` builds `web/` on every push to `main` that touches it and publishes it at
+`https://gumbo64.github.io/sm64coin/` (one-time setup: Settings -> Pages -> Source: GitHub Actions). The pages are
+static and call a node's RPC from the visitor's browser, by default the visitor's own node at
+`http://127.0.0.1:16481`, so nothing goes through GitHub and the RPC stays bound to localhost. Nodes started by the
+launcher or `scripts/start-node.sh` allow that origin (`--rpc-access-control-origins https://gumbo64.github.io`;
+`SITE_ORIGIN` overrides it) and answer Chrome's private-network preflight. Chrome and Firefox let an https page call
+`http://127.0.0.1`; newer Chrome asks first ("access devices on your local network": allow). Safari may refuse.
+Another node: the site's Network page.
+
 ### Web app on static hosting
 
 The web app needs no server of its own except a daemon's RPC and (optionally) a leaderboard server. To host the explorer and miner anywhere:
