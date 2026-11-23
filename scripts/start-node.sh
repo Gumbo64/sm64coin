@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the SM64Coin daemon in the background.
-# Env: SOLO=1 (first node of a new network), PEERS="host:port host:port" (added to the peers in seeds.txt; SEEDS_FILE overrides the file), NODE_DATA, ROM, P2P_PORT, RPC_PORT, ZMQ_PORT, RUN_DIR, EXTRA_ARGS
+# Env: SOLO=1 (first node of a new network), GATEWAY="host:16480" (talk only to your own gateway; see docs/gateway.md), PEERS="host:port host:port" (added to the peers in seeds.txt; SEEDS_FILE overrides the file), NODE_DATA, ROM, P2P_PORT, RPC_PORT, ZMQ_PORT, RUN_DIR, EXTRA_ARGS
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 [ -x "$BIN/sm64coind" ] || { echo "missing $BIN/sm64coind (run: make build)" >&2; exit 1; }
@@ -12,7 +12,14 @@ args=(--data-dir "$NODE_DATA" --sm64-rom "$ROM"
   --p2p-bind-port "$P2P_PORT" --rpc-bind-port "$RPC_PORT" --zmq-rpc-bind-port "$ZMQ_PORT"
   --non-interactive --log-file "$RUN_DIR/node-daemon.log")
 [ "${SOLO:-0}" = 1 ] && args+=(--sm64-solo)
-for p in $(seed_peers) ${PEERS:-}; do args+=(--add-peer "$p"); done
+if [ -n "${GATEWAY:-}" ]; then
+  # Only your own gateway (scripts/gateway-node.sh): no other peer sees this machine's IP, and
+  # nothing connects in (no port to forward).
+  for g in $GATEWAY; do args+=(--add-exclusive-node "$g"); done
+  args+=(--hide-my-port --no-igd)
+else
+  for p in $(seed_peers) ${PEERS:-}; do args+=(--add-peer "$p"); done
+fi
 # shellcheck disable=SC2206
 set -f  # no globbing: EXTRA_ARGS may contain *
 # The website on GitHub Pages calls the node from the visitor's browser (SITE_ORIGIN; RPC stays local).
