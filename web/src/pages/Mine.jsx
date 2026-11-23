@@ -50,9 +50,11 @@ function Miner() {
   const [limit, setLimit] = useState(null);
   // Runs finished on this tip (the limit chart's dots): {t: seconds after the parent, frames}.
   const [runs, setRuns] = useState([]);
+  // The run over the limit waiting for it (the auction): {validAt, frames}.
+  const [pendingRun, setPending] = useState(null);
   const [tick, setTick] = useState(0);
   const rec = useRef(null);
-  const ctl = useRef({ restart: false, forcePower: false, discard: false });
+  const ctl = useRef({ restart: false, forcePower: false, discard: false, pending: null, discardPending: false });
   // The last attempt, for debugging: its pads and the template it was played for.
   const [last, setLast] = useState(null);
   const say = (m) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 50));
@@ -88,6 +90,43 @@ function Miner() {
       } catch { /* daemon hiccup */ }
     }, 5000);
     const kill = async () => stopped || c.restart;
+    // Seals and submits a finished run on its own template (a newer one has other
+    // mempool transactions, which would change the seed), stamped when it is valid.
+    const submitRun = async (r) => {
+      const { t, done, st } = r;
+      try {
+        let ts = Math.max(Math.floor(Date.now() / 1000), r.validAt, templateTimestamp(t.blocktemplate_blob));
+        if (st.kind === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
+        const blob = withTimestamp(t.blocktemplate_blob, ts);
+        await daemon('submit_block', [seal(blob, proofFromRun(done.pads, done.poked, st.kind === 'power-on'))]);
+        setLast((l) => ({ ...l, result: 'accepted' }));
+        announceMined(t.height, t.expected_reward);
+        say(ts > Date.now() / 1000 + 1
+          ? `★ BLOCK ${t.height} SENT: ${r.frames} frames (${frames(r.frames)}); nodes hold it until ${new Date(ts * 1000).toLocaleTimeString()}, when it fits the limit`
+          : `★ BLOCK ${t.height} ACCEPTED: ${r.frames} frames (${frames(r.frames)}), ${coins(t.expected_reward)} SM64 to you`);
+      } catch (e) {
+        setLast((l) => ({ ...l, result: `rejected: ${e}` }));
+        say(`block rejected: ${e} (download the attempt below to debug)`);
+      }
+    };
+    // The pending run (over the limit when finished): sent once its valid time is within the
+    // nodes' future-timestamp window (CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT, 120 s); dropped if a
+    // new block lands first.
+    const SEND_AHEAD = 100;
+    const pendingTimer = setInterval(async () => {
+      const p = c.pending;
+      if (!p) return;
+      if (head && p.t.prev_hash !== head) {
+        c.pending = null; setPending(null);
+        say('A new block landed before your pending run became valid, so it can no longer be a block (it was played for the old tip).');
+        return;
+      }
+      if (c.discardPending) { c.discardPending = false; c.pending = null; setPending(null); say('pending run discarded'); return; }
+      if (p.validAt - Date.now() / 1000 > SEND_AHEAD || p.sending) return;
+      p.sending = true;
+      await submitRun(p);
+      if (c.pending === p) { c.pending = null; setPending(null); }
+    }, 1000);
 
     (async () => {
       let engine;
@@ -141,43 +180,27 @@ function Miner() {
           const q = await daemon('get_block_template', { wallet_address: t.paysTo, reserve_size: 0, sm64_frames: nFrames });
           validAt = q.sm64_valid_at || 0;
         } catch (e) { say(`could not ask when the run is valid: ${e}`); }
-        let superseded = false;
-        if (validAt > Date.now() / 1000) {
-          say(`over the time limit by ${nFrames - (c.tipTemplate ? c.tipTemplate.sm64_max_frames : 0)} frames: waiting until ${new Date(validAt * 1000).toLocaleTimeString()}, when the limit has grown to your run`);
-          while (!stopped && validAt > Date.now() / 1000) {
-            setPhase({ kind: 'waiting', validAt, frames: nFrames });
-            if (c.restart) { superseded = true; break; }
-            if (c.discard) break;
-            await sleep(250);
-          }
-          if (c.discard) { setLast((l) => ({ ...l, result: 'discarded while waiting' })); say('discarded: new attempt'); continue; }
-          if (superseded) {
-            setLast((l) => ({ ...l, result: 'superseded: a new block landed while waiting' }));
-            say('A new block landed before your run became valid, so it can no longer be a block (it was played for the old tip). Your cycle continues from the new block.');
-            continue;
-          }
-        }
         if (stopped) break;
-        setPhase({ kind: 'submitting' });
-        try {
-          // Re-stamp THIS attempt's template (a newer one has other mempool
-          // transactions, which would change the seed): the limit depends on
-          // the timestamp, so a later one admits longer runs.
-          let ts = Math.max(Math.floor(Date.now() / 1000), validAt, templateTimestamp(t.blocktemplate_blob));
-          if (st.kind === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
-          const blob = withTimestamp(t.blocktemplate_blob, ts);
-          await daemon('submit_block', [seal(blob, proofFromRun(done.pads, done.poked, st.kind === 'power-on'))]);
-          setLast((l) => ({ ...l, result: 'accepted' }));
-          announceMined(t.height, t.expected_reward);
-          say(`★ BLOCK ${t.height} ACCEPTED: ${nFrames} frames (${frames(nFrames)}), ${coins(t.expected_reward)} SM64 to you`);
-        } catch (e) {
-          setLast((l) => ({ ...l, result: `rejected: ${e}` }));
-          say(`block rejected: ${e} (download the attempt below to debug)`);
+        if (validAt > Date.now() / 1000) {
+          // Over the current limit: the auction. Keep it as the pending run (the one that becomes
+          // valid soonest) and play on for a shorter one; it is sent, stamped with its valid
+          // time, once that is within the nodes' future-timestamp window (they hold it until then).
+          const p = c.pending;
+          if (p && p.t.prev_hash === t.prev_hash && p.validAt <= validAt) {
+            say(`over the limit, and your pending run (${frames(p.frames)}) becomes valid sooner: this one is dropped. Play on for a shorter run.`);
+          } else {
+            c.pending = { t, done, st, validAt, frames: nFrames };
+            setPending({ validAt, frames: nFrames });
+            say(`over the time limit by ${nFrames - (c.tipTemplate ? c.tipTemplate.sm64_max_frames : 0)} frames: kept as your pending run, valid at ${new Date(validAt * 1000).toLocaleTimeString()} and sent automatically then. Play on: a shorter run becomes valid sooner.`);
+          }
+          continue;
         }
+        setPhase({ kind: 'submitting' });
+        await submitRun({ t, done, st, validAt, frames: nFrames });
       }
       engine.set_audio_enabled(0);
     })();
-    return () => { stopped = true; clearInterval(timer); clearInterval(refresh); };
+    return () => { stopped = true; clearInterval(timer); clearInterval(refresh); clearInterval(pendingTimer); };
   }, []);
 
   const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -190,7 +213,7 @@ function Miner() {
 
   return (
     <>
-    <CycleTimeline attempt={clock ? clock.frame : 0} />
+    <CycleTimeline attempt={clock ? clock.frame : 0} limit={lim || 0} />
     <div className="mine2">
       <div className="gamecol">
         <canvas ref={canvas} className="sm64canvas" />
@@ -206,8 +229,8 @@ function Miner() {
           {clock && clock.paused && <span className="stat warn">PAUSED</span>}
           {clock && clock.mode === 'catchup' && phase.kind === 'play' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
           {phase.kind === 'ff' && <span className="stat warn">fast-forwarding the cycle{phase.total ? `: ${Math.floor((phase.done / phase.total) * 100)}% (${phase.done} / ${phase.total} frames)` : '…'}</span>}
-          {phase.kind === 'waiting' && <span className="stat warn">goal reached over budget: valid in {mmss(Math.max(0, phase.validAt - Date.now() / 1000))} (submits automatically)
-            {' '}<button onClick={() => { ctl.current.discard = true; }}>Discard and replay</button></span>}
+          {pendingRun && <span className="stat warn">pending run {frames(pendingRun.frames)}: valid in {mmss(Math.max(0, pendingRun.validAt - Date.now() / 1000))} (sent automatically; play on for a shorter one)
+            {' '}<button onClick={() => { ctl.current.discardPending = true; }}>Discard</button></span>}
           {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
         </div>
         <Controls rec={rec} />

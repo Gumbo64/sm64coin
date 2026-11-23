@@ -145,3 +145,10 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .limitchart .sw { display: inline-block; width: 12px; height: 3px; margin-right: 5px; vertical-align: middle; border-radius: 2px; }
 .limitchart .sw.lim { background: #6ea8fe; } .limitchart .sw.run { background: var(--acc); height: 8px; width: 8px; border-radius: 50%; } .limitchart .sw.now { background: var(--mut); }
 .limitchart .lc-foot { font-size: 12px; margin-top: 4px; }
+
+/* The current time limit on the cycle timeline (Mine page). */
+.timeline .limitmark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #6ea8fe; pointer-events: auto; }
+.timeline .limitmark span { position: absolute; top: -18px; left: 4px; font-size: 11px; color: #6ea8fe; white-space: nowrap; }
+.timeline .limitmark.passed { background: var(--red); }
+.timeline .limitmark.passed span { color: var(--red); }
+.timeline .over-limit { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(255,107,107,0.10) 0 6px, transparent 6px 12px); pointer-events: none; }

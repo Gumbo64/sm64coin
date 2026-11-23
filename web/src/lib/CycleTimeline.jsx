@@ -99,7 +99,7 @@ export function useCycle() {
   return [cycle, err];
 }
 
-export default function CycleTimeline({ attempt = 0 }) {
+export default function CycleTimeline({ attempt = 0, limit = 0 }) {
   const [cycle, err] = useCycle();
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => { const id = setInterval(() => setNow(Date.now() / 1000), 1000); return () => clearInterval(id); }, []);
@@ -122,19 +122,20 @@ export default function CycleTimeline({ attempt = 0 }) {
         </span>
       </div>
       {cycle.blocks.length > 0 || attempt > 0
-        ? <Strip blocks={cycle.blocks} pads={cycle.pads} attempt={attempt} />
+        ? <Strip blocks={cycle.blocks} pads={cycle.pads} attempt={attempt} limit={limit} />
         : <p className="muted">The first block of the cycle starts from power-on: get any star.</p>}
     </div>
   );
 }
 
-function Strip({ blocks, pads, attempt, highlight, playhead }) {
+function Strip({ blocks, pads, attempt, limit = 0, highlight, playhead }) {
   const nav = useNavigate();
   const wrap = useRef(null);
   const strip = useRef(null);
   const [width, setWidth] = useState(800);
   const [hover, setHover] = useState(null);
-  const total = pads.length + attempt;
+  // With a limit (the Mine page), the strip reaches the limit too: where a run from the tip stops being valid now.
+  const total = pads.length + Math.max(attempt, limit ? Math.ceil(limit * 1.04) : 0);
 
   useEffect(() => {
     const ro = new ResizeObserver(([e]) => setWidth(Math.max(100, Math.floor(e.contentRect.width))));
@@ -231,7 +232,9 @@ function Strip({ blocks, pads, attempt, highlight, playhead }) {
         {blocks.map((b) => (
           <div key={b.hash} className="marker" style={{ left: pct(b.to) }} title={`${eventName(b.event)} (block ${b.height})`} />
         ))}
-        {attempt > 0 && <div className="playhead" style={{ left: pct(total) }} />}
+        {limit > 0 && <div className="over-limit" style={{ left: pct(pads.length + limit), width: pct(Math.max(0, total - pads.length - limit)) }} />}
+        {limit > 0 && <div className={`limitmark${attempt > limit ? ' passed' : ''}`} style={{ left: pct(pads.length + limit) }} title={`The current time limit: a run from the last block up to here (${fmtTime(limit)}) is valid now; it moves right as the limit grows`}><span>limit {fmtTime(limit)}</span></div>}
+        {attempt > 0 && <div className="playhead" style={{ left: pct(pads.length + attempt) }} />}
         {playhead != null && <div className="playhead" style={{ left: pct(playhead) }} />}
         {hover !== null && (
           <div className="hover" style={{ left: pct(hover) }}>
