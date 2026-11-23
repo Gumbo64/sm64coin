@@ -7,6 +7,7 @@
 import { Sm64VisualEngine, GamePad } from 'sm64-binds-frontend';
 import { perturbReady, readProgress } from './perturb.js';
 import { captureState, restoreState } from './savestate.js';
+import { saveTip, loadTips } from './tipstore.js';
 import { hexToBytes } from './proof.js';
 import { daemon } from './rpc.js';
 
@@ -21,6 +22,8 @@ export async function createEngine(canvas) {
   engine.canvas = canvas;
   engine.powerOn = captureState(engine); // frame 0: what restart means
   engine.cycleCache = []; // [{hash, frames, state}], newest last
+  // The tips saved by earlier visits (lib/tipstore.js): a reload needs no replay of the cycle.
+  engine.cycleCache.push(...(await loadTips(engine)));
   return engine;
 }
 
@@ -103,6 +106,7 @@ export async function reachTip(engine, cycle, onProgress = () => {}, kill = () =
   if (!ok) return null;
   const state = captureState(engine, null, engine.powerOn);
   engine.cycleCache.push({ hash: cycle.hash, frames: total, state });
+  saveTip(engine, { hash: cycle.hash, frames: total, state }); // kept across reloads (not awaited)
   while (engine.cycleCache.length > CACHE_TIPS) engine.cycleCache.shift();
   return { state, progress: readProgress(engine), frames: total, replayed: total - base.frames };
 }

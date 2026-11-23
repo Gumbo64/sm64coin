@@ -27,7 +27,9 @@
 //   game re-uploads whatever it draws next and nothing shows a wrong texture.
 //   The address is from the visual build's linker map (build/us_web/sm64.map,
 //   like pow/perturb/src/sm64_addrs.rs); rebuild the game -> update TEX_CACHE.
-//   Restoring into another engine instance isn't supported (its GL ids differ).
+//   The renderer's own GL bookkeeping (shader and combiner pools, the bound
+//   state) is kept live on restore (KEEP_LIVE), so a state from another
+//   engine instance (a saved tip, lib/tipstore.js) restores too.
 // - The keyboard: the game and SDL keep which keys are down in their memory
 //   (keyboard_buttons_down, SDL_keyboard). Restoring those from the snapshot
 //   would leave a key stuck down (or lose one held now), because the key-up
@@ -48,6 +50,15 @@ const TEX_HASHMAP_BYTES = 1024 * 4;
 const KEEP_LIVE = [
   [0xc4f234, 4], // keyboard_buttons_down
   [0xc53f98, 0xc10], // SDL_keyboard
+  // The renderer's GL objects (ids valid in this page's GL context only): kept live, so a
+  // state saved in another session (lib/tipstore.js) or earlier in this one never brings
+  // back ids this context doesn't have. Game logic never reads these.
+  [0xc35a10, 0xf00], // shader_program_pool (gfx_opengl.c)
+  [0xc36910, 1], // shader_program_pool_size
+  [0xc36914, 4], // opengl_vbo
+  [0xc3692c, 0x20], // rendering_state (gfx_pc.c: the bound shader and textures)
+  [0xc4ae0c, 1], // color_combiner_pool_size
+  [0xc4ae10, 0x400], // color_combiner_pool (points into shader_program_pool)
 ];
 
 const tops = new WeakMap(); // engine -> memory top seen so far

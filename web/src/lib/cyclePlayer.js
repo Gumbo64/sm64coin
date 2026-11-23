@@ -37,6 +37,7 @@ export class CyclePlayer extends Player {
     this.bad = null; // the first frame that did not match the perturbation
     this.wonEnd = null;
     this.startProgress = null;
+    this.unchecked = false; // in the block without the perturbation's state (after a headless catch-up)
   }
 
   async attach(container) {
@@ -54,17 +55,24 @@ export class CyclePlayer extends Player {
     this.pert?.free();
   }
 
-  // Catching up (the first seek to the block's frame, long seeks) is done by the
-  // headless worker of sm64-binds-frontend >= 2.3.0, but only up to the block's start:
-  // it replays the played pads of the earlier blocks, which are accepted as they are.
-  // The block's own frames are played here, through the perturbation, so the
-  // per-frame check (okTo / bad / wonEnd, the verdict) still runs on every one of them.
+  // Catching up (the first seek, long seeks) is done by the headless worker of
+  // sm64-binds-frontend >= 2.3.0, to any frame: the cycle's played pads already
+  // carry the pokes, so they reach the same game state without the perturbation.
+  // A catch-up into the block skips its per-frame check (the perturbation's
+  // state there is unknown, `unchecked`): frames are then played as recorded,
+  // and the check runs again when the block is played from its start (the node
+  // checked every frame when it accepted the block).
   headlessLimit() {
-    return this.S;
+    return this.pads.length;
+  }
+
+  landHeadless(res) {
+    super.landHeadless(res);
+    this.unchecked = this.frame > this.S;
   }
 
   verify() {
-    return { start: this.S, okTo: this.okTo, bad: this.bad, wonEnd: this.wonEnd, total: this.pads.length };
+    return { start: this.S, okTo: this.okTo, bad: this.bad, wonEnd: this.wonEnd, total: this.pads.length, unchecked: this.unchecked };
   }
 
   play() {
@@ -81,12 +89,15 @@ export class CyclePlayer extends Player {
   saveState() {
     const f = this.frame;
     const prev = this.trail.nearest(f - 1)?.state ?? null;
-    const state = captureState(this.engine, f > this.S ? this.pert : null, prev);
+    // Unchecked (after a headless jump into the block): no perturbation state to keep.
+    const state = captureState(this.engine, f > this.S && !this.unchecked ? this.pert : null, prev);
     if (f === this.S) state.pert = this.pertStart;
     return state;
   }
 
   loadState(state, frame) {
+    // Our own states carry the perturbation inside the block; the worker's portable ones don't.
+    this.unchecked = frame > this.S && !state.pert;
     restoreState(this.engine, this.pert, state);
     this.frame = frame;
     this.state = this.engine.get_game_state();
@@ -99,6 +110,7 @@ export class CyclePlayer extends Player {
     const f = this.frame;
     if (f === this.S) {
       this.pert.loadBytes(this.pertStart);
+      this.unchecked = false;
       this.startProgress = this.startProgress ?? readProgress(this.engine);
       if (!this.trail.has(f)) this.trail.add(f, this.saveState()); // where the block starts
     }
@@ -107,7 +119,7 @@ export class CyclePlayer extends Player {
 
   stepGame(pad) {
     const i = this.frame;
-    if (i < this.S) { this.engine.step_game(pad); return; }
+    if (i < this.S || this.unchecked) { this.engine.step_game(pad); return; }
     const [played] = this.pert.step(this.engine, pad);
     if (!played.equals(pad)) {
       if (this.bad === null) this.bad = i;

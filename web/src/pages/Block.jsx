@@ -123,6 +123,7 @@ function BlockPanel({ b, cycle, json, view }) {
   if (v) {
     if (v.bad !== null) verdict = `✗ Frame ${v.bad - v.start} of the block does not match the perturbation.`;
     else if (v.okTo === v.total) verdict = v.wonEnd ? '★ ✓ Success condition met on the last frame: the proof replays.' : 'The replay ended without success.';
+    else if (v.unchecked) verdict = `jumped into the block (headless): ${v.okTo - v.start} / ${v.total - v.start} of its frames checked so far; play from the block's start to check the rest`;
     else verdict = `checking every frame: ${v.okTo - v.start} / ${v.total - v.start} of the block's frames verified`;
   }
   return (
