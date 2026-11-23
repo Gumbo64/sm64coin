@@ -29,8 +29,16 @@ stop_pidfile() {
   rm -f "$f"
 }
 
-# seed_peers: print host:port from $SEEDS_FILE (comments after # and blank lines ignored)
+# seed_peers: print host:port from $SEEDS_FILE (comments after # and blank lines ignored).
+# Hostnames are resolved here and skipped when they don't resolve: the daemon refuses to start
+# on an --add-peer it can't resolve.
 seed_peers() {
   [ -f "$SEEDS_FILE" ] || return 0
-  sed -e 's/#.*//' -e 's/[[:space:]]//g' "$SEEDS_FILE" | grep -v '^$' || true
+  local e h port ip
+  for e in $(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$SEEDS_FILE" | grep -v '^$'); do
+    h=${e%:*}; port=${e##*:}; [ "$h" = "$e" ] && port=16480
+    if [[ "$h" =~ ^[0-9.]+$ ]]; then echo "$h:$port"; continue; fi
+    ip=$(getent ahostsv4 "$h" 2>/dev/null | awk 'NR==1 {print $1}')
+    if [ -n "$ip" ]; then echo "$ip:$port"; else echo "seed $h doesn't resolve: skipped" >&2; fi
+  done
 }

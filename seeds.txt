@@ -1,2 +1,5 @@
 # SM64Coin seed nodes, one host:port per line (p2p port, default 16480).
 # scripts/start-node.sh passes each as --add-peer. Lines starting with # and blank lines are ignored.
+# Hostnames are resolved at start (skipped if they don't resolve). A seed must reach the node's
+# p2p port directly: a DNS-only record (no Cloudflare proxy), not the tunnel's hostname.
+p2p.eboy.au:16480
