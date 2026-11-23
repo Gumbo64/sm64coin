@@ -10,9 +10,30 @@ const KEY = 'sm64coin.node';
 // A build for a static host (GitHub Pages) has no proxy: VITE_DEFAULT_NODE (e.g. the
 // visitor's own node, http://127.0.0.1:16481) is the node until one is chosen.
 const DEFAULT_NODE = (import.meta.env.VITE_DEFAULT_NODE || '').replace(/\/+$/, '');
-export const getNode = () => {
-  try { return (localStorage.getItem(KEY) || DEFAULT_NODE).trim().replace(/\/+$/, ''); } catch { return DEFAULT_NODE; }
-};
+// The public node: public-node.json next to the site ({"url": "https://..."}, e.g. a Cloudflare
+// tunnel to a node's restricted RPC), read at load so it can change without a rebuild. Used for
+// a visit when no node was chosen and the default (your own) node doesn't answer.
+let publicNode = '';
+let fallback = false; // this visit uses the public node
+export const getPublicNode = () => publicNode;
+export const usingPublicFallback = () => fallback;
+const chosen = () => { try { return (localStorage.getItem(KEY) || '').trim(); } catch { return ''; } };
+export const getNode = () => (chosen() || (fallback ? publicNode : DEFAULT_NODE)).replace(/\/+$/, '');
+
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);
+// Decides this visit's node (main.jsx, before the first render).
+export async function resolveNode() {
+  try {
+    const r = await withTimeout(fetch(`${import.meta.env.BASE_URL}public-node.json`, { cache: 'no-cache' }), 3000);
+    if (r.ok) publicNode = String((await r.json()).url || '').trim().replace(/\/+$/, '');
+  } catch { /* no public node */ }
+  if (chosen() || !publicNode || !DEFAULT_NODE) return;
+  try {
+    await withTimeout(call(`${DEFAULT_NODE}/json_rpc`, 'get_info'), 2500);
+  } catch {
+    fallback = true;
+  }
+}
 export const setNode = (url) => {
   try {
     const v = (url || '').trim().replace(/\/+$/, '');

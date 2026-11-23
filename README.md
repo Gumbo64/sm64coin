@@ -182,6 +182,14 @@ launcher or `scripts/start-node.sh` allow that origin (`--rpc-access-control-ori
 `http://127.0.0.1`; newer Chrome asks first ("access devices on your local network": allow). Safari may refuse.
 Another node: the site's Network page.
 
+**Public node fallback.** Visitors without a node of their own can use a public one: put its URL in
+`web/public/public-node.json` (`{"url": "https://..."}`; empty = none) and push. The site reads it on each load,
+tries the visitor's own node first and uses the public one for that visit if it doesn't answer (a node chosen on
+the Network page always wins). The public node should serve the **restricted** RPC (`--rpc-restricted-bind-port`,
+e.g. 16489) with the site's origin allowed, behind https, e.g. a Cloudflare tunnel:
+`cloudflared tunnel --url http://127.0.0.1:16489`. A quick tunnel's `*.trycloudflare.com` URL changes whenever
+`cloudflared` restarts (edit the file again); a named tunnel on your own domain keeps a fixed hostname.
+
 ### Web app on static hosting
 
 The web app needs no server of its own except a daemon's RPC and (optionally) a leaderboard server. To host the explorer and miner anywhere:
