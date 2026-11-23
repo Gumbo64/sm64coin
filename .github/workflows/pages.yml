@@ -1,7 +1,8 @@
 # The website on GitHub Pages (https://<owner>.github.io/<repo>/). It is static: the pages
 # call a node's RPC from the visitor's browser, by default the visitor's own node at
 # http://127.0.0.1:16481 (start it with --rpc-access-control-origins https://<owner>.github.io;
-# see README "Website on GitHub Pages"). One-time setup: Settings -> Pages -> Source: GitHub Actions.
+# see README "Website on GitHub Pages"). One-time setup: Settings -> Pages -> Source: GitHub Actions
+# (not "Deploy from a branch", which publishes the README with Jekyll instead).
 name: Pages
 
 on:
