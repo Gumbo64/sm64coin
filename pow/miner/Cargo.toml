@@ -29,6 +29,7 @@ sm64-binds = { workspace = true, features = ["default"] }
 # The node RPC client and the command lines: native only (in the browser the page talks to the node).
 ureq = { version = "2", features = ["json"] }
 clap = { version = "4", features = ["derive"] }
+flate2 = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 sm64-binds = { workspace = true, features = ["wasm_js"] }

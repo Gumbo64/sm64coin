@@ -133,6 +133,17 @@ impl Daemon {
         })
     }
 
+    /// `get_sm64_state`: the block's end state, straight from the node's cache
+    /// (no replay). Errors if the node doesn't have it or is too old for the method.
+    pub fn end_state(&self, hash: &str) -> Result<sm64_binds::SaveState> {
+        use std::io::Read;
+        let r = self.call("get_sm64_state", json!({"hash": hash}))?;
+        let gz = hex::decode(r["state_gz"].as_str().ok_or_else(|| anyhow!("get_sm64_state: no state_gz"))?)?;
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut bytes)?;
+        sm64_binds::SaveState::from_bytes(bytes)
+    }
+
     pub fn top_hash(&self) -> Result<String> {
         let r = self.call("get_info", json!({}))?;
         Ok(r["top_block_hash"].as_str().unwrap_or_default().to_string())
@@ -229,6 +240,13 @@ pub fn cycle_end_state(cycle: &Cycle) -> Result<(sm64_binds::SaveState, sm64pow:
         bail!("replaying the cycle gives {progress:?}, the daemon says {} stars {} keys", cycle.stars, cycle.keys);
     }
     Ok((g.save_state(), progress))
+}
+
+/// The progress (stars, keys) of a game loaded with `state`.
+pub fn state_progress(state: &sm64_binds::SaveState) -> Result<sm64pow::game::Progress> {
+    let mut g = sm64pow::generator()?.create_game()?;
+    g.load_state(state)?;
+    sm64pow::game::read_progress(&g)
 }
 
 #[cfg(test)]

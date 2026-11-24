@@ -314,9 +314,25 @@ fn main() -> Result<()> {
         let mut parent_state: Option<SaveState> = None;
         if start == Start::Parent {
             if parent_cache.as_ref().is_none_or(|c| c.tip != t.prev_hash) {
-                match daemon.cycle(Some(&t.prev_hash)).and_then(|c| rpc::cycle_end_state(&c).map(|s| (c, s))) {
-                    Ok((c, (state, p))) => {
-                        println!("  cycle: {} blocks, {} frames replayed -> {} stars {} keys", c.blocks.len(), c.pads.len(), p.stars, p.keys);
+                let from_node = daemon.end_state(&t.prev_hash).and_then(|s| rpc::state_progress(&s).map(|p| (s, p)));
+                let built = match from_node {
+                    Ok((state, p)) => {
+                        println!("  parent state: from the node (get_sm64_state) -> {} stars {} keys", p.stars, p.keys);
+                        Ok((state, p))
+                    }
+                    Err(e0) => daemon.cycle(Some(&t.prev_hash)).and_then(|c| rpc::cycle_end_state(&c).map(|(s, p)| (c, s, p))).map(|(c, state, p)| {
+                        println!(
+                            "  parent state: cycle replay ({e0:#}): {} blocks, {} frames replayed -> {} stars {} keys",
+                            c.blocks.len(),
+                            c.pads.len(),
+                            p.stars,
+                            p.keys
+                        );
+                        (state, p)
+                    }),
+                };
+                match built {
+                    Ok((state, _p)) => {
                         parent_cache = Some(ParentCache { tip: t.prev_hash.clone(), state });
                     }
                     Err(e) => {
