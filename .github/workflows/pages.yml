@@ -39,8 +39,24 @@ jobs:
         with:
           workspaces: |
             pow/perturb-wasm
+            pow/webminer
           key: wasm
-      - name: Browser WASM module (perturbation)
+      # The web miner (pow/webminer) needs clang for wasm32 (zstd-sys) and the obrrt crates from
+      # Gumbo64/sm64-AI-binds. If that repo is private, add the repo secret SM64_AI_BINDS_TOKEN
+      # (a read-only token); without it the git fetch is anonymous. A failed web miner build
+      # never fails this job (scripts/build-wasm.sh tolerates it; the site works without it).
+      - name: Toolchain for the web miner (clang, llvm, private repo access)
+        continue-on-error: true
+        env:
+          SM64_AI_BINDS_TOKEN: ${{ secrets.SM64_AI_BINDS_TOKEN }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm
+          if [ -n "$SM64_AI_BINDS_TOKEN" ]; then
+            git config --global url."https://x-access-token:${SM64_AI_BINDS_TOKEN}@github.com/Gumbo64/".insteadOf "https://github.com/Gumbo64/"
+          fi
+      - name: Browser WASM modules (perturbation, web miner)
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
       - run: npm ci
         working-directory: web
