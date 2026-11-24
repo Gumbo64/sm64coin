@@ -6,6 +6,7 @@ import { getNode, daemon } from '../rpc.js';
 
 const BASE = import.meta.env.BASE_URL;
 export const UNLOCK_WINDOW = 4; // SM64COIN: CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW (was 60)
+export const SPENDABLE_AGE = 10; // CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE: wallet2 also waits this long for any output
 export const ATOMIC = 1000000000000n; // 12 decimals, like Monero
 
 let lib;
@@ -108,8 +109,9 @@ export async function snapshot(w) {
       locked: !!t.getIsLocked(),
       incoming: inc, outgoing: out, fee: t.getFee(),
       timestamp: t.getBlock && t.getBlock() ? t.getBlock().getTimestamp() : undefined,
-      // blocks until the reward unlocks (a coinbase unlocks UNLOCK_WINDOW blocks after its block)
-      unlockIn: t.getIsMinerTx() && h ? Math.max(0, h + UNLOCK_WINDOW - daemon) : 0,
+      // blocks until it can be spent: wallet2 (is_transfer_unlocked) needs the output's block + UNLOCK_WINDOW
+      // for a coinbase and also block + SPENDABLE_AGE for every output
+      unlockIn: h ? Math.max(0, h + (t.getIsMinerTx() ? Math.max(UNLOCK_WINDOW, SPENDABLE_AGE) : SPENDABLE_AGE) - daemon) : 0,
     };
   }).sort((a, b) => (b.height ?? 1e12) - (a.height ?? 1e12));
   return { balance, unlocked, height, daemon, rows };
