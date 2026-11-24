@@ -92,8 +92,12 @@ jobs:
       - name: Browser WASM modules (perturbation, web miner)
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          REQUIRE_WEBMINER: "1"
         run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
       - run: npm ci
         working-directory: web
       - run: npm run build
+        working-directory: web
+      - name: Node tests
+        run: node src/lib/resetPolicy.test.mjs
         working-directory: web

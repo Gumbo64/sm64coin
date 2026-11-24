@@ -2,7 +2,7 @@
 # Build the browser WASM modules the website imports (web/src/wasm/*; perturb is git-ignored).
 # Needs: rustup target add wasm32-unknown-unknown, wasm-pack (npm i -g wasm-pack).
 # The web miner also needs clang + llvm-ar (wasm32 C code) and access to the git dependencies in
-# pow/webminer/Cargo.toml; set NO_WEBMINER=1 to skip it.
+# pow/webminer/Cargo.toml; set NO_WEBMINER=1 to skip it, REQUIRE_WEBMINER=1 to fail when it does not build.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build() { # crate-dir out-dir out-name
@@ -14,6 +14,10 @@ build perturb-wasm perturb sm64coin_perturb_wasm
 if [ -z "${NO_WEBMINER:-}" ]; then
   export CC_wasm32_unknown_unknown="${CC_wasm32_unknown_unknown:-$(command -v clang || echo /usr/lib/llvm-18/bin/clang)}"
   export AR_wasm32_unknown_unknown="${AR_wasm32_unknown_unknown:-$(command -v llvm-ar || echo /usr/lib/llvm-18/bin/llvm-ar)}"
-  build webminer webminer sm64coin_webminer || echo "build-wasm.sh: web miner not built (the site works without it)" >&2
+  if [ -n "${REQUIRE_WEBMINER:-}" ]; then
+    build webminer webminer sm64coin_webminer
+  else
+    build webminer webminer sm64coin_webminer || echo "build-wasm.sh: web miner not built (the site works without it)" >&2
+  fi
 fi
 exit 0

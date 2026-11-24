@@ -8,7 +8,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'scripts/build-wasm.sh', '.github/workflows/pages.yml']
+    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'pow/webminer/**', 'pow/miner/**', 'pow/sm64pow/**', 'pow/Cargo.lock', 'scripts/build-wasm.sh', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -43,8 +43,8 @@ jobs:
           key: wasm
       # The web miner (pow/webminer) needs clang for wasm32 (zstd-sys) and the obrrt crates from
       # Gumbo64/sm64-AI-binds. If that repo is private, add the repo secret SM64_AI_BINDS_TOKEN
-      # (a read-only token); without it the git fetch is anonymous. A failed web miner build
-      # never fails this job (scripts/build-wasm.sh tolerates it; the site works without it).
+      # (a read-only token); without it the git fetch is anonymous. A failed web miner build (REQUIRE_WEBMINER=1 below)
+      # fails this job.
       - name: Toolchain for the web miner (clang, llvm, private repo access)
         continue-on-error: true
         env:
@@ -57,6 +57,7 @@ jobs:
       - name: Browser WASM modules (perturbation, web miner)
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          REQUIRE_WEBMINER: "1"   # the site and the bundles ship the browser miner: a failed build fails the job
         run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
       - run: npm ci
         working-directory: web
