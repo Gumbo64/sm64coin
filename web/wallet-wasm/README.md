@@ -8,3 +8,9 @@ build) into `web/public/wallet/` (git-ignored, like the other wasm). The Wallet 
   needs (block ids commit to the proof). Mirrors `pow/sm64pow/src/{lib,proof,statecodec}.rs`; keep in step.
   Codec 2 (xz) needs liblzma and is not supported (such a block would fail to hash).
 * `monero-ts-sm64.patch`: build fixes for current emscripten/clang and the extra webpack configs.
+
+CI: `.github/workflows/wallet-engine.yml` (called by pages.yml and the release workflow's website job) builds it
+with emscripten 6.0.13, caches `web/wallet-wasm/work` (keyed on the script, patch, cpp and the fork's commit) and
+uploads the artifact `wallet-engine`; the site jobs download it into `web/public/wallet/` before `npm run build`.
+A failed engine build never fails the site: the Wallet page then says the engine is unavailable.
+Needs the `monero` submodule (the script also inits its `external/rapidjson`). Verified from a fresh clone.
