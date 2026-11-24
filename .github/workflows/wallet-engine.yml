@@ -8,8 +8,6 @@ name: Wallet engine
 on:
   workflow_call:
   workflow_dispatch:
-  push:
-    branches: [release-0.2.8]   # TEMP: dispatch needs the file on the default branch; test on this branch
 
 permissions:
   contents: read

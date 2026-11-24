@@ -9,6 +9,7 @@
 # SM64Coin-specific parts: web/wallet-wasm/sm64coin_wasm.cpp (the block id's proof_id, without the Rust
 # game engine; xz-embedded/ is its vendored xz decoder for proof codec 2) and monero-ts-sm64.patch
 # (c++17 for the newer emscripten, boost/clang fixes, the worker/lib webpack configs). See web/wallet-wasm/README.md.
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"   # also works when started as `sh scripts/build-wallet-wasm.sh`
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERE="$ROOT/web/wallet-wasm"
