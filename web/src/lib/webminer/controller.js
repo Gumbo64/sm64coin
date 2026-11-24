@@ -28,7 +28,11 @@ const SEND_AHEAD = 100; // the nodes' future-timestamp window (120 s), with a ma
 const ls = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
 
-export const RATE_WINDOW = 8; // seconds of the frames/s moving average
+// Seconds of the frames/s moving average. Workers report once per search round (a round can take
+// tens of seconds on a loaded machine), so the window is long and the readout only drops to 0 when
+// no worker has reported for RATE_STALE seconds.
+export const RATE_WINDOW = 60;
+export const RATE_STALE = 120;
 /** "1.37 M", "412 k", "950": a frame rate (or count) with k / M units. */
 export const fmtRate = (x) => (x >= 1e6 ? `${(x / 1e6).toFixed(x >= 1e7 ? 1 : 2)} M` : x >= 1e3 ? `${(x / 1e3).toFixed(x >= 1e5 ? 0 : 1)} k` : `${Math.round(x)}`);
 
@@ -52,7 +56,7 @@ class FrameRate {
     const [t0, c0] = this.samples[0], [t1, c1] = this.samples[n - 1];
     // No report for a while (stopped, or between steps): the average decays instead of freezing.
     const end = Math.max(t1, performance.now());
-    return end - t0 > 500 && performance.now() - t1 < 6000 ? (c1 - c0) / ((end - t0) / 1000) : 0;
+    return end - t0 > 500 && performance.now() - t1 < RATE_STALE * 1000 ? (c1 - c0) / ((end - t0) / 1000) : 0;
   }
 }
 

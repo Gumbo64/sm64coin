@@ -63,7 +63,7 @@ function AutoMiner() {
         {vizOn && running && !isolated && <span className="muted"> · workers started before it was switched on keep sampling off until their next search (enable worker sync for an instant switch)</span>}
       </p>
       {running && (
-        <p style={{ fontSize: '1.15em', margin: '0.4em 0' }} title="Simulated game frames per second, all workers (8 s moving average): this miner's hashrate">
+        <p style={{ fontSize: '1.15em', margin: '0.4em 0' }} title="Simulated game frames per second, all workers (moving average over the last minute): this miner's hashrate">
           <strong>Speed</strong> <span className="mono">{fps > 0 ? `${fmtRate(fps)} frames/s` : '…'}</span>
           <span className="muted"> · {workers.length || count} worker{(workers.length || count) === 1 ? '' : 's'}</span>
         </p>
