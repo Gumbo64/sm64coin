@@ -11,7 +11,7 @@
 
 use anyhow::{Result, bail};
 use clap::Parser;
-use sm64coin_miner::{beam, rh, routes::Library, rpc, rrt};
+use sm64coin_miner::{beam, reset, rh, routes::Library, rpc, rrt};
 use sm64pow::proof::Start;
 use sm64pow::sm64_binds::SaveState;
 use std::sync::Arc;
@@ -41,6 +41,16 @@ struct Args {
     /// star from power-on only).
     #[arg(long, default_value = "rrt")]
     controller: String,
+    /// Reset cycle (power-on start) policy, when the chain allows it (template sm64_start "either"):
+    /// `never` (only when the chain forces it), `when-stuck` (search the parent's end state first; take
+    /// power-on if that finds no route / gives up / times out / the parent has 120 stars; and restart when
+    /// a "parent" template's sm64_power_on_at passes), `always-when-allowed` (power-on as soon as allowed).
+    #[arg(long, default_value = "when-stuck")]
+    reset: String,
+    /// when-stuck: also give up the parent-start search after this many seconds on an "either" template
+    /// and take power-on (0: only when the search itself gives up).
+    #[arg(long, default_value_t = 0)]
+    reset_after: u64,
     /// rrt (the seg120 campaign per block): emulated frames (all threads) a castle tree / a course tree may use
     /// before the budget multiplier (campaign.py --hub, --course), a wall-clock cap of one tree (s, 0: none),
     /// checkpoints in a row before a course is given up (--checkpoints), the course trees' stall stop in frames
@@ -272,6 +282,8 @@ fn main() -> Result<()> {
         }
     }
     let mut mined = 0u64;
+    let reset_mode: reset::ResetMode = a.reset.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    println!("reset cycle policy: {:?} (--reset), parent-search time limit {} s", reset_mode, a.reset_after);
     let mut attempt = 0u64;
     let mut parent_cache: Option<ParentCache> = None;
     loop {
@@ -310,7 +322,9 @@ fn main() -> Result<()> {
         );
 
         // Where the run starts: the parent's end state, or power-on.
-        let mut start = if t.sm64_start == "power-on" { Start::PowerOn } else { Start::Parent };
+        let (pick, why_pick) = reset::initial(reset_mode, &t.sm64_start, t.sm64_parent_stars);
+        let mut start = if pick == reset::Pick::PowerOn { Start::PowerOn } else { Start::Parent };
+        println!("  reset policy {:?}: start {:?} ({why_pick}){}", reset_mode, start, if t.sm64_start == "parent" { format!("; power-on allowed in {} s", reset::seconds_until_allowed(&t.sm64_start, t.sm64_power_on_at, now())) } else { String::new() });
         let mut parent_state: Option<SaveState> = None;
         if start == Start::Parent {
             if parent_cache.as_ref().is_none_or(|c| c.tip != t.prev_hash) {
@@ -351,12 +365,15 @@ fn main() -> Result<()> {
 
         // Watch for a new block while playing.
         let stop = Arc::new(AtomicBool::new(false));
+        let pstop = Arc::new(AtomicBool::new(false)); // the parent-start search only (--reset-after)
         let done = Arc::new(AtomicBool::new(false));
         let watcher = {
             let (stop, done) = (stop.clone(), done.clone());
             let (url, prev) = (a.daemon.clone(), t.prev_hash.clone());
             // A parent-only template becomes "either" at sm64_power_on_at.
-            let power_on_at = if t.sm64_start == "parent" { t.sm64_power_on_at } else { 0 };
+            let power_on_at = reset::restart_at_power_on_time(reset_mode, &t.sm64_start, t.sm64_power_on_at).unwrap_or(0);
+            let deadline = if reset_mode == reset::ResetMode::WhenStuck && t.sm64_start == "either" && start == Start::Parent && a.reset_after > 0 { now() + a.reset_after } else { 0 };
+            let pstop = pstop.clone();
             std::thread::spawn(move || {
                 let d = rpc::Daemon::new(&url);
                 while !done.load(Ordering::Relaxed) {
@@ -366,10 +383,15 @@ fn main() -> Result<()> {
                         stop.store(true, Ordering::Relaxed);
                         return;
                     }
+                    if deadline != 0 && now() >= deadline {
+                        println!("  parent-start search used its --reset-after time");
+                        pstop.store(true, Ordering::Relaxed);
+                    }
                     if let Ok(h) = d.top_hash() {
                         if h != prev {
                             println!("  new block {}.. on the network: restarting", &h[..12]);
                             stop.store(true, Ordering::Relaxed);
+                            pstop.store(true, Ordering::Relaxed);
                             return;
                         }
                     }
@@ -383,16 +405,19 @@ fn main() -> Result<()> {
             let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt + a.salt, frame_cap: a.rh_frames, max_retries: if t.sm64_start == "either" { 3 } else { 40 }, ..Default::default() };
             let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
             let use_rrt = a.controller == "rrt";
-            let mut r = if use_rrt { rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &stop, |m| println!("  {m}"))? } else { rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &stop, |m| println!("  {m}"))? };
+            let first_stop = if start == Start::Parent { pstop.clone() } else { stop.clone() };
+            let mut r = if use_rrt { rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &first_stop, |m| println!("  {m}"))? } else { rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &first_stop, |m| println!("  {m}"))? };
             let fallback = match &r {
+                _ if start == Start::PowerOn => None,
                 rh::Attempt::NoRoute(why) => Some(format!("no route from the parent's end state: {why}")),
+                rh::Attempt::Gave(why) if pstop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) => Some(format!("parent-start search timed out ({why})")),
                 rh::Attempt::Gave(why) if t.sm64_start == "either" && !stop.load(Ordering::Relaxed) => Some(format!("the parent's end state didn't give progress quickly ({why})")),
                 _ => None,
             };
             if let Some(why) = fallback {
                 println!("  {why}");
-                if t.sm64_start == "either" {
-                    println!("  taking the power-on start");
+                if reset::after_failure(reset_mode, &t.sm64_start) {
+                    println!("  reset policy: taking the power-on start (reset cycle)");
                     start = Start::PowerOn;
                     parent_state = None;
                     r = if use_rrt { rrt::mine(start, None, &seed, &params, &ro, &stop, |m| println!("  {m}"))? } else { rh::mine(start, None, &seed, &params, &o, &stop, |m| println!("  {m}"))? };
@@ -403,7 +428,11 @@ fn main() -> Result<()> {
                 rh::Attempt::Gave(why) => println!("  no progress: {why}"),
                 rh::Attempt::NoRoute(why) => no_route = Some(why),
             }
-        } else if start == Start::PowerOn || t.sm64_parent_stars + t.sm64_parent_keys == 0 {
+        } else if start == Start::PowerOn || t.sm64_parent_stars + t.sm64_parent_keys == 0 || reset::after_failure(reset_mode, &t.sm64_start) {
+            if start == Start::Parent && t.sm64_parent_stars + t.sm64_parent_keys > 0 {
+                println!("  reset policy: the beam controller can't continue from the parent: taking the power-on start (reset cycle)");
+            }
+            parent_state = None;
             for (k, i) in lib.ranked().into_iter().take(a.routes_per_template.max(1)).enumerate() {
                 let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let cfg = beam::BeamConfig {

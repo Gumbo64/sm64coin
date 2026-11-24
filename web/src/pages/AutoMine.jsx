@@ -4,6 +4,7 @@ import { daemon } from '../lib/rpc.js';
 import { getCycle } from '../lib/replay/client.js';
 import { hexToBytes, seal, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { frames as fmtFrames } from '../lib/format.js';
+import { RESET_MODES, initialStart, afterFailure, restartAt } from '../lib/resetPolicy.js';
 
 // The automated miner in the browser: the native miner's RRT campaign (objective-RRT search,
 // pow/webminer) compiled to WebAssembly, one campaign per Web Worker. Each worker searches the
@@ -33,6 +34,11 @@ function AutoMiner() {
   const [log, setLog] = useState([]);
   const [workers, setWorkers] = useState([]); // [{salt, line}]
   const [stats, setStats] = useState({ rounds: 0, found: 0, accepted: 0 });
+  const [resetMode, setResetMode] = useState(() => { try { return localStorage.getItem('sm64coin.resetMode') || 'when-stuck'; } catch { return 'when-stuck'; } });
+  const mode = RESET_MODES.includes(resetMode) ? resetMode : 'when-stuck';
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  useEffect(() => { try { localStorage.setItem('sm64coin.resetMode', mode); } catch { /* private window */ } }, [mode]);
   const ctl = useRef(null);
 
   const say = (m) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 200));
@@ -65,9 +71,14 @@ function AutoMiner() {
     c.template = t;
     c.attempt += 1;
     setStats((s) => ({ ...s, rounds: s.rounds + 1 }));
-    const start = t.sm64_start === 'power-on' ? 'power-on' : 'parent';
+    const first = initialStart(modeRef.current, t.sm64_start, t.sm64_parent_stars);
+    say(`block ${t.height}: reset policy ${modeRef.current}, chain start ${t.sm64_start}: starting from ${first.start} (${first.why})`);
+    const start = first.start;
+    c.restartAt = restartAt(modeRef.current, t.sm64_start, t.sm64_power_on_at || 0);
     let parentPads = '';
     let parentState = null; // the parent's end state from the node (it has it cached)
+    // Parent start state (also fetched for "either": a worker may fall back to power-on later,
+    // and the parent search needs it first).
     if (start === 'parent') {
       try {
         const s = await daemon('get_sm64_state', { hash: t.prev_hash });
@@ -88,7 +99,7 @@ function AutoMiner() {
     }
     if (c.stopped || c.template !== t) return;
     say(`block ${t.height}: ${count} worker${count === 1 ? '' : 's'} searching (start ${start}, limit ${fmtFrames(t.sm64_max_frames)} now)`);
-    const status = Array.from({ length: count }, (_, i) => ({ salt: c.attempt * 1000 + i, line: 'loading the game…', runs: 0, fails: 0 }));
+    const status = Array.from({ length: count }, (_, i) => ({ salt: c.attempt * 1000 + i, line: 'loading the game…', runs: 0, fails: 0, start }));
     const show = () => setWorkers(status.map((s) => ({ ...s })));
     show();
     // Each worker searches on its own: one that ends without a run (or fails) starts again with
@@ -112,7 +123,7 @@ function AutoMiner() {
           say(`worker ${i + 1}: run found, ${r.frames} frames (${fmtFrames(r.frames)}), ${(r.sim_frames / 1e6).toFixed(0)} M frames searched`);
           c.pool.forEach((x) => x && x.terminate());
           c.pool = [];
-          submit(c, t, r);
+          submit(c, t, { ...r, start: status[i].start });
           return;
         }
         const failed = m.type === 'error';
@@ -121,13 +132,18 @@ function AutoMiner() {
         status[i].line = failed ? `failed: ${m.message}` : `no run (${r.why}); starting again`;
         if (failed) say(`worker ${i + 1} failed: ${m.message.slice(0, 200)}`);
         status[i].salt += count;
+        // A parent-start search that ends without a run on an "either" template: reset cycle.
+        if (!failed && status[i].start === 'parent' && afterFailure(modeRef.current, t.sm64_start)) {
+          status[i].start = 'power-on';
+          say(`worker ${i + 1}: no run from the parent (${r.why}); reset policy ${modeRef.current}: next attempt from power-on (reset cycle)`);
+        }
         show();
         setTimeout(() => launch(i), Math.min(60, 2 ** status[i].fails) * 1000);
       };
       w.postMessage({
         type: 'mine',
-        request: { start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1 },
-        parentState: parentState ? parentState.slice(0) : null,
+        request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1 },
+        parentState: status[i].start === 'parent' && parentState ? parentState.slice(0) : null,
       });
     };
     for (let i = 0; i < count; i++) launch(i);
@@ -149,7 +165,9 @@ function AutoMiner() {
         say('a new block landed first; the run was for the old tip');
         return;
       }
-      const ts = Math.max(Math.floor(now()), validAt, templateTimestamp(t.blocktemplate_blob));
+      let ts = Math.max(Math.floor(now()), validAt, templateTimestamp(t.blocktemplate_blob));
+      // A reset cycle (power-on on an "either" template) is judged against an earlier limit and is valid from sm64_power_on_at.
+      if (r.start === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
       await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), hexToBytes(r.proof))]);
       setStats((s) => ({ ...s, accepted: s.accepted + 1 }));
       say(`★ BLOCK ${t.height} SUBMITTED: ${r.frames} frames, to ${address.slice(0, 12)}…`);
@@ -169,6 +187,13 @@ function AutoMiner() {
     // A new tip: the template is stale, start over on the new one.
     c.watch = setInterval(async () => {
       try {
+        // A parent-only template turns "either" at sm64_power_on_at: refresh it to learn that.
+        if (c.template && c.restartAt && now() >= c.restartAt && c.pool.some(Boolean)) {
+          c.restartAt = 0;
+          say('the stall time passed: refreshing the template (power-on start now allowed)');
+          round(c);
+          return;
+        }
         const i = await daemon('get_info');
         if (c.template && i.top_block_hash !== c.template.prev_hash && c.pool.some(Boolean)) {
           say(`new block ${i.height - 1} on the chain: restarting on the new template`);
@@ -192,6 +217,11 @@ function AutoMiner() {
       </p>
       <p>
         Workers <input type="number" min="1" max="32" value={count} onChange={(e) => setCount(Math.max(1, Math.min(32, Number(e.target.value) || 1)))} disabled={running} style={{ width: '4em' }} />{' '}
+        <select value={mode} onChange={(e) => setResetMode(e.target.value)} title="Reset cycle (power-on start) policy when the chain allows it">
+          <option value="never">reset: never</option>
+          <option value="when-stuck">reset: when stuck</option>
+          <option value="always-when-allowed">reset: whenever allowed</option>
+        </select>{' '}
         {running ? <button onClick={stopAll}>Stop</button> : <button onClick={startAll} disabled={!isAddress(address)}>Start mining</button>}{' '}
         <span className="muted">rounds {stats.rounds} · runs found {stats.found} · blocks submitted {stats.accepted}</span>
       </p>

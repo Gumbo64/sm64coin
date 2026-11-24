@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { initialStart, afterFailure, restartAt, secondsUntilAllowed } from './resetPolicy.js';
+assert.equal(initialStart('never', 'power-on', 0).start, 'power-on');
+assert.equal(initialStart('never', 'either', 120).start, 'parent');
+assert.equal(initialStart('when-stuck', 'either', 5).start, 'parent');
+assert.equal(initialStart('when-stuck', 'either', 120).start, 'power-on');
+assert.equal(initialStart('always-when-allowed', 'either', 5).start, 'power-on');
+assert.equal(initialStart('always-when-allowed', 'parent', 5).start, 'parent');
+assert.ok(afterFailure('when-stuck', 'either') && afterFailure('always-when-allowed', 'either'));
+assert.ok(!afterFailure('never', 'either') && !afterFailure('when-stuck', 'parent'));
+assert.equal(restartAt('when-stuck', 'parent', 100), 100);
+assert.equal(restartAt('never', 'parent', 100), 0);
+assert.equal(restartAt('when-stuck', 'either', 100), 0);
+assert.equal(secondsUntilAllowed('parent', 100, 40), 60);
+assert.equal(secondsUntilAllowed('either', 100, 40), 0);
+console.log('resetPolicy ok');
