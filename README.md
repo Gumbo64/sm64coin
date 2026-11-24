@@ -55,7 +55,7 @@ Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet R
 
 ## Download and run (no build)
 
-Releases (https://github.com/Gumbo64/sm64coin/releases) hold one archive per platform (Linux x86_64, Linux aarch64/Raspberry Pi). Unpack it, copy your US ROM next to it as `baserom.us.z64`, run `./sm64coin`: it finds the ROM, starts the node (data in `~/.sm64coin`), serves the website at http://localhost:5181, opens the browser and the wallet app, and stops everything on Ctrl-C. `sm64coin --help` lists the options. Release process and gaps: `packaging/RELEASING.md`.
+Releases (https://github.com/Gumbo64/sm64coin/releases) hold one archive per platform (Linux x86_64, Linux aarch64/Raspberry Pi). Unpack it, copy your US ROM next to it as `baserom.us.z64` (or into `~/.sm64coin/`), open the wallet app (`sm64coin-wallet-gui`; `SM64Coin-Wallet.app` on macOS, `sm64coin-wallet-gui.exe` on Windows). It creates or restores a wallet and starts its own node, which syncs from the seed nodes; the Mining page has Start (automated miner) and Play to mine (website). Servers without the wallet app run `sm64coin-node` (a script around `sm64coind`: finds the ROM, resolves `seeds.txt`, `--help` lists the options) and can use `sm64coin-node.service` (systemd); open TCP 16480. The old `sm64coin` launcher is no longer shipped (source kept in `pow/launcher`). Release process and gaps: `packaging/RELEASING.md`.
 
 ## Requirements
 
@@ -76,7 +76,7 @@ make stop                 # stops node and wallet RPC (pid files only)
 
 Manual mining: open `/mine` in the web UI, upload the ROM once (it stays in the browser), and play. Explore blocks at `/`, replay any block's proof at `/block/:id`. Funds, mining controls and joining the leaderboard are in the wallet app (`bin/sm64coin-wallet-gui`); its Mining → Play to mine opens `/mine` with your address.
 
-Joining an existing network: nodes find each other through BitTorrent's Mainline DHT (the launcher looks up the network key `sm64coin-mainnet-1` and passes what it finds as `--add-peer`; `--dht-lookup` prints them, `--no-dht` skips it), plus `seeds.txt`. To point at a node you know: `PEERS="host:16480 host2:16480" make node` (do not set `SOLO`). A node that accepts connections can list itself with the launcher's `--dht-announce`; that publishes its IP to anyone who looks the network up.
+Joining an existing network: nodes find each other through BitTorrent's Mainline DHT (the old launcher, `pow/launcher`, which is no longer shipped, looked up the network key `sm64coin-mainnet-1`; the release now relies on `seeds.txt`), plus `seeds.txt`. To point at a node you know: `PEERS="host:16480 host2:16480" make node` (do not set `SOLO`). 
 
 For an interactive wallet: `scripts/wallet-cli.sh`.
 
@@ -137,9 +137,9 @@ Privacy: a view key lets whoever holds it see all of your incoming payments (nev
 
 **Sharing (off-chain, no consensus involvement).** Leaderboard servers share their top 50 with each other. `GET /share` returns `{"version":1,"id":...,"entries":[{name,address,view_key,blocks,reward_atomic,best_frames}]}` for the top 50 verified entries (the view key is included, so every server in the network can verify; `blocks`/`reward_atomic`/`best_frames` are display only). Each server pulls `/share` from its peers every `--share-secs` (default 300, jittered, so it works behind NAT), and for each entry checks the address and that the view key matches it (`a*G` = public view key), then counts the blocks itself with its own chain scan: stats from peers are never trusted. Entries that fail are ignored; an address already known keeps its local entry/name; at most 100 entries are taken per pull (256 KiB max response), at most 1000 entries and 200 peers are tracked (lowest-scoring peer-learned entries are evicted; local registrations never). `/leaderboard` is the top 50 by blocks, then reward (each row has `source`: `local` or `peer`, and `verified`). `/unregister` also stops that address being re-learned by this server; servers that already learned it keep it. `GET /peers` lists peers; `/health` has `peers` (responding) and `known_peers`.
 
-Peers come from: `--peer-leaderboard URL` (repeatable) and `--peers-file FILE` (the launcher reads `leaderboard-peers.txt` next to the program and in its data dir); the node's connected peers (RPC `get_connections`, unrestricted RPC only; tries `http://<ip>:16490`, `--peer-port`, `--no-discover` disables); and servers that pull from us with an `X-Leaderboard-Url` header (`--announce-url`), accepted only if the announced host is the caller's own IP. Unresponsive peers are retried with backoff and dropped. `/share` is rate limited per IP.
+Peers come from: `--peer-leaderboard URL` (repeatable) and `--peers-file FILE` (`leaderboard-peers.txt`); the node's connected peers (RPC `get_connections`, unrestricted RPC only; tries `http://<ip>:16490`, `--peer-port`, `--no-discover` disables); and servers that pull from us with an `X-Leaderboard-Url` header (`--announce-url`), accepted only if the announced host is the caller's own IP. Unresponsive peers are retried with backoff and dropped. `/share` is rate limited per IP.
 
-The `sm64coin` launcher runs a leaderboard server by default (port 16490, free-port fallback; `--no-leaderboard`, `--leaderboard-url URL` to use a remote one, `--peer-leaderboard URL`); with `--public` it listens on all interfaces so others can pull from it.
+Run the server yourself (`sm64coin-leaderboard`, port 16490; `scripts/leaderboard.sh`); the wallet app and the shipped bundle no longer start one for you.
 
 ```
 scripts/leaderboard.sh                 # build + start (pid run/leaderboard.pid, log run/leaderboard.log)
@@ -158,7 +158,7 @@ There is no central server: every node is equal, validates each block by replayi
 
 ### Seeds (`seeds.txt`)
 
-`seeds.txt` at the project root lists the seed nodes (today `p2p.eboy.au:16480`), one `host:port` (p2p port, default 16480) per line; `#` comments and blank lines are ignored. `scripts/start-node.sh` and the launcher pass each entry as `--add-peer` (set `SEEDS_FILE` to use another file, `PEERS="h:p h:p"` to add more from the environment). Whoever runs a long-lived node that accepts connections can add it with a pull request. The first node of a brand new network starts with `SOLO=1 scripts/start-node.sh` (`--sm64-solo`, counts as synced without peers); every other node must not.
+`seeds.txt` at the project root lists the seed nodes (today `p2p.eboy.au:16480`), one `host:port` (p2p port, default 16480) per line; `#` comments and blank lines are ignored. `scripts/start-node.sh` and `sm64coin-node` pass each entry as `--add-peer` (set `SEEDS_FILE` to use another file, `PEERS="h:p h:p"` to add more from the environment). Whoever runs a long-lived node that accepts connections can add it with a pull request. The first node of a brand new network starts with `SOLO=1 scripts/start-node.sh` (`--sm64-solo`, counts as synced without peers); every other node must not.
 
 ### Joining
 
@@ -178,7 +178,7 @@ Sync verifies every block by replay (about 0.1 to 1 s per block). Notes from tes
 `https://gumbo64.github.io/sm64coin/` (one-time setup: Settings -> Pages -> Source: GitHub Actions). The pages are
 static and call a node's RPC from the visitor's browser, by default the visitor's own node at
 `http://127.0.0.1:16481`, so nothing goes through GitHub and the RPC stays bound to localhost. Nodes started by the
-launcher or `scripts/start-node.sh` allow that origin (`--rpc-access-control-origins https://gumbo64.github.io`;
+`sm64coin-node` or `scripts/start-node.sh` allow that origin (`--rpc-access-control-origins https://gumbo64.github.io`;
 `SITE_ORIGIN` overrides it) and answer Chrome's private-network preflight. Chrome and Firefox let an https page call
 `http://127.0.0.1`; newer Chrome asks first ("access devices on your local network": allow). Safari may refuse.
 Another node: the site's Network page.

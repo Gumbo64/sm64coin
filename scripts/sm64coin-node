@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# sm64coin-node: run an SM64Coin node (sm64coind) on a server or any machine without the wallet app.
+# Finds and checks the ROM, reads seeds.txt, resolves the seed hostnames to IPv4 (sm64coind refuses
+# to start on an --add-peer it cannot resolve), then exec's sm64coind in the foreground.
+# Shipped in the Linux and macOS bundles as `sm64coin-node`; works from a git checkout too.
+set -euo pipefail
+
+ROM_SHA1=9bef1128717f958171a4afac3ed78ee2bb4e86ce
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do   # resolve symlinks (e.g. /usr/local/bin/sm64coin-node)
+  d="$(cd "$(dirname "$SELF")" && pwd)"; SELF="$(readlink "$SELF")"; case "$SELF" in /*) ;; *) SELF="$d/$SELF" ;; esac
+done
+HERE="$(cd "$(dirname "$SELF")" && pwd)"
+
+usage() {
+  cat <<USAGE
+Usage: sm64coin-node [options] [-- extra sm64coind arguments]
+
+Runs an SM64Coin node in the foreground (Ctrl-C or SIGTERM stops it cleanly).
+Needs your own US Super Mario 64 ROM (baserom.us.z64, SHA-1 $ROM_SHA1).
+
+Options (each also settable through the environment variable in brackets):
+  --data-dir DIR       blockchain, logs, settings         [DATA_DIR]  default ~/.sm64coin/node
+  --rom FILE|DIR       ROM, or a folder holding it        [ROM]       default: searched next to this
+                       script, in the current directory, in ~/.sm64coin and in the data dir
+  --daemon FILE        sm64coind to run                   [DAEMON]    default: next to this script
+  --seeds FILE         seeds file (host:port per line)    [SEEDS_FILE] default: seeds.txt next to this
+                       script and in the data dir (both are read)
+  --peer HOST[:PORT]   extra peer, repeatable             [PEERS]     (space separated in the variable)
+  --p2p-port N         p2p port                           [P2P_PORT]  default 16480
+  --rpc-port N         RPC port (127.0.0.1)               [RPC_PORT]  default 16481
+  --zmq-port N         ZMQ port (127.0.0.1)               [ZMQ_PORT]  default 16482
+  --public-rpc         also serve the RESTRICTED RPC (read-only, CORS for the website) on 0.0.0.0
+                       port 16489, for a public node      [PUBLIC_RPC=1]
+  --restricted-port N  port of that restricted RPC        [RESTRICTED_PORT] default 16489; setting it
+                       without --public-rpc binds it to 127.0.0.1 only (e.g. behind a tunnel/proxy)
+  --rpc-bind-ip IP     bind the main RPC to this IP (with --confirm-external-bind; only if you know
+                       what you are doing, the full RPC is not for the internet)    [RPC_BIND_IP]
+  --origins LIST       CORS origins for the RPC           [ORIGINS]   default https://gumbo64.github.io
+  --log-file FILE      log file                           [LOG_FILE]  default <data dir>/sm64coind.log
+  --solo               first node of a brand-new network: counts as synchronized without peers [SOLO=1]
+  -h, --help           this text
+
+Everything after -- is passed to sm64coind unchanged.
+Also set by default: --max-connections-per-ip=16 --non-interactive; every seed as
+--add-peer and --add-priority-node. Open TCP port 16480 (the p2p port) to accept connections.
+USAGE
+}
+
+DATA_DIR="${DATA_DIR:-$HOME/.sm64coin/node}"
+ROM="${ROM:-${SM64COIN_ROM:-}}"
+DAEMON="${DAEMON:-}"
+SEEDS_FILE="${SEEDS_FILE:-}"
+PEERS="${PEERS:-}"
+P2P_PORT="${P2P_PORT:-16480}"
+RPC_PORT="${RPC_PORT:-16481}"
+ZMQ_PORT="${ZMQ_PORT:-16482}"
+PUBLIC_RPC="${PUBLIC_RPC:-0}"
+RESTRICTED_PORT="${RESTRICTED_PORT:-}"
+RPC_BIND_IP="${RPC_BIND_IP:-}"
+ORIGINS="${ORIGINS:-https://gumbo64.github.io}"
+LOG_FILE="${LOG_FILE:-}"
+SOLO="${SOLO:-0}"
+extra=()
+die() { echo "sm64coin-node: $*" >&2; exit 2; }
+need_arg() { [ "$#" -ge 2 ] || die "$1 needs a value"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --data-dir) need_arg "$@"; DATA_DIR="$2"; shift 2 ;;
+    --rom) need_arg "$@"; ROM="$2"; shift 2 ;;
+    --daemon) need_arg "$@"; DAEMON="$2"; shift 2 ;;
+    --seeds) need_arg "$@"; SEEDS_FILE="$2"; shift 2 ;;
+    --peer) need_arg "$@"; PEERS="$PEERS $2"; shift 2 ;;
+    --p2p-port) need_arg "$@"; P2P_PORT="$2"; shift 2 ;;
+    --rpc-port) need_arg "$@"; RPC_PORT="$2"; shift 2 ;;
+    --zmq-port) need_arg "$@"; ZMQ_PORT="$2"; shift 2 ;;
+    --public-rpc) PUBLIC_RPC=1; shift ;;
+    --restricted-port) need_arg "$@"; RESTRICTED_PORT="$2"; shift 2 ;;
+    --rpc-bind-ip) need_arg "$@"; RPC_BIND_IP="$2"; shift 2 ;;
+    --origins) need_arg "$@"; ORIGINS="$2"; shift 2 ;;
+    --log-file) need_arg "$@"; LOG_FILE="$2"; shift 2 ;;
+    --solo) SOLO=1; shift ;;
+    --) shift; extra=("$@"); break ;;
+    *) echo "sm64coin-node: unknown option $1 (see --help; daemon arguments go after --)" >&2; exit 2 ;;
+  esac
+done
+case "$DATA_DIR" in "~"*) DATA_DIR="$HOME${DATA_DIR#\~}" ;; esac
+[ "$PUBLIC_RPC" = 1 ] && [ -z "$RESTRICTED_PORT" ] && RESTRICTED_PORT=16489
+
+# ---- sm64coind ----
+if [ -z "$DAEMON" ]; then
+  for c in "$HERE/sm64coind" "$HERE/../bin/sm64coind"; do [ -x "$c" ] && { DAEMON="$c"; break; }; done
+fi
+[ -n "$DAEMON" ] && [ -x "$DAEMON" ] || die "sm64coind not found (looked next to $HERE); give it with --daemon FILE"
+
+# ---- ROM ----
+sha1_of() {
+  if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 1 "$1" | cut -d' ' -f1
+  else openssl sha1 "$1" | awk '{print $NF}'; fi
+}
+find_rom() {
+  local cands=() d f h wrong=""
+  if [ -n "$ROM" ]; then
+    [ -e "$ROM" ] || die "the ROM path $ROM does not exist"
+    if [ -d "$ROM" ]; then cands+=("$ROM"/baserom.us.z64 "$ROM"/*.z64); else cands+=("$ROM"); fi
+  fi
+  for d in "$HERE" "$PWD" "$HOME/.sm64coin" "$DATA_DIR" "$HERE/.."; do
+    cands+=("$d"/baserom.us.z64 "$d"/*.z64)
+  done
+  for f in "${cands[@]}"; do
+    [ -f "$f" ] || continue
+    h="$(sha1_of "$f")"
+    if [ "$h" = "$ROM_SHA1" ]; then ROM_FOUND="$f"; return 0; fi
+    wrong="$wrong  Found $f but it is not the US ROM (its SHA-1 is $h).\n"
+  done
+  {
+    echo "sm64coin-node: Could not find your Super Mario 64 ROM."
+    echo
+    echo "SM64Coin needs the US version of Super Mario 64 as a .z64 file (SHA-1 $ROM_SHA1)."
+    echo "It is not included: you have to supply your own copy."
+    [ -n "$wrong" ] && printf '%b' "$wrong"
+    echo "Do one of these and run sm64coin-node again:"
+    echo "  - copy it next to this script, named baserom.us.z64  ($HERE)"
+    echo "  - or copy it to $HOME/.sm64coin/baserom.us.z64"
+    echo "  - or give its path:  sm64coin-node --rom /path/to/rom.z64   (or ROM=/path)"
+  } >&2
+  exit 2
+}
+ROM_FOUND=""
+find_rom
+
+# ---- seeds ----
+# resolve_v4 HOST: first IPv4 address of HOST (empty if it does not resolve).
+resolve_v4() {
+  local ip=""
+  if command -v getent >/dev/null 2>&1; then ip="$(getent ahostsv4 "$1" 2>/dev/null | awk 'NR==1{print $1}')"; fi
+  if [ -z "$ip" ] && command -v dscacheutil >/dev/null 2>&1; then   # macOS
+    ip="$(dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address:/{print $2; exit}')"
+  fi
+  if [ -z "$ip" ] && command -v dig >/dev/null 2>&1; then
+    ip="$(dig +short +time=3 +tries=1 A "$1" 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){3}$' | head -1 || true)"
+  fi
+  if [ -z "$ip" ] && command -v host >/dev/null 2>&1; then
+    ip="$(host -W 3 -t A "$1" 2>/dev/null | awk '/has address/{print $NF; exit}')"
+  fi
+  printf '%s' "$ip"
+}
+entries=()
+read_seeds() { [ -f "$1" ] && while IFS= read -r l; do l="${l%%#*}"; l="${l//[[:space:]]/}"; [ -n "$l" ] && entries+=("$l"); done < "$1"; return 0; }
+if [ -n "$SEEDS_FILE" ]; then
+  [ -f "$SEEDS_FILE" ] || die "seeds file $SEEDS_FILE does not exist"
+  read_seeds "$SEEDS_FILE"
+else
+  if [ -f "$HERE/seeds.txt" ]; then read_seeds "$HERE/seeds.txt"; elif [ -f "$HERE/../seeds.txt" ]; then read_seeds "$HERE/../seeds.txt"; fi
+  read_seeds "$DATA_DIR/seeds.txt"
+fi
+# shellcheck disable=SC2206
+entries+=($PEERS)
+peers=()
+for e in ${entries[@]+"${entries[@]}"}; do
+  h="${e%:*}"; port="${e##*:}"; [ "$h" = "$e" ] && port=16480
+  if [[ "$h" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then ip="$h"; else ip="$(resolve_v4 "$h")"; fi
+  if [ -z "$ip" ]; then echo "sm64coin-node: seed $h does not resolve to an IPv4 address: skipped" >&2; continue; fi
+  p="$ip:$port"
+  case " ${peers[*]:-} " in *" $p "*) ;; *) peers+=("$p") ;; esac
+done
+
+# ---- arguments ----
+mkdir -p "$DATA_DIR"
+[ -n "$LOG_FILE" ] || LOG_FILE="$DATA_DIR/sm64coind.log"
+args=(--data-dir "$DATA_DIR" --sm64-rom "$ROM_FOUND"
+  --p2p-bind-port "$P2P_PORT" --rpc-bind-port "$RPC_PORT" --zmq-rpc-bind-port "$ZMQ_PORT"
+  --max-connections-per-ip=16 --rpc-access-control-origins "$ORIGINS"
+  --non-interactive --log-file "$LOG_FILE")
+for p in ${peers[@]+"${peers[@]}"}; do args+=(--add-peer "$p" --add-priority-node "$p"); done
+[ "$SOLO" = 1 ] && args+=(--sm64-solo)
+if [ -n "$RESTRICTED_PORT" ]; then
+  args+=(--rpc-restricted-bind-port "$RESTRICTED_PORT")
+  [ "$PUBLIC_RPC" = 1 ] && args+=(--rpc-restricted-bind-ip 0.0.0.0 --confirm-external-bind)
+fi
+[ -n "$RPC_BIND_IP" ] && args+=(--rpc-bind-ip "$RPC_BIND_IP" --confirm-external-bind)
+args+=(${extra[@]+"${extra[@]}"})
+
+echo "sm64coin-node: ROM $ROM_FOUND, data $DATA_DIR, ${#peers[@]} peer(s), p2p $P2P_PORT rpc $RPC_PORT zmq $ZMQ_PORT${RESTRICTED_PORT:+, restricted rpc $RESTRICTED_PORT}" >&2
+exec "$DAEMON" "${args[@]}"

@@ -23,7 +23,7 @@
 Repository settings needed: none (the workflow uses the built-in `GITHUB_TOKEN`; Actions needs
 "Read and write permissions" under Settings -> Actions -> General). Optional secret `ROM_URL`: a
 download URL of a US `baserom.us.z64` (private storage); when present every build also runs the
-launcher with the ROM for 60 s (node starts, website and `/json_rpc` proxy answer).
+node script with the ROM for 60 s (the node starts and answers `get_info` on non-default ports).
 
 ## Reading a failed CI run without logs access
 
@@ -37,7 +37,7 @@ which turns the end of a failed step's log and its error-looking lines into anno
 ## What the bundle is
 
 `scripts/package.sh` (the workflow runs it; run it by hand after a build) lays out one folder:
-the launcher `sm64coin`, `sm64coind`, wallet CLI/RPC, the wallet app, the leaderboard server, the
+`sm64coind`, the node script `sm64coin-node` (`.bat` on Windows; Linux also `sm64coin-node.service`), wallet CLI/RPC, the wallet app, the leaderboard server, the
 website, `seeds.txt`, `README.txt` (the user's instructions, `packaging/README.txt`), and the
 libraries the programs need so users install nothing:
 
@@ -53,12 +53,11 @@ The ROM is never shipped. Daemon, wallet CLI/RPC and the wallet app come from ON
 `sm64pow` (Rust) is built by the daemon's CMake with `cargo` from the same toolchain family as the C++
 compiler (Windows: MSYS2's `rust`, target `x86_64-pc-windows-gnu`).
 
-`scripts/ci-smoke.sh` is run on every unpacked bundle: the launcher reports the missing ROM and exits
-2, `sm64coind --version`, wallet CLI/RPC `--version`, the wallet app resolves its libraries (Linux
-`ldd`, Windows Qt files present, macOS `otool`), the QML loads headless (informational), and with the
-ROM a 60 s full run. Without the ROM it still runs the launcher against a stand-in node
-(`SM64COIN_TEST_NO_ROM=1`, CI only): website, `/json_rpc` proxy, single-page routes, the wallet app as a
-child process (Windows, macOS) and that ending the launcher leaves no wallet process behind.
+`scripts/ci-smoke.sh` is run on every unpacked bundle: `sm64coin-node --help`, and without a ROM it reports the
+missing ROM and exits 2; `sm64coind --version`, wallet CLI/RPC `--version`, the wallet app resolves its libraries
+(Linux `ldd`, Windows Qt files present, macOS `otool`), the QML loads headless (informational), and with the
+ROM a 60 s run of the node script on non-default ports (`get_info` must answer). The `sm64coin` launcher
+(`pow/launcher`) is no longer built or shipped; its source is kept.
 
 ## Known gaps
 

@@ -2,8 +2,8 @@
 # Build the release bundle of the already built binaries: dist/sm64coin-<VERSION>-<PLATFORM>.tar.gz
 # (.zip when PLATFORM is windows-*). The release workflow runs exactly this.
 #
-# Bundle layout (flat, everything next to the launcher):
-#   sm64coin  sm64coind  sm64coin-wallet-cli  sm64coin-wallet-rpc  sm64coin-wallet-gui
+# Bundle layout (flat, everything next to the wallet app):
+#   sm64coind  sm64coin-node (+ .bat on Windows, sm64coin-node.service on Linux)  sm64coin-wallet-cli  sm64coin-wallet-rpc  sm64coin-wallet-gui
 #   sm64coin-leaderboard  [sm64coin-automine]  web/  seeds.txt  README.txt  LICENSE
 #   Linux:   lib/ qt/ qt.conf   the shared libraries and Qt plugins the binaries need, found
 #                               through RPATH $ORIGIN/lib, so users install nothing
@@ -19,7 +19,7 @@
 #   GUI_APP   (macOS: gui/build/bin/monero-wallet-gui.app, the deployed app bundle)
 #   POW_TARGET (pow/target/release: sm64coin-leaderboard, automine and its rrtrun; each skipped if missing)
 #   ALLOW_NO_WEB=1  dry runs: a placeholder page when there is no website build
-#   LAUNCHER  (pow/launcher/target/release/sm64coin)       WEB_DIST (web/dist)
+#   WEB_DIST (web/dist)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -38,7 +38,6 @@ MONERO_BIN="${MONERO_BIN:-$ROOT/monero/build/release/bin}"
 GUI_BIN="${GUI_BIN:-$ROOT/gui/build/bin/monero-wallet-gui}"
 GUI_APP="${GUI_APP:-$ROOT/gui/build/bin/monero-wallet-gui.app}"
 POW_TARGET="${POW_TARGET:-$ROOT/pow/target/release}"
-LAUNCHER="${LAUNCHER:-$ROOT/pow/launcher/target/release/sm64coin}"
 WEB_DIST="${WEB_DIST:-$ROOT/web/dist}"
 X=""; case "$PLATFORM" in windows-*) X=".exe" ;; esac
 
@@ -53,7 +52,6 @@ put() { # put <src> <dest name> [required]
   else echo "  - $2 skipped (no $1)"; fi
 }
 echo "Packaging $NAME"
-put "$LAUNCHER$X"                          "sm64coin$X" required
 put "$MONERO_BIN/monerod$X"                "sm64coind$X" required
 put "$MONERO_BIN/monero-wallet-cli$X"      "sm64coin-wallet-cli$X" required
 put "$MONERO_BIN/monero-wallet-rpc$X"      "sm64coin-wallet-rpc$X" required
@@ -61,6 +59,13 @@ case "$PLATFORM" in
   macos-*) [ -d "$GUI_APP" ] && { cp -R "$GUI_APP" "$STAGE/SM64Coin-Wallet.app"; echo "  + SM64Coin-Wallet.app"; } || echo "  - wallet app skipped (no $GUI_APP)" ;;
   *) put "$GUI_BIN$X"                        "sm64coin-wallet-gui$X" ;;
 esac
+# The node script for servers (no wallet app): a shell script, or a .bat on Windows.
+case "$PLATFORM" in
+  windows-*) put "$ROOT/packaging/sm64coin-node.bat" "sm64coin-node.bat" required
+             sed -i 's/\r$//; s/$/\r/' "$STAGE/sm64coin-node.bat" ;;   # cmd.exe wants CRLF
+  *) put "$ROOT/scripts/sm64coin-node" "sm64coin-node" required ;;
+esac
+case "$PLATFORM" in linux-*) cp "$ROOT/packaging/sm64coin-node.service" "$STAGE/sm64coin-node.service"; echo "  + sm64coin-node.service" ;; esac
 put "$POW_TARGET/sm64coin-leaderboard$X"   "sm64coin-leaderboard$X"
 put "$POW_TARGET/automine$X"               "sm64coin-automine$X"
 put "$POW_TARGET/rrtrun$X"                 "rrtrun$X"   # the miner's tree-search child, found next to it

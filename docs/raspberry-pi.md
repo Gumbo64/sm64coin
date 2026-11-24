@@ -80,6 +80,13 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload && sudo systemctl enable --now sm64coind
 ```
 
+### Without building: the release bundle
+
+The Linux aarch64 release bundle runs a node without compiling anything: unpack it to `/opt/sm64coin`,
+put `baserom.us.z64` there and follow `sm64coin-node.service` (its first lines are the install steps;
+`sm64coin-node --help` lists the options, `PUBLIC_RPC=1` serves the restricted RPC on 0.0.0.0:16489).
+It runs as user `sm64coin` with data in `/var/lib/sm64coin`.
+
 ## 4. Make it the network's seed
 
 Once it's reachable, add its public address to `seeds.txt` (one `host:16480`

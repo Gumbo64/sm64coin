@@ -1,6 +1,6 @@
 name: CI
 
-# Every push and pull request: the Rust crates build and test, the launcher and the website
+# Every push and pull request: the Rust crates build and test, the node script is checked and the website
 # build. (The C++ daemon and the wallet are built by release.yml, which takes an hour.)
 # ROM-dependent tests skip without a ROM. To run them too, add a repository secret ROM_URL
 # pointing at a US baserom.us.z64 (private storage); the step below fetches it when present.
@@ -17,7 +17,7 @@ env:
 
 jobs:
   rust:
-    name: Rust (sm64pow, leaderboard, launcher)
+    name: Rust (sm64pow, leaderboard, miner)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -28,7 +28,6 @@ jobs:
         with:
           workspaces: |
             pow
-            pow/launcher
       - name: Prepare the workspace
         run: scripts/ci-prepare.sh
       - name: Fetch the ROM (optional)
@@ -49,9 +48,10 @@ jobs:
         working-directory: pow
         env:
           SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
-      - name: Build and test the launcher
-        run: cargo test --release && cargo build --release
-        working-directory: pow/launcher
+      - name: Check the node script
+        run: |
+          bash -n scripts/sm64coin-node scripts/package.sh scripts/ci-smoke.sh
+          scripts/sm64coin-node --help
 
   web:
     name: Website

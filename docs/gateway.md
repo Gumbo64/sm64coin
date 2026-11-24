@@ -40,7 +40,7 @@ gateway syncs the chain from it. Check from anywhere: `nc -vz <server-ip> 16480`
 ## 4. Publish it
 
 Add `<server-ip>:16480` (or a DNS name pointing at it) to `seeds.txt`, commit and push. New nodes
-and the launcher read `seeds.txt` and find the network through the gateway.
+and the wallet app's node (or `sm64coin-node`) read `seeds.txt` and find the network through the gateway.
 
 ## Other ways to hide your IP
 

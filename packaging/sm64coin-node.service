@@ -1,0 +1,36 @@
+# systemd unit for an SM64Coin node. Install:
+#   sudo useradd --system --create-home --home-dir /var/lib/sm64coin --shell /usr/sbin/nologin sm64coin
+#   sudo mkdir -p /opt/sm64coin && sudo tar xzf sm64coin-*-linux-*.tar.gz -C /opt/sm64coin --strip-components=1
+#   sudo cp baserom.us.z64 /opt/sm64coin/ && sudo chmod 644 /opt/sm64coin/baserom.us.z64
+#   sudo cp /opt/sm64coin/sm64coin-node.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sm64coin-node
+# Open TCP 16480 (p2p). Logs: journalctl -u sm64coin-node -f   and /var/lib/sm64coin/sm64coind.log
+# Settings: `sudo systemctl edit sm64coin-node` and add e.g.
+#   [Service]
+#   Environment=PUBLIC_RPC=1          # restricted RPC on 0.0.0.0:16489 for a public node
+#   Environment=SOLO=1                # first node of a brand-new network only
+[Unit]
+Description=SM64Coin node
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=sm64coin
+Group=sm64coin
+WorkingDirectory=/var/lib/sm64coin
+Environment=DATA_DIR=/var/lib/sm64coin
+Environment=ROM=/opt/sm64coin/baserom.us.z64
+ExecStart=/opt/sm64coin/sm64coin-node
+Restart=always
+RestartSec=10
+# sm64coind flushes its database on SIGTERM; give it time.
+TimeoutStopSec=40
+KillSignal=SIGTERM
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
