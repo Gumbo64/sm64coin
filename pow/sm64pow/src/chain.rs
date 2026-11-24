@@ -491,6 +491,15 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     chains.retain(|c| !c.is_empty());
     let replayed = std::sync::atomic::AtomicUsize::new(0);
     let next = std::sync::atomic::AtomicUsize::new(0);
+    // The browser has no threads (spawning panics): replay the chains one after another.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = threads;
+        while let Some(chain) = chains.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+            let _ = replay_chain(chain, state_ok, &replayed);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::scope(|sc| {
         for _ in 0..threads.max(1).min(chains.len()) {
             sc.spawn(|| loop {
