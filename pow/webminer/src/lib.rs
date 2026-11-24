@@ -88,12 +88,17 @@ pub struct MineRequest {
     pub sync_secs: f64,
     #[serde(default = "sync_k_default")]
     pub sync_k: usize,
-    /// More tree settings, "VAR=value VAR=value" (rrt::RrtOptions::extra_env).
-    #[serde(default)]
+    /// More tree settings, "VAR=value VAR=value" (rrt::RrtOptions::extra_env). Default: rounds of 16 plans
+    /// (the engine's 64 suit a many-threaded native search; with one thread a round took ~1 minute, the tree
+    /// sync only runs between rounds, and BoB's step from power-on took 3-8 minutes instead of ~1).
+    #[serde(default = "extra_env_default")]
     pub extra_env: String,
 }
+fn extra_env_default() -> String {
+    "OBRRT_ROUND=16".into()
+}
 fn sync_secs_default() -> f64 {
-    8.0
+    4.0
 }
 fn sync_k_default() -> usize {
     12
