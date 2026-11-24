@@ -1,0 +1,46 @@
+.viz { margin-top: 12px; position: relative; }
+.viz-views { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; font-size: 13px; }
+.viz-views label { cursor: pointer; }
+.viz-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; margin-bottom: 12px; }
+.viz-card { background: #12162a; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; margin-bottom: 12px; }
+.viz-grid2 > .viz-card { margin-bottom: 0; }
+.viz-card h3 { margin: 0 0 8px; font-size: 15px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.viz-canvaswrap { position: relative; }
+.viz-canvaswrap .sm64canvas { width: 100%; height: auto; }
+.viz-sub { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 13px; align-items: baseline; }
+.viz-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; font-size: 13px; }
+.viz-bar button.on { background: var(--acc); color: #000; }
+.viz-bar .sep { flex: 1; }
+.viz-gl { width: 100%; border-radius: 6px; overflow: hidden; background: #0b0e1a; min-height: 260px; }
+.viz-gl canvas { display: block; width: 100% !important; touch-action: none; }
+.viz-node { margin-top: 6px; font-size: 13px; min-height: 2.6em; }
+.chip { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--mut); font-weight: 400; }
+.chip.warn { color: #f7c948; border-color: #f7c948; }
+.small { font-size: 12px; }
+.tiny { font-size: 10px; }
+.starget { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; background: radial-gradient(circle, rgba(247,201,72,.35), rgba(0,0,0,.2) 70%); animation: starfade 3s ease-out forwards; }
+.starget span { font-size: 96px; color: #f7c948; text-shadow: 0 0 24px #f7c948; animation: starspin 1.2s ease-out; }
+.starget b { font-size: 28px; color: #fff; text-shadow: 0 2px 6px #000; letter-spacing: 2px; }
+@keyframes starspin { from { transform: scale(0) rotate(-360deg); } to { transform: scale(1) rotate(0); } }
+@keyframes starfade { 0%, 70% { opacity: 1; } 100% { opacity: .85; } }
+.viz-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; flex-direction: column; gap: 6px; max-width: min(360px, calc(100vw - 32px)); }
+.viz-toast { background: #1a2038; border: 1px solid var(--line); border-left: 4px solid var(--acc); padding: 8px 12px; border-radius: 6px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.4); animation: toastin .25s ease-out; }
+.viz-toast.found { border-left-color: #f7c948; background: #2a2510; }
+@keyframes toastin { from { transform: translateX(30px); opacity: 0; } }
+.viz-strip { border-top: 1px solid var(--line); padding: 8px 0; }
+.viz-strip:first-of-type { border-top: 0; }
+.viz-strip-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; font-size: 13px; }
+.viz-strip-head .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; align-self: center; }
+.viz-steps { display: flex; gap: 6px; overflow-x: auto; padding: 6px 0 2px; }
+.viz-step { flex: 0 0 auto; width: 84px; text-align: center; background: #0e1224; border: 1px solid var(--line); border-radius: 6px; padding: 4px 4px 3px; opacity: .65; }
+.viz-step.active { opacity: 1; border-color: var(--acc); box-shadow: 0 0 8px rgba(110,168,254,.35); }
+.viz-step.done { opacity: .9; }
+.viz-step .ico { font-size: 20px; line-height: 1.1; }
+.viz-step .nm { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viz-step .bar { height: 4px; background: #232a45; border-radius: 2px; margin: 3px 0; overflow: hidden; }
+.viz-step .bar > div { height: 100%; }
+.viz-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viz-blocks td { padding: 2px 8px 2px 0; }
+.viz-blocks tr.accepted td { color: #4ade80; }
+.viz-blocks tr.rejected td { color: #f87171; }
+.vizswitch { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }

@@ -8,6 +8,7 @@ import Leaderboard from './pages/Leaderboard.jsx';
 import Network from './pages/Network.jsx';
 import Bots from './pages/Bots.jsx';
 import NewBlockBanner from './lib/NewBlockBanner.jsx';
+import MinerLight from './lib/MinerLight.jsx';
 import UpdateBanner from './lib/UpdateBanner.jsx';
 
 // The wallet page is lazy: its engine (a wasm web worker) is fetched only when it is opened.
@@ -20,12 +21,12 @@ export default function App() {
         <span className="brand">★ SM64Coin</span>
         <NavLink to="/" end>Explorer</NavLink>
         <NavLink to="/mine">Mine</NavLink>
-        <NavLink to="/automine">Auto-mine</NavLink>
         <NavLink to="/wallet">Wallet</NavLink>
         <NavLink to="/leaderboard">Leaderboard</NavLink>
         <NavLink to="/bots">Build a bot</NavLink>
         <NavLink to="/network">Network</NavLink>
         <a href="https://github.com/Gumbo64/sm64coin/releases/latest" target="_blank" rel="noreferrer">Download</a>
+        <MinerLight />
       </header>
       <UpdateBanner />
       <NewBlockBanner />
