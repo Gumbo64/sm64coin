@@ -154,6 +154,19 @@ pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8
 }
 
 /// Whether block `id32`'s end state is cached (1) or not (0).
+/// Block `id32`'s cached end state (the game's save state), gzip; for get_sm64_state. Same
+/// return convention as `sm64pow_decode_raw`; SIZE_MAX when it isn't cached.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_end_state_gz(id32: *const u8, out: *mut u8, cap: usize) -> usize {
+    match unsafe { id_arg(id32) }.and_then(|id| crate::chain::end_state_gz(&id)) {
+        Some(gz) => copy_out(&gz, out, cap),
+        None => {
+            set_error("the block's end state isn't cached".into());
+            usize::MAX
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
     match unsafe { id_arg(id32) } {

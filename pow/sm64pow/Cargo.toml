@@ -19,6 +19,8 @@ sm64coin-statecodec = { path = "../statecodec" }
 sm64-binds = { workspace = true }
 anyhow = { workspace = true }
 sha3 = "0.10"
+# gzip of end states handed to clients (get_sm64_state): pure Rust, browsers decompress it natively.
+flate2 = "1"
 xz2 = { version = "0.1", features = ["static"] }
 serde = { version = "1", features = ["derive"] }
 sm64coin-perturb = { path = "../perturb" }

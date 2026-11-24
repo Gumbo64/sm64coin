@@ -80,6 +80,25 @@ pub fn cached(id: &[u8; 32]) -> Option<Arc<EndState>> {
     c.ids.get(id).and_then(|k| c.runs.get(k)).map(|r| r.state.clone())
 }
 
+/// The cached end state of block `id` (the game's save state), gzip-compressed: for clients that
+/// trust this node (the web miner starts its search from it instead of replaying the cycle).
+/// None unless cached (never rebuilt here: answering a client must not cost a replay). The
+/// last answer is kept (callers ask for the size first, then the bytes).
+pub fn end_state_gz(id: &[u8; 32]) -> Option<Vec<u8>> {
+    static LAST: Mutex<Option<([u8; 32], Vec<u8>)>> = Mutex::new(None);
+    if let Some((k, v)) = LAST.lock().unwrap().as_ref() {
+        if k == id {
+            return Some(v.clone());
+        }
+    }
+    let s = cached(id)?;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut enc, s.game.as_bytes()).ok()?;
+    let gz = enc.finish().ok()?;
+    *LAST.lock().unwrap() = Some((*id, gz.clone()));
+    Some(gz)
+}
+
 /// A block's end progress, whether it ends the cycle, and its event: from its
 /// cached end state or its run summary.
 pub fn info(id: &[u8; 32]) -> Option<(Progress, bool, Option<crate::game::Event>)> {
