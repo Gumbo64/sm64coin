@@ -146,6 +146,7 @@ fn alias(id: [u8; 32], key: RunKey) {
 /// for played pads) stay in memory: writing them took ~0.3 s each (xz) and pushed the newest
 /// blocks' states off the disk (the newest DISK_STATES files by time are kept).
 fn remember(id: [u8; 32], key: RunKey, s: EndState, frames: u32, start: Start, durable: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
     if durable && STATE_DIR.get().is_some() {
         let copy = EndState { game: s.game.clone(), progress: s.progress, ends_cycle: s.ends_cycle, event: s.event };
         let _ = std::thread::Builder::new().name("sm64-persist".into()).spawn(move || persist(&id, &key, &copy, frames, start));
@@ -748,6 +749,14 @@ static STATE_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 /// the ones already there, newest first. Returns how many were loaded. A node
 /// that restarts then needs no replay of the cycle to verify the next block.
 pub fn set_state_dir(dir: &std::path::Path) -> usize {
+    // The browser build keeps no end states on disk.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (dir, durable_unused());
+        return 0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
     let _ = std::fs::create_dir_all(dir);
     let _ = STATE_DIR.set(dir.to_path_buf());
     let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
@@ -766,7 +775,10 @@ pub fn set_state_dir(dir: &std::path::Path) -> usize {
         }
     }
     n
+    }
 }
+#[cfg(target_arch = "wasm32")]
+fn durable_unused() {}
 
 fn event_bytes(e: Option<crate::game::Event>) -> [u8; 3] {
     match e {
@@ -790,6 +802,7 @@ const MAGIC: &[u8; 8] = b"SM64END1";
 
 /// `<dir>/<id hex>.state`: magic, id, run key, frames, start, ends_cycle,
 /// event, then the save state (xz).
+#[cfg(not(target_arch = "wasm32"))]
 fn persist(id: &[u8; 32], key: &RunKey, s: &EndState, frames: u32, start: Start) {
     let Some(dir) = STATE_DIR.get() else { return };
     let mut out = Vec::with_capacity(1 << 20);
@@ -826,6 +839,7 @@ fn persist(id: &[u8; 32], key: &RunKey, s: &EndState, frames: u32, start: Start)
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_state_file(path: &std::path::Path) -> Result<()> {
     use std::io::Read;
     let bytes = std::fs::read(path)?;

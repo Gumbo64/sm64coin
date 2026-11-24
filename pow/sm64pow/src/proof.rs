@@ -33,7 +33,12 @@ pub trait Codec: Sync {
 }
 
 /// Every codec a node accepts.
+#[cfg(not(target_arch = "wasm32"))]
 pub static CODECS: &[&dyn Codec] = &[&Raw, &RunLength, &Xz];
+/// The browser build (the web miner) has no liblzma: no xz codec. It still seals with the
+/// smallest of the others (the state codecs usually win), and nodes re-encode stateless proofs.
+#[cfg(target_arch = "wasm32")]
+pub static CODECS: &[&dyn Codec] = &[&Raw, &RunLength];
 
 pub fn codec(id: u8) -> Option<&'static dyn Codec> {
     CODECS.iter().copied().find(|c| c.id() == id)
@@ -246,6 +251,7 @@ impl Codec for RunLength {
 /// proofs (poked frames repeat the previous input) do better still.
 pub struct Xz;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Codec for Xz {
     fn id(&self) -> u8 {
         2

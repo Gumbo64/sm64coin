@@ -52,7 +52,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration}; use crate::sys::Instant;
 
 #[derive(Clone)]
 pub struct RrtOptions {
@@ -96,7 +96,7 @@ impl Default for RrtOptions {
             mem_mb: 1500,
             seed: 1,
             frame_cap: 0,
-            scratch: std::env::temp_dir().join("sm64coin-rrt"),
+            scratch: crate::sys::env::temp_dir().join("sm64coin-rrt"),
             child: None,
             keep: false,
             rom: None,
@@ -125,11 +125,11 @@ pub fn env(o: &RrtOptions) -> Result<Vec<(String, String)>> {
     // Copies of objective-rrt-v2/tools/seg120/{reach,rescue}_prior.json (the t1 campaign's priors).
     const REACH: &str = include_str!("../../priors/reach_prior.json");
     const RESCUE: &str = include_str!("../../priors/rescue_prior.json");
-    std::fs::create_dir_all(o.scratch.join("road"))?;
+    crate::sys::fs::create_dir_all(o.scratch.join("road"))?;
     let reach = o.scratch.join("reach_prior.json");
     let rescue = o.scratch.join("rescue_prior.json");
-    std::fs::write(&reach, REACH)?;
-    std::fs::write(&rescue, RESCUE)?;
+    crate::sys::fs::write(&reach, REACH)?;
+    crate::sys::fs::write(&rescue, RESCUE)?;
     let mut v: Vec<(String, String)> = Vec::new();
     for kv in ENV.split_whitespace().chain(o.extra_env.split_whitespace()) {
         let (k, val) = kv.split_once('=').ok_or_else(|| anyhow::anyhow!("not VAR=value: {kv}"))?;
@@ -196,7 +196,7 @@ impl Memory {
     /// the courses that gained a star come off the skip list, the
     /// multiplier and open_fail reset.
     fn load(path: &PathBuf, st: &St) -> Memory {
-        let f: MemoryFile = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let f: MemoryFile = crate::sys::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         let me = sig(st);
         if let Some(m) = f.entries.get(&me) {
             return m.clone();
@@ -220,7 +220,7 @@ impl Memory {
     }
 
     fn save(&self, path: &PathBuf, st: &St) {
-        let mut f: MemoryFile = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut f: MemoryFile = crate::sys::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         f.entries.insert(sig(st), self.clone());
         // The 64 with the most progress.
         while f.entries.len() > 64 {
@@ -229,8 +229,8 @@ impl Memory {
         }
         if let Ok(t) = serde_json::to_string_pretty(&f) {
             let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, t).is_ok() {
-                let _ = std::fs::rename(&tmp, path);
+            if crate::sys::fs::write(&tmp, t).is_ok() {
+                let _ = crate::sys::fs::rename(&tmp, path);
             }
         }
     }
@@ -254,6 +254,7 @@ struct Resume {
 
 static RESUME: Mutex<Option<Resume>> = Mutex::new(None);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn child_exe(o: &RrtOptions) -> Result<PathBuf> {
     if let Some(c) = &o.child {
         return Ok(c.clone());
@@ -266,22 +267,47 @@ fn child_exe(o: &RrtOptions) -> Result<PathBuf> {
     Ok(p)
 }
 
+/// In the browser (the web miner) a step runs in a fresh WebAssembly instance of the same
+/// module, which is what a fresh `rrtrun` process is natively (the search reads its settings
+/// once per process): `globalThis.sm64miner.run_child(job_json)` (the worker's) runs
+/// [`child::run_step`] there and returns its output as JSON. Files (the start state, the
+/// roadmap, the priors) are on the shared JavaScript side (`crate::sys::fs`).
+#[cfg(target_arch = "wasm32")]
+fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, _stop: &AtomicBool) -> Result<StepOut> {
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = sm64miner, js_name = run_child, catch)]
+        fn js_run_child(job: &str) -> std::result::Result<String, wasm_bindgen::JsValue>;
+    }
+    let base = o.scratch.join(format!("step-{tag}"));
+    let state = format!("{}.state", base.display());
+    crate::sys::fs::write(&state, game.game.save_state().as_bytes())?;
+    job.state_file = state.clone();
+    job.pert = game.pert.clone();
+    job.out_dir = format!("{}.run", base.display());
+    let out = js_run_child(&serde_json::to_string(&job)?).map_err(|e| anyhow::anyhow!("step {tag}: {}", e.as_string().unwrap_or_else(|| format!("{e:?}"))));
+    let _ = crate::sys::fs::remove_file(&state);
+    let _ = crate::sys::fs::remove_dir_all(&job.out_dir);
+    Ok(serde_json::from_str(&out?)?)
+}
+
 /// Runs the tree step `job` from `game` in a child process.
+#[cfg(not(target_arch = "wasm32"))]
 fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
-    std::fs::create_dir_all(&o.scratch)?;
+    crate::sys::fs::create_dir_all(&o.scratch)?;
     let base = o.scratch.join(format!("{}-{tag}", std::process::id()));
     let state = format!("{}.state", base.display());
-    std::fs::write(&state, game.game.save_state().as_bytes())?;
+    crate::sys::fs::write(&state, game.game.save_state().as_bytes())?;
     job.state_file = state.clone();
     job.pert = game.pert.clone();
     job.out_dir = format!("{}.run", base.display());
     let (jf, of, lf) = (format!("{}.job.json", base.display()), format!("{}.out.json", base.display()), format!("{}.log", base.display()));
-    std::fs::write(&jf, serde_json::to_string(&job)?)?;
+    crate::sys::fs::write(&jf, serde_json::to_string(&job)?)?;
     let mut child = std::process::Command::new(child_exe(o)?)
         .arg(&jf)
         .arg(&of)
-        .stdout(std::fs::File::create(&lf)?)
-        .stderr(std::fs::File::options().append(true).open(&lf)?)
+        .stdout(crate::sys::fs::File::create(&lf)?)
+        .stderr(crate::sys::fs::File::options().append(true).open(&lf)?)
         .spawn()?;
     let status = loop {
         if let Some(s) = child.try_wait()? {
@@ -290,22 +316,22 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
         if stop.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = std::fs::remove_file(&state);
+            let _ = crate::sys::fs::remove_file(&state);
             bail!("stopped");
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let _ = std::fs::remove_file(&state);
-    let _ = std::fs::remove_dir_all(&job.out_dir);
+    let _ = crate::sys::fs::remove_file(&state);
+    let _ = crate::sys::fs::remove_dir_all(&job.out_dir);
     if !status.success() {
-        let tail: String = std::fs::read_to_string(&lf).unwrap_or_default().lines().rev().take(5).collect::<Vec<_>>().join(" | ");
+        let tail: String = crate::sys::fs::read_to_string(&lf).unwrap_or_default().lines().rev().take(5).collect::<Vec<_>>().join(" | ");
         bail!("rrtrun {tag} failed ({status}): {tail}");
     }
-    let out: StepOut = serde_json::from_str(&std::fs::read_to_string(&of)?)?;
-    let _ = std::fs::remove_file(&of);
-    let _ = std::fs::remove_file(&jf);
+    let out: StepOut = serde_json::from_str(&crate::sys::fs::read_to_string(&of)?)?;
+    let _ = crate::sys::fs::remove_file(&of);
+    let _ = crate::sys::fs::remove_file(&jf);
     if !o.keep {
-        let _ = std::fs::remove_file(&lf);
+        let _ = crate::sys::fs::remove_file(&lf);
     }
     Ok(out)
 }
@@ -394,11 +420,11 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
     let origin = st.clone();
     log(format!("start {:?} at {} stars {} keys, ready at frame {} (level {} {})", start, before.stars, before.keys, st.frame, st.level, name(st.level)));
     let mem_path = o.scratch.join("campaign.json");
-    std::fs::create_dir_all(&o.scratch)?;
+    crate::sys::fs::create_dir_all(&o.scratch)?;
     let mut mem = Memory::load(&mem_path, &origin);
     let env0 = env(o)?;
     let rom = match &o.rom {
-        Some(r) => std::fs::canonicalize(r)?.to_string_lossy().into_owned(),
+        Some(r) => crate::sys::fs::canonicalize(r)?.to_string_lossy().into_owned(),
         None => sm64pow::default_rom_path().ok_or_else(|| anyhow::anyhow!("no ROM (RrtOptions::rom)"))?,
     };
     // Where the block's search was, if an earlier attempt at this block stopped.
@@ -683,6 +709,6 @@ pub fn write_guide(start: Start, parent: Option<&SaveState>, seed: &Seed, params
         }));
     }
     let n = specs.len();
-    std::fs::write(path, serde_json::to_string_pretty(&serde_json::json!({ "specs": specs }))?)?;
+    crate::sys::fs::write(path, serde_json::to_string_pretty(&serde_json::json!({ "specs": specs }))?)?;
     Ok(n)
 }
