@@ -21,6 +21,12 @@ extern "C" {
     fn js_log(line: &str);
 }
 
+/// Panics abort in WebAssembly (`unreachable`) and their message is lost: log it first.
+fn panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::panic::set_hook(Box::new(|info| js_log(&format!("PANIC: {info}")))));
+}
+
 fn err(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
 }
@@ -28,12 +34,14 @@ fn err(e: impl std::fmt::Display) -> JsError {
 /// Loads the game from the ROM (once per instance).
 #[wasm_bindgen]
 pub fn init(rom: Vec<u8>) -> Result<(), JsError> {
+    panic_hook();
     sm64pow::init(rom).map(|_| ()).map_err(err)
 }
 
 /// One campaign step (a fresh instance runs it): `child::Job` JSON in, `child::StepOut` JSON out.
 #[wasm_bindgen]
 pub fn run_step(job: &str) -> Result<String, JsError> {
+    panic_hook();
     let job: rrt::child::Job = serde_json::from_str(job).map_err(err)?;
     let out = rrt::child::run_step(&job).map_err(|e| err(format!("{e:#}")))?;
     serde_json::to_string(&out).map_err(err)
@@ -61,6 +69,13 @@ pub struct MineRequest {
     pub salt: u64,
     #[serde(default)]
     pub frame_cap: usize,
+    /// The search's memory budget per step (MB; native default 1500, too much for several
+    /// workers in one browser tab).
+    #[serde(default = "mem_default")]
+    pub mem_mb: usize,
+}
+fn mem_default() -> usize {
+    600
 }
 fn one() -> usize {
     1
@@ -100,6 +115,7 @@ pub fn mine(request: &str) -> Result<String, JsError> {
         checkpoints: r.checkpoints.unwrap_or(d.checkpoints),
         seed: r.salt,
         frame_cap: r.frame_cap,
+        mem_mb: r.mem_mb,
         scratch: "/scratch".into(),
         rom: Some("/rom.z64".into()),
         ..d
