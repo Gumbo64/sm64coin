@@ -26,7 +26,7 @@ Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is st
  +-----------------------------+   +-----------------------------+
  | web/  (Vite + React)        |   | gui/  SM64Coin wallet (Qt)  |
  |  Explorer, Block replay,    |   |  funds, Mining, Leaderboard |
- |  Mine (browser), Bots docs  |   |  (opt-in), Play to mine ->  |
+ |  Mine (browser), Info page  |   |  (opt-in), Play to mine ->  |
  |  no keys, no wallet         |   |  web /mine?address=...      |
  +-------------+---------------+   +--------------+--------------+
                | /json_rpc                        | daemon RPC
@@ -48,7 +48,7 @@ Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is st
 - `monero/` the fork. Every changed upstream line is marked `SM64COIN` (`grep -rn SM64COIN monero/src`); the glue lives in `monero/src/sm64coin/`. cmake builds `pow/sm64pow` automatically.
 - `pow/sm64pow` consensus crate: `rules.rs` (the `Rules` trait: success condition, difficulty to task, retarget, decay; `active()` selects the rules), `proof.rs` (proof codecs), `ffi.rs` (C ABI).
 - `pow/miner` the `automine` binary (automated miner: per block it rebuilds the parent's end state from `get_sm64_cycle` and plays on with a rolling-horizon GA over a route library, `src/rh.rs`), `rhbench` (offline benchmark, `--chain N` for further blocks) and `trackbench` (older beam controller).
-- `web/` explorer, in-browser replay and manual miner, read-only leaderboard, bot docs. It holds no keys and needs no wallet: the wallet is the desktop app (`gui/`).
+- `web/` explorer, in-browser replay, manual miner and auto-miner, lite wallet, leaderboard, info page. It holds no keys and needs no wallet: the wallet is the desktop app (`gui/`).
 - **Client-side replay.** A visitor who stored the ROM replays blocks in the browser instead of asking a node: `web/src/lib/replay/` fetches each block once with plain `get_block` (the proof is the tail of its blob), and a Web Worker replays it in the headless game build (the one nodes run) with the nodes' own pokes and proof codecs compiled to WASM (`pow/perturb-wasm`, `pow/statecodec`), the same answer as `get_sm64_cycle`, checked bit-identical against a node on the live chain. Results are kept per block hash in IndexedDB. Without a ROM the site asks the node (`get_sm64_cycle`, cached per block on the node).
 
 Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet RPC 16483; web dev server 5181 (preview 4174).
@@ -217,12 +217,45 @@ See [docs/raspberry-pi.md](docs/raspberry-pi.md): packages, `git clone --recursi
 
 `gui/` is a fork of the Monero GUI wallet (v0.18.5.4, branch `sm64coin`, edits marked `SM64COIN`) built against
 this repo's `monero/` fork (`gui/monero` is a symlink): "SM64Coin Wallet", SM64 ticker and ports, `sm64coin:` payment
-URIs, no price fetching or update checks, and a Mining page that points to the web miner and `automine` (there is no
+URIs, no price fetching, a check for new releases on GitHub (can be turned off), and a Mining page that points to the web miner and `automine` (there is no
 hash miner). Build and run instructions: `gui/SM64COIN.md`. Binary: `bin/sm64coin-wallet-gui`; in the setup
 wizard pick a custom node such as `127.0.0.1:16481`.
 
 ## Writing your own bot
 
-See `BOTS.md` (and the "Build a bot" page in the web app): the exact mining contract, a Rust SDK (`pow/sdk`,
+See `BOTS.md` for the exact mining contract, a Rust SDK (`pow/sdk`,
 `MiningEnv` + `Bot` trait + `run_miner`) and a Python SDK (`python/`), offline practice, and how to check a proof
 with the real verifier.
+
+A bot plays the next progress point from the parent block's end state while the controller is randomly poked; the
+SDKs handle the pokes, templates, timing and submission, and you write only the play. Shorter runs win (the time
+limit grows from the parent's timestamp); try futures on copies (`env.fork()`, `save()`/`restore()`), since a
+recorded route won't survive the pokes; check `stop()`, because a new block makes your run worthless.
+
+```rust
+use sm64coin_sdk::*;
+struct MyBot;
+impl Bot for MyBot {
+    fn play(&mut self, env: &mut MiningEnv, stop: &dyn Fn() -> bool) -> anyhow::Result<()> {
+        while !env.is_over() && !stop() {
+            let _played = env.step(GamePad::new(0, 0, 0))?; // a poke may replace the wanted pad
+            let _mario = env.state()?;
+        }
+        Ok(())
+    }
+}
+fn main() -> anyhow::Result<()> {
+    run_miner(&mut MyBot, "http://127.0.0.1:16481", "SM64...", "baserom.us.z64")
+}
+```
+
+```python
+from sm64coin import GamePad, practice, run_miner
+def bot(env, stop):
+    while not env.is_over() and not stop():
+        env.step(GamePad(0, 0, 0))
+practice(bot, seed=1, difficulty=1)                  # offline
+run_miner(bot, "http://127.0.0.1:16481", "SM64...")  # against a node
+```
+
+Examples: `cargo run --release -p sm64coin-sdk --example random_bot` (in `pow/`); Python: `pip install -e python`.
