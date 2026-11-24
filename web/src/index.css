@@ -158,3 +158,6 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .wallet .addr { font-size:14px; margin:6px 0 10px; }
 .wallet .walleterr { color: var(--red); }
 .wallet textarea { width:100%; }
+.update-banner { position: relative; background: #1b2540; border-bottom: 1px solid var(--acc); padding: 6px 40px 6px 16px; font-size: 13px; text-align: center; }
+.update-banner.required { background: #4a1a1a; border-bottom-color: #ff6b6b; }
+.update-banner .close { position: absolute; right: 10px; top: 3px; background: transparent; color: var(--fg); font-size: 18px; padding: 0 6px; }

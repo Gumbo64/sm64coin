@@ -70,6 +70,8 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+        env:
+          VITE_SM64COIN_VERSION: ${{ env.VERSION }}   # the site's "update available" check compares it with the latest release
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
@@ -145,6 +147,8 @@ jobs:
 
       - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
         run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
+        env:
+          SM64COIN_VERSION: ${{ env.VERSION }}   # compiled into automine for its "update available" log line
 
       # One CMake tree builds everything: the wallet app's tree contains the daemon (monerod) and
       # libwallet (gui/SM64COIN.md), so the wallet CLI and RPC server are just two more targets
@@ -153,7 +157,7 @@ jobs:
         run: |
           [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
           mkdir -p gui/build && cd gui/build
-          ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 \
+          ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 -DSM64COIN_VERSION="${VERSION#v}" \
                 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_DESKTOP_ENTRY=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
           ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server -- -k 0
           ls -la bin
@@ -287,6 +291,8 @@ jobs:
 
       - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
         run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
+        env:
+          SM64COIN_VERSION: ${{ env.VERSION }}   # compiled into automine for its "update available" log line
 
       - name: Daemon, wallets and wallet app (C++, Qt)
         run: |
@@ -294,7 +300,7 @@ jobs:
           [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
           mkdir -p gui/build && cd gui/build
           ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DSTATIC=OFF -DCMAKE_BUILD_TYPE=Release -DARCH=x86-64 -DBUILD_64=ON -DBUILD_TAG=win-x64 \
-                -DMANUAL_SUBMODULES=1 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
+                -DMANUAL_SUBMODULES=1 -DSM64COIN_VERSION="${VERSION#v}" -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF ..
           ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server -- -k 0
           ls -la bin
 
@@ -408,12 +414,14 @@ jobs:
 
       - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
         run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
+        env:
+          SM64COIN_VERSION: ${{ env.VERSION }}   # compiled into automine for its "update available" log line
 
       - name: Daemon, wallets and wallet app (C++, Qt)
         run: |
           [ -d gui/external/quirc/.git ] || { git clone https://github.com/dlbeer/quirc gui/external/quirc && git -C gui/external/quirc checkout 927d680904dc95fdff4cd9d022eb374b438ff8f2; }
           mkdir -p gui/build && cd gui/build
-          ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 \
+          ../../scripts/ci-run.sh cmake-configure cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DARCH=default -DMANUAL_SUBMODULES=1 -DSM64COIN_VERSION="${VERSION#v}" \
                 -DUSE_DEVICE_TREZOR=OFF -DWITH_UPDATER=OFF -DWITH_SCANNER=OFF -DBUILD_TESTS=OFF \
                 -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" ..
           ../../scripts/ci-run.sh cmake-build cmake --build . --target all simplewallet wallet_rpc_server -- -k 0

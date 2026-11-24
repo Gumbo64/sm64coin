@@ -210,6 +210,7 @@ fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
 
 fn main() -> Result<()> {
     let a = Args::parse();
+    sm64coin_miner::update::spawn_check();
     if !a.address.starts_with("SM6") {
         bail!("{} does not look like an SM64Coin address", a.address);
     }

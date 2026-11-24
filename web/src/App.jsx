@@ -8,6 +8,7 @@ import Leaderboard from './pages/Leaderboard.jsx';
 import Network from './pages/Network.jsx';
 import Bots from './pages/Bots.jsx';
 import NewBlockBanner from './lib/NewBlockBanner.jsx';
+import UpdateBanner from './lib/UpdateBanner.jsx';
 
 // The wallet page is lazy: its engine (a wasm web worker) is fetched only when it is opened.
 const Wallet = React.lazy(() => import('./pages/Wallet.jsx'));
@@ -26,6 +27,7 @@ export default function App() {
         <NavLink to="/network">Network</NavLink>
         <a href="https://github.com/Gumbo64/sm64coin/releases/latest" target="_blank" rel="noreferrer">Download</a>
       </header>
+      <UpdateBanner />
       <NewBlockBanner />
       <main>
         <Routes>

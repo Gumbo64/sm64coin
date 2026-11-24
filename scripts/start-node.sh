@@ -35,4 +35,5 @@ args+=(${EXTRA_ARGS:-})
 set +f
 setsid "$BIN/sm64coind" "${args[@]}" </dev/null >"$RUN_DIR/node.log" 2>&1 &
 echo $! >"$PIDF"
+( update_notice 2>/dev/null || true ) &   # at most 3 s, in the background
 echo "node started, pid $(cat "$PIDF"), rpc $DAEMON_URL, log $RUN_DIR/node.log"

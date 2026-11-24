@@ -72,6 +72,7 @@ need "$WEB_DIST/index.html"
 cp -r "$WEB_DIST" "$STAGE/web"
 cp seeds.txt "$STAGE/seeds.txt"
 sed "s/@VERSION@/$VERSION/g" packaging/README.txt > "$STAGE/README.txt"
+echo "$VERSION" > "$STAGE/VERSION"   # read by scripts/env.sh update_notice
 case "$PLATFORM" in windows-*) sed -i 's/$/\r/' "$STAGE/README.txt" ;; esac   # Notepad-friendly
 [ -f monero/LICENSE ] && cp monero/LICENSE "$STAGE/LICENSE"
 [ -d pow/miner/routes ] && [ -e "$STAGE/sm64coin-automine$X" ] && { mkdir -p "$STAGE/routes"; cp pow/miner/routes/block1-human.m64 "$STAGE/routes/"; }

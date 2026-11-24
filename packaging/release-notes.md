@@ -19,3 +19,12 @@ Not in this release: Windows and macOS builds, and the automated miner (`sm64coi
 ### Changes
 
 (edit before publishing)
+
+<!--
+  Update notices: the wallet app, the website, sm64coin-node and sm64coin-automine look at the latest
+  release (GitHub API, cached 6 h) and tell users when theirs is older. To make the notice a stronger
+  warning ("update required"), add a line consisting of only the words  Update: required  (case does
+  not matter) to the release body when you publish. Only a whole line counts, so this comment, which
+  is published with the notes, does not trigger it.
+  Opt out: SM64COIN_NO_UPDATE_CHECK=1 (programs), a setting in the wallet app.
+-->
