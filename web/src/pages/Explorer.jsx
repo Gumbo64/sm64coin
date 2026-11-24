@@ -47,23 +47,39 @@ export default function Explorer() {
     } catch (e) { setErr(String(e)); }
   }, 5000);
 
+  // One get_sm64_cycle per cycle on the page (not per row): every block adds exactly one progress
+  // point and the reply names each block's event, so the stars/keys after every block of a cycle
+  // are counted from it, and checked against the node's own totals for the cycle's last block.
+  // (Each reply carries the whole cycle's played pads, and a cold node replays the cycle to make
+  // it: asking once per row made a page load cost the node minutes on small boards.)
   async function fillProgress(hs) {
     if (busy.current) return;
     busy.current = true;
     try {
-      for (const h of hs) {
+      for (const h of hs) { // newest first: h is the last block of its cycle among the rows not done yet
         if (prog.current[h.hash] && prog.current[h.hash].exact) continue;
         const c = await daemon('get_sm64_cycle', { hash: h.hash });
-        c.blocks.forEach((b, i) => {
-          const old = prog.current[b.hash] || {};
-          prog.current[b.hash] = { ...old, powerOn: b.power_on, points: i + 1, cycleStart: c.start_height, event: b.event };
+        const blocks = c.blocks || [];
+        let stars = 0, keys = 0, known = true;
+        const counted = blocks.map((b, i) => {
+          const ev = b.event || '';
+          if (/^c\d+s\d+$/.test(ev)) stars += 1;
+          else if (/^key\d$/.test(ev)) keys += 1;
+          else if (ev !== 'grand') known = false;
+          return { b, i, stars, keys };
         });
-        prog.current[h.hash] = { ...prog.current[h.hash], exact: true, stars: c.stars, keys: c.keys, grand: c.grand_star, ends: c.ends_cycle };
+        const exact = known && stars === c.stars && keys === c.keys;
+        counted.forEach(({ b, i, stars: s, keys: k }) => {
+          const old = prog.current[b.hash] || {};
+          if (old.exact) return;
+          const last = i === blocks.length - 1;
+          prog.current[b.hash] = { ...old, powerOn: b.power_on, points: i + 1, cycleStart: c.start_height, event: b.event,
+            ...(exact || last ? { exact: true, stars: s, keys: k, grand: last ? c.grand_star : b.event === 'grand', ends: last ? c.ends_cycle : b.event === 'grand' } : {}) };
+        });
         bump((x) => x + 1);
       }
     } catch { /* the node may be busy: the next refresh retries */ } finally { busy.current = false; }
   }
-
   const progressCell = (b) => {
     if (b.height === 0) return '—';
     const p = prog.current[b.hash];
