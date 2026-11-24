@@ -33,7 +33,6 @@ pub mod proof;
 pub mod rules;
 pub mod statecodec;
 pub mod statemix;
-mod trig;
 
 pub use game::{SM64MiningGame, SM64MiningSave};
 

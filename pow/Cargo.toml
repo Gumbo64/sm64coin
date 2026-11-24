@@ -1,5 +1,5 @@
 [workspace]
-members = ["sm64pow", "perturb", "miner", "leaderboard", "sdk"]
+members = ["sm64pow", "perturb", "statecodec", "miner", "leaderboard", "sdk"]
 exclude = ["perturb-wasm"]
 resolver = "3"
 

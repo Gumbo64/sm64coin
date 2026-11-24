@@ -25,6 +25,9 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     dedupe: ['react', 'react-dom'],
+    // The package's src/ (its headless game and loader for the client-side replay worker):
+    // its export map only exposes the main entry, which pulls in React components.
+    alias: { 'sm64-binds-src': path.resolve(here, 'node_modules/sm64-binds-frontend/src') },
   },
   server: { proxy, port: 5181, host: true, fs: { allow: [here, binds] } },
   preview: { proxy, port: 4174 },

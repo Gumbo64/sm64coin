@@ -2,7 +2,7 @@
 //! (cost metered; round trip checked with SC_RT=1). Cfg overrides in SC_CFG="key=val,..".
 use sm64pow::game::Features;
 use sm64pow::proof::{self, Codec};
-use sm64pow::sm64_binds::GamePad;
+use sm64pow::statecodec::Pad as GamePad; // the codec crate's pad (these tools only code frames)
 use sm64pow::statecodec::{self, CostMeter, Frame};
 use sm64pow::statemix::{Cfg, Model};
 use std::sync::Mutex;
@@ -136,7 +136,7 @@ fn main() {
                     let w = &wins[i];
                     let pads: Vec<GamePad> = w.iter().filter(|f| !f.poked).map(|f| f.pad).collect();
                     let xz = xz_len(&pads.iter().flat_map(|p| { let mut v = p.button.to_le_bytes().to_vec(); v.push(p.stick_x as u8); v.push(p.stick_y as u8); v }).collect::<Vec<u8>>());
-                    let xz2 = proof::encode_with(&proof::Xz, &pads).len();
+                    let xz2 = proof::encode_with(&proof::Xz, &pads.iter().map(|p| sm64pow::game::from_pad(*p)).collect::<Vec<_>>()).len();
                     let _ = xz;
                     let c3 = statecodec::encode_frames(w).len();
                     let t_start = std::time::Instant::now();

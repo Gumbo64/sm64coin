@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
             let mut dec = c.decoder(body);
             let t = Instant::now();
             for _ in 0..pr.frames {
-                let (_, poked) = g.step_with(|f| { Ok(dec.pad(f)) })?;
+                let (_, poked) = g.step_with(|f| { Ok(sm64pow::game::from_pad(dec.pad(f))) })?;
                 if poked { dec.poked(); }
             }
             assert_eq!(dec.finish(), body);

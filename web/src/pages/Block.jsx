@@ -2,10 +2,27 @@ import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { CycleStrip } from '../lib/CycleTimeline.jsx';
 import { daemon } from '../lib/rpc.js';
+import { getCycle } from '../lib/replay/client.js';
 import { rawToPads, toM64, download } from '../lib/proof.js';
 import { coins, short, when, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
 import BlockReplay from './BlockReplay.jsx';
+
+// This block's run from its cycle (the last block): every frame's played pad, what it added, and
+// the proof's inputs (the non-poked frames; a stateless proof's are in get_block already).
+function ownRun(cycle, blk) {
+  const last = cycle.blocks[cycle.blocks.length - 1];
+  if (!last) return {};
+  const played = cycle.played_pads.slice(cycle.played_pads.length - last.frames * 8);
+  let wanted = blk.sm64_pads || '';
+  const poked = cycle.poked?.[cycle.poked.length - 1];
+  if (!wanted && poked) {
+    const parts = [];
+    for (let i = 0; i < last.frames; i++) if (!poked[i]) parts.push(played.substr(i * 8, 8));
+    wanted = parts.join('');
+  }
+  return { sm64_played_pads: played, sm64_pads: wanted, sm64_event: last.event };
+}
 
 export default function Block() {
   const { id } = useParams();
@@ -18,16 +35,21 @@ export default function Block() {
     let live = true;
     setB(null); setErr(null); setCycle(null);
     const params = /^\d+$/.test(id) ? { height: Number(id) } : { hash: id };
-    // sm64_played: the daemon replays the run and returns every frame's pad
-    // (the proof itself leaves out the poked frames).
-    daemon('get_block', { ...params, sm64_played: true }).then((blk) => {
+    // The block (cheap for the node), then the cycle it belongs to, from its first block up to
+    // it: where its run starts, and every frame as played (pokes included). getCycle replays it
+    // in this browser when it has the ROM (else the node does); this block's own played pads,
+    // event and inputs are the cycle's last block.
+    daemon('get_block', params).then((blk) => {
       if (!live) return;
       setB(blk);
-      // The cycle this block belongs to, from its first block up to it: where
-      // its run starts, and what replaying it from power-on takes.
       if (blk.block_header.height > 0) {
-        daemon('get_sm64_cycle', { hash: blk.block_header.hash })
-          .then((c) => live && setCycle({ ...c, blocks: c.blocks || [] }))
+        getCycle(blk.block_header.hash)
+          .then((c) => {
+            if (!live) return;
+            const cyc = { ...c, blocks: c.blocks || [] };
+            setCycle(cyc);
+            setB((x) => ({ ...x, ...ownRun(cyc, x) }));
+          })
           .catch(() => live && setCycle(false));
       } else setCycle(false);
     }).catch((e) => live && setErr(String(e)));
@@ -77,8 +99,8 @@ export default function Block() {
           </dl>
           <CycleInfo cycle={cycle} block={b} />
           <p>
-            <button onClick={() => download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)))}>Download .m64: this block's run</button>{' '}
-            <span className="muted">every frame as played, pokes included ({b.sm64_frames} frames; the proof stores {b.sm64_pads.length / 8} inputs)</span>
+            <button disabled={!b.sm64_played_pads} onClick={() => download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)))}>Download .m64: this block's run</button>{' '}
+            <span className="muted">every frame as played, pokes included ({b.sm64_frames} frames{b.sm64_pads ? `; the proof stores ${b.sm64_pads.length / 8} inputs` : ''})</span>
           </p>
           <p>
             <button disabled={!cycle} onClick={() => download(`sm64coin-cycle-to-block${h.height}.m64`, toM64(rawToPads(cycle.played_pads)))}>Download .m64: the whole cycle up to this block</button>{' '}
@@ -151,7 +173,7 @@ function BlockPanel({ b, cycle, json, view }) {
       <CycleInfo cycle={cycle} block={b} />
       <h3>Downloads</h3>
       <p className="small">
-        <button onClick={() => download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)))}>.m64: this block's run</button>
+        <button disabled={!b.sm64_played_pads} onClick={() => download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)))}>.m64: this block's run</button>
         <br /><span className="muted">every frame as played, pokes included</span>
       </p>
       <p className="small">

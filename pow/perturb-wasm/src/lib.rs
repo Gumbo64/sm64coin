@@ -3,7 +3,7 @@
 //! the game before and after each frame and passes the bytes here; everything
 //! else is `sm64coin-perturb`, the same code native nodes run.
 
-use sm64coin_perturb::sm64::{VISUAL, progress, progress_regions, regions, view};
+use sm64coin_perturb::sm64::{HEADLESS, VISUAL, event, features, progress, progress_regions, regions, view};
 use sm64coin_perturb::{Pad, Perturber, PokeConfig};
 use wasm_bindgen::prelude::*;
 
@@ -77,4 +77,74 @@ pub fn visual_progress_regions() -> Vec<u32> {
 pub fn progress_points(bytes: &[u8]) -> Vec<u32> {
     let p = progress(bytes);
     vec![p.stars, p.keys, p.grand_star as u32, p.points()]
+}
+
+/// The memory regions to read from the headless build (the one native nodes replay with; the
+/// browser runs the same build in a worker), as `[addr0, len0, ...]`, in order.
+#[wasm_bindgen]
+pub fn headless_regions() -> Vec<u32> {
+    regions(&HEADLESS).iter().flat_map(|&(a, l)| [a, l]).collect()
+}
+
+/// The memory regions [`progress_points`] reads from the headless build.
+#[wasm_bindgen]
+pub fn headless_progress_regions() -> Vec<u32> {
+    progress_regions(&HEADLESS).iter().flat_map(|&(a, l)| [a, l]).collect()
+}
+
+/// A state-coded proof's decoder (codecs 3+: the inputs are coded given the game state):
+/// the same `sm64coin-statecodec` code native nodes decode with. Per frame of the replay:
+/// [`WasmPerturber::pad`] first; on a poked frame call [`WasmStateDecoder::poked`], else
+/// [`WasmStateDecoder::pad`] with the same region bytes gives the input to play.
+#[wasm_bindgen]
+pub struct WasmStateDecoder {
+    // Declared first: dropped before the body it borrows.
+    dec: Option<Box<dyn sm64coin_statecodec::StateDecoder + 'static>>,
+    body: *mut [u8],
+}
+
+#[wasm_bindgen]
+impl WasmStateDecoder {
+    /// `codec`: the proof's codec id; `body`: the proof bytes after its header.
+    #[wasm_bindgen(constructor)]
+    pub fn new(codec: u8, body: &[u8]) -> Result<WasmStateDecoder, JsError> {
+        let c = sm64coin_statecodec::STATE_CODECS.iter().copied().find(|c| c.id() == codec).ok_or_else(|| JsError::new(&format!("unknown state codec {codec}")))?;
+        let body: *mut [u8] = Box::into_raw(body.to_vec().into_boxed_slice());
+        // Safety: the box lives until Drop, which drops `dec` first.
+        let dec = c.decoder(unsafe { &*body });
+        Ok(WasmStateDecoder { dec: Some(dec), body })
+    }
+
+    /// The input of a non-poked frame, given the regions' bytes before it: `[button, stick_x, stick_y]`.
+    pub fn pad(&mut self, before: &[u8]) -> Result<Vec<i32>, JsError> {
+        let d = self.dec.as_mut().ok_or_else(|| JsError::new("decoder finished"))?;
+        let p = d.pad(&features(before));
+        Ok(vec![p.button as i32, p.stick_x as i32, p.stick_y as i32])
+    }
+
+    /// The frame was poked (no input was stored for it).
+    pub fn poked(&mut self) -> Result<(), JsError> {
+        self.dec.as_mut().ok_or_else(|| JsError::new("decoder finished"))?.poked();
+        Ok(())
+    }
+
+    /// The canonical encoding of what was decoded: equal to the body for a valid proof.
+    pub fn finish(&mut self) -> Result<Vec<u8>, JsError> {
+        Ok(self.dec.take().ok_or_else(|| JsError::new("decoder finished"))?.finish())
+    }
+}
+
+impl Drop for WasmStateDecoder {
+    fn drop(&mut self) {
+        self.dec = None;
+        // Safety: from Box::into_raw in `new`, freed once.
+        drop(unsafe { Box::from_raw(self.body) });
+    }
+}
+
+/// What a block added, from the progress regions' bytes before and after its run: the names
+/// nodes report ("c01s6" course 1 star 6, "c00s3" castle, "key1", "grand"); empty if nothing.
+#[wasm_bindgen]
+pub fn progress_event(before: &[u8], after: &[u8]) -> String {
+    event(&progress(before), &progress(after)).map(|e| e.name()).unwrap_or_default()
 }

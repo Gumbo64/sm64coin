@@ -292,7 +292,7 @@ fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &P
     let mut out = played;
     for f in 0..frames as usize {
         let (pad, poked) = g.step_with(|ft| {
-            Ok(dec.pad(ft))
+            Ok(crate::game::from_pad(dec.pad(ft)))
         })?;
         if poked {
             dec.poked();

@@ -8,7 +8,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'scripts/build-wasm.sh', '.github/workflows/pages.yml']
+    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'scripts/build-wasm.sh', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:

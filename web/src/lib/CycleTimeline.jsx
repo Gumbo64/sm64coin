@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { daemon } from './rpc.js';
+import { getCycle } from './replay/client.js';
 import { restartDelay } from './rules.js';
 
 // The current cycle as a timeline, after sm64-viewer's (frontend/src/components/
@@ -87,7 +88,7 @@ export function useCycle() {
         const info = await daemon('get_info');
         if (info.top_block_hash === top) return;
         const [c, h] = await Promise.all([
-          daemon('get_sm64_cycle', { hash: info.top_block_hash }),
+          getCycle(info.top_block_hash),
           daemon('get_block_header_by_hash', { hash: info.top_block_hash }),
         ]);
         if (stop) return;
@@ -279,7 +280,7 @@ export function RecentCycles() {
         for (let i = 0; i < CYCLES_SHOWN && hash; i++) {
           let s = i > 0 ? [...doneCycles.values()].find((d) => d.endHash === hash) : null;
           if (!s) {
-            const c = await daemon('get_sm64_cycle', { hash });
+            const c = await getCycle(hash);
             c.blocks = c.blocks || []; // the RPC omits an empty list
             if (!c.blocks.length) break; // reached the genesis block
             s = { ...summary(c, i === 0), endHash: hash };

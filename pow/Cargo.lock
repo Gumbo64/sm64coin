@@ -2355,6 +2355,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm64coin-statecodec"
+version = "0.1.0"
+dependencies = [
+ "sm64coin-perturb",
+]
+
+[[package]]
 name = "sm64pow"
 version = "0.1.0"
 dependencies = [
@@ -2364,6 +2371,7 @@ dependencies = [
  "sha3",
  "sm64-binds",
  "sm64coin-perturb",
+ "sm64coin-statecodec",
  "xz2",
 ]
 

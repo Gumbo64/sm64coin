@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import CycleTimeline, { RecentCycles, eventName } from '../lib/CycleTimeline.jsx';
 import { daemon } from '../lib/rpc.js';
+import { getCycle } from '../lib/replay/client.js';
 import { coins, short, ago, frames } from '../lib/format.js';
 import useInterval from '../lib/useInterval.js';
 
@@ -58,7 +59,7 @@ export default function Explorer() {
     try {
       for (const h of hs) { // newest first: h is the last block of its cycle among the rows not done yet
         if (prog.current[h.hash] && prog.current[h.hash].exact) continue;
-        const c = await daemon('get_sm64_cycle', { hash: h.hash });
+        const c = await getCycle(h.hash);
         const blocks = c.blocks || [];
         let stars = 0, keys = 0, known = true;
         const counted = blocks.map((b, i) => {

@@ -9,7 +9,7 @@ import { perturbReady, readProgress } from './perturb.js';
 import { captureState, restoreState } from './savestate.js';
 import { saveTip, loadTips } from './tipstore.js';
 import { hexToBytes } from './proof.js';
-import { daemon } from './rpc.js';
+import { getCycle } from './replay/client.js';
 
 /** A game, powered on, rendering to `canvas`. One engine serves a whole page:
  * it is reset with save states, never recreated (the GL objects the game's
@@ -126,7 +126,7 @@ export async function prepareStart(engine, tpl, forcePowerOn, onProgress, kill) 
     restoreState(engine, null, engine.powerOn);
     return { kind: 'power-on', state: engine.powerOn, progress: readProgress(engine), cycle: null };
   }
-  const cycle = await daemon('get_sm64_cycle', { hash: tpl.prev_hash });
+  const cycle = await getCycle(tpl.prev_hash);
   const r = await reachTip(engine, cycle, onProgress, kill);
   if (!r) return null;
   if (!matchesTip(r.progress, cycle)) {

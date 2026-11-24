@@ -47,6 +47,12 @@ pub struct Pad {
     pub stick_y: i8,
 }
 
+impl Pad {
+    pub const fn new(button: u16, stick_x: i8, stick_y: i8) -> Pad {
+        Pad { button, stick_x, stick_y }
+    }
+}
+
 /// How hard the controller is poked (from the consensus rules).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PokeConfig {

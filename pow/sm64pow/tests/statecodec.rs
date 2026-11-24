@@ -124,7 +124,7 @@ fn replay_state_blob(blob: &[u8], parent: &SaveState, seed: &Seed) -> Vec<GamePa
     let mut dec = statecodec::state_codec(cid).unwrap().decoder(body);
     let mut out = vec![];
     for _ in 0..frames {
-        let (pad, poked) = g.step_with(|f| Ok(dec.pad(f))).unwrap();
+        let (pad, poked) = g.step_with(|f| Ok(sm64pow::game::from_pad(dec.pad(f)))).unwrap();
         if poked {
             dec.poked();
         }

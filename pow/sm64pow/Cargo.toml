@@ -15,6 +15,7 @@ default = ["state-codec"]
 state-codec = []
 
 [dependencies]
+sm64coin-statecodec = { path = "../statecodec" }
 sm64-binds = { workspace = true }
 anyhow = { workspace = true }
 sha3 = "0.10"

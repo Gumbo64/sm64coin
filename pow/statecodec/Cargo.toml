@@ -1,0 +1,8 @@
+[package]
+name = "sm64coin-statecodec"
+version = "0.1.0"
+edition = "2024"
+description = "SM64Coin's state-aware proof codecs (pure: no game, no emulator), shared by native nodes and the browser"
+
+[dependencies]
+sm64coin-perturb = { path = "../perturb" }

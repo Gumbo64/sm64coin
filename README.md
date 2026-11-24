@@ -49,6 +49,7 @@ Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is st
 - `pow/sm64pow` consensus crate: `rules.rs` (the `Rules` trait: success condition, difficulty to task, retarget, decay; `active()` selects the rules), `proof.rs` (proof codecs), `ffi.rs` (C ABI).
 - `pow/miner` the `automine` binary (automated miner: per block it rebuilds the parent's end state from `get_sm64_cycle` and plays on with a rolling-horizon GA over a route library, `src/rh.rs`), `rhbench` (offline benchmark, `--chain N` for further blocks) and `trackbench` (older beam controller).
 - `web/` explorer, in-browser replay and manual miner, read-only leaderboard, bot docs. It holds no keys and needs no wallet: the wallet is the desktop app (`gui/`).
+- **Client-side replay.** A visitor who stored the ROM replays blocks in the browser instead of asking a node: `web/src/lib/replay/` fetches each block once with plain `get_block` (the proof is the tail of its blob), and a Web Worker replays it in the headless game build (the one nodes run) with the nodes' own pokes and proof codecs compiled to WASM (`pow/perturb-wasm`, `pow/statecodec`), the same answer as `get_sm64_cycle`, checked bit-identical against a node on the live chain. Results are kept per block hash in IndexedDB. Without a ROM the site asks the node (`get_sm64_cycle`, cached per block on the node).
 
 Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet RPC 16483; web dev server 5181 (preview 4174).
 

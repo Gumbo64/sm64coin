@@ -1,7 +1,7 @@
 //! Measures codecs on statedump files: statecodec_eval DUMP.bin WINDOW [simulate_pokes]
 use sm64pow::game::Features;
 use sm64pow::proof::{self, Codec};
-use sm64pow::sm64_binds::GamePad;
+use sm64pow::statecodec::Pad as GamePad; // the codec crate's pad (these tools only code frames)
 use sm64pow::statecodec::*;
 use std::time::Instant;
 
@@ -85,8 +85,8 @@ fn main() {
             let pads: Vec<GamePad> = w.iter().filter(|f| !f.poked).map(|f| f.pad).collect();
             frames_total += w.len();
             tot[0] += 4 * pads.len();
-            tot[1] += proof::encode_with(&proof::RunLength, &pads).len();
-            tot[2] += proof::encode_with(&proof::Xz, &pads).len();
+            tot[1] += proof::encode_with(&proof::RunLength, &pads.iter().map(|p| sm64pow::game::from_pad(*p)).collect::<Vec<_>>()).len();
+            tot[2] += proof::encode_with(&proof::Xz, &pads.iter().map(|p| sm64pow::game::from_pad(*p)).collect::<Vec<_>>()).len();
             // planar + per-axis stick deltas, xz
             let mut pl = vec![];
             pl.extend(pads.iter().flat_map(|p| p.button.to_le_bytes()));
