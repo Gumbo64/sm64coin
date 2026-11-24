@@ -21,7 +21,10 @@ The `sm64coin` launcher is no longer shipped.
 
 ### Changes
 
-- **Mine in your browser:** new Auto-mine page runs the miner in WebAssembly.
+- **Mine in your browser:** new Auto-mine page runs the miner in WebAssembly, one worker per thread; workers share the castle step and sync their search trees. It keeps mining across pages (status corner, top right).
+- **Auto-mine visualisations:** live game view, search point cloud, envelope graph and popups; switch them off for full speed. Frames/s shown on the site and in the wallet app.
+- **Lite web wallet:** create, restore (seed or keys), receive and send in the browser; keys never leave it. Backups, desktop `.keys` import, optional passkey wallet.
+- **Update notices** in the wallet app, website and `sm64coin-node`.
 - **Cycle reset:** all miners restart from power-on when the chain allows it and the parent is stuck.
 - **Faster mining starts:** miners load the tip's state from the node (`get_sm64_state`, nodes need 0.2.8).
 - **Wallet app serves the website and leaderboard locally**; GitHub Pages only as a fallback.

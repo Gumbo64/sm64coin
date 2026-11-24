@@ -97,11 +97,14 @@ pub struct MineRequest {
 fn extra_env_default() -> String {
     "OBRRT_ROUND=16".into()
 }
+// Measured (4 workers, JRB and WF course steps from a shared castle step, 9 paired salt sets):
+// every 10 s / 8 states was the cheapest setting and trended faster (-34 s and -84 s mean, within
+// noise); every 4 s / 12 states replayed the most and was slower on WF. Neither is significant.
 fn sync_secs_default() -> f64 {
-    4.0
+    10.0
 }
 fn sync_k_default() -> usize {
-    12
+    8
 }
 fn mem_default() -> usize {
     600
