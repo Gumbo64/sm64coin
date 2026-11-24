@@ -46,6 +46,8 @@ pub fn init(rom: Vec<u8>) -> Result<(), JsError> {
 pub fn run_step(job: &str) -> Result<String, JsError> {
     panic_hook();
     let job: rrt::child::Job = serde_json::from_str(job).map_err(err)?;
+    // The step's tree sync reaches the other workers through the page (see rrt::child::tsync).
+    let _ = rrt::child::EXCHANGE.set(std::sync::Arc::new(|kind: &str, payload: &str| js_exchange(kind, payload)));
     let out = rrt::child::run_step(&job).map_err(|e| err(format!("{e:#}")))?;
     serde_json::to_string(&out).map_err(err)
 }
@@ -79,6 +81,22 @@ pub struct MineRequest {
     /// The page can have the search's tree sampled (`sm64miner.viz`, see rrt::child::viz).
     #[serde(default)]
     pub viz: bool,
+    /// Tree sync between the workers: seconds between rounds (0: off) and states offered per round
+    /// (see rrt::child::tsync). Takes effect when the page answers `exchange("tree_sync", ...)`
+    /// (cross-origin isolated pages); without it the workers only share at step boundaries.
+    #[serde(default = "sync_secs_default")]
+    pub sync_secs: f64,
+    #[serde(default = "sync_k_default")]
+    pub sync_k: usize,
+    /// More tree settings, "VAR=value VAR=value" (rrt::RrtOptions::extra_env).
+    #[serde(default)]
+    pub extra_env: String,
+}
+fn sync_secs_default() -> f64 {
+    8.0
+}
+fn sync_k_default() -> usize {
+    12
 }
 fn mem_default() -> usize {
     600
@@ -128,6 +146,9 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
         frame_cap: r.frame_cap,
         mem_mb: r.mem_mb,
         viz: r.viz,
+        sync_secs: r.sync_secs,
+        sync_k: r.sync_k,
+        extra_env: r.extra_env.clone(),
         scratch: "/scratch".into(),
         rom: Some("/rom.z64".into()),
         // wasm is single-threaded, so the Send + Sync bounds hold trivially.

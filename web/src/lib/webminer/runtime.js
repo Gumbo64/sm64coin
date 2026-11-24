@@ -10,7 +10,7 @@
 // wasm-bindgen glue keeps its instance in module-level variables. The glue is self-contained, so
 // its source is turned into a factory function: each call is an independent copy.
 
-import { bestCheckpoint } from './board.js';
+import { bestCheckpoint, makeChannel, makeTreeSync } from './board.js';
 
 /** A factory of independent instances from the wasm-bindgen glue's source text. */
 export function makeFactory(glueSource) {
@@ -49,6 +49,8 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), sh
   fs.write('/rom.z64', rom);
   globalThis.sm64fs = fs;
   let steps = 0;
+  const chan = board ? makeChannel(board) : null;
+  const treeSync = chan ? makeTreeSync(chan) : null;
   globalThis.sm64miner = {
     log,
     // Sharing with the other workers of the page (rrt::Exchange): the block's first castle step
@@ -63,7 +65,10 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), sh
         for (const [p, bytes] of shared.files) fs.write(p, bytes);
         return shared.step;
       }
-      if (kind === 'cp_sync') return board ? bestCheckpoint(board, payload) : undefined;
+      if (kind === 'cp_sync') return chan ? bestCheckpoint(chan, payload) : undefined;
+      // The search's own tree sync (rrt::child::tsync): needs the board (cross-origin isolated page);
+      // without it the workers share only at step boundaries (step_get/step_put, cp_sync's absence).
+      if (kind === 'tree_sync') return treeSync ? treeSync(payload) : undefined;
       if (kind === 'step_put') {
         // What the step left in the scratch (the roadmap...); not the campaign's own memory.
         const files = [...fs.map].filter(([p]) => p.startsWith('/scratch/') && !p.includes('/step-') && !p.endsWith('/campaign.json'));

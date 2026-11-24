@@ -85,6 +85,10 @@ pub struct RrtOptions {
     /// Sharing with other searches of the same block (the web miner's workers): called as
     /// `exchange(kind, payload) -> Option<reply>`; see [`Exchange`]. None natively.
     pub exchange: Option<Exchange>,
+    /// Tree sync between the workers (needs `exchange` to answer `"tree_sync"`): the period in seconds
+    /// (0: off) and how many frontier states each offers per round (at most 16).
+    pub sync_secs: f64,
+    pub sync_k: usize,
     /// Sample the trees for a viewer (see `child::viz`; the web miner's page).
     pub viz: bool,
 }
@@ -113,10 +117,21 @@ fn cp_tag(played: &[GamePad], zone: u16, cp_n: usize) -> String {
     format!("{:016x}-{zone}-{cp_n}", h.finish())
 }
 
+/// Switches the step's tree sync on (with `o.exchange`): the workers that are at the same point (same
+/// played prefix, zone and checkpoint count) and run the same step input share one tag.
+fn tree_sync(o: &RrtOptions, job: &mut Job, played: &[GamePad], zone: u16, cp_n: usize) {
+    if o.exchange.is_some() && o.sync_secs > 0.0 && o.sync_k > 0 {
+        job.sync_secs = o.sync_secs;
+        job.sync_k = o.sync_k.min(16);
+        job.sync_tag = format!("{}-{}", cp_tag(played, zone, cp_n), step_key(job));
+    }
+}
+
 fn step_key(job: &Job) -> String {
     use std::hash::{Hash, Hasher};
     let mut j = job.clone();
     (j.seed, j.state_file, j.out_dir, j.viz) = (0, String::new(), String::new(), false);
+    (j.sync_secs, j.sync_k, j.sync_tag) = (0.0, 0, String::new());
     let text = serde_json::to_string(&j).unwrap_or_default();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
@@ -141,6 +156,8 @@ impl Default for RrtOptions {
             rom: None,
             extra_env: String::new(),
             exchange: None,
+            sync_secs: 0.0,
+            sync_k: 0,
             viz: false,
         }
     }
@@ -542,6 +559,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             out_dir: String::new(),
             checkpoint: None,
             viz: o.viz,
+            sync_secs: 0.0,
+            sync_k: 0,
+            sync_tag: String::new(),
         };
         if in_hub || GEO_LEVELS.contains(&st.level) {
             env.push(("OBRRT_GEO".into(), "1".into()));
@@ -579,6 +599,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             job.env = env;
             log(format!("step {step}: castle at frame {}, {} stars {} keys: {what}; budget {:.0} M frames", played.len(), st.stars, st.keys, job.budget as f64 / 1e6));
             let ckpt = (game.save_state(), played.len());
+            tree_sync(o, &mut job, &played, st.level, cp_n);
             // The block's first castle step is the same for every search of it: shared.
             let key = (step == 1 && o.exchange.is_some()).then(|| step_key(&job));
             let shared: Option<StepOut> = key.as_ref().zip(o.exchange.as_ref()).and_then(|(k, ex)| {
@@ -608,6 +629,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                 }
             };
             sim += out.emulated;
+            if let Some(y) = &out.sync {
+                log(format!("  tree sync: {} rounds, offered {}, received {}, added {} (dup {}, known {}, bad {}, errors {}), {} frames replayed; imported nodes expanded {}, on the winner's path {}", y.rounds, y.offered, y.received, y.added, y.dup, y.known, y.bad, y.errors, y.frames, y.expanded, y.on_path));
+            }
             if !out.found {
                 log(format!("  {} ({:.0} s)", out.note, t0.elapsed().as_secs_f64()));
                 if castle.is_some() {
@@ -683,6 +707,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         job.checkpoint = (cp_n < o.checkpoints).then(|| CpAsk { n: cp_n, prefer: if cp_n > 0 { cp_goal.clone() } else { None }, avoid: seen.at.clone(), used_stages: seen.stages.clone(), keys: st.keys, end: final_(&st) });
         job.env = env;
         log(format!("step {step}: {} at frame {} (act select {} controllable {} action {:#x}){}{}; budget {:.0} M frames", name(zone), played.len(), st.act_select, st.controllable(), st.action, if need != 0 { format!(", cap switch {need:#x} wanted") } else { String::new() }, if cp_n > 0 { format!(", after checkpoint {cp_n}") } else { String::new() }, job.budget as f64 / 1e6));
+        tree_sync(o, &mut job, &played, zone, cp_n);
         let out = match run_child(o, &game, job, &format!("s{step}"), stop) {
             Ok(x) => x,
             Err(e) if stop.load(Ordering::Relaxed) => {
@@ -692,6 +717,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             Err(e) => return Err(e),
         };
         sim += out.emulated;
+        if let Some(y) = &out.sync {
+            log(format!("  tree sync: {} rounds, offered {}, received {}, added {} (dup {}, known {}, bad {}, errors {}), {} frames replayed; imported nodes expanded {}, on the winner's path {}", y.rounds, y.offered, y.received, y.added, y.dup, y.known, y.bad, y.errors, y.frames, y.expanded, y.on_path));
+        }
         if out.found {
             log(format!("  progress at frame {} (+{}), {:.1} M frames, {} nodes ({:.0} s)", out.frame, out.pads.len(), out.emulated as f64 / 1e6, out.nodes, t0.elapsed().as_secs_f64()));
             keys.extend(out.path_keys.iter().cloned());

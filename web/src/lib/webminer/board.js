@@ -21,7 +21,22 @@ export function makeBoard(sab, slot, slots, slotBytes = 1 << 20) {
   const bytes = new Uint8Array(sab);
   const at = (i) => (i * slotBytes);
   const ctl = new Int32Array(sab, slots * slotBytes, 1);
+  const read = (i) => {
+    const base = at(i);
+    for (let tries = 0; tries < 1000; tries++) {
+      const s1 = Atomics.load(ints, base / 4);
+      if (s1 === 0) return null; // nothing posted
+      if (s1 & 1) continue;
+      const len = Atomics.load(ints, base / 4 + 1);
+      const copy = bytes.slice(base + HEADER, base + HEADER + len);
+      if (Atomics.load(ints, base / 4) === s1) return dec.decode(copy);
+    }
+    return null;
+  };
   return {
+    slot,
+    slots: Array.from({ length: slots }, (_, i) => i),
+    read,
     /** Whether the page wants the viz feed now. */
     vizOn: () => Atomics.load(ctl, 0) === 1,
     /** Publishes this worker's message (dropped when it doesn't fit). */
@@ -55,16 +70,71 @@ export function makeBoard(sab, slot, slots, slotBytes = 1 << 20) {
   };
 }
 
+/** Every worker's current message as [slot, text] (own included). */
+function entries(board) {
+  return board.slots.map((i) => [i, board.read(i)]).filter(([, t]) => t != null);
+}
+
+/**
+ * Typed messages over the board: each worker's slot holds one JSON object {cp, tree} (the latest
+ * message of each kind), so the checkpoint sync and the tree sync don't overwrite each other.
+ */
+export function makeChannel(board) {
+  const mine = {};
+  const peers = (kind, withSelf = false) => {
+    const out = [];
+    for (const [slot, t] of entries(board)) {
+      if (!withSelf && slot === board.slot) continue;
+      try { const m = JSON.parse(t); if (m && m[kind] != null) out.push(m[kind]); } catch { /* torn or foreign */ }
+    }
+    return out;
+  };
+  return {
+    post(kind, obj) { mine[kind] = obj; return board.put(JSON.stringify(mine)); },
+    peers,
+  };
+}
+
 /** The checkpoint sync (rrt::mine's "cp_sync"): publish `payload` ({tag, eta, cp}) and return the
  * cp (JSON) with the lowest ETA among the workers' messages with the same tag (the lowest slot on a tie). */
-export function bestCheckpoint(board, payload) {
-  board.put(payload);
+export function bestCheckpoint(chan, payload) {
+  const mine = JSON.parse(payload);
+  chan.post('cp', mine);
   let best = null;
-  const tag = JSON.parse(payload).tag;
-  for (const t of board.all()) {
-    let m;
-    try { m = JSON.parse(t); } catch { continue; }
-    if (m.tag === tag && (!best || m.eta < best.eta)) best = m;
+  for (const m of chan.peers('cp', true)) {
+    if (m.tag === mine.tag && (!best || m.eta < best.eta)) best = m;
   }
   return best ? JSON.stringify(best.cp) : undefined;
+}
+
+const RING_BYTES = 640 * 1024;
+
+/**
+ * The tree sync ("tree_sync", see rrt::child::tsync): `payload` is {tag, recs} (this worker's newest
+ * frontier records for the step `tag`). The worker's recent records stay on the board (so a peer that
+ * syncs later still sees them); the reply is {recs} of the other workers' records with the same tag that
+ * this worker has not been given before, in slot order.
+ */
+export function makeTreeSync(chan) {
+  let tag = null;
+  let ring = [];
+  const given = new Set();
+  return (payload) => {
+    const m = JSON.parse(payload);
+    if (m.tag !== tag) { tag = m.tag; ring = []; given.clear(); }
+    ring.push(...m.recs);
+    let bytes = ring.reduce((n, r) => n + r.pads.length + 80, 0);
+    while (bytes > RING_BYTES && ring.length > 1) bytes -= ring.shift().pads.length + 80;
+    chan.post('tree', { tag, recs: ring });
+    const recs = [];
+    for (const t of chan.peers('tree')) {
+      if (t.tag !== tag) continue;
+      for (const r of t.recs) {
+        if (given.has(r.pads)) continue;
+        given.add(r.pads);
+        recs.push(r);
+      }
+    }
+    return JSON.stringify({ recs });
+  };
 }

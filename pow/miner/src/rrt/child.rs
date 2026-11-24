@@ -97,6 +97,37 @@ pub struct Job {
     /// switches the feed on and off while the search runs.
     #[serde(default)]
     pub viz: bool,
+    /// Tree sync with the other workers of the block (the browser build, see [`tsync`]): every this many
+    /// seconds (0: off) the search offers its best `sync_k` frontier states and takes the others' that
+    /// carry the same `sync_tag` (same step input and same played prefix).
+    #[serde(default)]
+    pub sync_secs: f64,
+    #[serde(default)]
+    pub sync_k: usize,
+    #[serde(default)]
+    pub sync_tag: String,
+}
+
+/// The channel the step's process reaches the other workers by (set by the browser build before
+/// `run_step`; natively there is none, the miner's threads share one tree).
+pub static EXCHANGE: std::sync::OnceLock<super::Exchange> = std::sync::OnceLock::new();
+
+/// What a step's tree sync did (see [`tsync`]).
+#[derive(Default, Clone, Serialize, Deserialize, Debug)]
+pub struct SyncStats {
+    pub rounds: u32,
+    pub offered: u32,
+    pub received: u32,
+    pub added: u32,
+    pub dup: u32,
+    pub known: u32,
+    pub bad: u32,
+    pub errors: u32,
+    /// Frames spent replaying imports.
+    pub frames: u64,
+    /// Imported nodes that were later started from (expanded) / that the winner's path runs through.
+    pub expanded: u32,
+    pub on_path: u32,
 }
 
 /// A state to continue from (campaign.py's checkpoint record).
@@ -136,6 +167,8 @@ pub struct StepOut {
     /// without an attempt event, e.g. dense adds, are skipped), for the next search's guide.
     #[serde(default)]
     pub path_keys: Vec<String>,
+    #[serde(default)]
+    pub sync: Option<SyncStats>,
 }
 
 /// In control: not in the cutscene action group, controllable, no menu.
@@ -206,7 +239,18 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
             engine.on_round = Some(viz::progress_file(format!("{}.progress", job.out_dir)));
         }
     }
+    let sync_stats = Arc::new(std::sync::Mutex::new(SyncStats::default()));
+    if job.sync_secs > 0.0 && job.sync_k > 0 && !job.sync_tag.is_empty() {
+        if let Some(ex) = EXCHANGE.get() {
+            engine.on_sync = Some(tsync::hook(job, ex.clone(), &root, sync_stats.clone()));
+        }
+    }
     engine.run()?;
+    let sync_out = (job.sync_secs > 0.0 && engine.on_sync.is_some()).then(|| {
+        let mut s = sync_stats.lock().unwrap().clone();
+        s.expanded = engine.tree.nodes.iter().filter(|n| n.via == "sync" && n.stats.as_start > 0).count() as u32;
+        s
+    });
 
     let tree = &engine.tree;
     let mut best: Option<usize> = None;
@@ -223,7 +267,7 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
             best = Some(i);
         }
     }
-    let mut out = StepOut { emulated: engine.total_frames_emulated(), nodes: tree.nodes.len(), exits, ..Default::default() };
+    let mut out = StepOut { emulated: engine.total_frames_emulated(), nodes: tree.nodes.len(), exits, sync: sync_out, ..Default::default() };
     let Some(b) = best else {
         out.note = format!("no state with the goal in {} frames, {} nodes", out.emulated, out.nodes);
         if let Some(ask) = &job.checkpoint {
@@ -249,6 +293,13 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     out.keys = n.st.keys;
     out.pos = n.st.pos;
     out.path_keys = path_keys(tree, b as u32, &job.out_dir);
+    if let Some(sy) = out.sync.as_mut() {
+        let mut at = Some(b as u32);
+        while let Some(n) = at {
+            sy.on_path += (tree.nodes[n as usize].via == "sync") as u32;
+            at = tree.nodes[n as usize].parent;
+        }
+    }
     Ok(out)
 }
 
@@ -662,5 +713,107 @@ pub mod viz {
     #[cfg(not(target_arch = "wasm32"))]
     fn viz_on() -> bool {
         true
+    }
+}
+
+/// Tree sync between the browser build's workers (periodic, within one step). Every `sync_secs` the
+/// search offers the best states of its frontier ([`Engine::sync_candidates`]: the top goals' best cells
+/// by the engine's own ETA ranking, then frontier states by progress, spread over distinct places) as
+/// records `{pads, level, pos, progress}`, the pads from the step's root. The exchange (`"tree_sync"`:
+/// payload `{tag, recs}`, reply `{recs}` of the other workers' recent records for the same tag) is the
+/// page's board. Each received record is replayed from the deepest node of this tree on its path and
+/// added by [`Engine::sync_import`] as if this search's own expansion made it: checked against the
+/// sender's position and progress, dropped when dead, wrong or when a cell has an earlier state.
+/// A seed fixes the search given what it received.
+pub mod tsync {
+    use super::*;
+    use crate::sys::Instant;
+    use obrrt_search::engine::{Engine, SyncImport};
+
+    const CELL_SEP: f32 = 150.0;
+    /// Imports per sync round, and the largest message (JSON bytes) offered.
+    const MAX_IMPORT: usize = 48;
+
+    #[derive(Serialize, Deserialize)]
+    struct Rec {
+        /// Hex, 8 digits a pad (button, stick x, stick y).
+        pads: String,
+        level: u16,
+        pos: [f32; 3],
+        progress: (u8, i16),
+    }
+
+    fn enc(p: &[GamePad]) -> String {
+        use std::fmt::Write;
+        let mut s = String::with_capacity(p.len() * 8);
+        for g in p {
+            let _ = write!(s, "{:04x}{:02x}{:02x}", g.button, g.stick_x as u8, g.stick_y as u8);
+        }
+        s
+    }
+
+    fn dec(s: &str, max: usize) -> Option<Vec<GamePad>> {
+        if s.len() % 8 != 0 || s.len() / 8 > max || !s.is_ascii() {
+            return None;
+        }
+        (0..s.len() / 8)
+            .map(|i| {
+                let c = &s[i * 8..i * 8 + 8];
+                Some(GamePad::new(u16::from_str_radix(&c[..4], 16).ok()?, u8::from_str_radix(&c[4..6], 16).ok()? as i8, u8::from_str_radix(&c[6..], 16).ok()? as i8))
+            })
+            .collect()
+    }
+
+    pub fn hook(job: &Job, ex: super::super::Exchange, root: &St, stats: Arc<std::sync::Mutex<SyncStats>>) -> Box<dyn FnMut(&mut Engine) + Send> {
+        let (every, k, tag) = (job.sync_secs, job.sync_k.min(16), job.sync_tag.clone());
+        // A path can't be longer than the step's frames budget allows.
+        let max_pads = job.max_path as usize;
+        let frame0 = root.frame;
+        let mut last = Instant::now();
+        Box::new(move |e: &mut Engine| {
+            if last.elapsed().as_secs_f64() < every {
+                return;
+            }
+            last = Instant::now();
+            let ids = e.sync_candidates(k, CELL_SEP);
+            let recs: Vec<Rec> = ids
+                .iter()
+                .filter_map(|&i| {
+                    let n = &e.tree.nodes[i as usize];
+                    let pads = e.tree.path(i);
+                    (n.st.frame >= frame0 && pads.len() == (n.st.frame - frame0) as usize && pads.len() <= max_pads).then(|| Rec { pads: enc(&pads), level: n.st.level, pos: n.st.pos, progress: n.st.progress() })
+                })
+                .collect();
+            let msg = serde_json::json!({ "tag": tag, "recs": recs }).to_string();
+            let mut s = stats.lock().unwrap();
+            s.rounds += 1;
+            s.offered += recs.len() as u32;
+            let Some(reply) = ex("tree_sync", &msg) else { return };
+            #[derive(Deserialize)]
+            struct Reply {
+                recs: Vec<Rec>,
+            }
+            let Ok(r) = serde_json::from_str::<Reply>(&reply) else { return };
+            let before = e.total_frames_emulated();
+            let mut got = 0;
+            for rec in r.recs.iter().take(MAX_IMPORT) {
+                let Some(pads) = dec(&rec.pads, max_pads) else { continue };
+                s.received += 1;
+                match e.sync_import(&pads, Some((rec.level, rec.pos, rec.progress))) {
+                    Ok(SyncImport::Added(_)) => {
+                        s.added += 1;
+                        got += 1;
+                    }
+                    Ok(SyncImport::Dup) => s.dup += 1,
+                    Ok(SyncImport::Known) => s.known += 1,
+                    Ok(SyncImport::Bad) => s.bad += 1,
+                    Err(_) => s.errors += 1,
+                }
+            }
+            s.frames += e.total_frames_emulated() - before;
+            if got > 0 || s.rounds <= 2 {
+                println!("tree sync {}: offered {}, received {}, added {} ({} frames replayed)", s.rounds, recs.len(), r.recs.len(), got, e.total_frames_emulated() - before);
+            }
+        })
     }
 }
