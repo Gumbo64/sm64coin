@@ -141,8 +141,15 @@ fn alias(id: [u8; 32], key: RunKey) {
     }
 }
 
-fn remember(id: [u8; 32], key: RunKey, s: EndState, frames: u32, start: Start) {
-    persist(&id, &key, &s, frames, start);
+/// Caches a block's end state in memory; `durable` (a block just verified: the chain's newest)
+/// also keeps it on disk, in the background. Replays of old blocks (rebuilds, a website asking
+/// for played pads) stay in memory: writing them took ~0.3 s each (xz) and pushed the newest
+/// blocks' states off the disk (the newest DISK_STATES files by time are kept).
+fn remember(id: [u8; 32], key: RunKey, s: EndState, frames: u32, start: Start, durable: bool) {
+    if durable && STATE_DIR.get().is_some() {
+        let copy = EndState { game: s.game.clone(), progress: s.progress, ends_cycle: s.ends_cycle, event: s.event };
+        let _ = std::thread::Builder::new().name("sm64-persist".into()).spawn(move || persist(&id, &key, &copy, frames, start));
+    }
     {
         let mut c = cache().lock().unwrap();
         if c.runs.insert(key, Run { state: Arc::new(s), frames, start }).is_none() {
@@ -414,7 +421,7 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
         Ok((g, now)) => {
             let ends_cycle = rules().ends_cycle(&now);
             let event = crate::game::event(&before, &now);
-            remember(*id, key, EndState { game: g.game.save_state(), progress: now, ends_cycle, event }, frames, start);
+            remember(*id, key, EndState { game: g.game.save_state(), progress: now, ends_cycle, event }, frames, start, difficulty.is_some());
             Ok(BlockVerdict::Valid { frames, progress: now, ends_cycle })
         }
     }
@@ -547,7 +554,7 @@ fn replay_chain(chain: &[&BatchBlock], state_ok: bool, replayed: &std::sync::ato
         let event = crate::game::event(&before, &now);
         let state = g.game.save_state();
         if last {
-            remember(b.id, key, EndState { game: state, progress: now, ends_cycle, event }, frames, start);
+            remember(b.id, key, EndState { game: state, progress: now, ends_cycle, event }, frames, start, true);
         } else {
             remember_summary(b.id, key, Summary { frames, start, progress: now, ends_cycle, event });
             prev = Some((state, now, ends_cycle));
