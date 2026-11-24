@@ -25,9 +25,10 @@ export PATH="$WORK/shim:$PATH"
 cd "$WORK"
 if [ ! -d monero-ts ]; then
   git -c core.autocrlf=false clone https://github.com/monero-ecosystem/monero-ts.git monero-ts
+  git -C monero-ts config core.autocrlf false   # (a global core.autocrlf=true would CRLF the files and the patch would not apply)
   git -C monero-ts checkout "$MONERO_TS_REV"
   git -C monero-ts -c core.autocrlf=false submodule update --init external/monero-cpp
-  (cd monero-ts && git apply "$HERE/monero-ts-sm64.patch")
+  (cd monero-ts && git -c core.autocrlf=false apply --whitespace=nowarn "$HERE/monero-ts-sm64.patch")
   ln -s "$HERE" monero-ts/sm64-wallet-wasm
   # monero-cpp's own monero-project (woodser's fork of upstream) is replaced by our fork
   rmdir monero-ts/external/monero-cpp/external/monero-project 2>/dev/null || true
