@@ -46,9 +46,81 @@ export async function createNew(password) {
   return w;
 }
 
-export async function restoreFromSeed(seed, password, restoreHeight) {
+// wallet2 detects the mnemonic's language from the words (monero-ts forbids passing one with a seed).
+export async function restoreFromSeed(seed, password, restoreHeight, { offset } = {}) {
   const m = await loadLib();
-  return m.MoneroWalletFull.createWallet(cfg(m, { password, seed: seed.trim().replace(/\s+/g, ' '), restoreHeight: restoreHeight || 0 }));
+  const extra = { password, seed: seed.trim().replace(/\s+/g, ' '), restoreHeight: restoreHeight || 0 };
+  if (offset) extra.seedOffset = offset;
+  return m.MoneroWalletFull.createWallet(cfg(m, extra));
+}
+
+/** A full wallet from the address and both private keys (wallet2 checks that they derive the address). */
+export async function restoreFromKeys(address, viewKey, spendKey, password, restoreHeight) {
+  const m = await loadLib();
+  return m.MoneroWalletFull.createWallet(cfg(m, {
+    password, primaryAddress: address.trim(), privateViewKey: viewKey.trim(), privateSpendKey: spendKey.trim(), restoreHeight: restoreHeight || 0,
+  }));
+}
+
+/** A full wallet from just the private spend key (the view key, address and seed follow deterministically). */
+export async function restoreFromSpendKey(spendKey, password, restoreHeight) {
+  const m = await loadLib();
+  return m.MoneroWalletFull.createWallet(cfg(m, { password, privateSpendKey: spendKey, restoreHeight: restoreHeight || 0 }));
+}
+
+/** Open raw wallet2 files (a desktop wallet's <name>.keys and optionally its cache file). */
+export async function openFiles(keysData, cacheData, password) {
+  const m = await loadLib();
+  return m.MoneroWalletFull.openWallet(cfg(m, { password, keysData, ...(cacheData && cacheData.length ? { cacheData } : {}) }));
+}
+
+/** Throws unless `password` opens the wallet's own keys file (wallet2 checks it; a second throwaway instance is opened). */
+export async function checkPassword(w, password) {
+  const { keysData } = await exportData(w);
+  let t;
+  try { t = await openFiles(keysData, undefined, password); } catch { throw new Error('Wrong password.'); }
+  try { await t.close(false); } catch { /* closing */ }
+}
+
+/** Every secret and public key of the open wallet; the seed is '' where the wallet has none (view-only / non-deterministic keys). */
+export async function allKeys(w) {
+  const get = async (f) => { try { return (await f()) || ''; } catch { return ''; } };
+  return {
+    address: await w.getPrimaryAddress(),
+    seed: await get(() => w.getSeed()),
+    seedLanguage: await get(() => w.getSeedLanguage()),
+    viewKey: await get(() => w.getPrivateViewKey()),
+    spendKey: await get(() => w.getPrivateSpendKey()),
+    publicViewKey: await get(() => w.getPublicViewKey()),
+    publicSpendKey: await get(() => w.getPublicSpendKey()),
+  };
+}
+
+// ---- backup file: JSON around wallet2's own password-encrypted .keys bytes ----
+export const BACKUP_FORMAT = 'sm64coin-wallet-backup';
+const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+export async function makeBackup(w) {
+  const { keysData } = await exportData(w);
+  let restoreHeight = 0;
+  try { restoreHeight = await w.getRestoreHeight(); } catch { /* unknown */ }
+  const address = await w.getPrimaryAddress();
+  const doc = { format: BACKUP_FORMAT, version: 1, network: 'mainnet', address, viewOnly: await w.isViewOnly(), restoreHeight, createdAt: new Date().toISOString(), keysData: b64(keysData) };
+  return { name: `sm64coin-wallet-${address.slice(0, 8)}.json`, doc: JSON.stringify(doc, null, 2), keys: keysData, keysName: `sm64coin-wallet-${address.slice(0, 8)}.keys` };
+}
+
+/** Bytes of a picked file -> { keysData, meta? }: our JSON backup, or a raw wallet2 .keys file. */
+export function parseBackup(u8) {
+  if (u8[0] === 0x7b) {
+    let d;
+    try { d = JSON.parse(new TextDecoder().decode(u8)); } catch { throw new Error('This is not a wallet backup file.'); }
+    if (d.format !== BACKUP_FORMAT) throw new Error('This JSON is not an SM64Coin wallet backup.');
+    if (d.version > 1) throw new Error(`Backup format version ${d.version} is newer than this page understands.`);
+    if (d.network && d.network !== 'mainnet') throw new Error(`This backup is for network "${d.network}", not SM64Coin.`);
+    return { keysData: unb64(d.keysData), meta: d };
+  }
+  return { keysData: u8 };
 }
 
 export async function restoreViewOnly(address, viewKey, password, restoreHeight) {

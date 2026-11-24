@@ -3,12 +3,33 @@ import { Link } from 'react-router';
 import { getNode } from '../lib/rpc.js';
 import { loadStored, saveStored, forgetStored } from '../lib/wallet/store.js';
 import * as eng from '../lib/wallet/engine.js';
+import * as pk from '../lib/wallet/passkey.js';
 
 // A lite wallet in the browser: the fork's wallet2 (WebAssembly, in a web worker) scans the chain
 // through the node's RPC. Keys are made and used inside the worker; what is stored (IndexedDB) is the
 // wallet's own password-encrypted keys file and cache. Nothing but node RPC calls leaves the browser.
 const SYNC_MS = 15000;
 const short = (a) => (a ? `${a.slice(0, 10)}…${a.slice(-8)}` : '');
+const isHex64 = (k) => /^[0-9a-fA-F]{64}$/.test((k || '').trim());
+const BK = (a) => `sm64coin.backedup.${a}`;
+const isBackedUp = (a) => { try { return !!localStorage.getItem(BK(a)); } catch { return false; } };
+const markBackedUp = (a) => { try { localStorage.setItem(BK(a), String(Date.now())); } catch { /* storage unavailable */ } };
+const readFile = (f) => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(new Uint8Array(r.result));
+  r.onerror = () => reject(r.error || new Error('could not read the file'));
+  r.readAsArrayBuffer(f);
+});
+/** Save bytes/text as a download: a Blob and a temporary link, nothing is uploaded. */
+const download = (name, data, type) => {
+  const url = URL.createObjectURL(new Blob([data], { type }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
+const copy = (t) => navigator.clipboard && navigator.clipboard.writeText(t);
+const wrongPw = (e) => new Error(/password/i.test(e.message || '') ? 'Wrong password (or this is not a wallet file).' : e.message);
 const isAddress = (a) => /^SM6[a-zA-Z0-9]{90,110}$/.test((a || '').trim());
 
 export default function Wallet() {
@@ -23,6 +44,8 @@ export default function Wallet() {
   const [progress, setProgress] = useState(null);
   const [seed, setSeed] = useState('');
   const wRef = useRef(null);
+  const passkeyRef = useRef(false);
+  const [passkey, setPasskey] = useState(false);
   const syncing = useRef(false);
   const [engineErr, setEngineErr] = useState('');
 
@@ -34,7 +57,7 @@ export default function Wallet() {
 
   const persist = useCallback(async (wallet, addr, vo) => {
     const data = await eng.exportData(wallet);
-    await saveStored({ ...data, address: addr, viewOnly: vo });
+    await saveStored({ ...data, address: addr, viewOnly: vo, passkey: passkeyRef.current });
   }, []);
 
   const refresh = useCallback(async (wallet) => {
@@ -58,7 +81,9 @@ export default function Wallet() {
     }
   }, [refresh, persist]);
 
-  const adopt = useCallback(async (wallet, fresh) => {
+  const adopt = useCallback(async (wallet, fresh, viaPasskey) => {
+    passkeyRef.current = !!viaPasskey;
+    setPasskey(!!viaPasskey);
     wRef.current = wallet;
     setW(wallet);
     const addr = await wallet.getPrimaryAddress();
@@ -120,7 +145,7 @@ export default function Wallet() {
       {stage === 'none' && <Onboard run={run} adopt={adopt} busy={!!busy} />}
       {stage === 'locked' && <Unlock rec={rec} run={run} adopt={adopt} forget={forget} busy={!!busy} />}
       {stage === 'open' && (
-        <Open w={w} address={address} viewOnly={viewOnly} snap={snap} progress={progress} seed={seed} setSeed={setSeed}
+        <Open w={w} passkey={passkey} address={address} viewOnly={viewOnly} snap={snap} progress={progress} seed={seed} setSeed={setSeed}
               sync={sync} lock={lock} forget={forget} run={run} refresh={() => refresh(wRef.current)} />
       )}
     </div>
@@ -128,71 +153,126 @@ export default function Wallet() {
 }
 
 function Onboard({ run, adopt, busy }) {
+  const [pkOk, setPkOk] = useState(false);
+  useEffect(() => { pk.supported().then(setPkOk); }, []);
+  const pkCreate = () => run('Creating the passkey wallet', async () => {
+    const k = await pk.createPasskey();
+    await adopt(await eng.restoreFromSpendKey(k.spendKey, k.password, k.height), true, true);
+  });
+  const pkOpen = () => run('Opening with the passkey', async () => {
+    const k = await pk.openPasskey();
+    await adopt(await eng.restoreFromSpendKey(k.spendKey, k.password, k.height), true, true);
+  });
   const [mode, setMode] = useState('create');
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [seed, setSeed] = useState('');
+  const [offset, setOffset] = useState('');
   const [height, setHeight] = useState('0');
   const [addr, setAddr] = useState('');
   const [vk, setVk] = useState('');
-  const [shown, setShown] = useState('');
-  const [pending, setPending] = useState(null);
-  const okPw = pw.length >= 8 && pw === pw2;
+  const [sk, setSk] = useState('');
+  const [keysFile, setKeysFile] = useState(null);
+  const [cacheFile, setCacheFile] = useState(null);
+  const fresh = mode === 'create' || mode === 'seed' || mode === 'keys' || mode === 'view';
+  const okPw = fresh ? pw.length >= 8 && pw === pw2 : pw.length > 0;
 
-  const create = () => run('Creating the wallet', async () => {
-    const wallet = await eng.createNew(pw);
-    setShown(await wallet.getSeed());
-    setPending(wallet);
-  });
-  const restore = () => run('Restoring the wallet', async () => {
+  const go = () => run({ create: 'Creating the wallet', seed: 'Restoring the wallet', keys: 'Restoring the wallet', view: 'Restoring the wallet', backup: 'Opening the backup', desktop: 'Opening the desktop wallet' }[mode], async () => {
     const h = Math.max(0, parseInt(height, 10) || 0);
-    const wallet = mode === 'seed' ? await eng.restoreFromSeed(seed, pw, h) : await eng.restoreViewOnly(addr, vk, pw, h);
+    let wallet;
+    if (mode === 'create') wallet = await eng.createNew(pw);
+    else if (mode === 'seed') wallet = await eng.restoreFromSeed(seed, pw, h, { offset });
+    else if (mode === 'keys') wallet = await eng.restoreFromKeys(addr, vk, sk, pw, h);
+    else if (mode === 'view') wallet = await eng.restoreViewOnly(addr, vk, pw, h);
+    else {
+      const { keysData } = mode === 'backup' ? eng.parseBackup(await readFile(keysFile)) : { keysData: await readFile(keysFile) };
+      const cache = mode === 'desktop' && cacheFile ? await readFile(cacheFile) : undefined;
+      try { wallet = await eng.openFiles(keysData, cache, pw); } catch (e) { throw wrongPw(e); }
+    }
     await adopt(wallet, true);
   });
 
-  if (pending) {
-    return (
-      <div className="card">
-        <h3>Write down your seed</h3>
-        <p>These 25 words are the only way to recover this wallet. Anyone who has them can spend your coins; if you lose them (and clear this browser's data) the coins are gone.</p>
-        <p className="mono seedbox">{shown}</p>
-        <button disabled={busy} onClick={() => run('Opening', async () => { await adopt(pending, true); setPending(null); setShown(''); })}>I have saved my seed, open the wallet</button>
-      </div>
-    );
-  }
+  const ready = okPw && (
+    mode === 'create' ||
+    (mode === 'seed' && seed.trim().split(/\s+/).length === 25) ||
+    (mode === 'keys' && isAddress(addr) && isHex64(vk) && isHex64(sk)) ||
+    (mode === 'view' && isAddress(addr) && isHex64(vk)) ||
+    ((mode === 'backup' || mode === 'desktop') && keysFile));
+  const fileInput = (label, onPick, accept) => (
+    <p><label className="muted">{label} <input type="file" accept={accept} onChange={(e) => onPick(e.target.files[0] || null)} /></label></p>
+  );
   return (
     <div className="card">
       <div className="controls">
         <button className={mode === 'create' ? 'on' : ''} onClick={() => setMode('create')}>Create a wallet</button>
         <button className={mode === 'seed' ? 'on' : ''} onClick={() => setMode('seed')}>Restore from seed</button>
+        <button className={mode === 'keys' ? 'on' : ''} onClick={() => setMode('keys')}>Restore from private keys</button>
+        <button className={mode === 'backup' ? 'on' : ''} onClick={() => setMode('backup')}>Load backup file</button>
+        <button className={mode === 'desktop' ? 'on' : ''} onClick={() => setMode('desktop')}>Import desktop wallet</button>
         <button className={mode === 'view' ? 'on' : ''} onClick={() => setMode('view')}>View-only</button>
       </div>
+      {mode === 'create' && <p className="muted">Opens at once. Back it up afterwards (seed words or a backup file): the page reminds you until you do.</p>}
       {mode === 'seed' && (
-        <p><textarea className="wide mono" rows={3} placeholder="25 word seed" value={seed} onChange={(e) => setSeed(e.target.value)} /></p>
-      )}
-      {mode === 'view' && (
         <>
-          <p className="muted">A view-only wallet sees incoming payments (mined rewards too) but cannot spend. It cannot see outgoing payments either, so its balance also counts coins the full wallet has already spent.</p>
-          <p><input className="wide mono" placeholder="SM64… primary address" value={addr} onChange={(e) => setAddr(e.target.value)} /></p>
-          <p><input className="wide mono" placeholder="private view key (64 hex)" value={vk} onChange={(e) => setVk(e.target.value)} /></p>
+          <p><textarea className="wide mono" rows={3} placeholder="25 word seed" value={seed} onChange={(e) => setSeed(e.target.value)} /></p>
+          <p className="muted">
+            The language (English, Spanish, French, German, Italian, Portuguese, Dutch, Russian, Japanese, Chinese, Esperanto, Lojban) is detected from the words.<br />
+            Seed offset (optional passphrase) <input type="password" value={offset} onChange={(e) => setOffset(e.target.value)} />
+          </p>
         </>
       )}
-      {mode !== 'create' && (
+      {(mode === 'keys' || mode === 'view') && (
+        <>
+          {mode === 'view'
+            ? <p className="muted">A view-only wallet sees incoming payments (mined rewards too) but cannot spend. It cannot see outgoing payments either, so its balance also counts coins the full wallet has already spent.</p>
+            : <p className="muted">The address and both private keys (as the desktop wallet's <code>viewkey</code> and <code>spendkey</code> commands print them). They must belong together.</p>}
+          <p><input className="wide mono" placeholder="SM64… primary address" value={addr} onChange={(e) => setAddr(e.target.value)} /></p>
+          <p><input className="wide mono" placeholder="private view key (64 hex)" value={vk} onChange={(e) => setVk(e.target.value)} /></p>
+          {mode === 'keys' && <p><input className="wide mono" type="password" placeholder="private spend key (64 hex)" value={sk} onChange={(e) => setSk(e.target.value)} /></p>}
+        </>
+      )}
+      {mode === 'backup' && (
+        <>
+          <p className="muted">A file saved by "Download backup" (sm64coin-wallet-….json), or a raw wallet <code>.keys</code> file. It is read in this browser only.</p>
+          {fileInput('Backup file', setKeysFile, '.json,.keys,application/json')}
+        </>
+      )}
+      {mode === 'desktop' && (
+        <>
+          <p className="muted">The SM64Coin desktop wallet (GUI or CLI) writes <code>&lt;name&gt;.keys</code> and a cache file <code>&lt;name&gt;</code>. Pick the .keys file; the cache is optional (it only saves rescanning). Enter that wallet's own password.</p>
+          {fileInput('The .keys file', setKeysFile, '.keys')}
+          {fileInput('The cache file (optional, no extension)', setCacheFile, '')}
+        </>
+      )}
+      {(mode === 'seed' || mode === 'keys' || mode === 'view') && (
         <p><label className="muted">Start scanning at block <input value={height} size={8} onChange={(e) => setHeight(e.target.value)} /> (0 is always right, a later block is faster)</label></p>
       )}
       <p>
-        <input type="password" placeholder="password (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
-        <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} />
+        <input type="password" placeholder={fresh ? 'password (8+ characters)' : 'the file\'s password'} value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+        {fresh && <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} />}
       </p>
-      {mode === 'create'
-        ? <button disabled={!okPw || busy} onClick={create}>Create</button>
-        : <button disabled={!okPw || busy || (mode === 'seed' ? seed.trim().split(/\s+/).length !== 25 : !isAddress(addr) || !/^[0-9a-fA-F]{64}$/.test(vk.trim()))} onClick={restore}>Restore</button>}
-      <p className="muted">The password encrypts the wallet in this browser only; it can't be recovered, but the seed always can.</p>
+      <button disabled={!ready || busy} onClick={go}>{mode === 'create' ? 'Create' : mode === 'backup' || mode === 'desktop' ? 'Open and save in this browser' : 'Restore'}</button>
+      {pkOk && (
+        <div className="notice" data-testid="passkey-box">
+          <b>Passkey wallet (experimental, optional)</b>
+          <p className="muted">Instead of a password, a passkey on this device (synced by your password manager or phone) makes and opens the wallet; the same passkey opens the same wallet on any device, on this website only. Nothing about the passkey is sent anywhere.</p>
+          <p className="walleterr">If you delete the passkey, the coins are lost unless you saved the seed words. Export them from the wallet page.</p>
+          <button disabled={busy} onClick={pkCreate}>Create passkey wallet (experimental)</button>{' '}
+          <button disabled={busy} onClick={pkOpen}>Open with passkey</button>
+        </div>
+      )}
+      <p className="muted">Your keys stay in this browser. The password encrypts the wallet here only; it can't be recovered, but the seed words or a backup file always can.</p>
     </div>
   );
 }
 
 function Unlock({ rec, run, adopt, forget, busy }) {
+  const pkUnlock = () => run('Opening with the passkey', async () => {
+    const k = await pk.openPasskey();
+    let wallet;
+    try { wallet = await eng.openStored(rec, k.password); } catch { throw new Error('That passkey does not open this wallet (pick the one you made it with).'); }
+    await adopt(wallet, false, true);
+  });
   const [pw, setPw] = useState('');
   const go = () => run('Unlocking', async () => {
     try { await adopt(await eng.openStored(rec, pw), false); }
@@ -202,16 +282,48 @@ function Unlock({ rec, run, adopt, forget, busy }) {
     <div className="card">
       <h3>Unlock</h3>
       <p className="mono break">{rec ? short(rec.address) : ''}{rec?.viewOnly ? ' (view-only)' : ''}</p>
-      <input type="password" autoFocus placeholder="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && pw && go()} />{' '}
-      <button disabled={!pw || busy} onClick={go}>Unlock</button>{' '}
+      {rec?.passkey && <p><button disabled={busy} onClick={pkUnlock}>Open with passkey</button> <span className="muted">this wallet has no password: it is opened by its passkey</span></p>}
+      {!rec?.passkey && <input type="password" autoFocus placeholder="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && pw && go()} />}{' '}
+      {!rec?.passkey && <button disabled={!pw || busy} onClick={go}>Unlock</button>}{' '}
       <button className="linkish" onClick={forget}>forget this wallet</button>
     </div>
   );
 }
 
-function Open({ w, address, viewOnly, snap, progress, seed, setSeed, sync, lock, forget, run, refresh }) {
+function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sync, lock, forget, run, refresh }) {
+  const [backed, setBacked] = useState(() => isBackedUp(address));
+  const [later, setLater] = useState(false);
+  const done = () => { markBackedUp(address); setBacked(true); };
+  const downloadBackup = () => run('Preparing the backup', async () => {
+    const b = await eng.makeBackup(w);
+    download(b.name, b.doc, 'application/json');
+    done();
+  });
+  const downloadKeys = () => run('Preparing the keys file', async () => {
+    const b = await eng.makeBackup(w);
+    download(b.keysName, b.keys, 'application/octet-stream');
+    done();
+  });
+  const showSeed = async () => {
+    if (seed) { setSeed(''); return; }
+    setSeed(viewOnly ? 'view-only wallet: no seed' : (await eng.allKeys(w)).seed || 'this wallet has no seed words (use Export keys)');
+    if (!viewOnly) done();
+  };
   return (
     <>
+      {!backed && !later && (
+        <div className="card notice">
+          <h3>Back up your wallet</h3>
+          {passkey && <p className="walleterr">Passkey wallet: it opens with your passkey, which only works on this website. If the passkey is deleted the coins are lost unless you save the seed words.</p>}
+          <p>This wallet exists only in this browser. <b>Without a backup, clearing the browser's data (or switching browser or device) loses the coins.</b> Your keys stay here; a backup is a copy you keep yourself.</p>
+          <div className="controls">
+            <button onClick={showSeed}>{seed ? 'Hide seed words' : 'Show seed words'}</button>
+            <button onClick={downloadBackup}>Download backup file</button>
+            <button className="linkish" onClick={() => setLater(true)}>remind me later</button>
+          </div>
+          {seed && <p className="mono seedbox">{seed}</p>}
+        </div>
+      )}
       <div className="card">
         <div className="label">Primary address</div>
         <p className="mono break addr">{address}</p>
@@ -232,17 +344,62 @@ function Open({ w, address, viewOnly, snap, progress, seed, setSeed, sync, lock,
       <div className="card">
         <div className="controls">
           <button onClick={sync}>Sync now</button>
-          <button onClick={async () => setSeed(seed ? '' : (viewOnly ? 'view-only wallet: no seed' : await w.getSeed()))}>{seed ? 'Hide seed' : 'Show seed'}</button>
+          <button onClick={showSeed}>{seed ? 'Hide seed' : 'Show seed'}</button>
+          <button onClick={downloadBackup}>Download backup</button>
+          <button onClick={downloadKeys} title="the raw wallet2 .keys file, as the desktop wallet reads it">Download .keys</button>
           <button onClick={lock}>Lock</button>
           <button onClick={forget}>Forget</button>
         </div>
         {seed && <p className="mono seedbox">{seed}</p>}
       </div>
+      <ExportKeys w={w} run={run} onShown={done} passkey={passkey} />
       {viewOnly && <p className="muted">View-only: spends made by the full wallet are not visible here, so this balance can be higher than the real one (change from a payment shows up as received).</p>}
       {!viewOnly && <Board w={w} run={run} />}
       <Txs snap={snap} />
       {!viewOnly && <Send w={w} snap={snap} run={run} refresh={refresh} />}
     </>
+  );
+}
+
+function ExportKeys({ w, run, onShown, passkey }) {
+  const [step, setStep] = useState(0); // 0 closed, 1 confirm + password, 2 shown
+  const [pw, setPw] = useState('');
+  const [k, setK] = useState(null);
+  const close = () => { setStep(0); setPw(''); setK(null); };
+  const reveal = () => run('Checking the password', async () => {
+    if (passkey) { const k = await pk.openPasskey(); await eng.checkPassword(w, k.password); } else await eng.checkPassword(w, pw);
+    setK(await eng.allKeys(w)); setPw(''); setStep(2); onShown();
+  });
+  const row = (label, v, secret) => v ? (
+    <p><span className="label">{label}</span><br /><span className={`mono break${secret ? ' seedbox' : ''}`}>{v}</span>{' '}
+      <button onClick={() => copy(v)}>Copy</button></p>
+  ) : null;
+  return (
+    <div className="card">
+      <h3>Export keys</h3>
+      {step === 0 && <button onClick={() => setStep(1)}>Export keys…</button>}
+      {step === 1 && (
+        <>
+          <p className="walleterr">Anyone who sees the spend key or the seed words can spend all of this wallet's coins. Show them only where nobody can look over your shoulder, and never paste them into a website or send them to anyone.</p>
+          {!passkey && <><input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && pw && reveal()} />{' '}</>}
+          <button disabled={!passkey && !pw} onClick={reveal}>I understand, show the keys</button>{' '}
+          <button className="linkish" onClick={close}>cancel</button>
+        </>
+      )}
+      {step === 2 && k && (
+        <>
+          <p className="walleterr">Secret: whoever has the spend key or the seed can spend your coins.</p>
+          {row('Seed words (25)' + (k.seedLanguage ? `, ${k.seedLanguage}` : ''), k.seed, true)}
+          {!k.seed && <p className="muted">This wallet has no seed words (it was made from keys that are not derived from a seed, or is view-only).</p>}
+          {row('Private spend key', k.spendKey, true)}
+          {row('Private view key', k.viewKey, true)}
+          {row('Public spend key', k.publicSpendKey)}
+          {row('Public view key', k.publicViewKey)}
+          {row('Address', k.address)}
+          <button onClick={close}>Hide</button>
+        </>
+      )}
+    </div>
   );
 }
 
