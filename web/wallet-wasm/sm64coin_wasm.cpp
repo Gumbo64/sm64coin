@@ -17,9 +17,10 @@
 #include <vector>
 #include "crypto/hash.h"
 #include "sm64coin/sm64coin.h"
-#if defined(SM64_WALLET_XZ)
-#include <lzma.h>
-#endif
+#include "xz-embedded/xz_wallet_config.h"
+extern "C" {
+#include "xz-embedded/xz.h" // xz-embedded (vendored; xz_unity.c is the C side), no liblzma in the browser
+}
 
 namespace sm64coin
 {
@@ -47,7 +48,9 @@ namespace sm64coin
 
   crypto::hash proof_id(const std::string &proof)
   {
-    const size_t MAX_FRAMES = 1 << 20;
+    // Rust: decode_proof(blob, rules().max_frames_any()) = min(the mainnet rules' largest time limit, proof.rs MAX_FRAMES)
+    // (rules.rs: StarCycle base_frames 36000 at difficulty 1). Over it, every stateless codec is undecodable.
+    const size_t MAX_FRAMES = 36000;
     size_t i = 0;
     uint64_t frames;
     if (!get_varint(proof, i, frames) || frames > MAX_FRAMES || i + 2 > proof.size()) return bad(proof);
@@ -83,19 +86,27 @@ namespace sm64coin
         for (uint64_t k = 0; k < n; ++k) raw += pad;
       }
     }
-#if defined(SM64_WALLET_XZ)
     else if (codec == 2)
     {
+      // Rust (proof.rs Xz::decode): xz2's XzDecoder (liblzma stream decoder, no memory limit) read through
+      // take(frames*4+1): a stream that fills the cap, a failing stream, any byte after the stream (more
+      // streams, stream padding, garbage: measured against the native decoder) or an output that is not
+      // whole pads is undecodable. xz-embedded's single-call mode decodes into the output buffer of exactly
+      // that size (a stream that would not fit, or is cut short, does not return STREAM_END).
       const size_t cap = (size_t)frames * 4 + 1;
       raw.resize(cap);
-      uint64_t memlimit = UINT64_MAX;
-      size_t in_pos = 0, out_pos = 0;
-      if (lzma_stream_buffer_decode(&memlimit, 0, nullptr, (const uint8_t *)body.data(), &in_pos, body.size(),
-                                    (uint8_t *)&raw[0], &out_pos, cap) != LZMA_OK || out_pos >= cap || out_pos % 4)
-        return bad(proof);
-      raw.resize(out_pos);
+      static const bool crc_ready = (xz_crc32_init(), xz_crc64_init(), true); // the CRC tables (thread-safe static init)
+      (void)crc_ready;
+      struct xz_dec *dec = xz_dec_init(XZ_SINGLE, 0);
+      if (!dec) return bad(proof);
+      struct xz_buf b;
+      b.in = (const uint8_t *)body.data(); b.in_pos = 0; b.in_size = body.size();
+      b.out = (uint8_t *)&raw[0]; b.out_pos = 0; b.out_size = cap;
+      const xz_ret r = xz_dec_run(dec, &b);
+      xz_dec_end(dec);
+      if (r != XZ_STREAM_END || b.in_pos != b.in_size || b.out_pos >= cap || b.out_pos % 4) return bad(proof);
+      raw.resize(b.out_pos);
     }
-#endif
     else
       return bad(proof);
 

@@ -6,7 +6,7 @@ build) into `web/public/wallet/` (git-ignored, like the other wasm). The Wallet 
 
 * `sm64coin_wasm.cpp`: `sm64coin::proof_id`, the only part of the daemon's proof-of-play code a wallet
   needs (block ids commit to the proof). Mirrors `pow/sm64pow/src/{lib,proof,statecodec}.rs`; keep in step.
-  Codec 2 (xz) needs liblzma and is not supported (such a block would fail to hash).
+  Codec 2 (xz) is decoded with the vendored xz-embedded (`xz-embedded/`, see its README), as Rust's xz2 does.
 * `monero-ts-sm64.patch`: build fixes for current emscripten/clang and the extra webpack configs.
 
 CI: `.github/workflows/wallet-engine.yml` (called by pages.yml and the release workflow's website job) builds it
@@ -14,3 +14,9 @@ with emscripten 6.0.13, caches `web/wallet-wasm/work` (keyed on the script, patc
 uploads the artifact `wallet-engine`; the site jobs download it into `web/public/wallet/` before `npm run build`.
 A failed engine build never fails the site: the Wallet page then says the engine is unavailable.
 Needs the `monero` submodule (the script also inits its `external/rapidjson`). Verified from a fresh clone.
+
+Tests (`web/wallet-wasm/test/`): `run.sh` compiles `sm64coin_wasm.cpp` natively (asan/ubsan) and with emscripten and checks
+`proof_id` against `vectors.jsonl`, ids computed by the Rust crate (`pow/sm64pow/examples/proofid_vectors.rs`, fed by
+`make-vectors.py` with real chain (the committed file has 3 blocks)'s proofs re-encoded as raw / run-length / xz, plus malformed blobs: truncated,
+bit-flipped, trailing bytes, extra streams, over-long, wrong frame counts ...). `sync-check.mjs` syncs the built engine
+against a node in headless Chromium.

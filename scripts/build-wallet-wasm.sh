@@ -7,8 +7,8 @@
 # Needs: emsdk (EMSDK env, `source emsdk_env.sh`), cmake, node/npm, git, curl, gcc (openssl headers).
 # First run takes ~30 min (boost, openssl, ~600 files); WORK is a cache. Uses at most JOBS (8) cores.
 # SM64Coin-specific parts: web/wallet-wasm/sm64coin_wasm.cpp (the block id's proof_id, without the Rust
-# game engine) and monero-ts-sm64.patch (c++17 for the newer emscripten, boost/clang fixes, the
-# worker/lib webpack configs). See web/wallet-wasm/README.md.
+# game engine; xz-embedded/ is its vendored xz decoder for proof codec 2) and monero-ts-sm64.patch
+# (c++17 for the newer emscripten, boost/clang fixes, the worker/lib webpack configs). See web/wallet-wasm/README.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERE="$ROOT/web/wallet-wasm"
@@ -36,6 +36,8 @@ if [ ! -d monero-ts ]; then
   rmdir monero-ts/external/monero-cpp/external/monero-project 2>/dev/null || true
   ln -sfn "$ROOT/monero" monero-ts/external/monero-cpp/external/monero-project
 fi
+# a cache cloned before the xz decoder joined the patch: add its source to the CMake list
+grep -q xz_unity monero-ts/CMakeLists.txt || sed -i 's|^\( *\)${SM64_WALLET_WASM}/sm64coin_wasm.cpp$|&\n\1${SM64_WALLET_WASM}/xz-embedded/xz_unity.c|' monero-ts/CMakeLists.txt
 # unbound's header (wallet2's DNS code includes it)
 [ -d "unbound-$UNBOUND" ] || { curl -sL "https://nlnetlabs.nl/downloads/unbound/unbound-$UNBOUND.tar.gz" | tar xz; }
 export UNBOUND_DIR="$WORK/unbound-$UNBOUND"

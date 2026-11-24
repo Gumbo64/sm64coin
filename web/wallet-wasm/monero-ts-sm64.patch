@@ -29,17 +29,18 @@ index 1f1387df..44558ebb 100644
  
  #############
  # OpenSSL
-@@ -233,6 +235,9 @@ set(
+@@ -233,6 +235,10 @@ set(
      ${MONERO_PROJECT_SRC}/ringct/multiexp.cc
      ${MONERO_PROJECT_SRC}/mnemonics/electrum-words.cpp
      ${MONERO_PROJECT}/external/easylogging++/easylogging++.cc
 +
 +    # SM64COIN: proof_id for block ids (see sm64coin_wasm.cpp)
 +    ${SM64_WALLET_WASM}/sm64coin_wasm.cpp
++    ${SM64_WALLET_WASM}/xz-embedded/xz_unity.c
  )
  
  ################################
-@@ -297,7 +302,7 @@ EMCC_LINKER_FLAGS_BASE
+@@ -297,7 +303,7 @@ EMCC_LINKER_FLAGS_BASE
  # unsure if the -I...boost..include is necessary here due to include above
  # TODO? does EXPORT_NAME need to be the same for both targets? (or should it be set per-target with …_WASM, …_ASMJS?)
  
@@ -48,7 +49,7 @@ index 1f1387df..44558ebb 100644
  --bind \
  -s MODULARIZE=1 \
  -s 'EXPORT_NAME=\"monero_ts\"' \
-@@ -308,11 +313,10 @@ EMCC_LINKER_FLAGS_BASE
+@@ -308,11 +314,10 @@ EMCC_LINKER_FLAGS_BASE
  -s EXCEPTION_DEBUG=0 \
  -s NO_DYNAMIC_EXECUTION=1 \
  -s NODEJS_CATCH_EXIT=0 \
