@@ -94,13 +94,18 @@ pub struct MineResult {
 
 /// Mines one block (the native automine's `rrt::mine` with its options), returning the sealed
 /// proof when the run makes the template's progress point.
+///
+/// `parent_state`: the parent's end state (a save state, e.g. from the node's get_sm64_state),
+/// used as is; without it the parent is rebuilt from `parent_pads`.
 #[wasm_bindgen]
-pub fn mine(request: &str) -> Result<String, JsError> {
+pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsError> {
     let r: MineRequest = serde_json::from_str(request).map_err(err)?;
     let start = if r.start == "power-on" { Start::PowerOn } else { Start::Parent };
     let params = sm64pow::params(r.retarget_difficulty.max(1));
     let seed = sm64pow::Seed::from_hex(&r.seed_hash).map_err(err)?;
-    let parent = if start == Start::Parent {
+    let parent = if start == Start::Parent && parent_state.is_some() {
+        Some(sm64pow::sm64_binds::SaveState::from_bytes(parent_state.unwrap()).map_err(err)?)
+    } else if start == Start::Parent {
         let b = hex::decode(&r.parent_pads).map_err(err)?;
         let pads: Vec<GamePad> = b.chunks(4).map(|c| GamePad::new(u16::from_le_bytes([c[0], c[1]]), c[2] as i8, c[3] as i8)).collect();
         Some(sm64pow::statecodec::state_after(&pads).map_err(err)?)

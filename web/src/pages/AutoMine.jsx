@@ -67,14 +67,23 @@ function AutoMiner() {
     setStats((s) => ({ ...s, rounds: s.rounds + 1 }));
     const start = t.sm64_start === 'power-on' ? 'power-on' : 'parent';
     let parentPads = '';
+    let parentState = null; // the parent's end state from the node (it has it cached)
     if (start === 'parent') {
-      say(`block ${t.height}: rebuilding the parent's end state (${t.sm64_parent_stars} stars, ${t.sm64_parent_keys} keys)`);
       try {
-        parentPads = (await getCycle(t.prev_hash)).played_pads;
+        const s = await daemon('get_sm64_state', { hash: t.prev_hash });
+        const gz = new Blob([hexToBytes(s.state_gz)]).stream().pipeThrough(new DecompressionStream('gzip'));
+        parentState = await new Response(gz).arrayBuffer();
+        say(`block ${t.height}: the parent's end state from the node (${t.sm64_parent_stars} stars, ${t.sm64_parent_keys} keys)`);
       } catch (e) {
-        say(`no cycle: ${e}; retrying in 10 s`);
-        setTimeout(() => round(c), 10000);
-        return;
+        // An older node, or the state isn't cached: rebuild it from the cycle.
+        say(`block ${t.height}: rebuilding the parent's end state (${t.sm64_parent_stars} stars, ${t.sm64_parent_keys} keys)`);
+        try {
+          parentPads = (await getCycle(t.prev_hash)).played_pads;
+        } catch (e2) {
+          say(`no cycle: ${e2}; retrying in 10 s`);
+          setTimeout(() => round(c), 10000);
+          return;
+        }
       }
     }
     if (c.stopped || c.template !== t) return;
@@ -118,6 +127,7 @@ function AutoMiner() {
       w.postMessage({
         type: 'mine',
         request: { start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1 },
+        parentState: parentState ? parentState.slice(0) : null,
       });
     };
     for (let i = 0; i < count; i++) launch(i);

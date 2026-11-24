@@ -61,7 +61,7 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs() }) 
   parent.initSync({ module });
   parent.init(rom);
   return {
-    mine: (request) => JSON.parse(parent.mine(JSON.stringify(request))),
+    mine: (request, parentState) => JSON.parse(parent.mine(JSON.stringify(request), parentState || undefined)),
     steps: () => steps,
     fs,
   };

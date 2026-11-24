@@ -12,7 +12,7 @@ self.onmessage = async (e) => {
   try {
     const [module, rom] = await Promise.all([WebAssembly.compileStreaming(fetch(wasmUrl)), getFile('ROM')]);
     const m = makeMiner({ module, glue, rom: new Uint8Array(rom), log: (line) => self.postMessage({ type: 'log', line }) });
-    const result = m.mine(e.data.request);
+    const result = m.mine(e.data.request, e.data.parentState ? new Uint8Array(e.data.parentState) : null);
     self.postMessage({ type: 'result', result, steps: m.steps() });
   } catch (err) {
     self.postMessage({ type: 'error', message: String(err?.message || err) });
