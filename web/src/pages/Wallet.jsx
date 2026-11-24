@@ -172,7 +172,7 @@ function Onboard({ run, adopt, busy }) {
       )}
       {mode === 'view' && (
         <>
-          <p className="muted">A view-only wallet sees incoming payments (mined rewards too) but cannot spend.</p>
+          <p className="muted">A view-only wallet sees incoming payments (mined rewards too) but cannot spend. It cannot see outgoing payments either, so its balance also counts coins the full wallet has already spent.</p>
           <p><input className="wide mono" placeholder="SM64… primary address" value={addr} onChange={(e) => setAddr(e.target.value)} /></p>
           <p><input className="wide mono" placeholder="private view key (64 hex)" value={vk} onChange={(e) => setVk(e.target.value)} /></p>
         </>
@@ -238,6 +238,7 @@ function Open({ w, address, viewOnly, snap, progress, seed, setSeed, sync, lock,
         </div>
         {seed && <p className="mono seedbox">{seed}</p>}
       </div>
+      {viewOnly && <p className="muted">View-only: spends made by the full wallet are not visible here, so this balance can be higher than the real one (change from a payment shows up as received).</p>}
       {!viewOnly && <Board w={w} run={run} />}
       <Txs snap={snap} />
       {!viewOnly && <Send w={w} snap={snap} run={run} refresh={refresh} />}
@@ -260,7 +261,7 @@ function Txs({ snap }) {
                 <tr key={r.hash}>
                   <td>{r.height ?? 'pool'}</td>
                   <td>{r.miner ? '★ mined reward' : net >= 0n ? 'received' : 'sent'}</td>
-                  <td className="mono">{net >= 0n ? '+' : '-'}{eng.fmt(net >= 0n ? net : -net)}</td>
+                  <td className="mono">{net >= 0n ? '+' : '-'}{eng.fmt(net >= 0n ? net : -net)}{net < 0n && r.fee ? ` (+${eng.fmt(r.fee)} fee)` : ''}</td>
                   <td>{r.failed ? 'failed' : !r.confirmed ? 'pending' : r.locked ? (r.unlockIn > 0 ? `unlocks in ${r.unlockIn} block${r.unlockIn === 1 ? '' : 's'}` : 'unlocking') : 'unlocked'}</td>
                   <td className="mono">{r.hash && <Link to={`/block/${r.height}`} title={r.hash}>{r.hash.slice(0, 10)}…</Link>}</td>
                 </tr>
@@ -326,7 +327,6 @@ function Board({ w, run }) {
   return (
     <div className="card">
       <h3>Leaderboard</h3>
-      <p className="walleterr">Joining shares this wallet's secret view key with the node, which can then see all incoming payments to it (not spend). Fine for your own node.</p>
       <p className="walleterr">Joining shares this wallet's secret view key with the node, which can then see all incoming payments to it (not spend). Fine for your own node.</p>
       <p className="muted">
         Opt in to show your blocks on the <Link to="/leaderboard">Leaderboard</Link>. The entry is signed here with your
