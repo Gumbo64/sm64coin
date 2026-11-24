@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import RomGate from '../lib/RomGate.jsx';
-import { miner, isAddress, isolated, enableSync } from '../lib/webminer/controller.js';
+import { miner, isAddress, isolated, enableSync, fmtRate } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
 
 // The automated miner in the browser: the native miner's RRT campaign (objective-RRT search,
@@ -23,7 +23,7 @@ export default function AutoMine() {
 
 function AutoMiner() {
   const s = useMiner();
-  const { address, count, running, log, workers, stats, mode, vizOn } = s;
+  const { address, count, running, log, workers, stats, mode, vizOn, fps } = s;
   // The views redraw only while this page is on screen.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
@@ -62,6 +62,12 @@ function AutoMiner() {
         </label>
         {vizOn && running && !isolated && <span className="muted"> · workers started before it was switched on keep sampling off until their next search (enable worker sync for an instant switch)</span>}
       </p>
+      {running && (
+        <p style={{ fontSize: '1.15em', margin: '0.4em 0' }} title="Simulated game frames per second, all workers (8 s moving average): this miner's hashrate">
+          <strong>Speed</strong> <span className="mono">{fps > 0 ? `${fmtRate(fps)} frames/s` : '…'}</span>
+          <span className="muted"> · {workers.length || count} worker{(workers.length || count) === 1 ? '' : 's'}</span>
+        </p>
+      )}
       {workers.length > 0 && (
         <table className="small">
           <tbody>

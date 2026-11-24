@@ -28,9 +28,38 @@ const SEND_AHEAD = 100; // the nodes' future-timestamp window (120 s), with a ma
 const ls = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
 
+export const RATE_WINDOW = 8; // seconds of the frames/s moving average
+/** "1.37 M", "412 k", "950": a frame rate (or count) with k / M units. */
+export const fmtRate = (x) => (x >= 1e6 ? `${(x / 1e6).toFixed(x >= 1e7 ? 1 : 2)} M` : x >= 1e3 ? `${(x / 1e3).toFixed(x >= 1e5 ? 0 : 1)} k` : `${Math.round(x)}`);
+
+/** Frames/s from the workers' cumulative per-step frame counts (a count that drops is a new step). */
+class FrameRate {
+  constructor() { this.last = []; this.cum = 0; this.samples = []; }
+  reset(i) { this.last[i] = 0; }
+  add(i, sim) {
+    const prev = this.last[i] || 0;
+    this.cum += sim >= prev ? sim - prev : sim;
+    this.last[i] = sim;
+    const t = performance.now();
+    this.samples.push([t, this.cum]);
+    const cut = t - RATE_WINDOW * 1000;
+    while (this.samples.length > 2 && this.samples[1][0] < cut) this.samples.shift();
+  }
+  clear() { this.last = []; this.samples = []; }
+  fps() {
+    const n = this.samples.length;
+    if (n < 2) return 0;
+    const [t0, c0] = this.samples[0], [t1, c1] = this.samples[n - 1];
+    // No report for a while (stopped, or between steps): the average decays instead of freezing.
+    const end = Math.max(t1, performance.now());
+    return end - t0 > 500 && performance.now() - t1 < 6000 ? (c1 - c0) / ((end - t0) / 1000) : 0;
+  }
+}
+
 class MinerController {
   constructor() {
     this.hub = new VizHub();
+    this.rate = new FrameRate();
     this.subs = new Set();
     const q = new URLSearchParams(window.location.search).get('address');
     this.address = q && isAddress(q.trim()) ? q.trim() : ls('sm64coin.address', '');
@@ -56,7 +85,7 @@ class MinerController {
   subscribe = (fn) => { this.subs.add(fn); return () => this.subs.delete(fn); };
   getSnapshot = () => this.snap;
   makeSnap() {
-    return { address: this.address, count: this.count, mode: this.mode, vizOn: this.vizOn, running: this.running, log: this.log, workers: this.workers, stats: this.stats, status: this.status() };
+    return { address: this.address, count: this.count, mode: this.mode, vizOn: this.vizOn, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
   }
   /** Wakes the views: at most 4 times a second, at once when `now`. */
   emit(now = false) {
@@ -70,11 +99,16 @@ class MinerController {
     return { ...st, on: this.running };
   }
 
+  /** Smoothed total simulated frames per second (moving average over RATE_WINDOW s); mock workers fall back to the hub's. */
+  fps() {
+    return this.rate.fps() || this.hub.workers.reduce((s, w) => s + (w.fps || 0), 0);
+  }
+
   statusKind() {
     const t = Date.now();
     const n = this.count;
-    const fps = this.hub.workers.reduce((s, w) => s + (w.fps || 0), 0);
-    const rate = fps > 0 ? `, ${(fps / 1000).toFixed(0)}k frames/s` : '';
+    const fps = this.fps();
+    const rate = fps > 0 ? `, ${fmtRate(fps)} fr/s` : '';
     if (this.flash && this.flash.until > t) return this.flash.kind === 'accepted' ? { kind: 'accepted', label: '★ block!', title: 'Block accepted' } : { kind: 'error', label: 'rejected', title: 'The block was rejected' };
     if (!this.running) return { kind: 'idle', label: 'off', title: 'Auto-miner off (click to open the Auto-mine page)' };
     if (this.error && this.error.until > t) return { kind: 'error', label: 'error', title: `Auto-miner error: ${this.error.text}` };
@@ -84,7 +118,7 @@ class MinerController {
     if (this.phase === 'loading') return { kind: 'loading', label: 'loading', title: 'Auto-miner preparing (game, state, template)' };
     const reset = this.c && this.c.status && this.c.status.some((s) => s.start === 'power-on');
     if (reset) return { kind: 'reset', label: 'reset cycle', title: `Auto-miner: ${n} worker${n === 1 ? '' : 's'}, a reset-cycle (power-on) attempt${rate}` };
-    return { kind: 'mining', label: `mining ${n}`, title: `Auto-miner mining: ${n} worker${n === 1 ? '' : 's'}${rate}` };
+    return { kind: 'mining', label: fps > 0 ? `${fmtRate(fps)} fr/s` : `mining ${n}`, title: `Auto-miner mining: ${n} worker${n === 1 ? '' : 's'}${rate}` };
   }
 
   setPhase(p) { this.phase = p; this.emit(true); }
@@ -142,6 +176,7 @@ class MinerController {
     this.c = null;
     this.running = false;
     this.workers = [];
+    this.rate.clear();
     this.phase = 'idle';
     this.error = null;
     this.emit(true);
@@ -172,7 +207,7 @@ class MinerController {
         }
       } catch { /* node hiccup */ }
     }, 5000);
-    c.tick = setInterval(() => this.emit(), 2000); // the light's frames/s
+    c.tick = setInterval(() => this.emit(), 1000); // the light's frames/s
     this.emit(true);
     this.round(c);
   }
@@ -263,6 +298,7 @@ class MinerController {
       c.pool[i] = w;
       const sh = shared[status[i].start] || null;
       hub.restartWorker(i, status[i].start);
+      this.rate.reset(i);
       if (sh) status[i].gotShared = true;
       w.onmessage = (e) => {
         const m = e.data;
@@ -274,7 +310,10 @@ class MinerController {
           show();
           return;
         }
+        if (m.type === 'progress') { this.rate.add(i, m.sim); return; }
         if (m.type === 'viz') {
+          const f = /"sim_frames":(\d+)/.exec(m.line);
+          if (f) this.rate.add(i, +f[1]);
           hub.ingest(i, m.line);
           return;
         }
@@ -314,7 +353,7 @@ class MinerController {
         type: 'mine',
         request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1 },
         parentState: status[i].start === 'parent' && parentState ? parentState.slice(0) : null,
-        viz: this.vizOn,
+        viz: true, // the sampler is always on: with the feed off it only reports a frame count
         vizOn: this.vizOn,
         shared: sh,
         board: board && { sab: board, slot: i, slots: count },

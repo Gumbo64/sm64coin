@@ -200,6 +200,11 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator)?;
     if job.viz {
         engine.on_round = Some(viz::sampler(job, &root));
+    } else {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            engine.on_round = Some(viz::progress_file(format!("{}.progress", job.out_dir)));
+        }
     }
     engine.run()?;
 
@@ -572,10 +577,14 @@ pub mod viz {
         let mut best: Option<usize> = None;
         Box::new(move |e: &Engine| {
             // The page can switch the feed off while the search runs: then this is the whole cost.
-            if !viz_on() {
+            if last.elapsed().as_secs_f64() < 1.0 {
                 return;
             }
-            if last.elapsed().as_secs_f64() < 1.0 {
+            // Feed off: only a tiny progress line (frames simulated so far in this step), about once a second,
+            // for the page's frames/s readout.
+            if !viz_on() {
+                last = Instant::now();
+                emit(&format!("{{\"progress\":1,\"sim_frames\":{}}}", e.total_frames_emulated()));
                 return;
             }
             last = Instant::now();
@@ -624,6 +633,20 @@ pub mod viz {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn emit(_line: &str) {}
+
+    /// Native: about once a second the frames this step has simulated so far go into `path` (a bare number), where the
+    /// parent (`run_child`) reads them for the miner's frames/s counter ([`super::super::SIM_FRAMES`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn progress_file(path: String) -> Box<dyn FnMut(&Engine) + Send> {
+        let mut last = Instant::now();
+        Box::new(move |e: &Engine| {
+            if last.elapsed().as_secs_f64() < 1.0 {
+                return;
+            }
+            last = Instant::now();
+            let _ = std::fs::write(&path, e.total_frames_emulated().to_string());
+        })
+    }
 
     /// Whether the page wants the feed now (`sm64miner.viz_on()`, a flag the page can flip).
     #[cfg(target_arch = "wasm32")]

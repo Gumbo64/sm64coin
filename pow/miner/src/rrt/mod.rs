@@ -51,7 +51,7 @@ use sm64pow::{Params, SM64MiningGame, SM64MiningSave, Seed};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration}; use crate::sys::Instant;
 
 #[derive(Clone)]
@@ -332,6 +332,10 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, _st
     Ok(serde_json::from_str(&out?)?)
 }
 
+/// Frames simulated by this process's search steps so far (all threads, finished steps and the running ones' last
+/// progress): the miner's speed is its rate (automine's `progress` line).
+pub static SIM_FRAMES: AtomicU64 = AtomicU64::new(0);
+
 /// Runs the tree step `job` from `game` in a child process.
 #[cfg(not(target_arch = "wasm32"))]
 fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
@@ -350,11 +354,24 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
         .stdout(crate::sys::fs::File::create(&lf)?)
         .stderr(crate::sys::fs::File::options().append(true).open(&lf)?)
         .spawn()?;
+    let pf = format!("{}.progress", job.out_dir);
+    let mut counted = 0u64; // this step's frames already in SIM_FRAMES
+    let mut polled = std::time::Instant::now();
     let status = loop {
+        if polled.elapsed() >= Duration::from_millis(500) {
+            polled = std::time::Instant::now();
+            if let Ok(n) = crate::sys::fs::read_to_string(&pf).unwrap_or_default().trim().parse::<u64>() {
+                if n > counted {
+                    SIM_FRAMES.fetch_add(n - counted, Ordering::Relaxed);
+                    counted = n;
+                }
+            }
+        }
         if let Some(s) = child.try_wait()? {
             break s;
         }
         if stop.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_file(&pf);
             let _ = child.kill();
             let _ = child.wait();
             let _ = crate::sys::fs::remove_file(&state);
@@ -364,11 +381,15 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
     };
     let _ = crate::sys::fs::remove_file(&state);
     let _ = crate::sys::fs::remove_dir_all(&job.out_dir);
+    let _ = std::fs::remove_file(&pf);
     if !status.success() {
         let tail: String = crate::sys::fs::read_to_string(&lf).unwrap_or_default().lines().rev().take(5).collect::<Vec<_>>().join(" | ");
         bail!("rrtrun {tag} failed ({status}): {tail}");
     }
     let out: StepOut = serde_json::from_str(&crate::sys::fs::read_to_string(&of)?)?;
+    if out.emulated > counted {
+        SIM_FRAMES.fetch_add(out.emulated - counted, Ordering::Relaxed);
+    }
     let _ = crate::sys::fs::remove_file(&of);
     let _ = crate::sys::fs::remove_file(&jf);
     if !o.keep {
