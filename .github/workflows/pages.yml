@@ -8,7 +8,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'scripts/build-wasm.sh', '.github/workflows/pages.yml']
+    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'scripts/build-wasm.sh', 'scripts/build-wallet-wasm.sh', 'monero', '.github/workflows/pages.yml', '.github/workflows/wallet-engine.yml']
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  wallet-engine:
+    uses: ./.github/workflows/wallet-engine.yml
+
   build:
+    needs: wallet-engine
+    if: ${{ !cancelled() }}   # the site is deployed even when the wallet engine failed to build
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -58,6 +63,12 @@ jobs:
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - name: Wallet engine (wasm); without it the Wallet page says it is unavailable
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wallet-engine
+          path: web/public/wallet
       - run: npm ci
         working-directory: web
       - name: Build for /<repo>/, the visitor's own node by default

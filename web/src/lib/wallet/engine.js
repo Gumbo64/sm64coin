@@ -15,7 +15,7 @@ export function loadLib() {
     const worker = `${BASE}wallet/monero.worker.js`;
     const head = await fetch(worker, { method: 'HEAD' }).catch(() => null);
     if (!head || !head.ok || /html/.test(head.headers.get('content-type') || '')) {
-      throw new Error('The wallet engine is not part of this build (run scripts/build-wallet-wasm.sh).');
+      throw new Error('Wallet engine unavailable: it is not part of this build (scripts/build-wallet-wasm.sh builds it; the site\'s CI does it, and a failed build leaves it out).');
     }
     const m = await import(/* @vite-ignore */ `${location.origin}${BASE}wallet/monero-ts.lib.mjs`);
     m.LibraryUtils.setWorkerDistPath(worker);

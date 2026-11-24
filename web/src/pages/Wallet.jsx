@@ -24,6 +24,9 @@ export default function Wallet() {
   const [seed, setSeed] = useState('');
   const wRef = useRef(null);
   const syncing = useRef(false);
+  const [engineErr, setEngineErr] = useState('');
+
+  useEffect(() => { eng.loadLib().catch((e) => setEngineErr(e.message || String(e))); }, []);
 
   useEffect(() => {
     loadStored().then((r) => { setRec(r || null); setStage(r ? 'locked' : 'none'); }).catch(() => setStage('none'));
@@ -110,6 +113,7 @@ export default function Wallet() {
           password, and never sent anywhere. It scans the chain through the node ({getNode() || 'this site\'s proxy'}, change it on the{' '}
           <Link to="/network">Network</Link> page).
         </p>
+        {engineErr && <p className="walleterr">{engineErr}</p>}
         {err && <p className="walleterr">{err}</p>}
         {busy && <p className="muted">{busy}…</p>}
       </div>
@@ -217,6 +221,7 @@ function Open({ w, address, viewOnly, snap, progress, seed, setSeed, sync, lock,
           <Link to={`/mine?address=${address}`}><button>Mine to it</button></Link>
         </div>
         <p className="muted">The Mine and Auto-mine pages now pay their rewards to this address.</p>
+        <p className="muted">Balances and history come from the node you are connected to and are trusted as it reports them (a remote node could show wrong ones; it cannot spend your coins).</p>
       </div>
       <div className="stats">
         <div className="stat"><div className="label">Balance</div><div className="value">{snap ? eng.fmt(snap.balance) : '…'}</div></div>
@@ -321,6 +326,8 @@ function Board({ w, run }) {
   return (
     <div className="card">
       <h3>Leaderboard</h3>
+      <p className="walleterr">Joining shares this wallet's secret view key with the node, which can then see all incoming payments to it (not spend). Fine for your own node.</p>
+      <p className="walleterr">Joining shares this wallet's secret view key with the node, which can then see all incoming payments to it (not spend). Fine for your own node.</p>
       <p className="muted">
         Opt in to show your blocks on the <Link to="/leaderboard">Leaderboard</Link>. The entry is signed here with your
         spend key (only you can name this address); to count your blocks, nodes are given your address and secret view key,
