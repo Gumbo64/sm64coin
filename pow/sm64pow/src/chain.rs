@@ -609,10 +609,53 @@ pub fn played_wanted_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u
 }
 
 pub fn played_wanted_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8], state_ok: bool) -> Result<std::result::Result<Played, BlockVerdict>> {
+    if let Some(pl) = played_cached(id) {
+        return Ok(Ok((*pl).clone()));
+    }
     let mut pl = Played::default();
     match check(id, &parent, seed, None, blob, Some(&mut pl), state_ok)? {
-        BlockVerdict::Valid { .. } => Ok(Ok(pl)),
+        BlockVerdict::Valid { .. } => {
+            remember_played(*id, &pl);
+            Ok(Ok(pl))
+        }
         v => Ok(Err(v)),
+    }
+}
+
+/// Frames of played pads kept in memory (~5 bytes each). A block's played pads never change (its
+/// id commits to its parent, seed and proof), and `get_sm64_cycle` asks for every block of the
+/// cycle on each call: without this every call replayed the whole cycle (220 s on a Raspberry
+/// Pi-class board at 23 blocks), and a website polling it every few seconds kept a node busy forever.
+const PLAYED_FRAMES: usize = 8 << 20;
+
+#[derive(Default)]
+struct PlayedCache {
+    runs: HashMap<[u8; 32], Arc<Played>>,
+    order: VecDeque<[u8; 32]>,
+    frames: usize,
+}
+
+fn played_cache() -> &'static Mutex<PlayedCache> {
+    static C: OnceLock<Mutex<PlayedCache>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn played_cached(id: &[u8; 32]) -> Option<Arc<Played>> {
+    played_cache().lock().unwrap().runs.get(id).cloned()
+}
+
+fn remember_played(id: [u8; 32], pl: &Played) {
+    let mut c = played_cache().lock().unwrap();
+    if c.runs.insert(id, Arc::new(pl.clone())).is_none() {
+        c.order.push_back(id);
+        c.frames += pl.pads.len();
+    }
+    while c.frames > PLAYED_FRAMES && c.order.len() > 1 {
+        if let Some(old) = c.order.pop_front() {
+            if let Some(r) = c.runs.remove(&old) {
+                c.frames -= r.pads.len();
+            }
+        }
     }
 }
 

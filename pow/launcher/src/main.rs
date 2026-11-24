@@ -446,15 +446,32 @@ fn proxy(mut req: tiny_http::Request, base: &str, rest: &str) {
     let _ = req.respond(tiny_http::Response::from_data(data).with_status_code(code).with_header(header("Content-Type", &ct)));
 }
 
+/// Proxied requests in flight. Each runs on its own thread: a node busy replaying (or starved by
+/// the miner) answers slowly, and on the shared worker threads a few slow calls kept the page's
+/// own files from loading.
+static PROXIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_PROXIES: usize = 64;
+
+fn proxy_async(req: tiny_http::Request, base: String, rest: String) {
+    if PROXIES.fetch_add(1, Ordering::SeqCst) >= MAX_PROXIES {
+        PROXIES.fetch_sub(1, Ordering::SeqCst);
+        return respond_text(req, 503, "the node is busy: too many requests waiting for it");
+    }
+    thread::spawn(move || {
+        proxy(req, &base, &rest);
+        PROXIES.fetch_sub(1, Ordering::SeqCst);
+    });
+}
+
 fn handle(req: tiny_http::Request, cfg: &WebCfg) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').map(|(p, q)| (p.to_string(), format!("?{q}"))).unwrap_or((url.clone(), String::new()));
     if path == "/json_rpc" {
-        return proxy(req, &cfg.rpc, "/json_rpc");
+        return proxy_async(req, cfg.rpc.clone(), "/json_rpc".into());
     }
     if let Some(rest) = path.strip_prefix("/leaderboard-api") {
         return match &cfg.leaderboard {
-            Some(base) => proxy(req, base, &format!("{}{}", if rest.is_empty() { "/" } else { rest }, query)),
+            Some(base) => proxy_async(req, base.clone(), format!("{}{}", if rest.is_empty() { "/" } else { rest }, query)),
             None => respond_text(req, 503, "no leaderboard configured (start sm64coin without --no-leaderboard, or with --leaderboard-url)"),
         };
     }
@@ -533,6 +550,26 @@ fn seed_wallet_settings(rpc_port: u16) {
     }
     let _ = fs::create_dir_all(&dir);
     let _ = fs::write(&f, format!("[General]\ncheckForUpdates=false\nuseRemoteNode=true\nsm64coinLauncherNode=true\n{line}\n"));
+}
+
+/// The miner uses every core but one; at normal priority it starved the node and the website.
+/// Lowered right after spawning (its search children inherit it).
+fn lower_priority(child: &Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, child.id() as libc::id_t, 10);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        unsafe extern "system" {
+            fn SetPriorityClass(h: *mut std::ffi::c_void, class: u32) -> i32;
+        }
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x4000;
+        unsafe {
+            SetPriorityClass(child.as_raw_handle() as *mut _, BELOW_NORMAL_PRIORITY_CLASS);
+        }
+    }
 }
 
 fn open_browser(url: &str) {
@@ -794,7 +831,9 @@ fn run(o: Opts) -> Result<(), String> {
             if route.is_file() {
                 cmd.arg("--route").arg(route);
             }
-            procs.push(Proc::spawn("miner", cmd, log_dir.join("automine.log"))?);
+            let miner = Proc::spawn("miner", cmd, log_dir.join("automine.log"))?;
+            lower_priority(&miner.child);
+            procs.push(miner);
             println!("Automated miner started, mining to {addr}.");
         }
 

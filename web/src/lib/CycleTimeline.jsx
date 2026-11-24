@@ -77,8 +77,12 @@ export function useCycle() {
   const [cycle, setCycle] = useState(null);
   const [err, setErr] = useState('');
   useEffect(() => {
-    let top = null, stop = false;
+    let top = null, stop = false, busy = false;
     const poll = async () => {
+      // One request at a time: on a slow node a cycle takes longer than the poll interval, and
+      // overlapping requests for the same tip piled up until the node never caught up.
+      if (busy) return;
+      busy = true;
       try {
         const info = await daemon('get_info');
         if (info.top_block_hash === top) return;
@@ -90,7 +94,7 @@ export function useCycle() {
         top = info.top_block_hash;
         setCycle({ ...decodeCycle(c), tipTime: h.block_header.timestamp, tipHeight: h.block_header.height, top });
         setErr('');
-      } catch (e) { setErr(String(e.message || e)); }
+      } catch (e) { setErr(String(e.message || e)); } finally { busy = false; }
     };
     poll();
     const id = setInterval(poll, 5000);
@@ -263,8 +267,10 @@ export function RecentCycles() {
   const nav = useNavigate();
   const [cycles, setCycles] = useState(null);
   useEffect(() => {
-    let top = null, stop = false;
+    let top = null, stop = false, busy = false;
     const poll = async () => {
+      if (busy) return; // one walk at a time (see useCycle)
+      busy = true;
       try {
         const info = await daemon('get_info');
         if (info.top_block_hash === top) return;
@@ -285,7 +291,7 @@ export function RecentCycles() {
           hash = s.prev;
         }
         if (!stop) { top = info.top_block_hash; setCycles(out); }
-      } catch { /* keep the last list */ }
+      } catch { /* keep the last list */ } finally { busy = false; }
     };
     poll();
     const id = setInterval(poll, 10000);

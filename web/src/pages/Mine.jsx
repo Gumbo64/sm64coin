@@ -79,15 +79,17 @@ function Miner() {
     // The time limit grows every second from the parent's timestamp, and the chain
     // may become stalled: re-read both from a fresh template every ~5 s while
     // the tip is unchanged (only these fields: this attempt keeps its own template).
+    let refreshing = false; // one template request at a time (a busy node answers slower than 5 s)
     const refresh = setInterval(async () => {
-      if (!head || !isAddress(addr.current)) return;
+      if (!head || !isAddress(addr.current) || refreshing) return;
+      refreshing = true;
       try {
         const t = await daemon('get_block_template', { wallet_address: addr.current, reserve_size: 0 });
         if (t.prev_hash !== head) return;
         c.tipTemplate = t;
         setLim(t.sm64_max_frames);
         setStartMode(t.sm64_start);
-      } catch { /* daemon hiccup */ }
+      } catch { /* daemon hiccup */ } finally { refreshing = false; }
     }, 5000);
     const kill = async () => stopped || c.restart;
     // Seals and submits a finished run on its own template (a newer one has other
