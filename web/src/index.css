@@ -152,3 +152,9 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .timeline .limitmark.passed { background: var(--red); }
 .timeline .limitmark.passed span { color: var(--red); }
 .timeline .over-limit { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(255,107,107,0.10) 0 6px, transparent 6px 12px); pointer-events: none; }
+
+/* Wallet page */
+.wallet .seedbox { background:#12162a; border:1px solid var(--line); border-radius:8px; padding:10px 12px; line-height:1.7; word-spacing:4px; }
+.wallet .addr { font-size:14px; margin:6px 0 10px; }
+.wallet .walleterr { color: var(--red); }
+.wallet textarea { width:100%; }

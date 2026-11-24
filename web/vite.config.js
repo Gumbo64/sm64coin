@@ -15,8 +15,12 @@ const binds = path.resolve(here, '../../sm64-binds/javascript')
 // sm64_board too). Override with SM64COIN_DAEMON.
 // The site never talks to a wallet: keys stay in the wallet app.
 const daemon = process.env.SM64COIN_DAEMON || 'http://127.0.0.1:16481'
+// The wallet (a wasm wallet2 in a web worker) also calls the daemon's other RPC endpoints (binary
+// getblocks, get_outs, sendrawtransaction ...); a node that isn't this site's proxy must allow CORS for them.
+const walletRpc = '^/(get_?blocks(_by_height)?\\.bin|get_?hashes\\.bin|get_o_indexes\\.bin|get_outs(\\.bin)?|get_?height|get_?info|get_transactions|gettransactions|send_?raw_?transaction|is_key_image_spent|get_transaction_pool[a-z_.]*|get_output_distribution(\\.bin)?)$'
 const proxy = {
   '/json_rpc': { target: daemon, changeOrigin: true },
+  [walletRpc]: { target: daemon, changeOrigin: true },
 }
 
 // SM64COIN_BASE: the path the site is served under (GitHub Pages: /<repo>/).

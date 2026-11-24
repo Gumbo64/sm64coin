@@ -9,6 +9,9 @@ import Network from './pages/Network.jsx';
 import Bots from './pages/Bots.jsx';
 import NewBlockBanner from './lib/NewBlockBanner.jsx';
 
+// The wallet page is lazy: its engine (a wasm web worker) is fetched only when it is opened.
+const Wallet = React.lazy(() => import('./pages/Wallet.jsx'));
+
 export default function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '')}>
@@ -17,6 +20,7 @@ export default function App() {
         <NavLink to="/" end>Explorer</NavLink>
         <NavLink to="/mine">Mine</NavLink>
         <NavLink to="/automine">Auto-mine</NavLink>
+        <NavLink to="/wallet">Wallet</NavLink>
         <NavLink to="/leaderboard">Leaderboard</NavLink>
         <NavLink to="/bots">Build a bot</NavLink>
         <NavLink to="/network">Network</NavLink>
@@ -29,6 +33,7 @@ export default function App() {
           <Route path="/block/:id" element={<Block />} />
           <Route path="/mine" element={<Mine />} />
           <Route path="/automine" element={<AutoMine />} />
+          <Route path="/wallet" element={<React.Suspense fallback={<p className="muted">Loading…</p>}><Wallet /></React.Suspense>} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/bots" element={<Bots />} />
           <Route path="/network" element={<Network />} />
