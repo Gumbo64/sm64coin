@@ -1,0 +1,68 @@
+// The web miner's runtime (shared by the browser worker and the Node test): the native
+// miner's RRT campaign compiled to WebAssembly (pow/webminer), run the way the native miner
+// runs it:
+//  * the campaign (`mine`) runs in one instance;
+//  * every campaign step runs in a FRESH instance of the same compiled module, as natively in a
+//    fresh `rrtrun` process (the search reads its settings once per process);
+//  * files (the ROM, the campaign's scratch: start states, roadmap, priors, campaign memory) are
+//    one JavaScript map shared by all of them (`globalThis.sm64fs`).
+// A fresh instance has to be made synchronously (the campaign waits for its step), but the
+// wasm-bindgen glue keeps its instance in module-level variables. The glue is self-contained, so
+// its source is turned into a factory function: each call is an independent copy.
+
+/** A factory of independent instances from the wasm-bindgen glue's source text. */
+export function makeFactory(glueSource) {
+  const body = glueSource
+    .replace(/^export \{[^}]*\};?\s*$/m, '')
+    .replace(/^export (?=(class|function|const|let|async) )/gm, '')
+    .replace(/import\.meta\.url/g, '"about:blank"');
+  // eslint-disable-next-line no-new-func
+  return new Function(`${body}\nreturn { init, mine, run_step, initSync };`);
+}
+
+/** The files: path -> Uint8Array. */
+export function makeFs(map = new Map()) {
+  const dirOf = (p) => (p.endsWith('/') ? p : `${p}/`);
+  return {
+    map,
+    read: (p) => map.get(p),
+    write: (p, bytes) => { map.set(p, new Uint8Array(bytes)); },
+    remove: (p) => map.delete(p),
+    list: (dir) => {
+      const d = dirOf(dir);
+      const names = new Set();
+      for (const k of map.keys()) if (k.startsWith(d)) names.add(k.slice(d.length).split('/')[0]);
+      return [...names].join('\n');
+    },
+  };
+}
+
+/**
+ * Sets up the globals the module expects and returns {mine(request), instances}: `module` is the
+ * compiled WebAssembly.Module, `glue` the glue's source text, `rom` the ROM bytes, `log(line)`
+ * the campaign's progress.
+ */
+export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs() }) {
+  const factory = makeFactory(glue);
+  fs.write('/rom.z64', rom);
+  globalThis.sm64fs = fs;
+  let steps = 0;
+  globalThis.sm64miner = {
+    log,
+    run_child(job) {
+      steps += 1;
+      const child = factory();
+      child.initSync({ module });
+      // The step's instance is dropped afterwards (its memory goes with it), like an exited process.
+      return child.run_step(job);
+    },
+  };
+  const parent = factory();
+  parent.initSync({ module });
+  parent.init(rom);
+  return {
+    mine: (request, parentState) => JSON.parse(parent.mine(JSON.stringify(request), parentState || undefined)),
+    steps: () => steps,
+    fs,
+  };
+}

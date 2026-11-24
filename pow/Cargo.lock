@@ -2318,6 +2318,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "flate2",
  "hex",
  "obrrt-core",
  "obrrt-objectives",
@@ -2330,6 +2331,7 @@ dependencies = [
  "sm64-binds",
  "sm64pow",
  "ureq",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2806,6 +2808,7 @@ dependencies = [
  "wasmer-derive",
  "wasmer-types",
  "wasmer-vm",
+ "wasmparser",
  "windows-sys 0.59.0",
 ]
 

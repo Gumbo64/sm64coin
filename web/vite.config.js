@@ -29,6 +29,11 @@ export default defineConfig({
     // its export map only exposes the main entry, which pulls in React components.
     alias: { 'sm64-binds-src': path.resolve(here, 'node_modules/sm64-binds-frontend/src') },
   },
+  // Workers' dependencies, bundled at startup (found only when a worker starts, they made the
+  // dev server re-optimize and reload the page mid-session).
+  optimizeDeps: {
+    include: ['sm64-binds-src/scripts/sm64/Sm64Headless.js', 'sm64-binds-src/scripts/headlessWasm.js', 'sm64-binds-src/scripts/fileUpload.js'],
+  },
   server: { proxy, port: 5181, host: true, fs: { allow: [here, binds] } },
   preview: { proxy, port: 4174 },
 })

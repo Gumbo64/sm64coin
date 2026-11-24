@@ -8,7 +8,7 @@ resolver = "3"
 # The game build is consensus-critical (sm64pow::GAME_BUILD checks it at startup): pin exactly.
 # Local development: the workspace-level .cargo/config.toml may patch crates-io to a sibling
 # ../sm64-binds checkout (same game build).
-sm64-binds = { version = "=2.1.1" }
+sm64-binds = { version = "=2.1.1", default-features = false }
 anyhow = "1"
 
 [profile.release]

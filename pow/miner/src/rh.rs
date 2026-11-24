@@ -25,7 +25,7 @@ use sm64pow::sm64_binds::SaveState;
 use sm64pow::{Params, SM64MiningGame, Seed};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use crate::sys::Instant;
 
 const CHOMP: &str = include_str!("../routes/rh-bob-chomp.json");
 const KING: &str = include_str!("../routes/rh-bob-king.json");

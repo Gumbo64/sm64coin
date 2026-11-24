@@ -1,0 +1,9 @@
+[package]
+# Stands in for rayon in the browser build only (pow/webminer's [patch]): the JS backend's
+# game instances can't move between threads, and a Web Worker is one thread anyway. The parts
+# of rayon's API the search uses, run sequentially on the calling thread.
+name = "rayon"
+version = "1.11.99"
+edition = "2024"
+description = "Sequential stand-in for rayon (sm64coin web miner)"
+license = "MIT OR Apache-2.0"

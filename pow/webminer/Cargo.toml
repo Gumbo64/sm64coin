@@ -1,0 +1,34 @@
+[package]
+name = "sm64coin-webminer"
+version = "0.1.0"
+edition = "2024"
+description = "The SM64Coin automated miner (the RRT campaign search) in the browser"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+obrrt-core = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a49220b4329b4b0286865ae0dca80e58f4912837" }
+obrrt-search = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a49220b4329b4b0286865ae0dca80e58f4912837", features = ["hooked"] }
+obrrt-spec = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a49220b4329b4b0286865ae0dca80e58f4912837" }
+obrrt-objectives = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a49220b4329b4b0286865ae0dca80e58f4912837" }
+wasm-bindgen = "0.2"
+sm64pow = { path = "../sm64pow" }
+sm64coin-miner = { path = "../miner" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+hex = "0.4"
+
+# Its own workspace: the browser build swaps crates for every dependency at once.
+[workspace]
+
+# CI/clean-clone build: everything from pinned git revisions (the two web branches below must
+# be pushed). For local development .cargo/config.toml (uncommitted, absolute paths to the
+# worktrees) overrides the sm64-binds patch and the obrrt crates; config [patch] takes
+# precedence over the manifest's.
+# obrrt-*: Gumbo64/sm64-AI-binds branch `web-miner` (pinned above by rev).
+[patch.crates-io]
+rayon = { path = "rayon-seq" }
+# sm64-binds 2.1.1 with the JS-backend memory fix: Gumbo64/sm64-binds branch `wasm-js-memory-2.1.1`.
+sm64-binds = { git = "https://github.com/Gumbo64/sm64-binds", rev = "7250cc094e2565d2a51e60d329fe85ae00ef4d94" }

@@ -162,13 +162,13 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     // SAFETY: single-threaded here (nothing else has started).
     unsafe {
         for (k, v) in &job.env {
-            std::env::set_var(k, v);
+            crate::sys::env::set_var(k, v);
         }
-        std::env::set_var("RAYON_NUM_THREADS", job.threads.to_string());
+        crate::sys::env::set_var("RAYON_NUM_THREADS", job.threads.to_string());
         if job.skip.is_empty() {
-            std::env::remove_var("OBRRT_EXIT_SKIP");
+            crate::sys::env::remove_var("OBRRT_EXIT_SKIP");
         } else {
-            std::env::set_var("OBRRT_EXIT_SKIP", job.skip.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
+            crate::sys::env::set_var("OBRRT_EXIT_SKIP", job.skip.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
         }
     }
     let (tech, names) = obrrt_objectives::setup::from_env().map_err(anyhow::Error::msg)?;
@@ -180,11 +180,11 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     cfg.seed = job.seed;
     cfg.minutes = if job.seconds > 0.0 { job.seconds / 60.0 } else { 1e9 };
     cfg.max_frames = Some(job.budget);
-    std::fs::create_dir_all(&job.out_dir)?;
+    crate::sys::fs::create_dir_all(&job.out_dir)?;
 
-    sm64pow::init(std::fs::read(&job.rom)?)?;
+    sm64pow::init(crate::sys::fs::read(&job.rom)?)?;
     let mut g = sm64pow::generator()?.create_game()?;
-    g.load_state(&SaveState::from_bytes(std::fs::read(&job.state_file)?)?)?;
+    g.load_state(&SaveState::from_bytes(crate::sys::fs::read(&job.state_file)?)?)?;
     let game = SM64MiningGame { game: g, pert: job.pert.clone() };
     check_layout(&game)?;
     let root = read_state(&game, job.frame0, true);
@@ -243,7 +243,7 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
 /// The objective keys along the path to node `i`, from the run's events.jsonl.
 fn path_keys(tree: &obrrt_search::tree::Tree, i: u32, out_dir: &str) -> Vec<String> {
     let mut made: HashMap<u64, String> = HashMap::new();
-    if let Ok(text) = std::fs::read_to_string(std::path::Path::new(out_dir).join("events.jsonl")) {
+    if let Ok(text) = crate::sys::fs::read_to_string(std::path::Path::new(out_dir).join("events.jsonl")) {
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
             if let (Some(n), Some(k)) = (v["added"].as_u64(), v["key"].as_str()) {
@@ -326,9 +326,9 @@ mod guide {
     }
 
     pub fn wrap(inner: Arc<dyn Generator>) -> Result<Arc<dyn Generator>> {
-        let Ok(path) = std::env::var("OBRRT_GUIDE_KEYS") else { return Ok(inner) };
-        let keys: HashSet<String> = std::fs::read_to_string(&path)?.lines().filter(|l| !l.is_empty()).map(String::from).collect();
-        let weight = std::env::var("OBRRT_GUIDE_WEIGHT").ok().map(|w| w.parse()).transpose()?.unwrap_or(20.0);
+        let Ok(path) = crate::sys::env::var("OBRRT_GUIDE_KEYS") else { return Ok(inner) };
+        let keys: HashSet<String> = crate::sys::fs::read_to_string(&path)?.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+        let weight = crate::sys::env::var("OBRRT_GUIDE_WEIGHT").ok().map(|w| w.parse()).transpose()?.unwrap_or(20.0);
         println!("guide: {} objective keys from the best run, weight x{weight}, kinship waived", keys.len());
         Ok(Arc::new(WithGuide { inner, keys, weight }))
     }
@@ -388,7 +388,7 @@ fn choose_checkpoint(engine: &Engine, root: &St, ask: &CpAsk, out_dir: &str) -> 
     }
     // stage_cp: the earliest healthy state a STAGE_KINDS success added.
     let mut added: HashMap<u32, String> = HashMap::new();
-    if let Ok(text) = std::fs::read_to_string(format!("{out_dir}/events.jsonl")) {
+    if let Ok(text) = crate::sys::fs::read_to_string(format!("{out_dir}/events.jsonl")) {
         for l in text.lines() {
             if !STAGE_KINDS.iter().any(|k| l.contains(k)) {
                 continue;
@@ -427,7 +427,7 @@ fn choose_checkpoint(engine: &Engine, root: &St, ask: &CpAsk, out_dir: &str) -> 
         return Ok(Some(Cp { node: b, kind: added[&b].clone(), how: "stage".into(), frame: st.frame, level: st.level, pos: st.pos, ..Default::default() }));
     }
     // checkpoint: from summary.json's goals.
-    let summary: Value = match std::fs::read_to_string(format!("{out_dir}/summary.json")).ok().and_then(|t| serde_json::from_str(&t).ok()) {
+    let summary: Value = match crate::sys::fs::read_to_string(format!("{out_dir}/summary.json")).ok().and_then(|t| serde_json::from_str(&t).ok()) {
         Some(v) => v,
         None => return Ok(None),
     };

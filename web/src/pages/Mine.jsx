@@ -11,6 +11,7 @@ import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
+import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 
 // The manual miner: play Super Mario 64 yourself. A block is the game's next
 // progress point (a star, a Bowser key, the Grand Star after 70 stars), played
@@ -47,6 +48,7 @@ function Miner() {
   // The start of the current attempt: {kind, progress, cycle}, and the chain's start mode.
   const [start, setStart] = useState(null);
   const [startMode, setStartMode] = useState('parent');
+  const [powerOnAt, setPowerOnAt] = useState(0); // when a parent-only template turns "either" (unix s)
   const [limit, setLimit] = useState(null);
   // Runs finished on this tip (the limit chart's dots): {t: seconds after the parent, frames}.
   const [runs, setRuns] = useState([]);
@@ -89,6 +91,7 @@ function Miner() {
         c.tipTemplate = t;
         setLim(t.sm64_max_frames);
         setStartMode(t.sm64_start);
+        setPowerOnAt(t.sm64_power_on_at || 0);
       } catch { /* daemon hiccup */ } finally { refreshing = false; }
     }, 5000);
     const kill = async () => stopped || c.restart;
@@ -148,7 +151,7 @@ function Miner() {
         if (head !== t.prev_hash) { c.forcePower = false; setRuns([]); }
         head = t.prev_hash;
         c.tipTemplate = t;
-        setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start);
+        setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start); setPowerOnAt(t.sm64_power_on_at || 0);
         const power = c.forcePower && t.sm64_start === 'either';
         say(`block ${t.height}: seed ${t.sm64_seed}, limit ${frames(t.sm64_max_frames)}, ${t.sm64_random_amount} pokes/${t.sm64_window_length}, start ${power ? 'power-on (restart)' : t.sm64_start}`);
 
@@ -259,12 +262,9 @@ function Miner() {
           </div>
         )}
         {task && start ? <CyclePanel task={task} start={start} /> : null}
-        {start && start.kind === 'parent' && startMode === 'either' && (
-          <div className="notice">
-            No block for over an hour: the chain has stalled, so a block may also start over from power-on.{' '}
-            <button onClick={() => { ctl.current.forcePower = true; ctl.current.restart = true; }}>Start over from power-on (the chain has stalled)</button>
-          </div>
-        )}
+        {start && startMode !== 'power-on' && <ResetCycle start={start} startMode={startMode} powerOnAt={powerOnAt} task={task} tick={tick}
+          onReset={() => { ctl.current.forcePower = true; ctl.current.restart = true; say('reset cycle: starting over from power-on'); }}
+          onParent={() => { ctl.current.forcePower = false; ctl.current.restart = true; say('back to continuing from the parent\'s end state'); }} />}
         {task ? (
           <dl className="kv">
             <dt>Block</dt><dd>{task.height}</dd>
@@ -301,6 +301,32 @@ function Miner() {
       </aside>
     </div>
     </>
+  );
+}
+
+// The "reset cycle" (power-on start): enabled exactly when the chain allows it (template
+// sm64_start "either"), with a countdown while it is parent-only, and suggested when the
+// parent's state looks stuck (every star taken, or a long time without a block).
+function ResetCycle({ start, startMode, powerOnAt, task, onReset, onParent, tick }) {
+  const nowS = Date.now() / 1000 + tick * 0;
+  const wait = secondsUntilAllowed(startMode, powerOnAt, nowS);
+  const onPower = start.kind === 'power-on';
+  const stuck = !onPower && task && (start.progress.stars >= ALL_STARS || nowS - task.sm64_parent_timestamp > 1800);
+  if (onPower) {
+    return (
+      <div className="notice">
+        Playing a reset cycle: this block starts over from power-on.{' '}
+        <button onClick={onParent}>Continue from the parent's end state instead</button>
+      </div>
+    );
+  }
+  return (
+    <div className={`notice${stuck ? ' warn' : ''}`}>
+      {startMode === 'either'
+        ? <>The chain has stalled, so a block may also start over from power-on (a reset cycle){stuck ? <b>: suggested, the parent's state looks stuck.</b> : '.'}{' '}</>
+        : <>Reset cycle (start over from power-on) becomes allowed in <b>{mmss(wait)}</b> if no block lands first.{' '}</>}
+      <button disabled={startMode !== 'either'} onClick={onReset} title={startMode === 'either' ? 'Restart this block from power-on' : 'Not allowed yet: the chain only accepts the parent\'s start until the stall time passes'}>Reset cycle (start over from power-on)</button>
+    </div>
   );
 }
 
@@ -383,7 +409,7 @@ function Help() {
         start the next block from that one). Ties go to the shorter run: of several runs waiting, the shortest
         becomes valid first.</p>
       <p><b>If the chain stalls</b> (no block for an hour, e.g. nobody can get past a hard spot), a block may start over
-        from power-on instead: a button then appears here ("Start over from power-on"). The Grand Star also ends the
+        from power-on instead: the "Reset cycle" button here turns on (it counts down until then). The Grand Star also ends the
         cycle by itself.</p>
       <p><b>Game keys</b> (sm64-port defaults; a gamepad works too): WASD stick · <b>I</b> = A · <b>J</b> = B ·
         <b>O</b> = Z · <b>Space</b> = Start · arrows = C buttons · Q = L · Right Shift = R · D-pad: R key up, Left Shift down.</p>

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router';
 import Explorer from './pages/Explorer.jsx';
 import Block from './pages/Block.jsx';
 import Mine from './pages/Mine.jsx';
+import AutoMine from './pages/AutoMine.jsx';
 import Leaderboard from './pages/Leaderboard.jsx';
 import Network from './pages/Network.jsx';
 import Bots from './pages/Bots.jsx';
@@ -15,6 +16,7 @@ export default function App() {
         <span className="brand">★ SM64Coin</span>
         <NavLink to="/" end>Explorer</NavLink>
         <NavLink to="/mine">Mine</NavLink>
+        <NavLink to="/automine">Auto-mine</NavLink>
         <NavLink to="/leaderboard">Leaderboard</NavLink>
         <NavLink to="/bots">Build a bot</NavLink>
         <NavLink to="/network">Network</NavLink>
@@ -26,6 +28,7 @@ export default function App() {
           <Route path="/" element={<Explorer />} />
           <Route path="/block/:id" element={<Block />} />
           <Route path="/mine" element={<Mine />} />
+          <Route path="/automine" element={<AutoMine />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/bots" element={<Bots />} />
           <Route path="/network" element={<Network />} />

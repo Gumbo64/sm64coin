@@ -22,7 +22,7 @@ use sm64_binds::GamePad;
 use sm64pow::{SM64MiningGame, SM64MiningSave};
 use sm64pow::{Params, Seed};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use crate::sys::Instant;
 
 /// What phase of the game a state is in; a change of phase is a landmark.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -650,7 +650,7 @@ pub fn mine(
             // Waiting out a cutscene isn't being stuck: count it slowly.
             stall += 1;
         }
-        if stall > cfg.patience && std::env::var("TRACK_DEBUG").is_ok() {
+        if stall > cfg.patience && crate::sys::env::var("TRACK_DEBUG").is_ok() {
             log(&format!("stall at p {p}: now {:?}", snap));
             for j in [p.saturating_sub(1), p, p + 3, p + 8] {
                 if let Some(r) = reference.snaps.get(j) {

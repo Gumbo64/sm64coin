@@ -4,7 +4,7 @@ use sm64_binds::GamePad;
 /// Inputs from a Mupen64 movie (0x400-byte header) or a raw file: 4 bytes a
 /// frame, u16 big-endian buttons, i8 stick x, i8 stick y.
 pub fn load_m64(path: &str) -> Result<Vec<GamePad>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = crate::sys::fs::read(path)?;
     let body = if bytes.len() >= 0x400 && &bytes[..4] == b"M64\x1a" { &bytes[0x400..] } else { &bytes[..] };
     Ok(body
         .chunks_exact(4)
