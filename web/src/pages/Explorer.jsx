@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import CycleTimeline, { RecentCycles, eventName } from '../lib/CycleTimeline.jsx';
 import { daemon } from '../lib/rpc.js';
-import { getCycle } from '../lib/replay/client.js';
+import { getCycle, blockSummary } from '../lib/replay/client.js';
 import { coins, short, ago, frames } from '../lib/format.js';
 import useInterval from '../lib/useInterval.js';
 
@@ -38,8 +38,9 @@ export default function Explorer() {
       setBlocks(hs);
       fillProgress(hs.filter((h) => h.height > 0));
       const missing = hs.filter((h) => h.height > 0 && !proofs.current[h.hash]);
-      Promise.all(missing.map((h) => daemon('get_block', { hash: h.hash })
-        .then((b) => { proofs.current[h.hash] = { bytes: b.sm64_proof_bytes, frames: b.sm64_frames }; })
+      // blockSummary: fetched once per block and kept in IndexedDB (lib/replay/client.js).
+      Promise.all(missing.map((h) => blockSummary(h.hash)
+        .then((x) => { proofs.current[h.hash] = x; })
         .catch(() => {})))
         .then(() => { if (missing.length) bump((x) => x + 1); });
       // get_info carries the task a block found now would have to meet.

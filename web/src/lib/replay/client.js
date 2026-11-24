@@ -69,6 +69,12 @@ async function fetchBlockInfo(hash) {
   return b;
 }
 
+/** A block's proof size and run length (the Explorer's columns), from the same per-block cache. */
+export async function blockSummary(hash) {
+  const b = await blockInfo(hash);
+  return { bytes: b.proof.length, frames: b.frames };
+}
+
 // Every replayed block's result, whoever asked (two components asking for the same cycle at
 // once: the worker replays it for the first; the second finds the results here).
 const playedMem = new Map();
@@ -206,7 +212,25 @@ const hasRom = async () => romKnown || (romKnown = await romStored());
  * The cycle ending at `hash` with its played pads: replayed in this browser when it has the ROM
  * (nodes do no replay work for it), else (or on any failure) the node's get_sm64_cycle.
  */
-export async function getCycle(hash, onProgress) {
+export function getCycle(hash, onProgress) {
+  // A cycle ending at a given block never changes: one answer per hash, shared by every caller
+  // (the timeline, the recent cycles and the Explorer all ask for the tip's), the last few kept.
+  const hit = cycleMem.get(hash);
+  if (hit) {
+    cycleMem.delete(hash);
+    cycleMem.set(hash, hit); // most recent last
+    return hit;
+  }
+  const p = fetchCycle(hash, onProgress);
+  cycleMem.set(hash, p);
+  p.catch(() => cycleMem.delete(hash));
+  while (cycleMem.size > CYCLES_KEPT) cycleMem.delete(cycleMem.keys().next().value);
+  return p;
+}
+const cycleMem = new Map();
+const CYCLES_KEPT = 4;
+
+async function fetchCycle(hash, onProgress) {
   if (typeof Worker !== 'undefined' && (await hasRom())) {
     try {
       return await clientCycle(hash, onProgress);
