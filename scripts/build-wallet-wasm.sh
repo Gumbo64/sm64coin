@@ -17,6 +17,10 @@ JOBS="${JOBS:-8}"
 MONERO_TS_REV=919ee6453136ad7a7ceca3d77822436be93758cb
 UNBOUND=1.22.0
 [ -n "${EMSDK:-}" ] || { echo "run: source /path/to/emsdk/emsdk_env.sh" >&2; exit 1; }
+# monero-ts's scripts read EMSCRIPTEN as emscripten's directory (they only default it when unset, and a
+# CI variable like EMSCRIPTEN=<version> would break them)
+export EMSCRIPTEN="$EMSDK/upstream/emscripten"
+[ -f "$EMSCRIPTEN/embuilder.py" ] || { echo "no emscripten in \$EMSDK ($EMSCRIPTEN)" >&2; exit 1; }
 [ -f "$ROOT/monero/CMakeLists.txt" ] || { echo "the monero submodule is empty: git submodule update --init monero" >&2; exit 1; }
 # the fork's own header-only dependency submodule (wallet2's rapidjson); the rest of the fork's submodules aren't needed
 [ -f "$ROOT/monero/external/rapidjson/include/rapidjson/document.h" ] || git -C "$ROOT/monero" submodule update --init --depth 1 external/rapidjson
