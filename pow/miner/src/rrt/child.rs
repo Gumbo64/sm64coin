@@ -93,6 +93,10 @@ pub struct Job {
     pub max_path: u32,
     pub out_dir: String,
     pub checkpoint: Option<CpAsk>,
+    /// The browser build: the tree can be sampled for the page's visualisation (see [`viz`]); the page
+    /// switches the feed on and off while the search runs.
+    #[serde(default)]
+    pub viz: bool,
 }
 
 /// A state to continue from (campaign.py's checkpoint record).
@@ -112,7 +116,7 @@ pub struct Cp {
     pub wip0: i64,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct StepOut {
     pub found: bool,
     pub pads: Vec<(u16, i8, i8)>,
@@ -194,6 +198,14 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     let generator = guide::wrap(obrrt_spec::wrap(Arc::new(Registry))?)?;
     let save = game.save_state();
     let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator)?;
+    if job.viz {
+        engine.on_round = Some(viz::sampler(job, &root));
+    } else {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            engine.on_round = Some(viz::progress_file(format!("{}.progress", job.out_dir)));
+        }
+    }
     engine.run()?;
 
     let tree = &engine.tree;
@@ -535,4 +547,120 @@ fn choose_checkpoint(engine: &Engine, root: &St, ask: &CpAsk, out_dir: &str) -> 
 fn pos_of(c: &Value) -> [f32; 3] {
     let p = |k: usize| c["pos"][k].as_f64().unwrap_or(0.0) as f32;
     [p(0), p(1), p(2)]
+}
+
+/// The tree sampled for the web miner's page (`Job::viz`): about once a second the closure of
+/// [`viz::sampler`] hands `sm64miner.viz` a JSON line (wasm only; natively there is no viewer):
+///
+/// ```text
+/// { "step": {"frame0", "seed", "goal", "level", "area", "pos": [x,y,z]},   // the step's root
+///   "t": seconds since the step began, "nodes_total", "sim_frames",
+///   "best": {"id", "frame" (from the step's start), "stars", "keys", "pos"},  // most progress, then soonest
+///   "nodes": [[id, parent, frame (from the step's start), x, y, z, stars, level, area, flags]],
+///   // up to NODES new nodes since the last sample (evenly thinned; flags bit 0: more progress than the root)
+///   "pads": [button, stickX, stickY, ...]   // only when `best` changed: its inputs from the step's start
+/// }
+/// ```
+pub mod viz {
+    use super::*;
+    use crate::sys::Instant;
+    use obrrt_search::engine::Engine;
+
+    const NODES: usize = 500;
+
+    pub fn sampler(job: &Job, root: &St) -> Box<dyn FnMut(&Engine) + Send> {
+        let head = serde_json::json!({ "frame0": job.frame0, "seed": job.seed, "goal": format!("{:?}", job.goal), "level": root.level, "area": root.area, "pos": root.pos });
+        let (frame0, root_prog) = (job.frame0, root.progress());
+        let mut last = Instant::now();
+        let t0 = Instant::now();
+        let mut seen = 1usize; // nodes below this index were sampled (the root isn't a sample)
+        let mut best: Option<usize> = None;
+        Box::new(move |e: &Engine| {
+            // The page can switch the feed off while the search runs: then this is the whole cost.
+            if last.elapsed().as_secs_f64() < 1.0 {
+                return;
+            }
+            // Feed off: only a tiny progress line (frames simulated so far in this step), about once a second,
+            // for the page's frames/s readout.
+            if !viz_on() {
+                last = Instant::now();
+                emit(&format!("{{\"progress\":1,\"sim_frames\":{}}}", e.total_frames_emulated()));
+                return;
+            }
+            last = Instant::now();
+            let nodes = &e.tree.nodes;
+            let n = nodes.len();
+            let key = |i: usize| (nodes[i].st.progress(), std::cmp::Reverse(nodes[i].st.frame));
+            let mut changed = false;
+            for i in seen..n {
+                if best.is_none_or(|b| key(i) > key(b)) {
+                    best = Some(i);
+                    changed = true;
+                }
+            }
+            let step = ((n - seen) / NODES).max(0) + 1;
+            let sample: Vec<serde_json::Value> = (seen..n)
+                .step_by(step)
+                .map(|i| {
+                    let nd = &nodes[i];
+                    let s = &nd.st;
+                    serde_json::json!([i, nd.parent, s.frame.saturating_sub(frame0), s.pos[0], s.pos[1], s.pos[2], s.stars, s.level, s.area, (s.progress() > root_prog) as u8])
+                })
+                .collect();
+            seen = n;
+            let mut msg = serde_json::json!({ "step": head, "t": t0.elapsed().as_secs_f64(), "nodes_total": n, "sim_frames": e.total_frames_emulated(), "nodes": sample });
+            if let Some(b) = best {
+                let s = &nodes[b].st;
+                msg["best"] = serde_json::json!({ "id": b, "frame": s.frame.saturating_sub(frame0), "stars": s.stars, "keys": s.keys, "pos": s.pos });
+                if changed {
+                    let pads: Vec<i64> = e.tree.path(b as u32).iter().flat_map(|p| [p.button as i64, p.stick_x as i64, p.stick_y as i64]).collect();
+                    msg["pads"] = serde_json::json!(pads);
+                }
+            }
+            emit(&msg.to_string());
+        })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn emit(line: &str) {
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        extern "C" {
+            #[wasm_bindgen(js_namespace = sm64miner, js_name = viz)]
+            fn js_viz(line: &str);
+        }
+        js_viz(line);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn emit(_line: &str) {}
+
+    /// Native: about once a second the frames this step has simulated so far go into `path` (a bare number), where the
+    /// parent (`run_child`) reads them for the miner's frames/s counter ([`super::super::SIM_FRAMES`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn progress_file(path: String) -> Box<dyn FnMut(&Engine) + Send> {
+        let mut last = Instant::now();
+        Box::new(move |e: &Engine| {
+            if last.elapsed().as_secs_f64() < 1.0 {
+                return;
+            }
+            last = Instant::now();
+            let _ = std::fs::write(&path, e.total_frames_emulated().to_string());
+        })
+    }
+
+    /// Whether the page wants the feed now (`sm64miner.viz_on()`, a flag the page can flip).
+    #[cfg(target_arch = "wasm32")]
+    fn viz_on() -> bool {
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        extern "C" {
+            #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_on)]
+            fn js_viz_on() -> bool;
+        }
+        js_viz_on()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn viz_on() -> bool {
+        true
+    }
 }

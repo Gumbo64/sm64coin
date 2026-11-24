@@ -10,6 +10,8 @@
 // wasm-bindgen glue keeps its instance in module-level variables. The glue is self-contained, so
 // its source is turned into a factory function: each call is an independent copy.
 
+import { bestCheckpoint } from './board.js';
+
 /** A factory of independent instances from the wasm-bindgen glue's source text. */
 export function makeFactory(glueSource) {
   const body = glueSource
@@ -42,13 +44,33 @@ export function makeFs(map = new Map()) {
  * compiled WebAssembly.Module, `glue` the glue's source text, `rom` the ROM bytes, `log(line)`
  * the campaign's progress.
  */
-export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs() }) {
+export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false }) {
   const factory = makeFactory(glue);
   fs.write('/rom.z64', rom);
   globalThis.sm64fs = fs;
   let steps = 0;
   globalThis.sm64miner = {
     log,
+    // Sharing with the other workers of the page (rrt::Exchange): the block's first castle step
+    // is made once; `shared` ({step, files}) is another worker's, `onShare` gets ours.
+    // The tree sampler's feed (rrt::child::viz): `onViz(json line)`; on/off from the page's board flag
+    // (live) or else `viz` (fixed at the worker's start).
+    viz: (line) => onViz && onViz(line),
+    viz_on: () => !!onViz && (board ? board.vizOn() : viz),
+    exchange(kind, payload) {
+      if (kind === 'step_get') {
+        if (!shared || JSON.parse(shared.step).key !== payload) return undefined;
+        for (const [p, bytes] of shared.files) fs.write(p, bytes);
+        return shared.step;
+      }
+      if (kind === 'cp_sync') return board ? bestCheckpoint(board, payload) : undefined;
+      if (kind === 'step_put') {
+        // What the step left in the scratch (the roadmap...); not the campaign's own memory.
+        const files = [...fs.map].filter(([p]) => p.startsWith('/scratch/') && !p.includes('/step-') && !p.endsWith('/campaign.json'));
+        onShare({ step: payload, files: files.map(([p, b]) => [p, new Uint8Array(b)]) });
+      }
+      return undefined;
+    },
     run_child(job) {
       steps += 1;
       const child = factory();

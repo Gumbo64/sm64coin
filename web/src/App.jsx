@@ -6,8 +6,13 @@ import Mine from './pages/Mine.jsx';
 import AutoMine from './pages/AutoMine.jsx';
 import Leaderboard from './pages/Leaderboard.jsx';
 import Network from './pages/Network.jsx';
-import Bots from './pages/Bots.jsx';
+import Info from './pages/Info.jsx';
 import NewBlockBanner from './lib/NewBlockBanner.jsx';
+import UpdateBanner from './lib/UpdateBanner.jsx';
+import MinerLight from './lib/MinerLight.jsx';
+
+// The wallet page is lazy: its engine (a wasm web worker) is fetched only when it is opened.
+const Wallet = React.lazy(() => import('./pages/Wallet.jsx'));
 
 export default function App() {
   return (
@@ -16,12 +21,13 @@ export default function App() {
         <span className="brand">★ SM64Coin</span>
         <NavLink to="/" end>Explorer</NavLink>
         <NavLink to="/mine">Mine</NavLink>
-        <NavLink to="/automine">Auto-mine</NavLink>
+        <NavLink to="/wallet">Wallet</NavLink>
         <NavLink to="/leaderboard">Leaderboard</NavLink>
-        <NavLink to="/bots">Build a bot</NavLink>
         <NavLink to="/network">Network</NavLink>
-        <a href="https://github.com/Gumbo64/sm64coin/releases/latest" target="_blank" rel="noreferrer">Download</a>
+        <NavLink to="/info">Info</NavLink>
+        <MinerLight />
       </header>
+      <UpdateBanner />
       <NewBlockBanner />
       <main>
         <Routes>
@@ -29,8 +35,9 @@ export default function App() {
           <Route path="/block/:id" element={<Block />} />
           <Route path="/mine" element={<Mine />} />
           <Route path="/automine" element={<AutoMine />} />
+          <Route path="/wallet" element={<React.Suspense fallback={<p className="muted">Loading…</p>}><Wallet /></React.Suspense>} />
           <Route path="/leaderboard" element={<Leaderboard />} />
-          <Route path="/bots" element={<Bots />} />
+          <Route path="/info" element={<Info />} />
           <Route path="/network" element={<Network />} />
         </Routes>
       </main>

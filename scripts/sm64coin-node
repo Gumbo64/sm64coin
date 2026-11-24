@@ -185,4 +185,31 @@ fi
 args+=(${extra[@]+"${extra[@]}"})
 
 echo "sm64coin-node: ROM $ROM_FOUND, data $DATA_DIR, ${#peers[@]} peer(s), p2p $P2P_PORT rpc $RPC_PORT zmq $ZMQ_PORT${RESTRICTED_PORT:+, restricted rpc $RESTRICTED_PORT}" >&2
+# update_notice: one line on stderr if a newer SM64Coin release exists (GitHub API, cached 6 h, 3 s
+# timeout, silent on any failure). Version: $SM64COIN_VERSION or the bundle's VERSION file (none, e.g.
+# a checkout, -> no check). SM64COIN_NO_UPDATE_CHECK=1 disables it. Same logic as scripts/env.sh.
+update_notice() {
+  [ "${SM64COIN_NO_UPDATE_CHECK:-0}" = 1 ] && return 0
+  local cur="${SM64COIN_VERSION:-}" cache="$DATA_DIR/latest-release.json" json tag latest v
+  if [ -z "$cur" ]; then for v in "$HERE/VERSION" "$HERE/../VERSION"; do [ -f "$v" ] && { cur="$(head -n1 "$v")"; break; }; done; fi
+  cur="${cur#v}"
+  case "$cur" in [0-9]*.[0-9]*.[0-9]*) ;; *) return 0 ;; esac
+  if [ -z "$(find "$cache" -mmin -360 2>/dev/null)" ]; then
+    command -v curl >/dev/null 2>&1 || return 0
+    curl -fsS -m 3 -H 'Accept: application/vnd.github+json' "${SM64COIN_UPDATE_URL:-https://api.github.com/repos/Gumbo64/sm64coin/releases/latest}" -o "$cache.tmp" 2>/dev/null && mv -f "$cache.tmp" "$cache" || { rm -f "$cache.tmp"; return 0; }
+  fi
+  json="$(cat "$cache" 2>/dev/null)" || return 0
+  tag="$(printf '%s' "$json" | sed -n 's/.*"tag_name" *: *"v\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1)"
+  [ -n "$tag" ] || return 0
+  latest="$(printf '%s\n%s\n' "$cur" "$tag" | sort -V | tail -n1)"
+  if [ "$latest" = "$tag" ] && [ "$tag" != "$cur" ]; then
+    if printf '%s' "$json" | grep -Eiq '("|\\n)Update: *required(\\r)?(\\n|")'; then
+      echo "SM64Coin $tag is available (UPDATE REQUIRED; you run $cur): https://github.com/Gumbo64/sm64coin/releases/tag/v$tag" >&2
+    else
+      echo "SM64Coin $tag is available: https://github.com/Gumbo64/sm64coin/releases/tag/v$tag" >&2
+    fi
+  fi
+}
+( update_notice || true ) &   # at most 3 s, in the background
+
 exec "$DAEMON" "${args[@]}"

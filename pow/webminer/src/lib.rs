@@ -19,6 +19,9 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     #[wasm_bindgen(js_namespace = sm64miner, js_name = log)]
     fn js_log(line: &str);
+    /// Sharing with the other workers (see rrt::Exchange): the reply, if any.
+    #[wasm_bindgen(js_namespace = sm64miner, js_name = exchange)]
+    fn js_exchange(kind: &str, payload: &str) -> Option<String>;
 }
 
 /// Panics abort in WebAssembly (`unreachable`) and their message is lost: log it first.
@@ -73,6 +76,9 @@ pub struct MineRequest {
     /// workers in one browser tab).
     #[serde(default = "mem_default")]
     pub mem_mb: usize,
+    /// The page can have the search's tree sampled (`sm64miner.viz`, see rrt::child::viz).
+    #[serde(default)]
+    pub viz: bool,
 }
 fn mem_default() -> usize {
     600
@@ -121,8 +127,11 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
         seed: r.salt,
         frame_cap: r.frame_cap,
         mem_mb: r.mem_mb,
+        viz: r.viz,
         scratch: "/scratch".into(),
         rom: Some("/rom.z64".into()),
+        // wasm is single-threaded, so the Send + Sync bounds hold trivially.
+        exchange: Some(std::sync::Arc::new(|kind: &str, payload: &str| js_exchange(kind, payload))),
         ..d
     };
     let stop = AtomicBool::new(false);

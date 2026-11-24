@@ -2160,6 +2160,7 @@ dependencies = [
  "anyhow",
  "flate2",
  "getrandom 0.3.4",
+ "js-sys",
  "libc",
  "lz4_flex",
  "serde",
@@ -2190,6 +2191,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "flate2",
  "hex",
  "obrrt-core",
  "obrrt-objectives",

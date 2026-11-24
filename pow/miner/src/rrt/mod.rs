@@ -51,7 +51,7 @@ use sm64pow::{Params, SM64MiningGame, SM64MiningSave, Seed};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration}; use crate::sys::Instant;
 
 #[derive(Clone)]
@@ -82,6 +82,45 @@ pub struct RrtOptions {
     pub rom: Option<String>,
     /// More tree settings, "VAR=value VAR=value" (campaign.py --env).
     pub extra_env: String,
+    /// Sharing with other searches of the same block (the web miner's workers): called as
+    /// `exchange(kind, payload) -> Option<reply>`; see [`Exchange`]. None natively.
+    pub exchange: Option<Exchange>,
+    /// Sample the trees for a viewer (see `child::viz`; the web miner's page).
+    pub viz: bool,
+}
+
+/// A channel to the other searches of the block. Kinds: `"step_get"` (payload: a step's key; reply:
+/// the shared [`SharedStep`] JSON or None) and `"step_put"` (payload: [`SharedStep`] JSON, no
+/// reply). The first castle step of the block is run once and shared: the other searches take its
+/// outcome and go on with their own salts from there.
+pub type Exchange = std::sync::Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
+
+/// A campaign step's outcome shared between searches: `key` identifies the step's input (the job
+/// without its seed, the start state's own path and out dir), so only an identical step is taken.
+#[derive(Serialize, Deserialize)]
+pub struct SharedStep {
+    pub key: String,
+    pub out: StepOut,
+}
+
+fn cp_tag(played: &[GamePad], zone: u16, cp_n: usize) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    played.len().hash(&mut h);
+    for p in played {
+        (p.button, p.stick_x, p.stick_y).hash(&mut h);
+    }
+    format!("{:016x}-{zone}-{cp_n}", h.finish())
+}
+
+fn step_key(job: &Job) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut j = job.clone();
+    (j.seed, j.state_file, j.out_dir, j.viz) = (0, String::new(), String::new(), false);
+    let text = serde_json::to_string(&j).unwrap_or_default();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 impl Default for RrtOptions {
@@ -101,6 +140,8 @@ impl Default for RrtOptions {
             keep: false,
             rom: None,
             extra_env: String::new(),
+            exchange: None,
+            viz: false,
         }
     }
 }
@@ -291,6 +332,10 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, _st
     Ok(serde_json::from_str(&out?)?)
 }
 
+/// Frames simulated by this process's search steps so far (all threads, finished steps and the running ones' last
+/// progress): the miner's speed is its rate (automine's `progress` line).
+pub static SIM_FRAMES: AtomicU64 = AtomicU64::new(0);
+
 /// Runs the tree step `job` from `game` in a child process.
 #[cfg(not(target_arch = "wasm32"))]
 fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
@@ -309,11 +354,24 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
         .stdout(crate::sys::fs::File::create(&lf)?)
         .stderr(crate::sys::fs::File::options().append(true).open(&lf)?)
         .spawn()?;
+    let pf = format!("{}.progress", job.out_dir);
+    let mut counted = 0u64; // this step's frames already in SIM_FRAMES
+    let mut polled = std::time::Instant::now();
     let status = loop {
+        if polled.elapsed() >= Duration::from_millis(500) {
+            polled = std::time::Instant::now();
+            if let Ok(n) = crate::sys::fs::read_to_string(&pf).unwrap_or_default().trim().parse::<u64>() {
+                if n > counted {
+                    SIM_FRAMES.fetch_add(n - counted, Ordering::Relaxed);
+                    counted = n;
+                }
+            }
+        }
         if let Some(s) = child.try_wait()? {
             break s;
         }
         if stop.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_file(&pf);
             let _ = child.kill();
             let _ = child.wait();
             let _ = crate::sys::fs::remove_file(&state);
@@ -323,11 +381,15 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
     };
     let _ = crate::sys::fs::remove_file(&state);
     let _ = crate::sys::fs::remove_dir_all(&job.out_dir);
+    let _ = std::fs::remove_file(&pf);
     if !status.success() {
         let tail: String = crate::sys::fs::read_to_string(&lf).unwrap_or_default().lines().rev().take(5).collect::<Vec<_>>().join(" | ");
         bail!("rrtrun {tag} failed ({status}): {tail}");
     }
     let out: StepOut = serde_json::from_str(&crate::sys::fs::read_to_string(&of)?)?;
+    if out.emulated > counted {
+        SIM_FRAMES.fetch_add(out.emulated - counted, Ordering::Relaxed);
+    }
     let _ = crate::sys::fs::remove_file(&of);
     let _ = crate::sys::fs::remove_file(&jf);
     if !o.keep {
@@ -479,6 +541,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             max_path: (max - played.len()) as u32,
             out_dir: String::new(),
             checkpoint: None,
+            viz: o.viz,
         };
         if in_hub || GEO_LEVELS.contains(&st.level) {
             env.push(("OBRRT_GEO".into(), "1".into()));
@@ -516,13 +579,33 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             job.env = env;
             log(format!("step {step}: castle at frame {}, {} stars {} keys: {what}; budget {:.0} M frames", played.len(), st.stars, st.keys, job.budget as f64 / 1e6));
             let ckpt = (game.save_state(), played.len());
-            let out = match run_child(o, &game, job.clone(), &format!("s{step}"), stop) {
-                Ok(x) => x,
-                Err(e) if stop.load(Ordering::Relaxed) => {
-                    *RESUME.lock().unwrap() = Some(Resume { seed: seed.0, start, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
-                    break Attempt::Gave(format!("stopped ({e})"));
+            // The block's first castle step is the same for every search of it: shared.
+            let key = (step == 1 && o.exchange.is_some()).then(|| step_key(&job));
+            let shared: Option<StepOut> = key.as_ref().zip(o.exchange.as_ref()).and_then(|(k, ex)| {
+                let r: SharedStep = serde_json::from_str(&ex("step_get", k)?).ok()?;
+                (r.key == *k).then_some(r.out)
+            });
+            let out = match shared {
+                Some(x) => {
+                    log("  taking the castle step another search made (shared)".into());
+                    x
                 }
-                Err(e) => return Err(e),
+                None => {
+                    let x = match run_child(o, &game, job.clone(), &format!("s{step}"), stop) {
+                        Ok(x) => x,
+                        Err(e) if stop.load(Ordering::Relaxed) => {
+                            *RESUME.lock().unwrap() = Some(Resume { seed: seed.0, start, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
+                            break Attempt::Gave(format!("stopped ({e})"));
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    if let (Some(k), Some(ex)) = (&key, &o.exchange) {
+                        if let Ok(t) = serde_json::to_string(&SharedStep { key: k.clone(), out: x.clone() }) {
+                            ex("step_put", &t);
+                        }
+                    }
+                    x
+                }
             };
             sim += out.emulated;
             if !out.found {
@@ -617,7 +700,30 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             }
             bail!("the course tree's winner made progress but the perturbed replay did not (frame {}): a game was stepped unperturbed", played.len());
         }
-        if let Some(cp) = out.checkpoint {
+        let mut ck = out.checkpoint;
+        // The searches of this block that reached the same point with the same played pads
+        // (the block's shared prefix) offer their checkpoints through the exchange: the one
+        // nearest its goal (lowest ETA) is taken by all, so the searches stay together on the
+        // most promising line (the tree itself isn't shared). The peer's pads replay on the same
+        // state; should they not reach the same place, this search's own checkpoint stays.
+        if let (Some(c), Some(ex)) = (ck.as_ref(), o.exchange.as_ref()) {
+            let tag = cp_tag(&played, zone, cp_n);
+            let msg = serde_json::json!({ "tag": tag, "eta": c.eta, "cp": c });
+            if let Some(best) = ex("cp_sync", &msg.to_string()).and_then(|r| serde_json::from_str::<child::Cp>(&r).ok()) {
+                if best.pads != c.pads {
+                    let snap = (game.save_state(), played.len());
+                    let before_n = played.len();
+                    let ok = !best.pads.is_empty() && replay(&mut game, &mut played, &child::pads_of(&best.pads), &before).ok() == Some(false) && guard(&game, &played, best.level, best.frame, best.pos).is_ok();
+                    game.load_state(&snap.0)?;
+                    played.truncate(before_n);
+                    if ok {
+                        log(format!("  taking the checkpoint another search found (ETA {:.0} < {:.0})", best.eta, c.eta));
+                        ck = Some(best);
+                    }
+                }
+            }
+        }
+        if let Some(cp) = ck {
             // No progress, but further along a goal: a fresh tree goes on from there.
             if replay(&mut game, &mut played, &child::pads_of(&cp.pads), &before)? {
                 break finish(played, sim, keys);

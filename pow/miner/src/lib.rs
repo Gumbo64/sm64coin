@@ -3,6 +3,8 @@ pub mod tracker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rpc;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod update;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod beam;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod routes;

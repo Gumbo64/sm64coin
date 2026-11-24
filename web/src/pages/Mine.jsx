@@ -297,7 +297,7 @@ function Miner() {
           <pre className="log">{log.join('\n')}</pre>
         </details>
         <p className="muted links"><Link to="/leaderboard">Leaderboard</Link></p>
-        <p className="muted">Rather not play by hand? <Link to="/bots">Build a bot</Link> to mine for you.</p>
+        <p className="muted">Rather not play by hand? Use <Link to="/automine">Auto-mine</Link>, or <a href="https://github.com/Gumbo64/sm64coin#writing-your-own-bot" target="_blank" rel="noreferrer">write a bot</a> to mine for you.</p>
       </aside>
     </div>
     </>

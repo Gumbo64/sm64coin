@@ -13,3 +13,5 @@ __pycache__/
 pow/perturb-wasm/target/
 dist/
 pow/launcher/target/
+web/public/wallet/
+web/wallet-wasm/work/

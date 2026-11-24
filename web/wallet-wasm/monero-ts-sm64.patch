@@ -1,0 +1,149 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1f1387df..44558ebb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -6,7 +6,7 @@ project(monero-ts-wasm)
+ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS wasm_exception_whitelist.txt) # reconfigure when the whitelist changes so flags are not stale
+ file(STRINGS wasm_exception_whitelist.txt WASM_EXCEPTION_WHITELIST)
+ string(REPLACE ";" "," WASM_EXCEPTION_WHITELIST "${WASM_EXCEPTION_WHITELIST}")
+-SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -Oz -s EXCEPTION_CATCHING_ALLOWED='[${WASM_EXCEPTION_WHITELIST}]' -D_REENTRANT")
++SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -Oz -Wno-enum-constexpr-conversion -s EXCEPTION_CATCHING_ALLOWED='[${WASM_EXCEPTION_WHITELIST}]' -D_REENTRANT")
+ add_definitions(-DAUTO_INITIALIZE_EASYLOGGINGPP -DNO_AES)
+ add_definitions(-DCONFIGURED=1) # vendored libsodium sources warn when built outside its configure script
+ 
+@@ -27,6 +27,7 @@ include_directories("external/libsodium/include/sodium")
+ # monero-cpp
+ #####################
+ 
++set(SM64_WALLET_WASM "${CMAKE_SOURCE_DIR}/sm64-wallet-wasm" CACHE PATH "SM64Coin additions (web/wallet-wasm)")
+ set(MONERO_CPP "external/monero-cpp")
+ set(MONERO_CPP_SRC "${MONERO_CPP}/src")
+ 
+@@ -80,7 +81,8 @@ include_directories("${CMAKE_BINARY_DIR}/generated_include")
+ # Unbound
+ #############
+ 
+-include_directories("~/unbound-1.22.0/libunbound")
++set(UNBOUND_DIR "$ENV{UNBOUND_DIR}")
++include_directories("${UNBOUND_DIR}/libunbound")
+ 
+ #############
+ # OpenSSL
+@@ -233,6 +235,10 @@ set(
+     ${MONERO_PROJECT_SRC}/ringct/multiexp.cc
+     ${MONERO_PROJECT_SRC}/mnemonics/electrum-words.cpp
+     ${MONERO_PROJECT}/external/easylogging++/easylogging++.cc
++
++    # SM64COIN: proof_id for block ids (see sm64coin_wasm.cpp)
++    ${SM64_WALLET_WASM}/sm64coin_wasm.cpp
++    ${SM64_WALLET_WASM}/xz-embedded/xz_unity.c
+ )
+ 
+ ################################
+@@ -297,7 +303,7 @@ EMCC_LINKER_FLAGS_BASE
+ # unsure if the -I...boost..include is necessary here due to include above
+ # TODO? does EXPORT_NAME need to be the same for both targets? (or should it be set per-target with …_WASM, …_ASMJS?)
+ 
+-"-Wall -Werror -Wno-js-compiler -Wl,--allow-undefined -std=c++14 -Oz -D_REENTRANT \
++"-Wall -Wno-js-compiler -Wno-deprecated -Wl,--allow-undefined -std=c++17 -Oz -D_REENTRANT \
+ --bind \
+ -s MODULARIZE=1 \
+ -s 'EXPORT_NAME=\"monero_ts\"' \
+@@ -308,11 +314,10 @@ EMCC_LINKER_FLAGS_BASE
+ -s EXCEPTION_DEBUG=0 \
+ -s NO_DYNAMIC_EXECUTION=1 \
+ -s NODEJS_CATCH_EXIT=0 \
+--s RESERVED_FUNCTION_POINTERS=5 \
+--s EXPORTED_RUNTIME_METHODS='[\"UTF8ToString\",\"stringToUTF8\",\"lengthBytesUTF8\",\"intArrayToString\",\"getTempRet0\",\"addFunction\"]' \
++-s ALLOW_TABLE_GROWTH=1 \
++-s EXPORTED_RUNTIME_METHODS='[\"UTF8ToString\",\"stringToUTF8\",\"lengthBytesUTF8\",\"intArrayToString\",\"getTempRet0\",\"addFunction\",\"HEAPU8\",\"HEAP8\",\"HEAP32\"]' \
+ -s SINGLE_FILE=1 \
+ -s ALLOW_MEMORY_GROWTH=1 \
+--s WASM_BIGINT=1 \
+ -s EXPORTED_FUNCTIONS='[_free, _malloc]' \
+ -s STACK_SIZE=5MB \
+ -s DEFAULT_PTHREAD_STACK_SIZE=2MB \
+diff --git a/src/main/cpp/http_client_wasm.cpp b/src/main/cpp/http_client_wasm.cpp
+index 8d8a3a11..bf7411ec 100644
+--- a/src/main/cpp/http_client_wasm.cpp
++++ b/src/main/cpp/http_client_wasm.cpp
+@@ -12,9 +12,9 @@ using namespace std;
+ EM_JS(const char*, js_send_json_request, (int client, const char* uri, const char* username, const char* password, const char* proxy_uri, const char* reject_unauthorized_fn_id, const char* method, const char* body, std::chrono::milliseconds timeout), {
+   //console.log("EM_JS js_send_json_request(" + UTF8ToString(uri) + ", " + UTF8ToString(username) + ", " + UTF8ToString(password) + ", " + UTF8ToString(method) + ")");
+ 
+-  const HttpClient = this.HttpClient;
+-  const LibraryUtils = this.LibraryUtils;
+-  const GenUtils = this.GenUtils;
++  const HttpClient = globalThis.HttpClient;
++  const LibraryUtils = globalThis.LibraryUtils;
++  const GenUtils = globalThis.GenUtils;
+ 
+   // use asyncify to synchronously return to C++
+   return Asyncify.handleSleep(function(wakeUp) {
+@@ -74,9 +74,9 @@ EM_JS(const char*, js_send_json_request, (int client, const char* uri, const cha
+ EM_JS(const char*, js_send_binary_request, (int client, const char* uri, const char* username, const char* password, const char* proxy_uri, const char* reject_unauthorized_fn_id, const char* method, const char* body, int body_length, std::chrono::milliseconds timeout), {
+   //console.log("EM_JS js_send_binary_request(" + UTF8ToString(uri) + ", " + UTF8ToString(username) + ", " + UTF8ToString(password) + ", " + UTF8ToString(method) + ")");
+ 
+-  const HttpClient = this.HttpClient;
+-  const LibraryUtils = this.LibraryUtils;
+-  const GenUtils = this.GenUtils;
++  const HttpClient = globalThis.HttpClient;
++  const LibraryUtils = globalThis.LibraryUtils;
++  const GenUtils = globalThis.GenUtils;
+ 
+   // use asyncify to synchronously return to C++
+   return Asyncify.handleSleep(function(wakeUp) {
+diff --git a/src/main/cpp/monero_wasm_bridge.cpp b/src/main/cpp/monero_wasm_bridge.cpp
+index 81c32612..21ad56df 100644
+--- a/src/main/cpp/monero_wasm_bridge.cpp
++++ b/src/main/cpp/monero_wasm_bridge.cpp
+@@ -1,4 +1,5 @@
+ #include <iostream>
++#include <emscripten.h>
+ #include "monero_wasm_bridge.h"
+ #include "wallet/monero_wallet_keys.h"
+ #include "utils/gen_utils.h"
+diff --git a/stubs/no-wasm.js b/stubs/no-wasm.js
+new file mode 100644
+index 00000000..17be3758
+--- /dev/null
++++ b/stubs/no-wasm.js
+@@ -0,0 +1,2 @@
++// The main-thread library never loads the wasm (the wallet runs in the web worker).
++module.exports = function () { throw new Error("monero-ts: wallet engine runs in the worker (proxyToWorker)"); };
+diff --git a/webpack.base.js b/webpack.base.js
+index b140f919..54c37e01 100644
+--- a/webpack.base.js
++++ b/webpack.base.js
+@@ -30,6 +30,8 @@ let configBase = {
+     devtool: 'source-map',
+     externals: ['worker_threads', 'ws', 'perf_hooks', 'child_process', 'web-worker'], // exclude nodejs dependencies
+     plugins: [
++      // SM64COIN: newer emscripten glue requires 'node:fs' etc. on its (dead in the browser) node path
++      new webpack.NormalModuleReplacementPlugin(/^node:/, (r) => { r.request = r.request.replace(/^node:/, ''); }),
+       new webpack.ProvidePlugin({
+         process: 'process/browser',
+         Buffer: ['buffer', 'Buffer']
+diff --git a/webpack.lib.js b/webpack.lib.js
+new file mode 100644
+index 00000000..c3b4100c
+--- /dev/null
++++ b/webpack.lib.js
+@@ -0,0 +1,17 @@
++"use strict"
++// SM64COIN: the main-thread API (index.ts) as one ES module, loaded by the web app at runtime
++// next to monero.worker.js (the worker holds the wasm).
++const path = require("path");
++const configBase = require("./webpack.base.js");
++
++module.exports = Object.assign({}, configBase, {
++  name: "Monero lib config",
++  entry: "./index.ts",
++  externals: [], // node-only modules (child_process, ws ...) become empty modules, never loaded in a browser
++  experiments: { outputModule: true },
++  output: { path: path.resolve(__dirname, "dist"), filename: "monero-ts.lib.mjs", library: { type: "module" } },
++  resolve: Object.assign({}, configBase.resolve, {
++    fallback: Object.assign({}, configBase.resolve.fallback, { child_process: false, worker_threads: false, ws: false, perf_hooks: false, "web-worker": false }),
++    alias: Object.assign({}, configBase.resolve.alias, { "#monero-ts/monero.js": path.resolve(__dirname, "stubs/no-wasm.js") }),
++  }),
++});

@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import { nodeVersion, parseVersion, isNewer, isRequired, summarize, latestRelease } from './updates.js';
+assert.deepEqual(parseVersion('v0.2.8'), [0, 2, 8]);
+assert.deepEqual(parseVersion('0.2.8-rc1'), [0, 2, 8]);
+assert.equal(parseVersion('dev'), null);
+assert.ok(isNewer('v0.2.8', '0.2.7'));
+assert.ok(isNewer('0.10.0', '0.9.9'));
+assert.ok(!isNewer('0.2.8', '0.2.8'));
+assert.ok(!isNewer('0.2.7', '0.2.8'));
+assert.ok(!isNewer('v0.2.8', 'dev'));
+assert.ok(!isNewer('garbage', '0.1.0'));
+assert.ok(isRequired('Notes\n\nUpdate: required\nmore'));
+assert.ok(isRequired('update: Required\r\n'));
+assert.ok(!isRequired('This update: required reading'));
+assert.ok(!isRequired(null));
+assert.deepEqual(summarize({ tag_name: 'v1.2.3', html_url: 'u', body: 'Update: required' }), { version: '1.2.3', url: 'u', required: true });
+assert.equal(summarize({ tag_name: 'nightly' }), null);
+assert.equal(nodeVersion('0.2.7'), '0.2.7');
+assert.equal(nodeVersion('0.2.7-abc123'), '0.2.7-abc123');
+assert.equal(nodeVersion('0.18.5.4-release'), null);
+assert.equal(nodeVersion(''), null);
+// cache: the second call does not fetch
+const mem = new Map(); const store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
+let n = 0; const f = async () => { n++; return { ok: true, json: async () => ({ tag_name: 'v0.3.0', html_url: 'u', body: '' }) }; };
+assert.equal((await latestRelease(f, store, 1000)).version, '0.3.0');
+await latestRelease(f, store, 2000); assert.equal(n, 1);
+await latestRelease(f, store, 1000 + 7 * 3600 * 1000); assert.equal(n, 2);
+assert.equal(await latestRelease(async () => { throw new Error('offline'); }, null), null);
+console.log('updates ok');
+{
+  const { stateMethodMissing, nodeLacksState } = await import('./updates.js');
+  assert.ok(stateMethodMissing(new Error('get_sm64_state: Method not found')));
+  assert.ok(!stateMethodMissing(new Error("get_sm64_state: This block's end state isn't cached")));
+  assert.ok(!stateMethodMissing(new Error('get_sm64_state: Method not found (restricted, forbidden)')));
+  let calls = 0;
+  const old = async () => { calls++; throw new Error('get_sm64_state: Method not found'); };
+  assert.equal(await nodeLacksState(old), true);
+  assert.equal(await nodeLacksState(old), true); assert.equal(calls, 1);
+  console.log('node probe ok');
+}

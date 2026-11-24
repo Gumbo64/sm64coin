@@ -210,6 +210,7 @@ fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
 
 fn main() -> Result<()> {
     let a = Args::parse();
+    sm64coin_miner::update::spawn_check();
     if !a.address.starts_with("SM6") {
         bail!("{} does not look like an SM64Coin address", a.address);
     }
@@ -281,6 +282,18 @@ fn main() -> Result<()> {
             println!("  {point}  <-  {route}");
         }
     }
+    // The miner's speed (its "hashrate"): a machine-readable line every ~2 s, `progress frames=<simulated frames so far>
+    // fps=<frames/s over the last interval>`, for the wallet GUI (the rrt controller's search steps; 0 otherwise).
+    std::thread::spawn(|| {
+        let (mut last, mut at) = (0u64, std::time::Instant::now());
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let n = sm64coin_miner::rrt::SIM_FRAMES.load(std::sync::atomic::Ordering::Relaxed);
+            let dt = at.elapsed().as_secs_f64();
+            println!("progress frames={n} fps={:.0}", (n - last) as f64 / dt.max(1e-3));
+            (last, at) = (n, std::time::Instant::now());
+        }
+    });
     let mut mined = 0u64;
     let reset_mode: reset::ResetMode = a.reset.parse().map_err(|e: String| anyhow::anyhow!(e))?;
     println!("reset cycle policy: {:?} (--reset), parent-search time limit {} s", reset_mode, a.reset_after);

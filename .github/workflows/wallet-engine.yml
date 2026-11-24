@@ -1,0 +1,64 @@
+# The browser wallet engine (web/public/wallet/: the fork's wallet2 as WebAssembly, built by
+# scripts/build-wallet-wasm.sh with emscripten). Called by pages.yml and release.yml; uploads the
+# artifact `wallet-engine`. Uncached it takes ~30-40 min (boost, openssl, ~600 C++ files), cached a few
+# minutes. A failure never fails the caller: the job is allowed to fail, no artifact is uploaded, the
+# site is built without the engine and its Wallet page says "wallet engine unavailable".
+name: Wallet engine
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    name: Wallet engine (wasm)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    continue-on-error: true
+    env:
+      EMSCRIPTEN: 6.0.13   # what the build was developed with; also the cache key
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - name: The fork's source (monero submodule only)
+        run: git submodule update --init --depth 1 monero
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSCRIPTEN }}
+          actions-cache-folder: emsdk-cache
+      - name: Cache key (script, patch, sources, the fork's commit)
+        id: key
+        run: echo "k=$(cat scripts/build-wallet-wasm.sh web/wallet-wasm/monero-ts-sm64.patch web/wallet-wasm/sm64coin_wasm.cpp | sha256sum | cut -c1-16)-$(git rev-parse HEAD:monero | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      # The work dir holds boost, openssl, the node_modules and the object files; saved even when
+      # the build fails or times out so the next run continues from there.
+      - name: Restore the build cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: web/wallet-wasm/work
+          key: wallet-wasm-${{ env.EMSCRIPTEN }}-${{ steps.key.outputs.k }}
+          restore-keys: |
+            wallet-wasm-${{ env.EMSCRIPTEN }}-${{ hashFiles('scripts/build-wallet-wasm.sh', 'web/wallet-wasm/monero-ts-sm64.patch') }}
+            wallet-wasm-${{ env.EMSCRIPTEN }}-
+      - name: Build
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq cmake libssl-dev curl
+          JOBS=$(nproc) scripts/build-wallet-wasm.sh
+      - name: Save the build cache
+        if: ${{ always() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: web/wallet-wasm/work
+          key: wallet-wasm-${{ env.EMSCRIPTEN }}-${{ steps.key.outputs.k }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wallet-engine
+          path: web/public/wallet
+          if-no-files-found: error
