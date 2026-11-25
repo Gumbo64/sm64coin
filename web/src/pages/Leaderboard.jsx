@@ -11,9 +11,10 @@ const short = (a) => a.slice(0, 8) + '…' + a.slice(-6);
 export default function Leaderboard() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
+  const [off, setOff] = useState(false);
 
   const load = useCallback(() => {
-    daemon('sm64_board').then((r) => { setRows(r.entries || []); setErr(''); })
+    daemon('sm64_board').then((r) => { setRows(r.entries || []); setOff(!!r.disabled); setErr(''); })
       .catch((e) => setErr('Node unreachable: ' + e.message));
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
@@ -31,7 +32,8 @@ export default function Leaderboard() {
         <p className="muted">The top 50 miners by blocks mined. Every node keeps this board and shares it with its peers;
           each node counts the blocks itself from the blockchain, with each entry's view key.</p>
         {err && <p className="muted">{err}</p>}
-        {rows && rows.length === 0 && <p className="muted">Nobody has joined yet.</p>}
+        {off && <p className="muted">The leaderboard is turned off on this node.</p>}
+        {rows && !off && rows.length === 0 && <p className="muted">Nobody has joined yet.</p>}
         {rows && rows.length > 0 && (
           <table>
             <thead><tr><th>#</th><th>Name</th><th>Address</th><th>Blocks</th><th>Rewards (SM64)</th><th>Last block</th></tr></thead>

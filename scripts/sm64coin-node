@@ -39,6 +39,7 @@ Options (each also settable through the environment variable in brackets):
   --origins LIST       CORS origins for the RPC           [ORIGINS]   default https://gumbo64.github.io
   --log-file FILE      log file                           [LOG_FILE]  default <data dir>/sm64coind.log
   --solo               first node of a brand-new network: counts as synchronized without peers [SOLO=1]
+  --no-leaderboard     turn the mining leaderboard off (no board messages handled, relayed or shared) [NO_LEADERBOARD=1]
   -h, --help           this text
 
 Everything after -- is passed to sm64coind unchanged.
@@ -61,6 +62,7 @@ RPC_BIND_IP="${RPC_BIND_IP:-}"
 ORIGINS="${ORIGINS:-https://gumbo64.github.io}"
 LOG_FILE="${LOG_FILE:-}"
 SOLO="${SOLO:-0}"
+NO_LEADERBOARD="${NO_LEADERBOARD:-0}"
 extra=()
 die() { echo "sm64coin-node: $*" >&2; exit 2; }
 need_arg() { [ "$#" -ge 2 ] || die "$1 needs a value"; }
@@ -82,6 +84,7 @@ while [ $# -gt 0 ]; do
     --origins) need_arg "$@"; ORIGINS="$2"; shift 2 ;;
     --log-file) need_arg "$@"; LOG_FILE="$2"; shift 2 ;;
     --solo) SOLO=1; shift ;;
+    --no-leaderboard) NO_LEADERBOARD=1; shift ;;
     --) shift; extra=("$@"); break ;;
     *) echo "sm64coin-node: unknown option $1 (see --help; daemon arguments go after --)" >&2; exit 2 ;;
   esac
@@ -177,6 +180,7 @@ args=(--data-dir "$DATA_DIR" --sm64-rom "$ROM_FOUND"
   --non-interactive --log-file "$LOG_FILE")
 for p in ${peers[@]+"${peers[@]}"}; do args+=(--add-peer "$p" --add-priority-node "$p"); done
 [ "$SOLO" = 1 ] && args+=(--sm64-solo)
+[ "$NO_LEADERBOARD" = 1 ] && args+=(--sm64-no-leaderboard)
 if [ -n "$RESTRICTED_PORT" ]; then
   args+=(--rpc-restricted-bind-port "$RESTRICTED_PORT")
   [ "$PUBLIC_RPC" = 1 ] && args+=(--rpc-restricted-bind-ip 0.0.0.0 --confirm-external-bind)

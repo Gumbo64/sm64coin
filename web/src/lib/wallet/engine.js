@@ -216,9 +216,25 @@ export async function snapshot(w) {
 export async function boardJoin(w, name) {
   const timestamp = Math.floor(Date.now() / 1000);
   const signature = await w.signMessage(`sm64coin-board:${timestamp}:${name}`);
+  // The evidence: the heights of the blocks this wallet mined (its coinbase transfers). The node checks each
+  // with one key derivation and never scans the chain; a height that is not ours refuses the whole entry.
+  const heights = [...new Set((await w.getTxs())
+    .filter((t) => t.getIsMinerTx() && t.getIsConfirmed() && !t.getIsFailed() && t.getHeight() > 0)
+    .map((t) => t.getHeight()))].sort((a, b) => a - b).slice(-20000);
+  if (!heights.length) throw new Error('This wallet has not mined a block yet (or is still syncing).');
+  const address = await w.getPrimaryAddress();
   const r = await daemon('sm64_board_join', {
-    name, address: await w.getPrimaryAddress(), view_key: await w.getPrivateViewKey(), timestamp, signature,
+    name, address, view_key: await w.getPrivateViewKey(), timestamp, signature, heights,
   });
+  if (r.disabled) throw new Error('The leaderboard is turned off on this node.');
+  if (!r.joined && r.queued) { // its heights are verified in the background: wait for it to appear
+    for (let i = 0; i < 30; i++) {
+      await new Promise((ok) => setTimeout(ok, 2000));
+      const b = await daemon('sm64_board', {});
+      if ((b.entries || []).some((x) => x.address === address && x.name === name)) return { ...r, joined: true };
+    }
+    throw new Error('Submitted; the node is still verifying your blocks. Check the leaderboard in a minute.');
+  }
   if (!r.joined) throw new Error(`Not on the board: ${r.reason}`);
   return r;
 }

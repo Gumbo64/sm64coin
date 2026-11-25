@@ -20,6 +20,8 @@ Group=sm64coin
 WorkingDirectory=/var/lib/sm64coin
 Environment=DATA_DIR=/var/lib/sm64coin
 Environment=ROM=/opt/sm64coin/baserom.us.z64
+# Turn the mining leaderboard off (no board messages handled, relayed or shared):
+#Environment=NO_LEADERBOARD=1
 ExecStart=/opt/sm64coin/sm64coin-node
 Restart=always
 RestartSec=10

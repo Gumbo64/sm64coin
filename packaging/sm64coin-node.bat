@@ -1,6 +1,6 @@
 @echo off
 rem sm64coin-node.bat: run an SM64Coin node (sm64coind.exe) without the wallet app.
-rem Usage:  sm64coin-node.bat [--solo] [--data-dir DIR] [--rom FILE] [--public-rpc] [-- extra sm64coind args]
+rem Usage:  sm64coin-node.bat [--solo] [--no-leaderboard] [--data-dir DIR] [--rom FILE] [--public-rpc] [-- extra sm64coind args]
 rem Environment: DATA_DIR, ROM, P2P_PORT, RPC_PORT, ZMQ_PORT. Open TCP 16480 in the firewall to accept peers.
 rem Seeds: seeds.txt next to this file. Hostnames are resolved with PowerShell (Resolve-DnsName) to IPv4,
 rem and skipped with a message when they do not resolve. The ROM's SHA-1 is checked with certutil.
@@ -16,6 +16,7 @@ set "EXTRA="
 :args
 if "%~1"=="" goto argsdone
 if /i "%~1"=="--solo" (set "SOLOARG=--sm64-solo" & shift & goto args)
+if /i "%~1"=="--no-leaderboard" (set "SOLOARG=%SOLOARG% --sm64-no-leaderboard" & shift & goto args)
 if /i "%~1"=="--public-rpc" (set "PUBARG=--rpc-restricted-bind-ip 0.0.0.0 --rpc-restricted-bind-port 16489 --confirm-external-bind" & shift & goto args)
 if /i "%~1"=="--data-dir" (set "DATA_DIR=%~2" & shift & shift & goto args)
 if /i "%~1"=="--rom" (set "ROM=%~2" & shift & shift & goto args)
