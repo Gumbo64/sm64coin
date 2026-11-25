@@ -1,13 +1,21 @@
-//! Blocks as a chain of game states: each block's run starts where its parent's
-//! ended (or from power-on, see [`proof::Start`]), so verifying a block needs
-//! its parent's end state.
+//! Blocks as a chain of game states (layer 5): the verdict per block.
 //!
-//! End states are cached here by block id (a few, they are megabytes each).
-//! When a parent's state isn't cached, [`verify_block`] answers
-//! [`BlockVerdict::NeedParent`]; the caller (the daemon) then walks back to a
-//! block it can start from (one with a cached parent, a power-on start, or the
-//! genesis block as parent), and replays forward with [`rebuild_block`].
-//! Replay is fast (a whole cycle is seconds), so nothing is stored on disk.
+//! Each block's run starts where its parent's ended (or from power-on, see
+//! [`proof::Start`]), so verifying a block needs its parent's end state.
+//! [`verify_block`] looks the parent up in the cache ([`crate::cache`]); when
+//! it isn't there it answers [`BlockVerdict::NeedParent`], and the daemon
+//! (`Blockchain::sm64_rebuild`) walks back to a block it can start from and
+//! replays forward with [`rebuild_block`] (difficulty 0: no time limit).
+//! A run already verified (a restamped copy, or the pre-pass) is not
+//! replayed again: only the timestamp-dependent rules are re-checked.
+//!
+//! The limit a block must meet is `rules().max_frames(difficulty, gap)`,
+//! the gap being the seconds between its timestamp and its parent's (for a
+//! restart, the gap minus the restart delay); the genesis block's child gets
+//! the cap. This module re-exports the pieces below it so `chain::X` stays
+//! the one path the daemon-facing code uses.
+//!
+//! Read next: ffi.rs (how the daemon calls this).
 
 use crate::cache::{REPLAYS, alias, known_summary, parent_state, played_cached, remember, remember_played, run_key};
 use crate::game::Progress;

@@ -1,4 +1,9 @@
-//! C ABI used by the daemon (monero fork). See `sm64pow.h`.
+//! The C ABI the daemon calls (layer 6), declared in `sm64pow.h`.
+//!
+//! The Monero fork wraps it in monero/src/sm64coin/sm64coin.{h,cpp}; every
+//! function catches panics and reports errors through
+//! [`sm64pow_last_error`] (per thread). Changing a signature here means
+//! changing the header and the wrapper too.
 
 use crate::proof::Codec;
 use crate::proof_id::proof_id;
@@ -66,9 +71,7 @@ pub extern "C" fn sm64pow_last_error(buf: *mut c_char, cap: usize) -> usize {
     n
 }
 
-/// Verifies a proof for the block whose hashing blob hashes to `hash32`
-/// (32 bytes, the perturbation's seed). Returns the number of frames (> 0) when valid, 0 when
-/// invalid, -1 on an internal error. The reason is in `sm64pow_last_error`.
+/// A 32-byte argument (block id, seed hash), None for a null pointer.
 unsafe fn id_arg(p: *const u8) -> Option<[u8; 32]> {
     if p.is_null() { None } else { Some(unsafe { *(p as *const [u8; 32]) }) }
 }
@@ -185,6 +188,7 @@ pub extern "C" fn sm64pow_set_state_dir(path: *const c_char) -> i32 {
     std::panic::catch_unwind(|| crate::chain::set_state_dir(std::path::Path::new(p)) as i32).unwrap_or(-1)
 }
 
+/// Whether block `id32`'s end state is cached (1) or not (0).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
     match unsafe { id_arg(id32) } {
@@ -193,7 +197,6 @@ pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
     }
 }
 
-/// Whether block `id32`'s end state is cached (1) or not (0).
 /// Block `id32`'s cached end state (the game's save state), gzip; for get_sm64_state. Same
 /// return convention as `sm64pow_decode_raw`; SIZE_MAX when it isn't cached.
 #[unsafe(no_mangle)]
@@ -359,7 +362,7 @@ pub extern "C" fn sm64pow_reencode(blob: *const u8, len: usize, out: *mut u8, ca
     }
 }
 
-/// The RNG seed for a block from `cn_fast_hash(hashing blob)` (32 bytes).
+/// The first word of a seed hash (32 bytes), for display (see `seed_from_hash`).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_seed(hash32: *const u8) -> u32 {
     let h: &[u8; 32] = unsafe { &*(hash32 as *const [u8; 32]) };
@@ -497,7 +500,8 @@ pub extern "C" fn sm64pow_probs(difficulty: u64, a: *mut f32, b: *mut f32, z: *m
     }
 }
 
-/// Frames between reseeds of the perturbation at `difficulty` (0: never).
+/// Frames between reseeds of the perturbation at `difficulty`: always 0 (vestigial, see
+/// `Params::reseed_frames`).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_reseed_frames(difficulty: u64) -> u32 {
     params(difficulty).reseed_frames

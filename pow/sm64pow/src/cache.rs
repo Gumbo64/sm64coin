@@ -1,4 +1,18 @@
-//! The end-state cache.
+//! The end-state cache (layer 5): what the chain remembers between blocks.
+//!
+//! Verifying a block needs its parent's end state (a save state of a few
+//! MB), so the last few dozen are kept in memory, keyed by run (parent,
+//! start, seed, proof bytes) with block ids pointing at runs: blocks that
+//! differ only in their timestamp are the same run and share one entry.
+//! Run summaries (frames, progress, ...) of many more blocks are kept for the
+//! parallel pre-pass. With [`set_state_dir`] the newest end states also go
+//! to disk, so a restarted node verifies the next block without replaying
+//! the cycle. A played-pads cache serves explorers (`get_sm64_cycle`).
+//!
+//! None of this decides validity: a missing entry only means a replay
+//! (`BlockVerdict::NeedParent`, then the daemon rebuilds the parent).
+//!
+//! Read next: preverify.rs.
 
 use crate::game::Progress;
 use crate::proof::Start;
@@ -228,7 +242,7 @@ const DISK_STATES: usize = 8;
 
 static STATE_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 
-/// Keeps end states in `dir` from now on (the newest [`DISK_STATES`]), and loads
+/// Keeps end states in `dir` from now on (the newest `DISK_STATES`), and loads
 /// the ones already there, newest first. Returns how many were loaded. A node
 /// that restarts then needs no replay of the cycle to verify the next block.
 pub fn set_state_dir(dir: &std::path::Path) -> usize {

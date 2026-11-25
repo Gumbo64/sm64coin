@@ -1,23 +1,21 @@
-//! State-aware proof codecs: the inputs are coded given the game state they
-//! are played in, so decoding happens frame by frame during the replay.
+//! State-aware proof codecs (layer 3): the inputs are coded given the game
+//! state they are played in, so decoding happens frame by frame during the
+//! replay.
 //!
-//! Everything on the decode path is integer arithmetic (no floats, no ML
-//! runtime), so every node decodes bit-identically:
+//! The codecs themselves are the pure `sm64coin-statecodec` crate
+//! (pow/statecodec: a binary range coder and adaptive context-mixing models,
+//! integer arithmetic only, shared with the browser); this module re-exports
+//! it and adds the replay that feeds it game states: [`encode_proof_state`]
+//! (sealing) and [`decode_proof_state`] (tools; the verifier decodes inside
+//! `replay::replay_state`). A state-coded proof has exactly one valid
+//! encoding (the verifier re-encodes and compares), and the block id commits
+//! to its bytes ([`state_proof_id`]).
 //!
-//! * [`RangeEncoder`] / [`RangeDecoder`]: a binary range coder (LZMA style,
-//!   12-bit probabilities) with a canonical minimal flush and an implicit
-//!   all-zero tail, so each bit sequence has exactly one byte string.
-//! * [`Model`]: predicts every binary decision of a pad (same as before?,
-//!   which buttons, which stick values) from several small contexts of the
-//!   game state ([`Features`]) and the previous pads; the predictions are
-//!   mixed by a logistic mixer and every counter adapts while coding
-//!   (prequential, nothing is transmitted). One code path ([`BitIo`]) both
-//!   encodes and decodes, so the two cannot disagree.
-//! * [`StateCodec`]: the codec ids built from it. A model change is a new id.
+//! On by default (cargo feature `state-codec`, the state-codec hard fork);
+//! built without it, nodes reject codecs 3-5 like any unknown id. The bottom
+//! of the file is research tooling ([`Run`], [`state_after`]), not consensus.
 //!
-//! The codecs themselves are the `sm64coin-statecodec` crate (pure, shared with the browser
-//! through `sm64coin-perturb-wasm`); this module re-exports them and adds the replay that
-//! feeds them game states.
+//! Read next: proof_id.rs.
 
 use crate::emulator::generator;
 use crate::game::mining_start;
@@ -31,8 +29,8 @@ use sm64_binds::{GamePad, SaveState};
 pub use sm64coin_statecodec::*;
 use crate::game::{from_pad, to_pad};
 
-/// Whether blocks may use state codecs: the hard fork switch. Off unless
-/// built with the `state-codec` feature.
+/// Whether blocks may use state codecs: the hard fork switch. On unless
+/// built without the (default) `state-codec` feature.
 pub const fn state_codec_enabled() -> bool {
     cfg!(feature = "state-codec")
 }

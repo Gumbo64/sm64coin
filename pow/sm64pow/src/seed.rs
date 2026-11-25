@@ -1,26 +1,34 @@
-//! The perturbation's seed.
+//! The perturbation's seed (layer 1).
+//!
+//! A block's seed is all 256 bits of `cn_fast_hash(block hashing blob)` with
+//! the block's timestamp zeroed (the daemon computes it:
+//! `Blockchain::sm64_seed`), so a miner can restamp a block without changing
+//! its run, while every other field of the header (parent, miner tx, nonce,
+//! ...) changes the pokes. The perturbation seeds its generators from all
+//! 32 bytes ([`sm64coin_perturb::Perturber::new`]); [`Seed::word`] and
+//! [`seed_from_hash`] are a 32-bit summary for display (RPC `sm64_seed`).
+//!
+//! Read next: rules.rs.
 
 use anyhow::Result;
 
-/// The RNG seed for a block: the first four bytes (little endian) of
-/// `cn_fast_hash(block hashing blob)`. xorshift32 cannot leave zero, so zero
-/// becomes one. (The whole hash is used: see [`Seed`].)
+/// The seed's first word ([`Seed::word`]`(0)`: the first four bytes, little
+/// endian, zero becoming one), for display (RPC `sm64_seed`). The
+/// perturbation uses the whole hash.
 pub fn seed_from_hash(hash: &[u8; 32]) -> u32 {
     Seed(*hash).word(0)
 }
 
-/// A block's perturbation seed: `cn_fast_hash(block hashing blob)`.
-///
-/// The xorshift32 state is reset to [`Seed::word`]`(k)` before frame
-/// `k * reseed_frames`, so every bit of the hash shapes the run: a run
-/// played for one block is useless for another beyond the first
-/// `reseed_frames` frames, however the miner grinds nonces.
+/// A block's perturbation seed: `cn_fast_hash(block hashing blob)`, the
+/// timestamp zeroed. All 32 bytes seed the perturbation's generators.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Seed(pub [u8; 32]);
 
 impl Seed {
     /// Word `k`: 32 bits of the hash (cycling through its 8 words), mixed
-    /// with `k` so later cycles differ. Never zero.
+    /// with `k` so later cycles differ. Never zero. (A leftover of the old
+    /// xorshift32 perturbation, which reseeded from word `k` every
+    /// `reseed_frames`; now only [`seed_from_hash`] uses it.)
     pub fn word(&self, k: u32) -> u32 {
         let i = (k as usize % 8) * 4;
         let w = u32::from_le_bytes([self.0[i], self.0[i + 1], self.0[i + 2], self.0[i + 3]]);

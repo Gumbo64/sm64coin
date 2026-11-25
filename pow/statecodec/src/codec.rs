@@ -1,4 +1,7 @@
-//! The state codec interface.
+//! The state codec interface: a codec is an id plus a streaming encoder and
+//! decoder that the replay feeds frame by frame (the state's [`Features`],
+//! then the pad, or "poked"). Like `sm64pow::proof::Codec`, a new model is a
+//! new id.
 
 use sm64coin_perturb::Pad as GamePad;
 use sm64coin_perturb::sm64::Features;

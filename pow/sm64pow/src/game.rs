@@ -1,11 +1,16 @@
-//! The game adapter: what the perturbation reads from Super Mario 64, and a
-//! game bundled with its perturbation ([`SM64MiningGame`]).
+//! The game adapter (layer 2): what the perturbation reads from Super Mario
+//! 64, and a game bundled with its perturbation ([`SM64MiningGame`]).
 //!
-//! The adapter names a few memory regions; native code reads them from the
-//! game, the browser copies the same bytes out of its build's memory and
-//! hands them to this code compiled to WASM. Both then compute the clock and
-//! digest with [`view`]. Another game needs another adapter (its regions,
-//! clock and digest) and nothing else.
+//! The adapter (pow/perturb/src/sm64.rs) names a few memory regions; native
+//! code reads them from the game here, the browser copies the same bytes out
+//! of its build's memory and hands them to the same code compiled to WASM.
+//! Both then compute the clock and digest with [`view`]. [`perturbed_step`]
+//! is the one way a frame is played, by miners and verifiers alike: ask the
+//! perturbation for this frame's pad (a poke, or the wanted pad), play it,
+//! then settle the perturbation with the game's clock and state digest.
+//! [`read_progress`] reads what the rules count (stars, keys, Grand Star).
+//!
+//! Read next: statecodec.rs.
 
 use crate::emulator::generator;
 use crate::proof::Start;

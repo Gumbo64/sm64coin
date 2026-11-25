@@ -2,18 +2,15 @@
 //! are played in, so decoding happens frame by frame during the replay.
 //!
 //! Everything on the decode path is integer arithmetic (no floats, no ML
-//! runtime), so every node decodes bit-identically:
+//! runtime), so every node decodes bit-identically. Bottom layer first:
 //!
-//! * [`RangeEncoder`] / [`RangeDecoder`]: a binary range coder (LZMA style,
-//!   12-bit probabilities) with a canonical minimal flush and an implicit
-//!   all-zero tail, so each bit sequence has exactly one byte string.
-//! * [`Model`]: predicts every binary decision of a pad (same as before?,
-//!   which buttons, which stick values) from several small contexts of the
-//!   game state ([`Features`]) and the previous pads; the predictions are
-//!   mixed by a logistic mixer and every counter adapts while coding
-//!   (prequential, nothing is transmitted). One code path ([`BitIo`]) both
-//!   encodes and decodes, so the two cannot disagree.
-//! * [`StateCodec`]: the codec ids built from it. A model change is a new id.
+//! * [`range`]: the binary range coder, canonical (one byte string per bit
+//!   sequence); [`BitIo`] is one code path for encoding and decoding.
+//! * [`logistic`]: integer squash / stretch for the mixers.
+//! * [`codec`]: the [`StateCodec`] interface (streaming, frame by frame).
+//! * [`statectx`]: codec 3, an adaptive context-mixing model.
+//! * [`statemix`]: codecs 4 and 5, a stronger model (what miners seal with).
+//! * this file: the registry ([`STATE_CODECS`], [`SEAL_CODECS`]).
 //!
 //! This crate is the pure part (no game, no emulator): native nodes use it through
 //! `sm64pow::statecodec`, the browser through `sm64coin-perturb-wasm`. Same source, so the
@@ -36,7 +33,7 @@ pub use sm64coin_perturb::Pad;
 pub use sm64coin_perturb::Pad as GamePad;
 
 /// Every state codec this build knows (accepted in blocks only when
-/// [`state_codec_enabled`]).
+/// `sm64pow::statecodec::state_codec_enabled`).
 pub static STATE_CODECS: &[&dyn StateCodec] = &[&StateCtx1, &crate::statemix::VARIANTS[0], &crate::statemix::VARIANTS[1]];
 
 /// The codecs sealing tries (the newest family; 3 stays decodable).

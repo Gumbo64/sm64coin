@@ -1,4 +1,14 @@
-//! The parallel pre-pass of a sync batch.
+//! The parallel pre-pass of a sync batch (layer 5).
+//!
+//! When the daemon receives a batch of blocks it first replays their runs in
+//! parallel, chain by chain (a chain starts at a power-on run, the genesis
+//! block, or a block whose parent's end state is cached), and keeps a
+//! summary of each. The sequential check ([`crate::chain::verify_block`])
+//! then finds each run and only re-checks the rules that depend on the
+//! timestamp and the parent. Nothing here decides validity: an invalid run is
+//! just not summarized, and the sequential check replays and rejects it.
+//!
+//! Read next: chain.rs.
 
 use crate::cache::{REPLAYS, Summary, alias, cached, known_summary, parent_state, remember, remember_summary, run_key};
 use crate::emulator::generator;
@@ -22,8 +32,8 @@ pub struct BatchBlock {
 /// it splits the batch into chains that can be replayed on their own (from a
 /// power-on start, the genesis block, or a parent whose end state is cached)
 /// and replays the chains on up to `threads` threads at once, keeping a
-/// [`Summary`] of every run and the full end state of each chain's last block.
-/// [`verify_block`] then finds each run and only re-checks the rules that
+/// `Summary` of every run and the full end state of each chain's last block.
+/// [`crate::chain::verify_block`] then finds each run and only re-checks the rules that
 /// depend on the timestamp and the parent, so a batch spanning several cycles
 /// verifies in parallel. Nothing here decides validity: an invalid run is just
 /// not summarized (and the chain stops there), and the sequential check

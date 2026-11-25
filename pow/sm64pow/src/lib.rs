@@ -1,41 +1,57 @@
-//! SM64Coin proof-of-play.
+//! SM64Coin proof-of-play: the consensus core.
 //!
-//! A block is sealed by playing Super Mario 64 from power-on until the success
-//! condition holds (by default: Mario has a star). While playing, the
-//! controller is randomly perturbed ("poking the robot"), outside the game
-//! ([`perturb`]): a 256-bit generator seeded from the whole block hash, mixed
-//! with a digest of the game state ([`game`]) after every frame the game
-//! simulates, and scheduled on the game's own clock (so pausing neither spends
-//! nor rerolls pokes). The game build is stock; [`SM64MiningGame`] bundles it with
-//! its perturbation so save states carry both.
+//! A block is sealed by playing Super Mario 64 on an emulated N64: its proof
+//! is a run of controller inputs that, replayed from the parent block's end
+//! state (or from power-on), makes the game's next progress point (a star, a
+//! Bowser key, or the Grand Star). While the run plays the controller is
+//! randomly "poked": pads replaced by random ones, drawn from the block's
+//! seed and the game state ([`sm64coin_perturb`]), so a run only works for
+//! the block it was played for. Every node verifies a block by replaying it.
 //!
-//! This crate is the single source of truth that the daemon (through the C
-//! ABI in [`ffi`]), the miners and the explorer share:
+//! This crate is the single source of truth: the daemon calls it through the
+//! C ABI in [`ffi`] (the C++ side has no rules of its own), and the miners,
+//! SDK and explorer link it directly. Start at docs/CORE.md for the guided
+//! tour. The modules, bottom layer first (each uses only the ones above it in
+//! this list):
 //!
-//! * [`rules`]: the success condition, difficulty -> task, retargeting, decay.
-//! * [`proof`]: the proof blob format (codecs; compression goes here).
-//! * [`Seed`]: the perturbation's seed: all 256 bits of
-//!   `cn_fast_hash(block hashing blob)`.
-//! * [`verify`]: replays a proof and checks it. A proof is the frame count and
-//!   the player's inputs on the frames that weren't poked: the game applies
-//!   the random pad itself whenever a frame is poked, so pokes are never
-//!   recorded (see [`proof::Proof`], [`Recorder`]).
+//! 1. [`seed`], [`rules`](mod@rules), [`hold`], [`proof`]: pure, no game. The seed; the
+//!    consensus parameters as functions (time limit, retarget, restarts);
+//!    the hold policy; the proof blob and its stateless codecs (0 raw,
+//!    1 run-length, 2 xz).
+//! 2. [`emulator`], [`game`]: the ROM and the game build; a game bundled
+//!    with its perturbation ([`SM64MiningGame`]).
+//! 3. [`statecodec`], [`proof_id`](mod@proof_id): the state-aware codecs (3-5, decoded
+//!    while the game plays) and what a block id commits to.
+//! 4. [`replay`]: verifying one run (where it may start, what it must do).
+//! 5. [`cache`], [`preverify`], [`chain`]: blocks as a chain of end states:
+//!    the cache, the parallel sync pre-pass, and the verdict per block.
+//! 6. [`ffi`]: the C ABI the daemon calls (`sm64pow.h`).
+//!
+//! Beside the consensus path: [`mining`] (building and sealing proofs, the
+//! standalone `verify`), and the research tooling at the bottom of
+//! [`statecodec`].
 
-pub mod ffi;
-pub mod cache;
-pub mod chain;
-pub mod emulator;
-pub mod game;
+// 1: pure
 pub mod hold;
-pub mod mining;
-pub mod preverify;
 pub mod proof;
-pub mod proof_id;
-pub mod replay;
 pub mod rules;
 pub mod seed;
+// 2: the game
+pub mod emulator;
+pub mod game;
+// 3: codecs that need the game, block ids
+pub mod proof_id;
 pub mod statecodec;
 pub mod statemix;
+// 4-5: verification
+pub mod cache;
+pub mod chain;
+pub mod preverify;
+pub mod replay;
+// 6: the daemon's C ABI
+pub mod ffi;
+// beside the consensus path
+pub mod mining;
 
 pub use emulator::{GAME_BUILD, default_rom_path, game_build_id, generator, init, init_default};
 pub use game::{SM64MiningGame, SM64MiningSave};

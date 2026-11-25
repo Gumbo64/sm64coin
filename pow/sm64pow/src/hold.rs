@@ -1,4 +1,13 @@
-//! The hold policy.
+//! The hold policy (layer 1): when a node processes a block that is valid at
+//! its own timestamp but not yet by the node's clock.
+//!
+//! Relay policy, not consensus: the daemon (`Blockchain::sm64_hold`) holds
+//! such a block, instead of rejecting it, until the first second its run fits
+//! the limit by the node's clock, then processes and relays it. So stamping a
+//! block ahead of the clock gains nothing, and miners stamp "now". Pure
+//! function of the rules ([`crate::rules::Rules::max_frames`]).
+//!
+//! Read next: proof.rs.
 
 use crate::rules::active as rules;
 

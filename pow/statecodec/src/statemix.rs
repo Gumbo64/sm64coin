@@ -12,7 +12,7 @@
 //!   second mixing layer, then two APM/SSE stages, in 16-bit probabilities.
 //!
 //! Integer arithmetic only. [`Cfg`] holds every tunable; the shipped variants
-//! are frozen presets ([`Cfg::variant`]), the codec id says which one.
+//! are frozen presets ([`StateMix::cfg`]), the codec id says which one.
 
 use crate::codec::{StateCodec, StateDecoder, StateEncoder};
 use crate::logistic::{squash, stretch_table};

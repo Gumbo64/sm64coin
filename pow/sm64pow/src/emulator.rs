@@ -1,4 +1,11 @@
-//! The emulator: the ROM and the consensus game build.
+//! The emulator (layer 2): the ROM, the consensus game build, and fresh games.
+//!
+//! The game is sm64-binds' headless WASM build of Super Mario 64, run by
+//! wasmer. [`init`] loads the ROM once per process and refuses any game build
+//! but [`GAME_BUILD`]: a different build is a different game. [`generator`]
+//! makes game instances (each one powered on).
+//!
+//! Read next: game.rs.
 
 use anyhow::{Result, anyhow};
 use sm64_binds::SM64GameGenerator;

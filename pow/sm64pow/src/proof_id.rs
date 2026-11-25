@@ -1,4 +1,15 @@
-//! What a block id commits to for its proof.
+//! What a block id commits to for its proof (layer 3).
+//!
+//! The daemon's block id is the hash of the block hashing blob followed by
+//! [`proof_id`] of `block::sm64_proof` (`get_block_id_blob` in the Monero
+//! fork). For the stateless codecs it hashes the decoded proof, so a proof
+//! re-encoded with another of them keeps its block id; for the state-aware
+//! codecs it hashes the (canonical) bytes, since decoding needs the parent's
+//! state. The web wallet has a C++ port of this function
+//! (web/wallet-wasm/sm64coin_wasm.cpp) checked against vectors from
+//! examples/proofid_vectors.rs.
+//!
+//! Read next: replay.rs.
 
 use crate::rules::active as rules;
 use crate::{proof, statecodec};

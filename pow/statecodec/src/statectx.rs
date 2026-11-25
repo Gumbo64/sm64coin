@@ -1,4 +1,10 @@
-//! Codec 3.
+//! Codec 3 (`statectx1`): an adaptive context-mixing model of the pads.
+//!
+//! Predicts every binary decision of a pad (same as before?, which buttons,
+//! which stick values) from small contexts of the game state ([`Features`])
+//! and the previous pads; a logistic mixer combines them and every counter
+//! adapts while coding (prequential: nothing is transmitted). Still accepted
+//! in blocks; sealing now uses codecs 4/5 (statemix.rs).
 
 use crate::codec::{StateCodec, StateDecoder, StateEncoder};
 use crate::logistic::{squash, stretch_table};

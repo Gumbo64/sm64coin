@@ -1,4 +1,10 @@
-//! The miner's side: playing perturbed frames, building and sealing proofs.
+//! The miner's side (beside the consensus path): playing perturbed frames,
+//! building proofs from played pads, sealing them in the smallest codec, and
+//! checking a run standalone ([`verify`], as the first block of a cycle).
+//!
+//! Miners keep the pads they played on every frame; [`seal_proof_at`] turns
+//! that into a proof blob by replaying it and dropping the poked frames.
+//! Used by pow/miner, the SDK and the web miner; nodes don't call it.
 
 use crate::game::{SM64MiningGame, mining_start};
 use crate::rules::Params;

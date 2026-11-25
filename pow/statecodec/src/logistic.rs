@@ -1,4 +1,5 @@
-//! Logistic squash and stretch.
+//! Logistic squash (stretch domain -> 12-bit probability) and its inverse,
+//! as integer tables: the mixers of codecs 3-5 use them.
 
 const SQUASH_T: [i32; 33] = [
     1, 2, 3, 6, 10, 16, 27, 45, 73, 120, 194, 310, 488, 747, 1101, 1546, 2047, 2549, 2994, 3348, 3607, 3785, 3901, 3975, 4022, 4050, 4068,

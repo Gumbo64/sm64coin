@@ -1,4 +1,20 @@
-//! Replaying one block's run.
+//! Verifying one run (layer 4): where it may start and what it must do.
+//!
+//! `start_game` applies the start rules: the first block after the genesis
+//! block and every block after a cycle-ending (Grand Star) block start from
+//! power-on; any other block continues from its parent's end state, or
+//! restarts from power-on at a price (its limit is the limit
+//! [`crate::rules::Rules::restart_delay`] seconds earlier). `replay` and
+//! `replay_state` then play the proof through the perturbation
+//! ([`crate::game::perturbed_step`]) and accept it only if: it is within the
+//! time limit, every non-poked frame has an input, the success condition
+//! ([`crate::rules::Rules::is_success`]) first holds on exactly the last
+//! frame, and no input is left over (state codecs: and the body is the
+//! canonical encoding).
+//!
+//! Pure: the caller hands in the parent's end state; no cache, no globals.
+//!
+//! Read next: cache.rs, preverify.rs, then chain.rs (the verdict per block).
 
 use crate::game::{Progress, SM64MiningGame, read_progress};
 use crate::proof::{self, Proof, Start};

@@ -1,4 +1,11 @@
-//! The binary range coder.
+//! The binary range coder (LZMA style) every state codec writes through.
+//!
+//! 12- and 16-bit probabilities; [`RangeEncoder::finish`] is a canonical
+//! minimal flush and the decoder reads an implicit all-zero tail, so each bit
+//! sequence has exactly one byte string. [`BitIo`] is the one code path for
+//! both directions (the encoder codes a bit, the decoder returns one), so a
+//! model can't encode and decode differently. [`CostMeter`] only measures
+//! (model development).
 
 const PROB_BITS: u32 = 12;
 const TOP: u32 = 1 << 24;
