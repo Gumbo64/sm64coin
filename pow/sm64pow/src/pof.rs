@@ -12,9 +12,10 @@
 //!   by the node's clock. The auction's shortest-run selection stays: a
 //!   shorter run is eligible sooner.
 //! - **The window.** The first block on a parent that becomes eligible at
-//!   this node opens a window of [`POF_WINDOW_SECONDS`] (60 s, this node's
+//!   this node opens a window of [`POF_WINDOW_SECONDS`] (30 s, this node's
 //!   clock). A sibling (same parent, so the same height) that becomes
-//!   eligible inside the window, carries **strictly fewer frames** than our
+//!   eligible inside the window, carries **strictly fewer frames** (at equal
+//!   frames: a lower cn_fast_hash(sm64_sig)) than our
 //!   current block at that height, and has **another miner key** (another
 //!   template: a different seed) displaces it: the node reorganises to it
 //!   ([`Policy::displaces`]). After the window, or once our block has a
@@ -57,6 +58,8 @@ pub struct Seen {
     pub stale: bool,
     /// Its timestamp.
     pub stamp: u64,
+    /// The equal-length tie-break: cn_fast_hash(sm64_sig) (lower wins; [`NO_TIE`] when unknown).
+    pub tie: [u8; 32],
 }
 
 /// Whether a block stamped `stamp` and arriving (eligible) at `now` is stale.
@@ -80,11 +83,17 @@ impl Policy {
     /// `stamp`) is eligible at `now`: valid and fitting by this node's clock.
     /// The first time only.
     pub fn note_eligible(&mut self, id: [u8; 32], parent: [u8; 32], seed: [u8; 32], frames: u32, stamp: u64, now: u64) {
+        self.note_eligible_tie(id, parent, seed, frames, stamp, now, NO_TIE)
+    }
+
+    /// [`Policy::note_eligible`] with the block's tie-break hash, `cn_fast_hash(sm64_sig)` ([`tie_of`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn note_eligible_tie(&mut self, id: [u8; 32], parent: [u8; 32], seed: [u8; 32], frames: u32, stamp: u64, now: u64, tie: [u8; 32]) {
         let (blocks, first) = self.maps();
         if blocks.get(&id).is_some() {
             return;
         }
-        blocks.insert(id, Seen { parent, seed, frames, at: now, stale: stale(stamp, now), stamp });
+        blocks.insert(id, Seen { parent, seed, frames, at: now, stale: stale(stamp, now), stamp, tie });
         if first.get(&parent).is_none() {
             first.insert(parent, now);
         }
@@ -102,6 +111,9 @@ impl Policy {
         if t.parent != a.parent {
             return false; // not siblings
         }
+        if t.seed != a.seed && crate::equivocation::policy().lock().unwrap_or_else(|e| e.into_inner()).tainted(&a.seed) {
+            return false; // the window never overrides the equivocation penalty (fork choice decides)
+        }
         if t.seed == a.seed {
             // The same key: the same run restamped (a second different run is equivocation.rs's).
             let opened = first.get(&t.parent).copied().unwrap_or(t.at);
@@ -114,21 +126,43 @@ impl Policy {
             return false;
         }
         let opened = first.get(&t.parent).copied().unwrap_or(t.at);
-        a.frames < t.frames && a.at <= opened.saturating_add(POF_WINDOW_SECONDS)
+        beats(a.frames, &a.tie, t.frames, &t.tie) && a.at <= opened.saturating_add(POF_WINDOW_SECONDS)
     }
 
     /// Whether an alternative block claiming `frames`, a sibling of our
     /// childless `tip`, arriving at `now` stamped `stamp`, could displace it
     /// (then it is worth a replay whatever admit.rs's per-parent cap says).
     pub fn candidate(&mut self, tip: &[u8; 32], frames: u32, stamp: u64, now: u64) -> bool {
+        self.candidate_tie(tip, frames, &NO_TIE, stamp, now)
+    }
+
+    /// [`Policy::candidate`] for a block whose tie-break hash is `tie` (an equal-length sibling
+    /// with a lower hash also displaces, inside the window).
+    pub fn candidate_tie(&mut self, tip: &[u8; 32], frames: u32, tie: &[u8; 32], stamp: u64, now: u64) -> bool {
         let (blocks, first) = self.maps();
         let Some(t) = blocks.get(tip).copied() else { return false };
         if t.stale && !stale(stamp, now) {
             return true;
         }
         let opened = first.get(&t.parent).copied().unwrap_or(t.at);
-        !stale(stamp, now) && frames < t.frames && now <= opened.saturating_add(POF_WINDOW_SECONDS)
+        !stale(stamp, now) && beats(frames, tie, t.frames, &t.tie) && now <= opened.saturating_add(POF_WINDOW_SECONDS)
     }
+}
+
+/// "Unknown": never wins a tie.
+pub const NO_TIE: [u8; 32] = [0xff; 32];
+
+/// A block's tie-break hash: `cn_fast_hash(sm64_sig)`.
+pub fn tie_of(sig: &[u8; 64]) -> [u8; 32] {
+    crate::sign::cn_fast_hash(sig)
+}
+
+/// Inside the window, between siblings of different keys: strictly fewer frames wins; at equal
+/// frames, the lower signature hash, at every node whatever the arrival order (the auction-
+/// smoothness simulation: window-edge splits 0.8 % -> 0). Only the run's owner can change its
+/// signature, and grinding it only matters for exact ties.
+fn beats(frames: u32, tie: &[u8; 32], their_frames: u32, their_tie: &[u8; 32]) -> bool {
+    frames < their_frames || (frames == their_frames && *tie != NO_TIE && tie < their_tie)
 }
 
 /// Copies of one run (the same seed and run, another timestamp: anyone can
@@ -157,6 +191,25 @@ pub fn restamp_preferred(tip: &[u8; 32], seed: &[u8; 32], stamp: u64, id: &[u8; 
     t.seed == *seed && !stale(stamp, at) && at <= opened.saturating_add(POF_WINDOW_SECONDS) && copy_preferred(seed, (stamp, id), (t.stamp, tip))
 }
 
+/// Whether a sibling of our block `tip` (seed `seed`, claiming `frames`, stamped `stamp`,
+/// eligible at `at`) could replace it: a [`Policy::candidate`] (shorter inside the window, or
+/// fresh against a stale tip), or a clean sibling of a tip whose template has equivocation
+/// evidence (equivocation.rs: miners build such siblings, and the fork-choice penalty prefers
+/// them, so they must be replayed and stored, not dropped).
+pub fn sibling_could_matter(tip: &[u8; 32], seed: &[u8; 32], frames: u32, tie: &[u8; 32], stamp: u64, at: u64) -> bool {
+    let (cand, tip_seed) = {
+        let mut p = policy().lock().unwrap_or_else(|e| e.into_inner());
+        let c = p.candidate_tie(tip, frames, tie, stamp, at);
+        (c, p.seen(tip).map(|s| s.seed))
+    };
+    if cand {
+        return true;
+    }
+    let Some(ts) = tip_seed else { return false };
+    let e = crate::equivocation::policy().lock().unwrap_or_else(|e| e.into_inner());
+    ts != *seed && e.avoid(&ts) && !e.avoid(seed)
+}
+
 pub fn policy() -> &'static Mutex<Policy> {
     static P: OnceLock<Mutex<Policy>> = OnceLock::new();
     P.get_or_init(|| Mutex::new(Policy::default()))
@@ -174,23 +227,46 @@ mod tests {
 
     #[test]
     fn a_shorter_run_of_another_key_displaces_inside_the_window_only() {
+        const W: u64 = POF_WINDOW_SECONDS;
         let mut p = Policy::default();
         let t0 = 1_000_000;
         p.note_eligible(id(10), P, id(100), 3000, t0, t0);
-        // 30 s later, 2800 frames, another template: displaces.
-        p.note_eligible(id(11), P, id(101), 2800, t0 + 30, t0 + 30);
-        assert!(p.candidate(&id(10), 2800, t0 + 30, t0 + 30));
+        // Inside the window, 2800 frames, another template: displaces.
+        p.note_eligible(id(11), P, id(101), 2800, t0 + W / 2, t0 + W / 2);
+        assert!(p.candidate(&id(10), 2800, t0 + W / 2, t0 + W / 2));
         assert!(p.displaces(&id(10), &id(11)));
-        // Not longer or equal runs.
-        p.note_eligible(id(12), P, id(102), 3000, t0 + 31, t0 + 31);
+        // Not longer or equal runs (without a tie-break hash).
+        p.note_eligible(id(12), P, id(102), 3000, t0 + W / 2 + 1, t0 + W / 2 + 1);
         assert!(!p.displaces(&id(10), &id(12)));
-        assert!(!p.candidate(&id(10), 3000, t0 + 31, t0 + 31));
+        assert!(!p.candidate(&id(10), 3000, t0 + W / 2 + 1, t0 + W / 2 + 1));
         // The window counts from the first eligible block on the parent, not from the current tip.
-        p.note_eligible(id(13), P, id(103), 2700, t0 + 61, t0 + 61);
-        assert!(!p.displaces(&id(11), &id(13)), "61 s after the first: the block we have stays");
-        assert!(!p.candidate(&id(11), 2700, t0 + 61, t0 + 61));
-        p.note_eligible(id(14), P, id(104), 2700, t0 + 60, t0 + 60);
-        assert!(p.displaces(&id(11), &id(14)), "60 s: still inside");
+        p.note_eligible(id(13), P, id(103), 2700, t0 + W + 1, t0 + W + 1);
+        assert!(!p.displaces(&id(11), &id(13)), "just after the window: the block we have stays");
+        assert!(!p.candidate(&id(11), 2700, t0 + W + 1, t0 + W + 1));
+        p.note_eligible(id(14), P, id(104), 2700, t0 + W, t0 + W);
+        assert!(p.displaces(&id(11), &id(14)), "at the window's end: still inside");
+    }
+
+    #[test]
+    fn equal_lengths_of_different_keys_go_to_the_lower_signature_hash_whatever_the_order() {
+        let t0 = 3_000_000;
+        let (lo, hi) = ([1u8; 32], [2u8; 32]);
+        for first_low in [true, false] {
+            let mut p = Policy::default();
+            let (a, b) = if first_low { ((id(40), lo), (id(41), hi)) } else { ((id(41), hi), (id(40), lo)) };
+            p.note_eligible_tie(a.0, P, [a.0[0] + 100; 32], 3000, t0, t0, a.1);
+            p.note_eligible_tie(b.0, P, [b.0[0] + 100; 32], 3000, t0 + 5, t0 + 5, b.1);
+            // Whichever arrived first, the lower hash is where every node ends.
+            assert_eq!(p.displaces(&a.0, &b.0), !first_low, "first_low {first_low}");
+            assert_eq!(p.candidate_tie(&a.0, 3000, &b.1, t0 + 5, t0 + 5), !first_low);
+            assert!(!p.displaces(&id(40), &id(41)), "the higher hash never displaces the lower");
+        }
+        // Outside the window, or unknown hashes: no tie-break.
+        let mut q = Policy::default();
+        q.note_eligible_tie(id(50), P, id(150), 3000, t0, t0, hi);
+        q.note_eligible_tie(id(51), P, id(151), 3000, t0 + POF_WINDOW_SECONDS + 1, t0 + POF_WINDOW_SECONDS + 1, lo);
+        assert!(!q.displaces(&id(50), &id(51)));
+        assert!(!q.candidate(&id(50), 3000, t0 + 1, t0 + 1), "no tie-break hash: never wins a tie");
     }
 
     #[test]

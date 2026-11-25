@@ -57,6 +57,11 @@ pub const RPC_PENALTY_SECONDS: f64 = 600.0;
 /// at [`RPC_REPLAY_SECONDS_PER_MIN`] (a fifth of one core).
 pub const RPC_REPLAY_SECONDS: f64 = 20.0;
 pub const RPC_REPLAY_SECONDS_PER_MIN: f64 = 12.0;
+/// Restricted RPC's bulk answers (get_sm64_state, get_sm64_cycle: megabytes
+/// each), all clients together: a burst of this many bytes, refilled at
+/// [`RPC_BULK_BYTES_PER_MIN`] (DoS audit N2). About 10 states a minute.
+pub const RPC_BULK_BYTES: f64 = 128.0 * 1048576.0;
+pub const RPC_BULK_BYTES_PER_MIN: f64 = 64.0 * 1048576.0;
 /// Bounds on the bookkeeping.
 const SEEDS: usize = 65536;
 const PARENTS: usize = 16384;
@@ -165,6 +170,11 @@ impl Bucket {
         self.refill(now);
         self.tokens -= n;
     }
+    /// Gives back `n` tokens charged earlier (never above the cap).
+    pub fn refund(&mut self, n: f64, now: f64) {
+        self.refill(now);
+        self.tokens = (self.tokens + n).min(self.cap);
+    }
 }
 
 /// Where the block (or RPC call) being handled on this thread came from.
@@ -221,6 +231,7 @@ pub struct Policy {
     /// Restricted-RPC sources refused until a time, and how often they offended.
     penalty: Bounded<String, (f64, u32)>,
     rpc_replay: Bucket,
+    rpc_bulk: Bucket,
     /// Counters for logs and tests.
     pub skipped: u64,
     pub refused: u64,
@@ -256,6 +267,7 @@ impl Policy {
             rpc_global: Bucket::new(RPC_GLOBAL_FRAMES, RPC_GLOBAL_FRAMES_PER_MIN, now),
             penalty: Bounded::new(SOURCES),
             rpc_replay: Bucket::new(RPC_REPLAY_SECONDS, RPC_REPLAY_SECONDS_PER_MIN, now),
+            rpc_bulk: Bucket::new(RPC_BULK_BYTES, RPC_BULK_BYTES_PER_MIN, now),
             skipped: 0,
             refused: 0,
         }
@@ -430,6 +442,13 @@ impl Policy {
     pub fn rpc_replay_charge(&mut self, seconds: f64, now: f64) {
         self.rpc_replay.charge(seconds, now);
     }
+    /// May restricted RPC answer a bulk request now (some budget left)? Charge the bytes after.
+    pub fn rpc_bulk_ok(&mut self, now: f64) -> bool {
+        self.rpc_bulk.positive(now)
+    }
+    pub fn rpc_bulk_charge(&mut self, bytes: f64, now: f64) {
+        self.rpc_bulk.charge(bytes, now);
+    }
 }
 
 /// A restricted-RPC client address that is shared by many users: loopback,
@@ -442,9 +461,42 @@ pub fn shared_host(host: &str) -> bool {
     host.starts_with("127.") || host == "::1" || host == "[::1]" || host.starts_with("::ffff:127.") || host == "localhost"
 }
 
+/// Restricted RPC's bulk-answer budget ([`RPC_BULK_BYTES`]): may it answer now?
+pub fn rpc_bulk_ok() -> bool {
+    with(|p| p.rpc_bulk_ok(now()))
+}
+pub fn rpc_bulk_charge(bytes: u64) {
+    with(|p| p.rpc_bulk_charge(bytes as f64, now()))
+}
+
 /// [`Policy::gate_relay`] on the process's policy, in this thread's context.
 pub fn gate_relay(ctx: Option<&Context>) -> Decision {
     with(|p| p.gate_relay(ctx, now()))
+}
+
+/// Gives back what [`charge_replay`] reserved for a claim that was not replayed.
+pub fn refund_replay(frames: u32, ctx: Option<&Context>) {
+    let Some(ctx) = ctx else { return };
+    let f = frames.max(1) as f64;
+    with(|p| {
+        let t = now();
+        match ctx.source {
+            Source::Sync { .. } => {}
+            Source::Relay => {
+                if let Some(b) = p.sources.get_mut(&format!("p2p {}", ctx.host)) {
+                    b.refund(f, t)
+                }
+            }
+            Source::RpcSubmit => {
+                if !shared_host(&ctx.host) {
+                    if let Some(b) = p.sources.get_mut(&format!("rpc {}", ctx.host)) {
+                        b.refund(f, t)
+                    }
+                }
+                p.rpc_global.refund(f, t);
+            }
+        }
+    })
 }
 
 /// [`Policy::charge_replay`] on the process's policy.

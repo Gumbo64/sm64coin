@@ -316,7 +316,7 @@ pub extern "C" fn sm64pow_evidence_for(hash32: *const u8, out: *mut u8, cap: usi
 /// equivocation::RECENT_HEIGHTS of `top`), for a newly connected peer; 0: no more.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_evidence_recent(top: u64, index: usize, out: *mut u8, cap: usize) -> usize {
-    match std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().recent(top).into_iter().nth(index)) {
+    match std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().recent_nth(top, index)) {
         Ok(Some(e)) => copy_out(&e, out, cap),
         _ => 0,
     }
@@ -332,9 +332,10 @@ pub extern "C" fn sm64pow_evidence_persist(path: *const c_char) {
 /// Until sm64pow_block_scope_leave: the block this thread handles (its blob;
 /// our top block's height), so evidence formed about its template carries it.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_block_scope_enter(blob: *const u8, len: usize, top: u64) -> *mut std::ffi::c_void {
+pub extern "C" fn sm64pow_block_scope_enter(blob: *const u8, len: usize, hash32: *const u8, height: u64, top: u64) -> *mut std::ffi::c_void {
     let b = blob_arg(blob, len);
-    match std::panic::catch_unwind(|| crate::equivocation::block_scope(b, top)) {
+    let Some(seed) = (unsafe { id_arg(hash32) }) else { return std::ptr::null_mut() };
+    match std::panic::catch_unwind(|| crate::equivocation::block_scope(b, seed, height, top)) {
         Ok(g) => Box::into_raw(Box::new(g)) as *mut std::ffi::c_void,
         Err(_) => std::ptr::null_mut(),
     }
@@ -364,10 +365,11 @@ pub extern "C" fn sm64pow_fork_choice(main_len: u64, main_seeds: *const u8, n_ma
 /// its own stamp for the displacement window (pof.rs), so a sibling of the
 /// tip found within the window is still judged after a restart.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_note_history(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64) {
+pub extern "C" fn sm64pow_note_history(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8) {
     let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| crate::pof::tie_of(&s));
     let at = timestamp.min(unix_now());
-    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible(id, parent, seed, frames, timestamp, at));
+    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible_tie(id, parent, seed, frames, timestamp, at, tie));
 }
 
 // ---- Publish-on-find (pof.rs): the displacement window, the freshness bound ----
@@ -379,14 +381,15 @@ fn unix_now() -> u64 {
 /// Block `id32` (parent `parent32`, seed `hash32`, `frames`, stamped
 /// `timestamp`) is eligible now: valid and fitting by this node's clock.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_note_eligible(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64) {
+pub extern "C" fn sm64pow_note_eligible(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8) {
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| crate::pof::tie_of(&s));
     let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
     // A block that came in a sync span (we asked for it: it is history) counts as eligible at its own
     // stamp: neither stale nor opening a window now. Otherwise a node that just synced (or restarted)
     // would treat its tip as stale and let any fresh sibling a peer sends it displace the tip.
     let synced = matches!(crate::admit::context().map(|c| c.source), Some(crate::admit::Source::Sync { .. }));
     let at = if synced { timestamp.min(unix_now()) } else { eligible_at(&id) };
-    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible(id, parent, seed, frames, timestamp, at));
+    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible_tie(id, parent, seed, frames, timestamp, at, tie));
 }
 
 /// Whether eligible alternative block `alt32` replaces our childless block
@@ -400,11 +403,12 @@ pub extern "C" fn sm64pow_displaces(tip32: *const u8, alt32: *const u8) -> i32 {
 /// Whether a sibling of our childless tip `tip32` claiming `frames`, stamped
 /// `timestamp`, could displace it (1: worth a replay).
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, id32: *const u8, frames: u32, timestamp: u64) -> i32 {
-    let (Some(t), Some(id)) = (unsafe { id_arg(tip32) }, unsafe { id_arg(id32) }) else { return 0 };
+pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, id32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8) -> i32 {
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| crate::pof::tie_of(&s));
+    let (Some(t), Some(id), Some(seed)) = (unsafe { id_arg(tip32) }, unsafe { id_arg(id32) }, unsafe { id_arg(hash32) }) else { return 0 };
     // Judged at the time block `id` became eligible here (a claim the queue replayed late still counts).
     let at = eligible_at(&id);
-    std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().candidate(&t, frames, timestamp, at)).unwrap_or(false) as i32
+    std::panic::catch_unwind(|| crate::pof::sibling_could_matter(&t, &seed, frames, &tie, timestamp, at)).unwrap_or(false) as i32
 }
 
 /// Whether a block stamped `timestamp` arriving now is stale (the freshness
@@ -633,10 +637,12 @@ pub extern "C" fn sm64pow_queue_set_threads(n: u32) {
     crate::queue::global().set_threads(n as usize);
 }
 
-fn queue_job(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64) -> Option<crate::queue::Job> {
+#[allow(clippy::too_many_arguments)]
+fn queue_job(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64, sig64: *const u8) -> Option<crate::queue::Job> {
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| crate::pof::tie_of(&s));
     let (id, parent_id, seed) = unsafe { (id_arg(id32)?, id_arg(parent32)?, id_arg(hash32)?) };
     let parent = if genesis_parent != 0 { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: parent_id, gap_seconds } };
-    Some(crate::queue::Job { id, parent, parent_id, seed: Seed(seed), difficulty, blob: blob_arg(proof, len).to_vec(), frames, stamp, due, arrived: unix_now(), ctx: crate::admit::context() })
+    Some(crate::queue::Job { id, parent, parent_id, seed: Seed(seed), difficulty, blob: blob_arg(proof, len).to_vec(), frames, tie, stamp, due, arrived: unix_now(), ctx: crate::admit::context() })
 }
 
 fn verdict_code(v: &crate::queue::Verdict) -> i32 {
@@ -664,9 +670,9 @@ fn verdict_code(v: &crate::queue::Verdict) -> i32 {
 /// 0 queued, 1 already known, 2 the queue (or this source's share) is full, 3
 /// this source sent an invalid claim recently (reason in sm64pow_last_error).
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_queue_submit(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64) -> i32 {
+pub extern "C" fn sm64pow_queue_submit(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64, sig64: *const u8) -> i32 {
     use crate::queue::Refused;
-    let Some(job) = queue_job(id32, parent32, genesis_parent, gap_seconds, hash32, difficulty, proof, len, frames, stamp, due) else { return 2 };
+    let Some(job) = queue_job(id32, parent32, genesis_parent, gap_seconds, hash32, difficulty, proof, len, frames, stamp, due, sig64) else { return 2 };
     match crate::queue::global().submit(job) {
         Ok(()) => 0,
         Err(Refused::Known) => 1,
@@ -691,8 +697,8 @@ pub extern "C" fn sm64pow_queue_submit(id32: *const u8, parent32: *const u8, gen
 /// says so), 0 invalid, 2 skipped (it cannot matter), 3 not decided here
 /// (process it the normal way).
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_queue_replay_now(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64) -> i32 {
-    let Some(job) = queue_job(id32, parent32, genesis_parent, gap_seconds, hash32, difficulty, proof, len, frames, stamp, 0) else { return 3 };
+pub extern "C" fn sm64pow_queue_replay_now(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, sig64: *const u8) -> i32 {
+    let Some(job) = queue_job(id32, parent32, genesis_parent, gap_seconds, hash32, difficulty, proof, len, frames, stamp, 0, sig64) else { return 3 };
     match std::panic::catch_unwind(|| crate::queue::global().replay_now(job)) {
         Ok(v) => verdict_code(&v),
         Err(_) => 3,
@@ -716,6 +722,40 @@ pub extern "C" fn sm64pow_queue_wait(timeout_ms: u32, out_id32: *mut u8) -> i32 
 
 /// Whether block `id32` was replayed valid by the queue and not yet
 /// consumed: then the daemon's normal path finds the cached result. Consumes it.
+// ---- Reorganisation cap (reorg.rs), restricted RPC's bulk budget (admit.rs) ----
+
+/// The operator's reorganisation cap in blocks (0: unlimited; default 36).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_set_max_reorg(n: u64) {
+    crate::reorg::set_max(n);
+}
+
+/// The operator allows one reorganisation onto a chain holding block `id32`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_allow_reorg(id32: *const u8) {
+    if let Some(id) = unsafe { id_arg(id32) } {
+        crate::reorg::allow(id);
+    }
+}
+
+/// May the node pop `depth` blocks to switch to an alternative chain with the `n` block ids `alt_ids`?
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_reorg_allowed(depth: u64, alt_ids: *const u8, n: usize) -> i32 {
+    let ids: Vec<[u8; 32]> = if alt_ids.is_null() || n == 0 { vec![] } else { unsafe { std::slice::from_raw_parts(alt_ids, 32 * n) }.chunks(32).map(|c| c.try_into().unwrap()).collect() };
+    std::panic::catch_unwind(|| crate::reorg::allowed_reorg(depth, &ids)).unwrap_or(false) as i32
+}
+
+/// Restricted RPC's bulk answers (get_sm64_state / get_sm64_cycle): 1 may answer now; charge the bytes after.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_rpc_bulk_ok() -> i32 {
+    std::panic::catch_unwind(crate::admit::rpc_bulk_ok).unwrap_or(true) as i32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_rpc_bulk_charge(bytes: u64) {
+    let _ = std::panic::catch_unwind(|| crate::admit::rpc_bulk_charge(bytes));
+}
+
 /// Claim `id`, already queued, was sent again by this thread's source: a fallback source for it.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_queue_also(id32: *const u8) {

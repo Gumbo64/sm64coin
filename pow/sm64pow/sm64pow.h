@@ -42,21 +42,21 @@ size_t sm64pow_evidence_recent(uint64_t top, size_t index, uint8_t *out, size_t 
 /* Keeps recent evidence in the file `path` across restarts (loads it now). */
 void sm64pow_evidence_persist(const char *path);
 /* While entered: the block this thread handles (its blob, our top height), so evidence about it carries its template. */
-void *sm64pow_block_scope_enter(const uint8_t *blob, size_t len, uint64_t top);
+void *sm64pow_block_scope_enter(const uint8_t *blob, size_t len, const uint8_t *hash32, uint64_t height, uint64_t top);
 void sm64pow_block_scope_leave(void *handle);
 /* Fork choice with the equivocation penalty: 1 switch to the alternative chain. Seeds: 32 bytes each. */
 int32_t sm64pow_fork_choice(uint64_t main_len, const uint8_t *main_seeds, size_t n_main, uint64_t alt_len, const uint8_t *alt_seeds, size_t n_alt);
 /* A block of our chain at startup: eligible at its own stamp (the displacement window after a restart). */
-void sm64pow_note_history(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp);
+void sm64pow_note_history(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64);
 /* SM64COIN v0.3 publish-on-find (pof.rs, relay / fork-choice policy). note_eligible:
  * block id32 became eligible now (valid, fitting by the node's clock). displaces: 1
  * when eligible sibling alt32 replaces our childless tip32 (a strictly shorter run of
  * another key inside the 60 s window, or a fresh block against a stale tip).
  * pof_candidate: 1 when such a sibling is worth a replay. stale: 1 when a block
  * stamped timestamp is stale now (not relayed). */
-void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp);
+void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64); /* sig64: the block's sm64_sig (the equal-length tie-break) */
 int32_t sm64pow_displaces(const uint8_t *tip32, const uint8_t *alt32);
-int32_t sm64pow_pof_candidate(const uint8_t *tip32, const uint8_t *id32, uint32_t frames, uint64_t timestamp);
+int32_t sm64pow_pof_candidate(const uint8_t *tip32, const uint8_t *id32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64);
 int32_t sm64pow_stale(uint64_t timestamp);
 /* The freshness bound for block id32, judged when it became eligible here (a queued claim: max(arrival, due)). */
 int32_t sm64pow_stale_block(const uint8_t *id32, uint64_t timestamp);
@@ -67,6 +67,14 @@ int32_t sm64pow_restamp_preferred(const uint8_t *tip32, const uint8_t *hash32, u
 uint64_t sm64pow_rpc_submit_ahead(void);
 /* An already queued claim sent again by this thread's source (a fallback if the first source is penalised). */
 void sm64pow_queue_also(const uint8_t *id32);
+/* Reorganisation cap (reorg.rs): the operator's cap (0 unlimited, default 36), a one-time allowance by block id,
+ * and the check: may the node pop `depth` blocks for the alternative chain with these n ids? */
+void sm64pow_set_max_reorg(uint64_t n);
+void sm64pow_allow_reorg(const uint8_t *id32);
+int32_t sm64pow_reorg_allowed(uint64_t depth, const uint8_t *alt_ids, size_t n);
+/* Restricted RPC's bulk answers (get_sm64_state, get_sm64_cycle), all clients together: 1 may answer; charge after. */
+int32_t sm64pow_rpc_bulk_ok(void);
+void sm64pow_rpc_bulk_charge(uint64_t bytes);
 /* One run per key (equivocation.rs): 0 bad signature, 1 the template's first run,
  * 2 the same run again, 3 a different run (equivocation; evidence queued for relay), -1 error. */
 int32_t sm64pow_note_claim(const uint8_t *hash32, const uint8_t *proof, size_t len,
@@ -79,11 +87,11 @@ void sm64pow_queue_set_threads(uint32_t n);
 /* 0 queued, 1 known, 2 full, 3 source penalised. */
 int32_t sm64pow_queue_submit(const uint8_t *id32, const uint8_t *parent32, int32_t genesis_parent, uint64_t gap_seconds,
                              const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len,
-                             uint32_t frames, uint64_t stamp, uint64_t due);
+                             uint32_t frames, uint64_t stamp, uint64_t due, const uint8_t *sig64);
 /* 1 valid, 0 invalid, 2 skipped, 3 not decided here. */
 int32_t sm64pow_queue_replay_now(const uint8_t *id32, const uint8_t *parent32, int32_t genesis_parent, uint64_t gap_seconds,
                                  const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len,
-                                 uint32_t frames, uint64_t stamp);
+                                 uint32_t frames, uint64_t stamp, const uint8_t *sig64);
 int32_t sm64pow_queue_wait(uint32_t timeout_ms, uint8_t *out_id32);
 int32_t sm64pow_queue_take_cleared(const uint8_t *id32);
 /* The next new evidence to relay to peers (272 bytes to out); 0: none. */

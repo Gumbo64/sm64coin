@@ -316,9 +316,14 @@ pub const STAR_CYCLE: StarCycle = StarCycle {
 /// is relayed when it is found and becomes eligible when it fits the limit;
 /// within this many seconds of the first eligible block on a parent (by this
 /// node's clock), a strictly shorter eligible sibling with another miner key
-/// displaces it (pof.rs). 60: removes the head start and stops selfish mining
-/// paying up to 40 % of the compute; 120 makes private chains easier.
-pub const POF_WINDOW_SECONDS: u64 = 60;
+/// displaces it (pof.rs; at equal length, the lower signature hash). 60
+/// removed the head start and stopped selfish mining paying up to 40 % of the
+/// compute (FAIRNESS.md); 30 (the auction-smoothness simulation, SMOOTH.md:
+/// 12 nodes, +-1.5 s skew, 2 s jittered propagation) cuts the sniping gain
+/// over late publishing from +0.032 to +0.008 and tip flips from 4.6 % to
+/// 2.4 %, with fairness unchanged and private chains harder (P(z=6) at 33 %:
+/// 0.25 against 0.38).
+pub const POF_WINDOW_SECONDS: u64 = 30;
 /// Freshness bound (relay policy, FAIRNESS.md section 8): a block stamped more
 /// than this before its arrival is stale: not relayed, and it loses a
 /// same-height tie to a fresh sibling while it has no child.

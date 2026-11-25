@@ -63,24 +63,42 @@ const WIRES: usize = 1024;
 
 thread_local! {
     /// The block being handled on this thread (the daemon's add_new_block), as a template, its seed and our top height.
-    static BLOCK: RefCell<Option<(TemplateParts, [u8; 32], u64)>> = const { RefCell::new(None) };
+    static BLOCK: RefCell<Option<Scoped>> = const { RefCell::new(None) };
 }
 
 /// While alive, evidence formed on this thread about `blob`'s template carries it (so it can be relayed).
-pub struct BlockScope(Option<(TemplateParts, [u8; 32], u64)>);
+#[derive(Clone)]
+struct Scoped {
+    /// None when the block doesn't fit template.rs's caps (then evidence about it is kept
+    /// and counts here, but can't be relayed).
+    parts: Option<TemplateParts>,
+    seed: [u8; 32],
+    height: u64,
+    top: u64,
+}
+
+pub struct BlockScope(Option<Scoped>);
 impl Drop for BlockScope {
     fn drop(&mut self) {
         let prev = self.0.take();
         BLOCK.with(|b| *b.borrow_mut() = prev);
     }
 }
-/// `blob`: a full block; `top`: the height of our chain's top block.
-pub fn block_scope(blob: &[u8], top: u64) -> BlockScope {
-    let cur = template::split_block(blob).ok().and_then(|p| template::facts(&p).ok().map(|f| (p, f.seed, top)));
+/// `blob`: a full block (its seed `seed`, at `height`); `top`: the height of our chain's top block.
+pub fn block_scope(blob: &[u8], seed: [u8; 32], height: u64, top: u64) -> BlockScope {
+    let parts = template::split_block(blob).ok().filter(|p| template::facts(p).is_ok_and(|f| f.seed == seed));
+    let cur = Some(Scoped { parts, seed, height, top });
     BlockScope(BLOCK.with(|b| std::mem::replace(&mut *b.borrow_mut(), cur)))
 }
-fn scoped(seed: &[u8; 32]) -> Option<(TemplateParts, u64)> {
-    BLOCK.with(|b| b.borrow().as_ref().filter(|(_, s, _)| s == seed).map(|(p, _, t)| (p.clone(), *t)))
+fn scoped(seed: &[u8; 32]) -> Option<Scoped> {
+    BLOCK.with(|b| b.borrow().as_ref().filter(|s| s.seed == *seed).cloned())
+}
+
+/// Whether evidence about a block at `height`, seen when our top is `top`, counts for fork
+/// choice: the block at most FORK_CHOICE_DEPTH deep (a node far behind, syncing, doesn't count
+/// evidence the network has long buried).
+fn counts(height: u64, top: u64) -> bool {
+    top >= height && top - height <= FORK_CHOICE_DEPTH
 }
 
 /// What we keep per accused template, beyond the [`Evidence`].
@@ -223,8 +241,13 @@ pub struct Policy {
     /// New evidence to relay to peers (the daemon drains it: [`Policy::take_outbox`]).
     outbox: Vec<Vec<u8>>,
     wires: Bounded<[u8; 32], Wire>,
+    /// Evidence formed here about a block too big for a wire: whether it counts for fork choice.
+    local_counted: Bounded<[u8; 32], bool>,
     /// Where recent evidence is kept across restarts (None: memory only).
     file: Option<std::path::PathBuf>,
+    /// Unsaved changes, and when the file was last written (saves are at most every 10 s: [`Policy::flush`]).
+    dirty: bool,
+    saved_at: f64,
     /// Evidence about a seed whose template key we don't know yet: kept (a
     /// few), not relayed and not acted on, until [`Policy::note_key`] shows
     /// the key is the template's.
@@ -235,7 +258,7 @@ pub struct Policy {
 
 impl Default for Policy {
     fn default() -> Self {
-        Policy { claims: Bounded::new(SEEDS), keys: Bounded::new(SEEDS), evidence: Bounded::new(SEEDS), outbox: Vec::new(), wires: Bounded::new(WIRES), file: None, pending: Bounded::new(PENDING), received: 0 }
+        Policy { claims: Bounded::new(SEEDS), keys: Bounded::new(SEEDS), evidence: Bounded::new(SEEDS), outbox: Vec::new(), wires: Bounded::new(WIRES), local_counted: Bounded::new(WIRES), file: None, dirty: false, saved_at: f64::NEG_INFINITY, pending: Bounded::new(PENDING), received: 0 }
     }
 }
 
@@ -309,8 +332,13 @@ impl Policy {
         self.evidence.insert(e.seed, e);
         self.received += 1;
         // Relayable only with its template (the daemon handles every block inside a block scope).
-        if let Some((parts, top)) = scoped(&e.seed) {
-            self.keep_wire(&e, &parts, top, None);
+        if let Some(sc) = scoped(&e.seed) {
+            match &sc.parts {
+                Some(parts) => self.keep_wire(&e, parts, sc.top, None),
+                // Too big for a wire (template.rs caps): it still counts here (an equivocator can't
+                // dodge the penalty with a huge coinbase), it just isn't relayed.
+                None => self.local_counted.insert(e.seed, counts(sc.height, sc.top)),
+            }
         }
     }
 
@@ -318,12 +346,24 @@ impl Policy {
         let Ok(f) = template::facts(parts) else { return };
         let mut bytes = e.encode();
         bytes.extend_from_slice(&template::encode(parts));
-        let counted = counted.unwrap_or(top.saturating_sub(f.height) <= FORK_CHOICE_DEPTH);
+        let counted = counted.unwrap_or(counts(f.height, top));
         self.wires.insert(e.seed, Wire { bytes: bytes.clone(), height: f.height, counted });
         if self.outbox.len() < 64 {
             self.outbox.push(bytes);
         }
-        self.save();
+        self.dirty = true;
+        self.flush(crate::admit::now());
+    }
+
+    /// Writes the file if something changed and the last write is 10 s old (called on every
+    /// new piece and from the daemon's idle loop, through take_outbox), so a burst of evidence
+    /// doesn't rewrite it each time.
+    pub fn flush(&mut self, now: f64) {
+        if self.dirty && now - self.saved_at >= 10.0 {
+            self.save();
+            self.dirty = false;
+            self.saved_at = now;
+        }
     }
 
     /// Evidence from a peer, on the wire (self-contained, [`MAX_WIRE`]); `top`: our top height.
@@ -350,6 +390,15 @@ impl Policy {
         if self.wires.get(&e.seed).is_some() {
             return Offer::Known;
         }
+        // Plausible only for a block near our tip (anyone can invent a key, a template and two
+        // runs): outside [top - RECENT_HEIGHTS, top + 2] it is ignored, not stored or relayed.
+        // Restored evidence (persist) passes counted = Some(..) and is exempt.
+        if counted.is_none() {
+            let h = template::facts(&parts).map(|f| f.height).unwrap_or(0);
+            if h + RECENT_HEIGHTS < top || h > top + 2 {
+                return Offer::Known;
+            }
+        }
         self.keys.insert(e.seed, e.key);
         self.pending.remove(&e.seed);
         let e = e.canonical();
@@ -364,9 +413,22 @@ impl Policy {
         self.wires.get(seed).map(|w| w.bytes.clone())
     }
 
-    /// Wire evidence whose accused block is at most [`RECENT_HEIGHTS`] below `top` (for a new peer).
+    /// Wire evidence whose accused block is within [`RECENT_HEIGHTS`] of `top` (for a new peer).
     pub fn recent(&self, top: u64) -> Vec<Vec<u8>> {
-        self.wires.values().filter(|w| w.height + RECENT_HEIGHTS >= top).map(|w| w.bytes.clone()).collect()
+        (0..).map_while(|i| self.recent_nth(top, i)).collect()
+    }
+
+    /// The `i`-th of [`Policy::recent`] (at most 64), without copying the others.
+    pub fn recent_nth(&self, top: u64, i: usize) -> Option<Vec<u8>> {
+        if i >= 64 {
+            return None;
+        }
+        self.wires.values().filter(|w| w.height + RECENT_HEIGHTS >= top && w.height <= top + 2).nth(i).map(|w| w.bytes.clone())
+    }
+
+    /// Whether template `seed` has evidence that counts for fork choice.
+    pub fn tainted(&self, seed: &[u8; 32]) -> bool {
+        self.wires.get(seed).is_some_and(|w| w.counted) || self.local_counted.get(seed).copied().unwrap_or(false)
     }
 
     /// Fork choice with the equivocation penalty (relay / fork-choice policy, not consensus).
@@ -376,7 +438,10 @@ impl Policy {
     /// equivocated one of equal length or one block longer. Otherwise the longer chain wins, and
     /// a tie keeps the chain we have. True: switch to `alt`.
     pub fn fork_choice(&self, main_len: u64, main: &[[u8; 32]], alt_len: u64, alt: &[[u8; 32]]) -> bool {
-        let tainted = |s: &[[u8; 32]]| s.iter().any(|x| self.wires.get(x).is_some_and(|w| w.counted));
+        // Only blocks right above the fork point (FORK_CHOICE_DEPTH + 1 of them) matter: the
+        // penalty settles a race at the fork, it doesn't let an old taint decide a deep fork.
+        let near = (FORK_CHOICE_DEPTH + 1) as usize;
+        let tainted = |s: &[[u8; 32]]| s.iter().take(near).any(|x| self.tainted(x));
         let w = |len: u64, t: bool| 2 * len as i128 - if t { 3 } else { 0 };
         w(alt_len, tainted(alt)) > w(main_len, tainted(main))
     }
@@ -415,6 +480,7 @@ impl Policy {
 
     /// The next new evidence to relay, on the wire (only evidence with its template is relayed).
     pub fn take_outbox(&mut self) -> Option<Vec<u8>> {
+        self.flush(crate::admit::now());
         self.outbox.pop()
     }
 
@@ -590,7 +656,7 @@ mod tests {
         let mut p = Policy::default();
         {
             // The daemon handles the second run inside a block scope: the evidence gets the template and is relayed.
-            let _s = block_scope(&blob, 1);
+            let _s = block_scope(&blob, seed, 1, 1);
             assert_eq!(p.claim(&seed, &k.public, &run(&k, &seed, 1, 3000)), Claim::First);
             assert!(matches!(p.claim(&seed, &k.public, &run(&k, &seed, 2, 3000)), Claim::Equivocation(_)));
         }
@@ -625,7 +691,7 @@ mod tests {
         let mut p = Policy::default();
         // Without evidence: the longer chain, a tie keeps ours.
         assert!(p.fork_choice(1, &[seed], 2, &clean[..2]) && !p.fork_choice(1, &[seed], 1, &clean[..1]));
-        let _s = block_scope(&blob, 2); // the accused block (height 1) at depth 1
+        let _s = block_scope(&blob, seed, 1, 2); // the accused block (height 1) at depth 1
         p.claim(&seed, &k.public, &run(&k, &seed, 1, 3000));
         p.claim(&seed, &k.public, &run(&k, &seed, 2, 3000));
         // Our chain has the equivocated block: a clean competitor of equal length, or one block shorter, wins.
@@ -656,7 +722,7 @@ mod tests {
         let mut p = Policy::default();
         p.persist(path.clone());
         {
-            let _s = block_scope(&blob, 1);
+            let _s = block_scope(&blob, seed, 1, 1);
             p.claim(&seed, &k.public, &run(&k, &seed, 1, 3000));
             p.claim(&seed, &k.public, &run(&k, &seed, 2, 3000));
         }
@@ -666,5 +732,40 @@ mod tests {
         assert!(q.take_outbox().is_none(), "not re-flooded; sent to new peers on connect");
         assert!(q.fork_choice(1, &[seed], 1, &[[1; 32]]), "the fork-choice flag is kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn implausible_or_late_evidence_and_far_forks() {
+        let (k, seed, blob) = real();
+        let mut p = Policy::default();
+        {
+            let _s = block_scope(&blob, seed, 1, 1);
+            p.claim(&seed, &k.public, &run(&k, &seed, 1, 3000));
+            p.claim(&seed, &k.public, &run(&k, &seed, 2, 3000));
+        }
+        let wire = p.wire_for(&seed).unwrap();
+        // Accused height 1: ignored by a node whose tip is far above it, or far below (not stored, not relayed).
+        assert_eq!(Policy::default().offer_wire(&wire, 1 + RECENT_HEIGHTS + 1), Offer::Known);
+        let mut syncing = Policy::default();
+        assert_eq!(syncing.offer_wire(&wire, 0), Offer::New, "one below: still plausible");
+        // A node behind the accused block doesn't count it for fork choice.
+        assert!(!syncing.tainted(&seed));
+        // The penalty only looks at blocks right above the fork point.
+        let deep: Vec<[u8; 32]> = (0..5u8).map(|i| [i + 50; 32]).chain(std::iter::once(seed)).collect();
+        assert!(!p.fork_choice(6, &deep, 6, &[[9; 32]; 6]), "a taint 6 blocks above the fork doesn't decide it");
+        assert!(p.recent_nth(1, 0).is_some() && p.recent_nth(1, 1).is_none() && p.recent_nth(100, 0).is_none());
+    }
+
+    #[test]
+    fn a_block_too_big_for_a_wire_still_counts_here() {
+        let (k, seed, _) = real();
+        let mut p = Policy::default();
+        {
+            let _s = block_scope(&[0u8; 10], seed, 5, 5); // not a parseable block: no template
+            p.claim(&seed, &k.public, &run(&k, &seed, 1, 3000));
+            p.claim(&seed, &k.public, &run(&k, &seed, 2, 3000));
+        }
+        assert!(p.wire_for(&seed).is_none() && p.take_outbox().is_none());
+        assert!(p.tainted(&seed) && p.fork_choice(1, &[seed], 1, &[[1; 32]]));
     }
 }
