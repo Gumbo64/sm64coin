@@ -919,6 +919,23 @@ pub extern "C" fn sm64pow_wanted_block(id32: *const u8, parent32: *const u8, gap
     }
 }
 
+// ---- v0.4 feature switches (features.rs) ----
+
+/// Sets the v0.4 consensus features for this process (start-up, once per network): bit 0
+/// committed inputs, 1 included proofs, 2 proof weight, 3 proof rewards. Returns 0, or -1 when
+/// the dependencies don't hold (nothing changes).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_set_features(bits: u32) -> i32 {
+    let f = crate::features::Features { committed_inputs: bits & 1 != 0, included_proofs: bits & 2 != 0, proof_weight: bits & 4 != 0, proof_rewards: bits & 8 != 0 };
+    match crate::features::set(f) {
+        Ok(()) => 0,
+        Err(e) => {
+            set_error(e.into());
+            -1
+        }
+    }
+}
+
 // ---- Proof blobs (proof.rs, proof_id.rs) and the seed ----
 
 /// What a block id commits to for this proof blob (32 bytes into `out32`).

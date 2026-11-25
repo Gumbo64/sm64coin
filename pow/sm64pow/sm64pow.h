@@ -163,6 +163,11 @@ int32_t sm64pow_rpc_submit_allowed(const char *host);
 /* An RPC call that may replay (played pads, cycles, templates): draws on the RPC replay budget. */
 void *sm64pow_rpc_enter(void);
 void sm64pow_rpc_leave(void *handle);
+/* v0.4 (features.rs): the consensus features, bits 0 committed inputs, 1 included proofs,
+ * 2 proof weight, 3 proof rewards; 0 ok, -1 dependencies don't hold. sm64pow_verify_block
+ * returns -3 for a bad encoding (committed inputs: never mark the block id invalid); the queue's
+ * verdict 4 is a bad encoding too (drop the claim, not the id). */
+int32_t sm64pow_set_features(uint32_t bits);
 
 #ifdef __cplusplus
 }
