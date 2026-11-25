@@ -31,58 +31,6 @@ use sm64_binds::{GamePad, SaveState};
 pub use sm64coin_statecodec::*;
 use crate::game::{from_pad, to_pad};
 
-/// A run with everything needed to replay it: where it starts, the parent's
-/// played pads (to rebuild the parent's end state for a parent start), the
-/// block's seed, and its proof.
-#[derive(Clone, Debug)]
-pub struct Run {
-    pub seed: Seed,
-    pub parent_played: Vec<GamePad>,
-    pub proof: Proof,
-}
-
-/// The game state after playing `played` from power-on, unperturbed.
-pub fn state_after(played: &[GamePad]) -> Result<SaveState> {
-    let mut g = generator()?.create_game()?;
-    for p in played {
-        g.step_game(*p)?;
-    }
-    Ok(g.save_state())
-}
-
-impl Run {
-    pub fn parent_state(&self) -> Result<Option<SaveState>> {
-        Ok(match self.proof.start {
-            Start::PowerOn => None,
-            Start::Parent => Some(state_after(&self.parent_played)?),
-        })
-    }
-
-    /// Replays the run, listing for every frame the features before it, the
-    /// pad played and whether it was a poke.
-    pub fn dump_rows(&self) -> Result<Vec<(Features, GamePad, bool)>> {
-        let ps = self.parent_state()?;
-        let (mut g, _) = mining_start(self.proof.start, ps.as_ref(), &self.seed, &params(1))?;
-        let mut rows = Vec::new();
-        let mut next = 0;
-        for _ in 0..self.proof.frames {
-            let wanted = self.proof.inputs.get(next).copied().unwrap_or_default();
-            let mut feat = Features::default();
-            let (pad, poked) = g.step_with(|f| {
-                feat = *f;
-                Ok(wanted)
-            })?;
-            if !poked {
-                next += 1;
-            }
-            rows.push((feat, pad, poked));
-        }
-        Ok(rows)
-    }
-}
-
-// ---------------------------------------------------------------- range coder
-
 /// Whether blocks may use state codecs: the hard fork switch. Off unless
 /// built with the `state-codec` feature.
 pub const fn state_codec_enabled() -> bool {
@@ -152,3 +100,54 @@ pub fn state_proof_id(blob: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+// ---- Research tooling (not consensus): dump a run's states for codec work ----
+
+/// A run with everything needed to replay it: where it starts, the parent's
+/// played pads (to rebuild the parent's end state for a parent start), the
+/// block's seed, and its proof.
+#[derive(Clone, Debug)]
+pub struct Run {
+    pub seed: Seed,
+    pub parent_played: Vec<GamePad>,
+    pub proof: Proof,
+}
+
+/// The game state after playing `played` from power-on, unperturbed.
+pub fn state_after(played: &[GamePad]) -> Result<SaveState> {
+    let mut g = generator()?.create_game()?;
+    for p in played {
+        g.step_game(*p)?;
+    }
+    Ok(g.save_state())
+}
+
+impl Run {
+    pub fn parent_state(&self) -> Result<Option<SaveState>> {
+        Ok(match self.proof.start {
+            Start::PowerOn => None,
+            Start::Parent => Some(state_after(&self.parent_played)?),
+        })
+    }
+
+    /// Replays the run, listing for every frame the features before it, the
+    /// pad played and whether it was a poke.
+    pub fn dump_rows(&self) -> Result<Vec<(Features, GamePad, bool)>> {
+        let ps = self.parent_state()?;
+        let (mut g, _) = mining_start(self.proof.start, ps.as_ref(), &self.seed, &params(1))?;
+        let mut rows = Vec::new();
+        let mut next = 0;
+        for _ in 0..self.proof.frames {
+            let wanted = self.proof.inputs.get(next).copied().unwrap_or_default();
+            let mut feat = Features::default();
+            let (pad, poked) = g.step_with(|f| {
+                feat = *f;
+                Ok(wanted)
+            })?;
+            if !poked {
+                next += 1;
+            }
+            rows.push((feat, pad, poked));
+        }
+        Ok(rows)
+    }
+}
