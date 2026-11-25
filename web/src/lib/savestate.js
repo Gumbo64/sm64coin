@@ -27,7 +27,7 @@
 //   game re-uploads whatever it draws next and nothing shows a wrong texture.
 //   The address is from the visual build's linker map (build/us_web/sm64.map,
 //   like pow/perturb/src/sm64_addrs.rs); rebuild the game -> update TEX_CACHE.
-//   The renderer's own GL bookkeeping (shader and combiner pools, the bound
+//   The renderer's own GL bookkeeping (its whole .bss: shader and combiner pools, the bound
 //   state) is kept live on restore (KEEP_LIVE), so a state from another
 //   engine instance (a saved tip, lib/tipstore.js) restores too.
 // - The keyboard: the game and SDL keep which keys are down in their memory
@@ -50,15 +50,14 @@ const TEX_HASHMAP_BYTES = 1024 * 4;
 const KEEP_LIVE = [
   [0xc4f234, 4], // keyboard_buttons_down
   [0xc53f98, 0xc10], // SDL_keyboard
-  // The renderer's GL objects (ids valid in this page's GL context only): kept live, so a
-  // state saved in another session (lib/tipstore.js) or earlier in this one never brings
-  // back ids this context doesn't have. Game logic never reads these.
-  [0xc35a10, 0xf00], // shader_program_pool (gfx_opengl.c)
-  [0xc36910, 1], // shader_program_pool_size
-  [0xc36914, 4], // opengl_vbo
-  [0xc3692c, 0x20], // rendering_state (gfx_pc.c: the bound shader and textures)
-  [0xc4ae0c, 1], // color_combiner_pool_size
-  [0xc4ae10, 0x400], // color_combiner_pool (points into shader_program_pool)
+  // The renderer's whole .bss (src/pc/gfx, from the linker map; same range as sm64-binds'
+  // portable RENDERER): GL ids valid in this page's GL context only (the shader and combiner
+  // pools, the VBO, the bound state, and the texture cache's node pool with each node's GL
+  // texture id). Kept live, so a state saved in another session (lib/tipstore.js: a reload
+  // restores a tip made in an earlier page) or earlier in this one never brings back ids this
+  // context doesn't have (every texture black, WebGL INVALID_OPERATION). Game logic never
+  // reads it. The texture cache's hashmap inside it is emptied after (see TEX_CACHE).
+  [0xc35a00, 104488],
 ];
 
 const tops = new WeakMap(); // engine -> memory top seen so far
