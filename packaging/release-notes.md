@@ -19,27 +19,28 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
-### A new chain
+### 0.3.1: a point release of the 0.3 chain (no consensus change)
 
-**0.3 starts a new chain on 2026-11-26 at 00:00 UTC (10:00 AEST). The 0.2 chain ends there.** 0.3 nodes only talk to 0.3 nodes.
+Every block that is valid on 0.3.0 is valid on 0.3.1 and every invalid block stays invalid (the consensus
+tests and the 234 proof-id vectors pass unchanged). The chain, the genesis block, the ports and the data
+dir are the same: **just replace the binaries; no resync.**
 
-- **Node operators:** install 0.3 and start with a fresh data dir (move or delete `~/.sm64coin`, keep your wallet files). Ports are unchanged.
-- **Wallets:** the same keys and addresses work. The wallet app and the web wallet rescan the new chain on their own; with the CLI wallet, keep the `.keys` file, delete the cache file and restore from height 0.
-- **Miners and bots:** update. Blocks without a signed proof are invalid on 0.3 (see `BOTS.md`, "Signed proofs").
+- **Smaller proofs (miners).** The miners (`automine`, the Rust SDK, the web miner on request) run an
+  input normaliser before sealing: pads that do not change what the game does (the stick in the air and in
+  cutscenes, buttons that nothing reads) are replaced by cheaper ones, then the proof is coded with the
+  existing codecs. Every candidate is replayed first; if the end state, the perturbation state, the frame
+  count or the success frame differ at all, the run as played is sealed. Seconds per block, on the
+  encoder only; `automine --no-normalise` skips it. On the 34 v0.2 mainnet blocks (143,505 frames) the proofs shrink from 60,639 to 47,651 bytes (-21.4 %); a fresh testnet block went 1,814 to 1,577 bytes (-13 %). Costs about 2-3 ms per frame (10-60 s for a 3,000-9,000 frame run).
+- **No reserved controller bits.** Mupen64Plus treats a pad with both reserved bits (0x00C0) as a console
+  reset. The game never reads them (tests/reserved_bits.rs) and the poke pads never use them; miners now
+  clear them before sealing. Consensus still accepts them. The chain export tool gets a
+  `--clear-reserved-bits` flag for `.m64` output.
+- **Fix (tests/nodes):** a state the node verified long ago is no longer evicted from its cache while it
+  is the tip's parent (this was a flaky `NeedParent` in the test suite).
+- **Tools:** `pow/tools/board/` has the leaderboard's functional checks and benches, runnable against a
+  throwaway build.
 
-### Changes
-
-- **Signed proofs:** every block's run is signed by a key the miner commits in its template, so nobody else can submit a variant of your run. Checked in about 0.1 ms, before any replay.
-- **One run per block:** a miner signs one run per template. Two different signed runs from one key are equivocation, and nodes build around the equivocator's block. Miners keep improving privately and submit their best run just before it is due.
-- **20-minute blocks** (were 5). One-thread and browser miners can now win blocks; rewards per day are unchanged.
-- **Fairer races:** within 30 s of the first valid block, a strictly shorter run from another miner takes its place (equal lengths: the same winner at every node), and nodes no longer relay stale-stamped blocks.
-- **Replay queue:** nodes check signatures on arrival, replay claims only when they are due and only if they could matter, shortest first, in parallel, outside the blockchain lock.
-- **Finality and locks:** nodes never reorganise more than 36 blocks (about 12 h; operators can override). Mined rewards unlock after 72 blocks (24 h); received coins are spendable after 3 blocks (1 h).
-- **Leaderboard:** joining sends the heights of your mined blocks, which nodes check instead of scanning the chain; the board updates live with each block. Operators can turn it off (`--sm64-no-leaderboard`).
-- **Hardening:** a security and DoS review of the node, RPC, leaderboard, wallet app and launcher (see `docs/DOS.md`). The wallet app's and launcher's local site only pass the website's own calls to the node.
-- The website's updates since 0.2.9 (save states, full-screen toolbars, touch goals, automatic worker sync), now in the wallet app's local site too.
-
-Update: required
+Update: recommended
 
 <!--
   Update notices: the wallet app, the website, sm64coin-node and sm64coin-automine look at the latest

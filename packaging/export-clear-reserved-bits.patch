@@ -1,0 +1,116 @@
+diff --git a/docs/EXPORT.md b/docs/EXPORT.md
+index b307946..315915f 100644
+--- a/docs/EXPORT.md
++++ b/docs/EXPORT.md
+@@ -33,7 +33,7 @@ target/release/sm64coin-export verify out/             # replay every cycle m64
+ 
+ Options: `--from H --to H` (RPC or JSONL range), `--max-blocks N`,
+ `--features` (per-frame state features), `--states none|portable|raw|both`
+-(per-block start states), `--mupen64plus` (also write a variant for stock
++(per-block start states), `--clear-reserved-bits` (clear the reserved button bits 0x00C0 in the cycle `.m64` files: the game ignores them, Mupen64Plus resets on a sample with both set), `--mupen64plus` (also write a variant for stock
+ Mupen64Plus, see below).
+ 
+ The input must be one chain in height order. It may start at any block whose
+diff --git a/pow/export/src/export.rs b/pow/export/src/export.rs
+index cffb1f3..1819ca9 100644
+--- a/pow/export/src/export.rs
++++ b/pow/export/src/export.rs
+@@ -40,6 +40,9 @@ pub struct Options {
+     pub states: States,
+     /// Also write `cycle_N.mupen64plus.m64` with one leading zero poll (Mupen64Plus polls once more at boot).
+     pub mupen64plus: bool,
++    /// Clear the reserved button bits (both set: Mupen64Plus resets the console) in the `.m64` movies;
++    /// the raw `.pads` files stay as played.
++    pub clear_reserved_bits: bool,
+     pub author: String,
+ }
+ 
+@@ -384,11 +387,12 @@ fn write_cycle(o: &Options, c: Cycle, end: &str) -> Result<CycleMeta> {
+     let desc = format!("SM64Coin cycle {} (blocks {}-{}): effective inputs, pokes applied", c.n, c.blocks[0].height, c.blocks.last().unwrap().height);
+     let h = Header::power_on(0, c.first_ts as u32, o.rom.clone(), &o.author, &desc);
+     let f = format!("cycles/cycle_{:04}.m64", c.n);
+-    write(&o.out.join(&f), &m64::write(&h, &c.pads))?;
++    let movie = if o.clear_reserved_bits { m64::clear_reserved_bits(&c.pads) } else { c.pads.clone() };
++    write(&o.out.join(&f), &m64::write(&h, &movie))?;
+     let mp = if o.mupen64plus {
+         let f = format!("cycles/cycle_{:04}.mupen64plus.m64", c.n);
+         let mut pads = vec![GamePad::default()];
+-        pads.extend_from_slice(&c.pads);
++        pads.extend_from_slice(&movie);
+         write(&o.out.join(&f), &m64::write(&h, &pads))?;
+         Some(f)
+     } else {
+diff --git a/pow/export/src/m64.rs b/pow/export/src/m64.rs
+index 64152f9..431ffb8 100644
+--- a/pow/export/src/m64.rs
++++ b/pow/export/src/m64.rs
+@@ -163,6 +163,17 @@ pub fn frames_from_bytes(b: &[u8]) -> Result<Vec<GamePad>> {
+     Ok(b.chunks_exact(4).map(|c| pad_from_bytes(c.try_into().unwrap())).collect())
+ }
+ 
++/// The N64 controller's two reserved button bits (0x0080, 0x0040). The game never reads them
++/// (sm64pow tests/reserved_bits.rs), but Mupen64Plus reads a sample with both set as a console
++/// reset, so a movie containing one doesn't play back. The poke pads only use A, B and Z, and the
++/// miners no longer seal such pads; old chains may still have them.
++pub const RESERVED_BITS: u16 = 0x00C0;
++
++/// `pads` with the reserved bits cleared on every pad that has both set.
++pub fn clear_reserved_bits(pads: &[GamePad]) -> Vec<GamePad> {
++    pads.iter().map(|p| if p.button & RESERVED_BITS == RESERVED_BITS { GamePad::new(p.button & !RESERVED_BITS, p.stick_x, p.stick_y) } else { *p }).collect()
++}
++
+ /// A whole movie: header, then the frames.
+ pub fn write(header: &Header, pads: &[GamePad]) -> Vec<u8> {
+     let mut h = header.clone();
+@@ -218,3 +229,16 @@ mod tests {
+         assert_eq!(Header::parse(&again.to_bytes()).unwrap().rom, h.rom);
+     }
+ }
++
++#[cfg(test)]
++mod reserved_tests {
++    use super::*;
++
++    #[test]
++    fn only_pads_with_both_reserved_bits_change() {
++        let pads = [GamePad::new(0x8000 | RESERVED_BITS, 1, 2), GamePad::new(0x0080, 3, 4), GamePad::new(0x0040, 5, 6), GamePad::new(0x8000, 7, 8)];
++        let c = clear_reserved_bits(&pads);
++        assert_eq!(c[0], GamePad::new(0x8000, 1, 2));
++        assert_eq!(&c[1..], &pads[1..]);
++    }
++}
+diff --git a/pow/export/src/main.rs b/pow/export/src/main.rs
+index 9641845..60c1cb0 100644
+--- a/pow/export/src/main.rs
++++ b/pow/export/src/main.rs
+@@ -8,7 +8,7 @@ use std::path::PathBuf;
+ 
+ const USAGE: &str = "usage:
+   sm64coin-export export --out DIR (--jsonl FILE | --rpc URL [--from H] [--to H]) [--rom PATH]
+-                  [--features] [--states none|portable|raw|both] [--mupen64plus] [--max-blocks N]
++                  [--features] [--states none|portable|raw|both] [--mupen64plus] [--clear-reserved-bits] [--max-blocks N]
+   sm64coin-export verify DIR [--cycle N] [--rom PATH]
+   sm64coin-export fetch --rpc URL --out FILE.jsonl [--from H] [--to H]
+ The ROM defaults to $SM64COIN_ROM, ./baserom.us.z64 or ~/.sm64coin/baserom.us.z64.";
+@@ -53,7 +53,7 @@ fn main() -> Result<()> {
+                 Some("both") => States::Both,
+                 Some(x) => bail!("--states {x}?"),
+             };
+-            let o = Options { out: PathBuf::from(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?), rom: info, features: flag("--features"), states, mupen64plus: flag("--mupen64plus"), author: "sm64coin-export".into() };
++            let o = Options { out: PathBuf::from(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?), rom: info, features: flag("--features"), states, mupen64plus: flag("--mupen64plus"), clear_reserved_bits: flag("--clear-reserved-bits"), author: "sm64coin-export".into() };
+             let s = export(&blocks, &o, &mut log)?;
+             println!("{} blocks, {} cycles, {} frames ({} poked); plain-replay mismatches {:?}, portable mismatches {:?}", s.blocks, s.cycles, s.frames, s.poked, s.plain_replay_mismatches, s.portable_mismatches);
+             if !s.plain_replay_mismatches.is_empty() || !s.portable_mismatches.is_empty() {
+diff --git a/pow/export/tests/export.rs b/pow/export/tests/export.rs
+index 230cb0e..f073878 100644
+--- a/pow/export/tests/export.rs
++++ b/pow/export/tests/export.rs
+@@ -27,7 +27,7 @@ fn dir(name: &str) -> PathBuf {
+ }
+ 
+ fn opts(out: PathBuf, rom: Rom) -> Options {
+-    Options { out, rom, features: true, states: States::Portable, mupen64plus: true, author: "test".into() }
++    Options { out, rom, features: true, states: States::Portable, mupen64plus: true, clear_reserved_bits: false, author: "test".into() }
+ }
+ 
+ #[test]
