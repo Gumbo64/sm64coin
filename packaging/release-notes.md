@@ -25,6 +25,9 @@ Every block that is valid on 0.3.0 is valid on 0.3.1 and every invalid block sta
 tests and the 234 proof-id vectors pass unchanged). The chain, the genesis block, the ports and the data
 dir are the same: **just replace the binaries; no resync.**
 
+**Coming from 0.2?** 0.3 started a new chain on 2026-11-26 00:00 UTC: use a fresh data dir and let your wallet
+rescan (see the [0.3.0 notes](https://github.com/Gumbo64/sm64coin/releases/tag/v0.3.0)). 0.2 nodes no longer reach the network.
+
 - **Smaller proofs (miners).** The miners (`automine`, the Rust SDK, the web miner on request) run an
   input normaliser before sealing: pads that do not change what the game does (the stick in the air and in
   cutscenes, buttons that nothing reads) are replaced by cheaper ones, then the proof is coded with the
@@ -41,7 +44,7 @@ dir are the same: **just replace the binaries; no resync.**
 - **Tools:** `pow/tools/board/` has the leaderboard's functional checks and benches, runnable against a
   throwaway build.
 
-Update: recommended
+Update: required
 
 <!--
   Update notices: the wallet app, the website, sm64coin-node and sm64coin-automine look at the latest
