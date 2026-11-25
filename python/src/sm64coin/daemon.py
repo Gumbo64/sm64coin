@@ -37,6 +37,8 @@ class Template:
     cycle_start_height: int = 0
     valid_at: int = 0               # only when asked with `frames`: when a run of that many frames is valid
     key: Keypair = None             # the miner key the template was requested with
+    tip: str = ""                   # the chain's tip when the template was made: usually prev_hash, not when the node
+                                    # builds around an equivocated tip, so "a new block landed" = the tip moved from THIS
 
 
 @dataclass
@@ -81,6 +83,10 @@ class Daemon:
         p = {"wallet_address": address, "extra_nonce": key.extra_nonce().hex()}
         if frames is not None:
             p["sm64_frames"] = int(frames)
+        try:
+            tip = self.top_hash()
+        except (OSError, RuntimeError):
+            tip = ""
         r = self.call("get_block_template", p)
         return Template(
             blocktemplate_blob=r["blocktemplate_blob"], difficulty=r["difficulty"], height=r["height"],
@@ -93,7 +99,7 @@ class Daemon:
             start=r.get("sm64_start", "parent"), power_on_at=r.get("sm64_power_on_at", 0), restart_delay=r.get("sm64_restart_delay", 0),
             parent_timestamp=r.get("sm64_parent_timestamp", 0), parent_stars=r.get("sm64_parent_stars", 0),
             parent_keys=r.get("sm64_parent_keys", 0), cycle_start_height=r.get("sm64_cycle_start_height", 0),
-            valid_at=r.get("sm64_valid_at", 0), key=key)
+            valid_at=r.get("sm64_valid_at", 0), key=key, tip=tip or r["prev_hash"])
 
     def valid_at(self, address, key, frames) -> int:
         """Unix time from which a run of `frames` frames is valid for the next block."""
