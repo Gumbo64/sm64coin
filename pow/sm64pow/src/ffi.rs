@@ -1,7 +1,9 @@
 //! C ABI used by the daemon (monero fork). See `sm64pow.h`.
 
 use crate::proof::Codec;
-use crate::{params, proof_id, rules, seed_from_hash};
+use crate::proof_id::proof_id;
+use crate::rules::{active as rules, params};
+use crate::seed::{Seed, seed_from_hash};
 use std::ffi::{CStr, c_char};
 use std::cell::RefCell;
 
@@ -29,9 +31,9 @@ pub extern "C" fn sm64pow_init(rom_path: *const c_char) -> i32 {
         match path {
             Some(p) => std::fs::read(&p)
                 .map_err(|e| anyhow::anyhow!("reading ROM {p}: {e}"))
-                .and_then(crate::init)
+                .and_then(crate::emulator::init)
                 .map(|_| ()),
-            None => crate::init_default().map(|_| ()),
+            None => crate::emulator::init_default().map(|_| ()),
         }
     });
     match res {
@@ -78,7 +80,7 @@ pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap
     };
     let parent = unsafe { parent_arg(parent32, gap_seconds) };
     let bytes = blob_arg(proof, len);
-    let seed = crate::Seed(seed);
+    let seed = Seed(seed);
     let res = std::panic::catch_unwind(|| {
         if difficulty == 0 {
             crate::chain::rebuild_block(&id, parent, &seed, bytes)
@@ -148,7 +150,7 @@ pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8
             return 0;
         }
         let parent = if p == [0u8; 32] { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: p, gap_seconds: 0 } };
-        batch.push(crate::chain::BatchBlock { id, parent, seed: crate::Seed(seed), blob: blobs[a..b].to_vec() });
+        batch.push(crate::chain::BatchBlock { id, parent, seed: Seed(seed), blob: blobs[a..b].to_vec() });
     }
     std::panic::catch_unwind(|| crate::chain::preverify(&batch, threads as usize)).unwrap_or(0) as u64
 }
@@ -418,7 +420,7 @@ pub extern "C" fn sm64pow_played_block(id32: *const u8, parent32: *const u8, gap
     };
     let parent = unsafe { parent_arg(parent32, gap_seconds) };
     let bytes = blob_arg(proof, len);
-    let res = std::panic::catch_unwind(|| crate::chain::played_block(&id, parent, &crate::Seed(seed), bytes));
+    let res = std::panic::catch_unwind(|| crate::chain::played_block(&id, parent, &Seed(seed), bytes));
     match res {
         Ok(Ok(Ok(pads))) => copy_out(&crate::proof::Raw.encode(&pads), out, cap),
         Ok(Ok(Err(crate::chain::BlockVerdict::NeedParent))) => {
@@ -452,7 +454,7 @@ pub extern "C" fn sm64pow_wanted_block(id32: *const u8, parent32: *const u8, gap
     };
     let parent = unsafe { parent_arg(parent32, gap_seconds) };
     let bytes = blob_arg(proof, len);
-    let res = std::panic::catch_unwind(|| crate::chain::played_wanted_block(&id, parent, &crate::Seed(seed), bytes));
+    let res = std::panic::catch_unwind(|| crate::chain::played_wanted_block(&id, parent, &Seed(seed), bytes));
     match res {
         Ok(Ok(Ok(pl))) => copy_out(&crate::proof::Raw.encode(&pl.wanted()), out, cap),
         Ok(Ok(Err(crate::chain::BlockVerdict::NeedParent))) => {

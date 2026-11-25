@@ -19,9 +19,11 @@
 //! through `sm64coin-perturb-wasm`); this module re-exports them and adds the replay that
 //! feeds them game states.
 
+use crate::emulator::generator;
+use crate::game::{SM64MiningGame, mining_start};
 use crate::proof::{Proof, Start};
-use crate::game::SM64MiningGame;
-use crate::{Seed, params};
+use crate::rules::{Params, params};
+use crate::seed::Seed;
 use anyhow::Result;
 #[allow(hidden_glob_reexports)]
 use sm64_binds::{GamePad, SaveState};
@@ -41,7 +43,7 @@ pub struct Run {
 
 /// The game state after playing `played` from power-on, unperturbed.
 pub fn state_after(played: &[GamePad]) -> Result<SaveState> {
-    let mut g = crate::generator()?.create_game()?;
+    let mut g = generator()?.create_game()?;
     for p in played {
         g.step_game(*p)?;
     }
@@ -60,7 +62,7 @@ impl Run {
     /// pad played and whether it was a poke.
     pub fn dump_rows(&self) -> Result<Vec<(Features, GamePad, bool)>> {
         let ps = self.parent_state()?;
-        let (mut g, _) = crate::chain::mining_start(self.proof.start, ps.as_ref(), &self.seed, &params(1))?;
+        let (mut g, _) = mining_start(self.proof.start, ps.as_ref(), &self.seed, &params(1))?;
         let mut rows = Vec::new();
         let mut next = 0;
         for _ in 0..self.proof.frames {
@@ -91,8 +93,8 @@ pub const fn state_codec_enabled() -> bool {
 /// The proof blob (`varint(frames) || start || id || body`) of `pr` in a
 /// state codec: replays the run from `parent` (the parent's end state, for a
 /// parent start) to code each input in its state.
-pub fn encode_proof_state(c: &dyn StateCodec, parent: Option<&SaveState>, seed: &Seed, p: &crate::Params, pr: &Proof) -> Result<Vec<u8>> {
-    let (mut g, _) = crate::chain::mining_start(pr.start, parent, seed, p)?;
+pub fn encode_proof_state(c: &dyn StateCodec, parent: Option<&SaveState>, seed: &Seed, p: &Params, pr: &Proof) -> Result<Vec<u8>> {
+    let (mut g, _) = mining_start(pr.start, parent, seed, p)?;
     let mut enc = c.encoder();
     let mut next = 0;
     for f in 0..pr.frames {
@@ -123,10 +125,10 @@ pub fn encode_proof_state(c: &dyn StateCodec, parent: Option<&SaveState>, seed: 
 /// the body must be the canonical encoding. Does not check that the run
 /// succeeds. For tools (SDK, explorers); the verifier does this inside
 /// [`crate::chain`]'s replay.
-pub fn decode_proof_state(blob: &[u8], parent: Option<&SaveState>, seed: &Seed, p: &crate::Params) -> Result<Proof> {
+pub fn decode_proof_state(blob: &[u8], parent: Option<&SaveState>, seed: &Seed, p: &Params) -> Result<Proof> {
     let (frames, start, id, body) = crate::proof::split_blob(blob)?;
     let c = state_codec(id).ok_or_else(|| anyhow::anyhow!("unknown proof codec {id}"))?;
-    let (mut g, _) = crate::chain::mining_start(start, parent, seed, p)?;
+    let (mut g, _) = mining_start(start, parent, seed, p)?;
     let mut dec = c.decoder(body);
     let mut inputs = Vec::new();
     for _ in 0..frames {

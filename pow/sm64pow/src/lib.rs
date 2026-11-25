@@ -46,11 +46,6 @@ pub use mining::{
 pub use proof_id::proof_id;
 pub use seed::{Seed, seed_from_hash};
 
-pub use rules::{Params, Rules, active as rules, level8};
+pub use rules::{Params, Rules, active as rules, level8, params};
 pub use sm64_binds;
-
-/// What the active rules ask at `difficulty`.
-pub fn params(difficulty: u64) -> Params {
-    rules().params(difficulty)
-}
 

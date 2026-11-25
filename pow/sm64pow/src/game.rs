@@ -7,10 +7,11 @@
 //! digest with [`view`]. Another game needs another adapter (its regions,
 //! clock and digest) and nothing else.
 
+use crate::emulator::generator;
 use crate::proof::Start;
-use crate::{Params, Seed, generator};
+use crate::rules::{Params, RngConfig};
+use crate::seed::Seed;
 use anyhow::Result;
-use crate::rules::RngConfig;
 use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
 pub use sm64coin_perturb::sm64::{Features, features, Addrs, Event, HEADLESS, Progress, VISUAL, event, View, progress, progress_regions, progress_regions_len, regions, regions_len, view};
 pub use sm64coin_perturb::{Pad, PokeConfig, Perturber};
@@ -112,7 +113,7 @@ pub fn perturbed_step(game: &mut SM64Game, pert: &mut Perturber, wanted: GamePad
 impl SM64MiningGame {
     /// A fresh game, powered on, with the block's perturbation armed.
     pub fn new(seed: &Seed, p: &Params) -> Result<SM64MiningGame> {
-        Ok(SM64MiningGame { game: crate::generator()?.create_game()?, pert: Perturber::new(&seed.0, &poke_config(&p.rng)) })
+        Ok(SM64MiningGame { game: generator()?.create_game()?, pert: Perturber::new(&seed.0, &poke_config(&p.rng)) })
     }
 
     /// `game` (in whatever state, e.g. the parent block's end state) with a
@@ -158,7 +159,7 @@ impl SM64MiningGame {
 
     /// A copy (a new game instance with the same memory and perturbation).
     pub fn fork(&self) -> Result<SM64MiningGame> {
-        Ok(SM64MiningGame { game: crate::generator()?.copy_from(&self.game)?, pert: self.pert.clone() })
+        Ok(SM64MiningGame { game: generator()?.copy_from(&self.game)?, pert: self.pert.clone() })
     }
 
     /// Becomes a copy of `source` (game and perturbation).

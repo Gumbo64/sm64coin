@@ -1,11 +1,12 @@
 //! The parallel pre-pass of a sync batch.
 
-use crate::cache::{alias, cached, known_summary, remember, remember_summary, run_key, REPLAYS, Summary};
+use crate::cache::{REPLAYS, Summary, alias, cached, known_summary, parent_state, remember, remember_summary, run_key};
+use crate::emulator::generator;
 use crate::game::{Progress, read_progress};
-use crate::replay::EndState;
 use crate::proof::{self, Start};
-use crate::replay::{Parent, replay_blob, start_game};
-use crate::{Seed, generator, rules};
+use crate::replay::{EndState, Parent, replay_blob, start_game};
+use crate::rules::active as rules;
+use crate::seed::Seed;
 use anyhow::Result;
 use sm64_binds::SaveState;
 
@@ -111,7 +112,7 @@ fn replay_chain(chain: &[&BatchBlock], state_ok: bool, replayed: &std::sync::ato
                 g.load_state(st)?;
                 (g, *p)
             }
-            (Start::Parent, None) => match start_game(start, &b.parent, false)? {
+            (Start::Parent, None) => match start_game(start, &b.parent, parent_state(&b.parent), false)? {
                 Some(Ok((g, p, _))) => (g, p),
                 _ => return Ok(()),
             },

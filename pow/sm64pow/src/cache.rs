@@ -3,7 +3,8 @@
 use crate::game::Progress;
 use crate::proof::Start;
 use crate::replay::{EndState, Parent, Played};
-use crate::{Seed, generator};
+use crate::emulator::generator;
+use crate::seed::Seed;
 use crate::game::read_progress;
 use anyhow::Result;
 use sm64_binds::SaveState;
@@ -62,6 +63,14 @@ fn cache() -> &'static Mutex<Cache> {
 pub fn cached(id: &[u8; 32]) -> Option<Arc<EndState>> {
     let c = cache().lock().unwrap();
     c.ids.get(id).and_then(|k| c.runs.get(k)).map(|r| r.state.clone())
+}
+
+/// The cached end state of `parent` (None for the genesis block, or when not cached).
+pub(crate) fn parent_state(parent: &Parent) -> Option<Arc<EndState>> {
+    match parent {
+        Parent::Genesis => None,
+        Parent::Block { id, .. } => cached(id),
+    }
 }
 
 /// The cached end state of block `id` (the game's save state), gzip-compressed: for clients that

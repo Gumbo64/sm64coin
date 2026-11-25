@@ -2,8 +2,10 @@
 
 use crate::game::{Progress, SM64MiningGame, read_progress};
 use crate::proof::{self, Proof, Start};
-use crate::chain::cached;
-use crate::{Params, Seed, generator, params, rules};
+use crate::emulator::generator;
+use crate::rules::{Params, active as rules, params};
+use crate::seed::Seed;
+use std::sync::Arc;
 use anyhow::Result;
 use sm64_binds::{GamePad, SaveState};
 
@@ -47,12 +49,8 @@ impl Played {
 /// limit is taken ([`crate::Rules::restart_delay`]), or why the start isn't
 /// allowed (None: parent state needed). With `checking` false (rebuilding an
 /// accepted block) a restart needs no parent state.
-pub(crate) fn start_game(start: Start, parent: &Parent, checking: bool) -> Result<Option<std::result::Result<(sm64_binds::SM64Game, Progress, u64), String>>> {
+pub(crate) fn start_game(start: Start, parent: &Parent, parent_state: Option<Arc<EndState>>, checking: bool) -> Result<Option<std::result::Result<(sm64_binds::SM64Game, Progress, u64), String>>> {
     let r = rules();
-    let parent_state = match parent {
-        Parent::Genesis => None,
-        Parent::Block { id, .. } => cached(id),
-    };
     let mut cost = 0;
     match (start, parent) {
         (Start::PowerOn, Parent::Genesis) => {}

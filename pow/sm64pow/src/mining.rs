@@ -1,6 +1,9 @@
 //! The miner's side: playing perturbed frames, building and sealing proofs.
 
-use crate::{Params, SM64MiningGame, Seed, chain, proof, statecodec};
+use crate::game::{SM64MiningGame, mining_start};
+use crate::rules::Params;
+use crate::seed::Seed;
+use crate::{chain, proof, statecodec};
 use anyhow::Result;
 use sm64_binds::GamePad;
 
@@ -42,7 +45,7 @@ impl Recorder {
 /// A fresh game for a run with `start`: power-on, or loaded from the
 /// parent's end state `parent` (a native save state).
 fn start_game(start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params) -> Result<SM64MiningGame> {
-    Ok(chain::mining_start(start, parent, seed, p)?.0)
+    Ok(mining_start(start, parent, seed, p)?.0)
 }
 
 /// The proof for a run given as the pads played on every frame (what the

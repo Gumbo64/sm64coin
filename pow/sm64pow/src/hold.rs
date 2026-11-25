@@ -1,6 +1,6 @@
 //! The hold policy.
 
-use crate::rules;
+use crate::rules::active as rules;
 
 /// The hold policy's decision (a node's relay policy, not consensus): when a
 /// node may process a block extending its tip whose run is `frames` long, at

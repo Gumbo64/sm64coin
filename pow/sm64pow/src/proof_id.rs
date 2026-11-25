@@ -1,6 +1,7 @@
 //! What a block id commits to for its proof.
 
-use crate::{proof, rules, statecodec};
+use crate::rules::active as rules;
+use crate::{proof, statecodec};
 use sha3::{Digest, Keccak256};
 
 /// What a block id commits to: Keccak-256 of the decoded proof (frame count,

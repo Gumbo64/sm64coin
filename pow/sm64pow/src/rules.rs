@@ -138,6 +138,11 @@ pub fn active() -> &'static dyn Rules {
     &STAR_CYCLE
 }
 
+/// What the active rules ask at `difficulty`.
+pub fn params(difficulty: u64) -> Params {
+    active().params(difficulty)
+}
+
 /// About `8 * log2(d)` in integer arithmetic: 8 x the exponent plus the next
 /// three mantissa bits (0 for `d <= 1`). Within 1.5 of the exact value.
 pub fn level8(d: u64) -> u32 {

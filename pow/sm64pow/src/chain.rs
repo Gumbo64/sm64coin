@@ -9,11 +9,12 @@
 //! genesis block as parent), and replays forward with [`rebuild_block`].
 //! Replay is fast (a whole cycle is seconds), so nothing is stored on disk.
 
-use crate::cache::{REPLAYS, alias, known_summary, played_cached, remember, remember_played, run_key};
-use crate::proof::{self, Start};
+use crate::cache::{REPLAYS, alias, known_summary, parent_state, played_cached, remember, remember_played, run_key};
 use crate::game::Progress;
+use crate::proof::{self, Start};
 use crate::replay::{replay, replay_state, start_game};
-use crate::{Seed, params, rules};
+use crate::rules::{active as rules, params};
+use crate::seed::Seed;
 use anyhow::Result;
 use sm64_binds::GamePad;
 
@@ -100,7 +101,7 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
             }
         }
     }
-    let (game, before) = match start_game(start, parent, difficulty.is_some())? {
+    let (game, before) = match start_game(start, parent, parent_state(parent), difficulty.is_some())? {
         None => return Ok(BlockVerdict::NeedParent),
         Some(Err(why)) => return Ok(BlockVerdict::Invalid(why)),
         Some(Ok((g, p, delay))) => {
