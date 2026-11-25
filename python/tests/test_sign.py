@@ -10,7 +10,8 @@ import pytest
 
 from sm64coin.daemon import seal
 from sm64coin.proof import varint
-from sm64coin.sign import Keypair, keccak256, keccak512, proof_id, sign_proof
+from sm64coin.proof import decode_proof, commit, input_hash, proof_id, split
+from sm64coin.sign import Keypair, keccak256, keccak512, message, proof_id_v03, sign_proof
 
 VECTORS = [json.loads(l) for l in (pathlib.Path(__file__).parent / "sig_vectors.jsonl").read_text().splitlines() if l]
 
@@ -30,11 +31,13 @@ def test_matches_rust(v):
     assert key.public.hex() == v["public"]
     assert key.extra_nonce().hex() == "64" + v["public"]
     blob = bytes.fromhex(v["proof_hex"])
-    assert proof_id(blob).hex() == v["proof_id"]
-    assert sign_proof(key, bytes.fromhex(v["seed"]), blob).hex() == v["sig"]
+    assert proof_id_v03(blob).hex() == v["proof_id"]
+    # v0.3 signature: the same message over the v0.3 id
+    frames = v["frames"]
+    assert key.sign(message(bytes.fromhex(v["seed"]), proof_id_v03(blob), frames)).hex() == v["sig"]
 
 
-WEB = [json.loads(l) for l in (pathlib.Path(__file__).parent / "sig_vectors_web.jsonl").read_text().splitlines() if l]
+WEB = [json.loads(l) for l in (pathlib.Path(__file__).parent / "sig_vectors_web_v04.jsonl").read_text().splitlines() if l]
 
 
 @pytest.mark.parametrize("v", WEB)
@@ -44,7 +47,42 @@ def test_matches_rust_web_vectors(v):
     assert key.extra_nonce().hex() == v["extra_nonce"]
     blob = bytes.fromhex(v["proof"])
     assert proof_id(blob).hex() == v["proof_id"]
+    assert split(blob)[0] == v["frames"]
     assert sign_proof(key, bytes.fromhex(v["seed"]), blob).hex() == v["sig"]
+
+
+V04 = [json.loads(l) for l in (pathlib.Path(__file__).parent.parent.parent / "web/wallet-wasm/test/vectors-v04.jsonl").read_text().splitlines() if l]
+
+
+@pytest.mark.parametrize("v", V04, ids=[v["name"] for v in V04])
+def test_v04_vectors(v):
+    blob = bytes.fromhex(v["blob"])
+    assert proof_id(blob).hex() == v["id"]
+    try:
+        frames, start, h, enc = split(blob)
+        parsed = True
+    except ValueError:
+        parsed = False
+    assert parsed == v["header"]
+    if parsed:
+        assert (frames, start) == (v["frames"], v["start"])
+        assert h.hex() == v["id"]
+    try:
+        decode_proof(blob)
+        ok = True
+    except ValueError:
+        ok = False
+    assert ok == (v["stateless"])
+    if v.get("kind") == "run":
+        pads = bytes.fromhex(v["pads"])
+        assert input_hash(v["frames"], v["start"], pads).hex() == v["input_hash"]
+        if v["name"].endswith("/raw"):
+            assert commit(v["frames"], v["start"], pads, 0) == blob
+        codec = blob[len(blob) - len(enc)] if enc else 0
+        if codec in (0, 1):
+            assert commit(v["frames"], v["start"], pads, codec) == blob
+        else:
+            assert proof_id(commit(v["frames"], v["start"], pads, 2)) == proof_id(blob)
 
 
 def test_proof_id_is_codec_independent():

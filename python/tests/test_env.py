@@ -12,6 +12,7 @@ import subprocess
 
 import pytest
 
+from sm64coin.proof import commit, decode_proof_v03, encode_proof_v03, input_hash, proof_id
 from sm64coin import (event, GamePad, MiningEnv, Progress, Seed, Task, buttons, decode_proof, encode_proof, load_rom,
                       max_frames, params, replay_pads, seal, verify)
 from sm64coin import rules
@@ -145,22 +146,31 @@ def test_proof_encoding_round_trip():
     pads = [GamePad(0x8000, -80, 80), GamePad(0, 0, 0), GamePad(0x1234, 3, -4)]
     for start in (0, 1):
         blob = encode_proof(300, start, pads)
-        assert blob == varint(300) + bytes([start, 0]) + b"".join(pad_bytes(p) for p in pads)
+        raw = b"".join(pad_bytes(p) for p in pads)
+        assert blob == varint(300) + bytes([start]) + input_hash(300, start, raw) + b"\x00" + raw
         assert blob[:2] == bytes([300 % 128 | 0x80, 300 // 128])
         pr = decode_proof(blob, 18000)
         assert (pr.frames, pr.start, pr.inputs) == (300, start, pads)
+        for codec in (1, 2):
+            c = commit(300, start, pads, codec)
+            assert proof_id(c) == proof_id(blob) and decode_proof(c, 18000).inputs == pads
+        assert decode_proof_v03(encode_proof_v03(300, start, pads), 18000).inputs == pads
     with pytest.raises(ValueError):
         decode_proof(encode_proof(300, 0, pads), 299)       # over the limit
     with pytest.raises(ValueError):
-        decode_proof(varint(300) + b"\x02\x00", 400)        # unknown start
+        decode_proof(varint(300) + b"\x02" + bytes(33), 400)  # unknown start
     with pytest.raises(ValueError):
         decode_proof(encode_proof(2, 0, pads), 400)         # more inputs than frames
+    bad = bytearray(encode_proof(300, 0, pads))
+    bad[-2] ^= 1
     with pytest.raises(ValueError):
-        decode_proof(b"\x80\x00\x00\x00", 400)             # non-canonical varint
+        decode_proof(bytes(bad), 400)                       # bad encoding: the hash does not match
+    with pytest.raises(ValueError):
+        decode_proof(b"\x80\x00" + bytes(40), 400)          # non-canonical varint
     # the run-length codec (id 1): runs of identical pads
     p = GamePad(0, 0, 0)
     rle = varint(60) + b"\x00" + b"\x01" + varint(50) + pad_bytes(p) + varint(10) + pad_bytes(GamePad(0x8000, 1, 2))
-    assert decode_proof(rle, 100).inputs == [p] * 50 + [GamePad(0x8000, 1, 2)] * 10
+    assert decode_proof_v03(rle, 100).inputs == [p] * 50 + [GamePad(0x8000, 1, 2)] * 10
 
 
 def test_seal_rewrites_the_timestamp_and_appends_proof_and_signature():
@@ -246,8 +256,8 @@ def test_seal_proof_stores_only_unpoked_inputs():
     n_poked = len(env.pads) - len(env.inputs)
     assert n_poked > 20
     b = env.proof()
-    assert b[:2] == bytes([2000 % 128 | 0x80, 2000 // 128]) and b[2:4] == b"\x01\x00"  # power-on start, raw codec
-    assert len(b) == 2 + 1 + 1 + 4 * len(env.inputs)
+    assert b[:2] == bytes([2000 % 128 | 0x80, 2000 // 128]) and b[2] == 1 and b[35] == 0  # power-on start, hash, raw codec
+    assert len(b) == 2 + 1 + 32 + 1 + 4 * len(env.inputs)
     # No star: the replay agrees with the pads played but finds no progress.
     ok, why = verify(task, b, max_frames=2000)
     assert not ok and "no progress" in why, why
@@ -279,8 +289,9 @@ def test_winning_fixture_verifies():
     task = Task(Seed.from_hex(j["seed_hash"]), 1)
     blob = bytes.fromhex(j["proof_hex"])
     assert task.start == "power-on" and task.max_frames == 36000
-    pr = decode_proof(blob, 18000)
+    pr = decode_proof_v03(blob, 18000)                  # the fixture is a v0.3-layout blob: commit it
     assert (pr.frames, pr.start) == (j["frames"], 1)
+    blob = commit(pr.frames, pr.start, pr.inputs, 2)   # xz, like the fixture
     ok, info = verify(task, blob)
     assert ok and info == j["frames"], info
     # Driving a MiningEnv with the decoded inputs wins on exactly the last frame; the poked frames

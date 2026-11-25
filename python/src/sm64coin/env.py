@@ -246,7 +246,7 @@ class MiningEnv:
         self.success, self.progress, self._state = snap.success, snap.progress, None
 
     def proof(self) -> bytes:
-        """Proof blob: varint(frames) || start byte || codec 0 (raw) || 4 bytes per NON-POKED frame's input.
+        """Committed proof blob: varint(frames) || start byte || input_hash (32) || codec 0 (raw) || 4 bytes per NON-POKED frame's input.
         The daemon re-encodes to the smallest codec; pokes are regenerated from the seed."""
         return encode_proof(len(self.pads), self.task.start_byte, self.inputs)
 

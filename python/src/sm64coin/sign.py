@@ -1,73 +1,20 @@
-"""Signed proofs (v0.3): the miner key and the block signature, in pure Python.
+"""Signed proofs (v0.3 keys; v0.4 committed proof_id): the miner key and the block signature, in pure Python.
 
 Every block must be signed by a throwaway per-template key. The miner generates a `Keypair`,
 asks the daemon for a template with `extra_nonce=key.extra_nonce()` (the daemon puts it in the
 coinbase, so the seed covers the key), plays the run, then signs it: `sign_proof(key, seed, proof)`.
 The scheme is Monero's own Schnorr signature on ed25519 with Keccak (`crypto::generate_signature`);
-mirror of pow/sm64pow/src/sign.rs, checked byte for byte against Rust (tests/sig_vectors.jsonl).
+mirror of pow/sm64pow/src/sign.rs, checked byte for byte against Rust (tests/sig_vectors_web_v04.jsonl).
 """
 
 import os
 
-from .proof import MAX_FRAMES, decode_proof, get_varint, pad_bytes
+from .keccak import keccak256, keccak512, _keccak  # noqa: F401  (re-exported)
+from .proof import MAX_FRAMES, decode_proof, get_varint, pad_bytes, proof_id, split  # noqa: F401
 
 KEY_TAG = 0x64
 MSG_TAG = b"sm64coin proof signature v1"
 NONCE_TAG = b"sm64coin signing nonce v1"
-
-# ---- Keccak (the original padding, as Monero's cn_fast_hash; hashlib.sha3_* pad differently) ----
-
-_RC = [
-    0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000, 0x000000000000808B,
-    0x0000000080000001, 0x8000000080008081, 0x8000000000008009, 0x000000000000008A, 0x0000000000000088,
-    0x0000000080008009, 0x000000008000000A, 0x000000008000808B, 0x800000000000008B, 0x8000000000008089,
-    0x8000000000008003, 0x8000000000008002, 0x8000000000000080, 0x000000000000800A, 0x800000008000000A,
-    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008]
-_ROT = [[0, 36, 3, 41, 18], [1, 44, 10, 45, 2], [62, 6, 43, 15, 61], [28, 55, 25, 21, 56], [27, 20, 39, 8, 14]]
-_M64 = (1 << 64) - 1
-
-
-def _rol(x, n):
-    return ((x << n) | (x >> (64 - n))) & _M64 if n else x
-
-
-def _permute(a):
-    """Keccak-f[1600] on a[x][y]."""
-    for rc in _RC:
-        c = [a[x][0] ^ a[x][1] ^ a[x][2] ^ a[x][3] ^ a[x][4] for x in range(5)]
-        d = [c[(x - 1) % 5] ^ _rol(c[(x + 1) % 5], 1) for x in range(5)]
-        a = [[a[x][y] ^ d[x] for y in range(5)] for x in range(5)]
-        b = [[0] * 5 for _ in range(5)]
-        for x in range(5):
-            for y in range(5):
-                b[y][(2 * x + 3 * y) % 5] = _rol(a[x][y], _ROT[x][y])
-        a = [[b[x][y] ^ (~b[(x + 1) % 5][y] & b[(x + 2) % 5][y]) for y in range(5)] for x in range(5)]
-        a[0][0] ^= rc
-    return a
-
-
-def _keccak(data: bytes, rate: int, out_len: int) -> bytes:
-    msg = bytearray(data)
-    msg.append(0x01)                              # original Keccak padding (SHA-3 uses 0x06)
-    msg.extend(b"\0" * (-len(msg) % rate))
-    msg[-1] |= 0x80
-    a = [[0] * 5 for _ in range(5)]
-    for off in range(0, len(msg), rate):
-        for i in range(rate // 8):
-            a[i % 5][i // 5] ^= int.from_bytes(msg[off + 8 * i:off + 8 * i + 8], "little")
-        a = _permute(a)
-    out = b"".join(a[i % 5][i // 5].to_bytes(8, "little") for i in range(25))
-    return out[:out_len]
-
-
-def keccak256(data: bytes) -> bytes:
-    """Monero's `cn_fast_hash`."""
-    return _keccak(data, 136, 32)
-
-
-def keccak512(data: bytes) -> bytes:
-    return _keccak(data, 72, 64)
-
 
 # ---- ed25519: just enough for scalar-mult-base ----
 
@@ -164,11 +111,11 @@ class Keypair:
         return self.secret.hex()
 
 
-def proof_id(blob: bytes) -> bytes:
-    """What a block id commits to for its proof (pow/sm64pow/src/proof_id.rs), codecs 0-2: Keccak-256
-    of `"sm64run2" || frames u32 LE || start || 4 bytes per input pad`, so re-encoding a proof with
-    another codec does not change it. State codecs (3-5) hash their bytes after a replay: use the Rust SDK."""
-    p = decode_proof(blob, MAX_FRAMES)    # raises on state codecs and malformed blobs
+def proof_id_v03(blob: bytes) -> bytes:
+    """v0.3's proof_id (no committed header): Keccak-256 of `"sm64run2" || frames u32 LE || start || 4 bytes
+    per input pad` of a v0.3-layout blob, codecs 0-2. Kept for the v0.3 vectors (tests/sig_vectors_web_v04.jsonl)."""
+    from .proof import decode_proof_v03
+    p = decode_proof_v03(blob, MAX_FRAMES)
     return keccak256(b"sm64run2" + p.frames.to_bytes(4, "little") + bytes([p.start]) + b"".join(pad_bytes(g) for g in p.inputs))
 
 
@@ -182,5 +129,5 @@ def sign_proof(key: Keypair, seed: bytes, proof: bytes) -> bytes:
     `sm64_seed_hash` (bytes, or its hex string), requested with `extra_nonce=key.extra_nonce()`."""
     if isinstance(seed, str):
         seed = bytes.fromhex(seed)
-    frames, _ = get_varint(proof, 0)
+    frames = split(proof)[0]    # the committed header must parse: the id is the hash it carries
     return key.sign(message(seed, proof_id(proof), frames))
