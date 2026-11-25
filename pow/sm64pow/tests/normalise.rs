@@ -55,6 +55,12 @@ fn normalised_blocks_replay_identically_and_are_smaller() {
         // The sealed proof is a valid block's proof for the same template: the node's check.
         let again = sm64pow::mining::decode_proof_any(&sealed, parent_state.as_ref(), &seed, &p).unwrap();
         assert_eq!(again.frames, frames);
+        let mut other = id;
+        other[0] ^= 0xff; // another block id: the same template, the normalised run
+        match verify_block(&other, parent, &seed, difficulty, &sealed).unwrap() {
+            BlockVerdict::Valid { frames: f, .. } => assert_eq!(f, frames),
+            v => panic!("block {}: the normalised proof is not a valid block: {v:?}", j["height"]),
+        }
         for s in [&CONSERVATIVE, &AGGRESSIVE] {
             let pads = normalise_played(start, parent_state.as_ref(), &seed, &p, &played, s).unwrap();
             assert_eq!(pads.len(), played.len());
