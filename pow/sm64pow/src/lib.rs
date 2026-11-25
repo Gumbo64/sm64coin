@@ -55,7 +55,6 @@ pub mod chain;
 pub mod equivocation;
 pub mod pof;
 pub mod preverify;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod queue;
 pub mod replay;
 // 6: the daemon's C ABI

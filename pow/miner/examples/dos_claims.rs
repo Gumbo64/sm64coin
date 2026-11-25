@@ -49,7 +49,7 @@ fn main() -> Result<()> {
             let key = Keypair::from_secret(&<[u8; 32]>::try_from(hex::decode(g("key_secret"))?.as_slice())?).unwrap();
             let proof = hex::decode(g("proof"))?;
             let frames = s["frames"].as_u64().unwrap() as u32;
-            println!("{}", line(&seal_with(&g("template_blob"), &g("seed_hash"), &key, &proof, Some(now()))?, height - 1, frames, &key));
+            println!("{}", line(&seal_with(&g("template_blob"), &g("seed_hash"), &key, &proof, Some(now()))?, height, frames, &key));
         }
         mode @ ("fake" | "samekey") => {
             let n: u32 = a[3].parse()?;
