@@ -58,6 +58,11 @@ pub struct Template {
     /// Only on a `sm64_frames` request: when a run of that many frames becomes valid.
     #[serde(default)]
     pub sm64_valid_at: u64,
+    /// The chain's tip when the template was made (set by [`Daemon::template`]).
+    /// Usually `prev_hash`; not when the node builds around an equivocated tip, so
+    /// "a new block landed" means the tip moved from THIS, not from `prev_hash`.
+    #[serde(default)]
+    pub tip: String,
 }
 
 /// `get_sm64_cycle`: the current cycle's blocks and every frame played in it.
@@ -99,8 +104,11 @@ impl Daemon {
     /// daemon puts `key.extra_nonce()` into the coinbase, so the seed covers
     /// the key; use the same key for every template call of one run).
     pub fn template(&self, address: &str, key: &Keypair) -> Result<Template> {
+        let tip = self.top_hash().unwrap_or_default();
         let r = self.call("get_block_template", json!({"wallet_address": address, "extra_nonce": hex::encode(key.extra_nonce())}))?;
-        Ok(serde_json::from_value(r)?)
+        let mut t: Template = serde_json::from_value(r)?;
+        t.tip = if tip.is_empty() { t.prev_hash.clone() } else { tip };
+        Ok(t)
     }
 
     /// A template that also says when a run of `frames` frames becomes valid

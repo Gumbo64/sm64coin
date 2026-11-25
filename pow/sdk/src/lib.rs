@@ -35,7 +35,7 @@ mod miner;
 
 pub use daemon::{Cycle, CycleBlock, Daemon, Template, cycle_end_state, get_timestamp, seal, set_timestamp, sign_proof};
 pub use env::{MiningEnv, Snapshot, Task};
-pub use miner::{Bot, MinerConfig, PracticeReport, practice, run_miner, run_miner_keyed, run_miner_with};
+pub use miner::{Bot, MinerConfig, SignedStore, PracticeReport, practice, run_miner, run_miner_keyed, run_miner_with};
 pub use sm64pow::sign::Keypair;
 pub use sm64_binds::{GamePad, GameState, SM64Game, buttons};
 pub use sm64pow::game::Progress;

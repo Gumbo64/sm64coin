@@ -31,11 +31,76 @@ pub struct MinerConfig {
     pub blocks: u64,
     /// Print progress.
     pub verbose: bool,
+    /// One run per key (v0.3): the miner key signs at most ONE run per template (a second
+    /// different signed run is equivocation, and honest nodes avoid the block). The run is
+    /// kept private and submitted once, this many seconds before it is valid (stamped with
+    /// the second it becomes valid; nodes hold it until then). Already valid: at once.
+    pub submit_lead_secs: u64,
+    /// Where to remember which seeds a run was signed for (seed -> proof id), so a
+    /// restart never signs a second run for the same seed. "" keeps it in memory only.
+    pub signed_file: String,
+}
+
+impl Default for MinerConfig {
+    fn default() -> MinerConfig {
+        MinerConfig {
+            daemon_url: "http://127.0.0.1:16481".into(),
+            address: String::new(),
+            rom: String::new(),
+            blocks: 0,
+            verbose: true,
+            submit_lead_secs: 5,
+            signed_file: std::env::var("SM64COIN_SIGNED_FILE").unwrap_or_else(|_| "sm64coin-signed.json".into()),
+        }
+    }
+}
+
+/// The record of signed runs (one run per key): seed hash -> proof id and frames,
+/// kept in a JSON file.
+#[derive(Debug, Default)]
+pub struct SignedStore {
+    path: Option<std::path::PathBuf>,
+    map: std::collections::BTreeMap<String, (String, u32, u64)>,
+}
+
+impl SignedStore {
+    /// Loads `path` ("": memory only; a missing file: empty).
+    pub fn open(path: &str) -> SignedStore {
+        let path = (!path.is_empty()).then(|| std::path::PathBuf::from(path));
+        let map = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        SignedStore { path, map }
+    }
+
+    /// `Err((frames))` of the run already signed for `seed_hash` if it is a different run than `proof`.
+    pub fn may_sign(&self, seed_hash: &str, proof: &[u8]) -> std::result::Result<(), u32> {
+        match self.map.get(seed_hash) {
+            Some((id, frames, _)) if *id != hex::encode(sm64pow::proof_id(proof)) => Err(*frames),
+            _ => Ok(()),
+        }
+    }
+
+    /// Records `proof` for `seed_hash` and saves the file; call BEFORE signing.
+    pub fn record(&mut self, seed_hash: &str, proof: &[u8], frames: u32) -> Result<()> {
+        self.map.insert(seed_hash.to_string(), (hex::encode(sm64pow::proof_id(proof)), frames, now()));
+        while self.map.len() > 256 {
+            let oldest = self.map.iter().min_by_key(|(_, v)| v.2).map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => self.map.remove(&k),
+                None => break,
+            };
+        }
+        if let Some(p) = &self.path {
+            let tmp = p.with_extension("tmp");
+            std::fs::write(&tmp, serde_json::to_string(&self.map)?)?;
+            std::fs::rename(&tmp, p)?;
+        }
+        Ok(())
+    }
 }
 
 /// Mines forever with `bot` (see [`run_miner_with`]).
 pub fn run_miner(bot: &mut dyn Bot, daemon_url: &str, address: &str, rom: &str) -> Result<()> {
-    run_miner_with(bot, &MinerConfig { daemon_url: daemon_url.into(), address: address.into(), rom: rom.into(), blocks: 0, verbose: true })
+    run_miner_with(bot, &MinerConfig { daemon_url: daemon_url.into(), address: address.into(), rom: rom.into(), ..Default::default() })
 }
 
 fn now() -> u64 {
@@ -68,9 +133,10 @@ fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
 /// from `get_sm64_cycle`, or power-on), run the bot while a watcher thread
 /// raises `stop` on a new block, check the proof locally, wait if the run is
 /// longer than the current time limit (it becomes valid as the limit grows),
-/// stamp the block "now", sign the proof with the template's miner key, seal
-/// proof and signature into the template and submit. The
-/// task allows over-budget runs ([`Task::allow_over_budget`]).
+/// sign the proof with the template's miner key once (one run per key: the run is
+/// remembered in `cfg.signed_file`), seal proof and signature into the template and submit
+/// it `cfg.submit_lead_secs` before it is valid. The task allows over-budget runs
+/// ([`Task::allow_over_budget`]).
 pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
     run_miner_keyed(bot, cfg, &mut |_| Ok(Keypair::generate()))
 }
@@ -89,6 +155,8 @@ pub fn run_miner_keyed(bot: &mut dyn Bot, cfg: &MinerConfig, next_key: &mut dyn 
     let daemon = Daemon::new(&cfg.daemon_url);
     let mut mined = 0u64;
     let mut round = 0u64;
+    let mut signed = SignedStore::open(&cfg.signed_file);
+    let lead = cfg.submit_lead_secs.min(sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(10));
     loop {
         let key = next_key(round)?;
         round += 1;
@@ -118,7 +186,7 @@ pub fn run_miner_keyed(bot: &mut dyn Bot, cfg: &MinerConfig, next_key: &mut dyn 
         let done = Arc::new(AtomicBool::new(false));
         let watcher = {
             let (stop, done) = (stop.clone(), done.clone());
-            let (url, prev) = (cfg.daemon_url.clone(), t.prev_hash.clone());
+            let (url, prev) = (cfg.daemon_url.clone(), t.tip.clone());
             std::thread::spawn(move || {
                 let d = Daemon::new(&url);
                 while !done.load(Ordering::Relaxed) {
@@ -171,9 +239,9 @@ pub fn run_miner_keyed(bot: &mut dyn Bot, cfg: &MinerConfig, next_key: &mut dyn 
                 println!("  {frames} frames is over the current limit; valid at {ts} (in {} s)", ts.saturating_sub(now()));
             }
             let mut abandoned = false;
-            while now() < ts {
+            while now() + lead < ts {
                 std::thread::sleep(Duration::from_secs(1));
-                if now() % 3 == 0 && matches!(daemon.top_hash(), Ok(h) if h != t.prev_hash) {
+                if now() % 3 == 0 && matches!(daemon.top_hash(), Ok(h) if h != t.tip) {
                     abandoned = true;
                     break;
                 }
@@ -186,6 +254,15 @@ pub fn run_miner_keyed(bot: &mut dyn Bot, cfg: &MinerConfig, next_key: &mut dyn 
         } else {
             ts = now();
         }
+        // One run per key: never sign a second, different run for this seed.
+        if let Err(prev) = signed.may_sign(&t.sm64_seed_hash, &proof) {
+            println!("  already signed a different run ({prev} frames) for this seed: not signing a second one; waiting for a new block");
+            while matches!(daemon.top_hash(), Ok(h) if h == t.tip) {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            continue;
+        }
+        signed.record(&t.sm64_seed_hash, &proof, frames)?;
         let sig = sign_proof(&key, &t, &proof)?;
         match daemon.submit(&seal(&t.blocktemplate_blob, &proof, &sig, Some(ts))?) {
             Ok(()) => {
@@ -232,4 +309,29 @@ pub fn practice(bot: &mut dyn Bot, seed: u64, difficulty: u64, stop: &dyn Fn() -
     let (success, proof) = (env.is_success(), env.proof());
     let verdict = if success { Some(task.check(&proof)?) } else { None };
     Ok(PracticeReport { seed, difficulty, frames: env.frame(), max_frames: env.max_frames(), success, verdict, seconds, proof })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_run_per_seed_and_it_survives_a_restart() {
+        let f = std::env::temp_dir().join(format!("sdk-signed-{}.json", std::process::id()));
+        let f = f.to_str().unwrap();
+        let (a, b) = (vec![1u8, 2, 3], vec![9u8, 9, 9]);
+        let mut s = SignedStore::open(f);
+        assert!(s.may_sign("seed", &a).is_ok());
+        s.record("seed", &a, 100).unwrap();
+        assert!(s.may_sign("seed", &a).is_ok(), "the same run is the same block");
+        assert_eq!(s.may_sign("seed", &b), Err(100), "a second, different run is equivocation");
+        assert_eq!(SignedStore::open(f).may_sign("seed", &b), Err(100), "remembered after a restart");
+        assert!(SignedStore::open("").may_sign("seed", &b).is_ok(), "no file: memory only");
+        std::fs::remove_file(f).ok();
+    }
+
+    #[test]
+    fn default_lead_is_five_seconds() {
+        assert_eq!(MinerConfig::default().submit_lead_secs, 5);
+    }
 }
