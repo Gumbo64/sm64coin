@@ -7,6 +7,7 @@ use sm64coin_export::{source, verify};
 use std::path::PathBuf;
 
 const USAGE: &str = "usage:
+  sm64coin-export compare-mupen-dump CYCLE.m64 DUMP.bin [pool]   (a Mupen64Plus per-poll RAM dump, tools/mupen64plus/threeway.sh)
   sm64coin-export export --out DIR (--jsonl FILE | --rpc URL [--from H] [--to H]) [--rom PATH]
                   [--features] [--states none|portable|raw|both] [--mupen64plus] [--max-blocks N]
   sm64coin-export verify DIR [--cycle N] [--rom PATH]
@@ -57,6 +58,20 @@ fn main() -> Result<()> {
             let s = export(&blocks, &o, &mut log)?;
             println!("{} blocks, {} cycles, {} frames ({} poked); plain-replay mismatches {:?}, portable mismatches {:?}", s.blocks, s.cycles, s.frames, s.poked, s.plain_replay_mismatches, s.portable_mismatches);
             if !s.plain_replay_mismatches.is_empty() || !s.portable_mismatches.is_empty() {
+                std::process::exit(2);
+            }
+        }
+        "compare-mupen-dump" => {
+            // compare-mupen-dump CYCLE.m64 DUMP.bin [pool]: every poll of a Mupen64Plus RDRAM dump against the port.
+            sm64pow::init(std::fs::read(rom_path?)?)?;
+            let (_, pads) = sm64coin_export::m64::read(&std::fs::read(args.get(1).ok_or_else(|| anyhow!("{USAGE}"))?)?)?;
+            let dump = std::fs::read(args.get(2).ok_or_else(|| anyhow!("{USAGE}"))?)?;
+            let r = sm64coin_export::mupen::compare_dump(&pads, &dump, args.get(3).map(String::as_str) == Some("pool"))?;
+            for (poll, frames, what) in &r.first {
+                println!("poll {poll} (port after {frames} frames): {what}");
+            }
+            println!("{} polls compared, {} differ", r.polls, r.differing);
+            if r.differing > 0 {
                 std::process::exit(2);
             }
         }

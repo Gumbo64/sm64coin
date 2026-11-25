@@ -129,7 +129,7 @@ time (`start_portable_exact`): a fresh game loaded from it and fed the block's
 pads must end in the chain's end state (same `GameState`, progress, and the
 same portable variable digest; `gMatStack`, the render walk's scratch matrices,
 is ignored). On the 34 v0.2 fixture blocks this holds for 32; blocks 11 and 32
-do not reproduce from the portable state (the game state diverges), so
+do not reproduce from the portable state with the pinned translator (sm64-binds 2.1.1; see DIVERGENCE.md), so
 `start_portable_exact` is false there and the raw state must be used for them.
 
 ## Verification
@@ -148,7 +148,8 @@ do not reproduce from the portable state (the game state diverges), so
    `mupen64plus-rsp-hle`) with an input plugin that plays an m64, a null video
    plugin that raises the RDP-done interrupt (the core's built-in dummy video
    does not, and the game stalls), and the built-in dummy audio.
-   `check_cycle.sh EXPORT CYCLE WORKDIR` saves states at every block boundary
+   `threeway.sh EXPORT CYCLE WORKDIR` compares every poll (and, with the sm64-binds oracle, sm64_physics
+   too); `check_cycle.sh EXPORT CYCLE WORKDIR` saves states at every block boundary
    and every 5000 frames, and `sm64coin-export compare-mupen` compares Mario
    (action, position, velocity, health, stars) with the port. Notes: Mupen64Plus
    polls once more at boot, hence the `.mupen64plus.m64` variant with one
@@ -163,18 +164,16 @@ do not reproduce from the portable state (the game state diverges), so
   byte-identical RAM image at every block. `verify` replays all 3 cycles
   (cycle 0: blocks 1-24, 107,931 frames, abandoned by the restart at block 25;
   cycle 1: blocks 25-34, 35,574 frames) from power-on with 0 divergences.
-- Stock Mupen64Plus 2.6.0: cycle 1 (35,574 frames, all 10 block boundaries and
-  every 5000 frames, 17 states) matches the port **exactly** (Mario's action,
-  position, velocity, health, stars). Cycle 0 matches exactly through frame
-  77,400 (blocks 1-18 and the first part of block 19; 33 states) and
-  **diverges between frames 77,400 and 77,500** (block 19, which has pokes at
-  77,409-77,412, 77,439-40, 77,450-51, 77,471-72 and 77,499). The port-only
-  replays of the same pads are exact, so this is a difference between the port
-  and the N64 build, not something pokes change in the port; its cause is not
-  found.
-- Portable start states: exact for 36 of 38 blocks; blocks 11 and 32 (a block
-  that starts right after a star was taken) do not reproduce from the portable
-  state, see above.
+- Stock Mupen64Plus 2.6.0, compared at **every poll** (`tools/mupen64plus/threeway.sh`: Mario, RNG, timer):
+  cycle 1 (35,574 frames) matches the port in all polls. Cycle 0 matches until poll 58,535 and then the RNG
+  differs: a **port bug**, found and explained in [DIVERGENCE.md](DIVERGENCE.md): at frame 58,532 (block 17,
+  object pool full) two splash guards use `USE_SYSTEM_MALLOC` where the N64 checks the free object list, so
+  the port evicts and spawns one object more than the N64. sm64_physics (the oracle) agrees with Mupen, not
+  with the port. With a two-line fix of the game (patch in docs/divergence/), the whole cycle matches Mupen
+  at every poll. The fix changes the game build (hard fork), so it is not applied in this repository.
+- Portable start states: exact for 36 of 38 blocks (34 distinct fixture blocks; 2 cycles); blocks 11 and 32
+  do not reproduce under sm64-binds 2.1.1's translator (it relocated non-pointer words of an object as
+  pointers); fixed in sm64-binds >= 2.3.1, see DIVERGENCE.md.
 
 ## Limits
 
