@@ -86,6 +86,9 @@ fn the_committed_proof_id_vectors_still_match() {
     if !init() {
         return;
     }
+    // v0.3's vectors: v0.3's registry (codecs 6-7 exist only with committed inputs, where they are
+    // transport). Both tests of this file run v0.3 semantics, so the switch can't upset the other.
+    sm64pow::features::set(sm64pow::features::Features::NONE).unwrap();
     let mut n = 0;
     for l in include_str!("../../../web/wallet-wasm/test/vectors.jsonl").lines() {
         let j: serde_json::Value = serde_json::from_str(l).unwrap();
@@ -96,4 +99,21 @@ fn the_committed_proof_id_vectors_still_match() {
         n += 1;
     }
     assert_eq!(n, 234);
+}
+
+/// The v0.4 committed proof-id vectors (web/wallet-wasm/test/vectors-v04.jsonl, which the C++,
+/// Python and browser ports are checked against) match commit::proof_id; no game needed.
+#[test]
+fn the_v04_proof_id_vectors_still_match() {
+    let mut n = 0;
+    for l in include_str!("../../../web/wallet-wasm/test/vectors-v04.jsonl").lines() {
+        let j: serde_json::Value = serde_json::from_str(l).unwrap();
+        let unhex = |s: &str| -> Vec<u8> { (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect() };
+        let blob = unhex(j["blob"].as_str().unwrap());
+        let id: String = sm64pow::commit::proof_id(&blob).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(id, j["id"].as_str().unwrap(), "{}", j["name"]);
+        assert_eq!(sm64pow::commit::header(&blob).is_ok(), j["header"].as_bool().unwrap(), "{}", j["name"]);
+        n += 1;
+    }
+    assert_eq!(n, 257);
 }
