@@ -12,6 +12,7 @@ import { coins, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
+import { getPlayFromStart, setPlayFromStart, subscribePlayFromStart } from '../lib/hybridSetting.js';
 
 // The manual miner: play Super Mario 64 yourself. A block is the game's next
 // progress point (a star, a Bowser key, the Grand Star after 70 stars), played
@@ -261,6 +262,7 @@ function Miner() {
             <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the attempt)</button>
           </div>
         )}
+        <PlayFromStart />
         {task && start ? <CyclePanel task={task} start={start} /> : null}
         {start && startMode !== 'power-on' && <ResetCycle start={start} startMode={startMode} powerOnAt={powerOnAt} task={task} tick={tick}
           onReset={() => { ctl.current.forcePower = true; ctl.current.restart = true; say('reset cycle: starting over from power-on'); }}
@@ -301,6 +303,21 @@ function Miner() {
       </aside>
     </div>
     </>
+  );
+}
+
+// "Play from the start" (shared with the Auto-mine page): on, manual mining ignores hybrid mining (this page, from the block's
+// beginning, is all there is); off, the Auto-mine page's search tree can be played from (click a node there).
+function PlayFromStart() {
+  const [on, setOn] = useState(getPlayFromStart);
+  useEffect(() => subscribePlayFromStart(setOn), []);
+  return (
+    <p className="small">
+      <label title="On: always play from the block's beginning, no hybrid mining (the Auto-mine page's tree cannot be played from)." style={{ cursor: 'pointer' }}>
+        <input type="checkbox" checked={on} onChange={(e) => setPlayFromStart(e.target.checked)} /> Play from the start
+      </label>
+      <span className="muted"> · {on ? 'hybrid mining is off.' : <>hybrid mining: on <Link to="/automine">Auto-mine</Link> click a node of the search tree to play from there.</>}</span>
+    </p>
   );
 }
 
@@ -347,11 +364,12 @@ function CyclePanel({ task, start }) {
   );
 }
 
-const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];
+export const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];
 
 // On-screen buttons and keyboard shortcuts for the recorder (keys the game
 // doesn't use).
-function Controls({ rec }) {
+// `hybrid` (the Auto-mine page's "play from a tree node"): no new-template button; `onFinish` ends the segment.
+export function Controls({ rec, hybrid = false, onFinish = null }) {
   const [, force] = useState(0);
   useEffect(() => {
     const onKey = (e) => {
@@ -363,7 +381,7 @@ function Controls({ rec }) {
       else if (k === '[') r.back(1);
       else if (k === 'p' || k === 'P') r.togglePause();
       else if (k === 't' || k === 'T') r.takeOver();
-      else if (k === 'n' || k === 'N') r.skip();
+      else if ((k === 'n' || k === 'N') && !hybrid) r.skip();
       else if (k >= '1' && k <= '6') r.setSpeed(SPEEDS[Number(k) - 1]);
       else return;
       force((x) => x + 1);
@@ -377,7 +395,7 @@ function Controls({ rec }) {
   );
   return (
     <div className="controls">
-      {btn('⟲', 'Restart the attempt (G)', (r) => r.restart())}
+      {btn('⟲', hybrid ? 'Back to the node\'s state (G)' : 'Restart the attempt (G)', (r) => r.restart())}
       {[[1, '[ '], [5, 'Backspace'], [10, 'D-pad up'], [30, 'Shift+Backspace']].map(([s, k]) =>
         btn(`◀${s}s`, `Back ${s} s (${k.trim()})`, (r) => r.back(s)))}
       {btn('II', 'Pause / resume (P)', (r) => r.togglePause())}
@@ -385,7 +403,9 @@ function Controls({ rec }) {
       <span className="sep" />
       {SPEEDS.map((s, i) => btn(`${s}×`, `Speed ${s}× (${i + 1})`, (r) => r.setSpeed(s), rec.current && rec.current.speed === s))}
       <span className="sep" />
-      {btn('▶| new', 'New template: restart on a fresh block template (N)', (r) => r.skip())}
+      {hybrid
+        ? <button className="primary" title="Finish the segment: it becomes a node of the search tree (Enter)" onClick={() => onFinish && onFinish()}>Finish ⏎</button>
+        : btn('▶| new', 'New template: restart on a fresh block template (N)', (r) => r.skip())}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { Link } from 'react-router';
 import RomGate from '../lib/RomGate.jsx';
 import { miner, isAddress, isolated, enableSync, fmtRate } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
@@ -23,7 +24,7 @@ export default function AutoMine() {
 
 function AutoMiner() {
   const s = useMiner();
-  const { address, count, running, log, workers, stats, mode, vizOn, fps } = s;
+  const { address, count, running, log, workers, stats, mode, vizOn, fps, playFromStart, hybridOK } = s;
   // The views redraw only while this page is on screen.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
@@ -61,6 +62,14 @@ function AutoMiner() {
           <input type="checkbox" checked={vizOn} onChange={(e) => miner.setVizOn(e.target.checked)} /> Visualisations
         </label>
         {vizOn && running && !isolated && <span className="muted"> · workers started before it was switched on keep sampling off until their next search (enable worker sync for an instant switch)</span>}
+      </p>
+      <p className="small">
+        <label className="switch-row" title="On: manual mining ignores hybrid mining entirely: always from the block's beginning (power-on / the parent's end), no search tree to play from, no clicking into nodes. Off: click a node of the 3D cloud and press Play from here.">
+          <input type="checkbox" checked={playFromStart} onChange={(e) => miner.setPlayFromStart(e.target.checked)} /> Play from the start
+        </label>
+        <span className="muted"> · {playFromStart
+          ? <>hybrid mining is off: <Link to="/mine">play the classic manual miner</Link> from the block's beginning</>
+          : <>hybrid mining: click a node in the cloud, <b>Play from here</b>, play on by hand, Enter returns to the visualiser{running && !hybridOK ? ' (needs worker sync: reload with "Enable worker sync", then restart)' : ''}</>}</span>
       </p>
       {running && (
         <p style={{ fontSize: '1.15em', margin: '0.4em 0' }} title="Simulated game frames per second, all workers (moving average over the last minute): this miner's hashrate">

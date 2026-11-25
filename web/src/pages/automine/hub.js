@@ -10,6 +10,7 @@ const ENV_CAP = 4000;
 
 export class VizHub {
   constructor() {
+    this.goal = null; // the position goal {level, area, pos} (hybrid mining), kept across rounds
     this.enabled = false; // collecting (the visualisations are switched on)
     this.live = false; // the Auto-mine page is on screen: views are woken
     this.subs = new Set();
@@ -31,6 +32,7 @@ export class VizHub {
     this.found = null; // the run being submitted: {w, frames, inputs, power, template, status, height}
     this.game = { id: 0 }; // what the game view plays: {id, kind: 'best'|'run', w}
     this.selected = null; // {w, id}
+    this.manual = null; // the last human-played segment: see playedSegment()
     // Point cloud ring buffer.
     this.n = 0; // nodes ever added
     this.pos = new Float32Array(CAP * 3);
@@ -41,6 +43,7 @@ export class VizHub {
     this.area = new Uint8Array(CAP);
     this.flags = new Uint8Array(CAP);
     this.nodeId = new Int32Array(CAP);
+    this.stepOf = new Uint16Array(CAP); // the worker's step number the node belongs to
     this.parentSlot = new Int32Array(CAP).fill(-1);
     this.keyAt = new Float64Array(CAP).fill(-1);
     this.index = new Map(); // (worker, step, id) -> slot
@@ -164,24 +167,54 @@ export class VizHub {
   }
 
   add(w, step, id, parent, frame, pos, stars, level, area, flags) {
-    const slot = this.n % CAP;
-    const old = this.keyAt[slot];
-    if (old >= 0) this.index.delete(old);
     const key = (w * 4096 + (step & 4095)) * 1e8 + id;
-    this.keyAt[slot] = key;
-    this.index.set(key, slot);
+    // A node can come twice (a manual node the page added itself, then the tree's own sample of it): the same slot.
+    const had = this.index.get(key);
+    const slot = had ?? this.n % CAP;
+    if (had === undefined) {
+      const old = this.keyAt[slot];
+      if (old >= 0) this.index.delete(old);
+      this.keyAt[slot] = key;
+      this.index.set(key, slot);
+      this.n++;
+    }
     this.pos[slot * 3] = pos[0]; this.pos[slot * 3 + 1] = pos[1]; this.pos[slot * 3 + 2] = pos[2];
     this.frame[slot] = frame;
     this.stars[slot] = stars;
     this.worker[slot] = w;
     this.level[slot] = level;
     this.area[slot] = area;
-    this.flags[slot] = flags;
+    this.flags[slot] = had === undefined ? flags : flags | (this.flags[slot] & 2);
     this.nodeId[slot] = id;
+    this.stepOf[slot] = step & 4095;
     this.parentSlot[slot] = parent >= 0 ? this.index.get((w * 4096 + (step & 4095)) * 1e8 + parent) ?? -1 : -1;
-    this.n++;
     this.cloudChanged = true;
+    return slot;
   }
+
+  /** The slot of node `id` of worker `w`'s step `step`, if still in the buffer. */
+  slotOf(w, step, id) { return this.index.get((w * 4096 + (step & 4095)) * 1e8 + id); }
+
+  /** Whether the slot's node belongs to its worker's current search tree (the one that can answer for it). */
+  isCurrent(slot) {
+    const w = this.workers[this.worker[slot]];
+    return !!w?.cur && (w.cur.n & 4095) === this.stepOf[slot];
+  }
+
+  /**
+   * A human-played segment (hybrid mining) that now is a node of the tree: `info` = {w, step, nid, parentSlot, pos, level, area, stars,
+   * frame, trail: [x, y, z, ...]}. The node is a point of the cloud (flag bit 1 = manual) and the cloud highlights it.
+   */
+  playedSegment(info) {
+    if (!this.enabled) return;
+    const slot = info.nid != null ? this.add(info.w, info.step, info.nid, -1, info.frame, info.pos, info.stars, info.level, info.area, 2) : -1;
+    if (slot >= 0 && info.parentSlot != null && info.parentSlot >= 0) this.parentSlot[slot] = info.parentSlot;
+    this.manual = { ...info, slot, at: Date.now() };
+    this.cloudChanged = true;
+    this.notify();
+  }
+
+  setGoal(goal) { this.goal = goal; this.cloudChanged = true; this.notify(); }
 
   /** The ancestors of `slot` that are in the buffer (sampling thins the tree), nearest first. */
   chain(slot) {

@@ -3,10 +3,15 @@ import { CAP } from './hub.js';
 import { useHub, useVisible } from './useHub.js';
 import { levelName, levelIcon, workerColor } from './levels.js';
 
-// The explored search nodes as a 3D point cloud (after sm64-viewer's tree view): the sampled nodes of every
-// worker's trees in one level/area at a time, over that area's collision geometry (read from the player's
-// own ROM). Orbit with the mouse, click a node for its details; "play this path" replays the worker's best
-// path in the game view (the only path the feed carries inputs for).
+// The explored search nodes as a 3D point cloud, with sm64-viewer's tree view controls (frontend/src/tree/treeview.js):
+// the sampled nodes of every worker's trees in one level/area at a time, over that area's collision geometry (read from
+// the player's own ROM). Left drag pans in the screen plane, middle drag pans across the ground, right drag orbits,
+// the wheel zooms, a left click without dragging selects a node. Geometry is solid, see-through or off (areas with a roof
+// start see-through; a choice is remembered per area), the cloud can be mirrored, edges (to each node's parent) toggled,
+// and the view fitted.
+// Hybrid mining adds: "Play from here" on a selected node (a person plays on from its state, see HybridPlay.jsx; the
+// played segment becomes a manual node, drawn magenta, and the view highlights where it finished), and shift + right
+// click (without dragging) on the level geometry, which sets a position goal for the searches (Mario::PosTime to the point).
 // three.js is loaded when this view mounts, i.e. only with the visualisations on.
 
 const VIRIDIS = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
@@ -14,7 +19,32 @@ const STAR_COLORS = ['#7c8aa5', '#60a5fa', '#4ade80', '#f7c948', '#fb923c', '#f4
 const MODES = [['stars', 'Stars'], ['frame', 'Game time'], ['worker', 'Worker'], ['progress', 'Made progress']];
 const clock = (f) => { const s = f / 30; return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`; };
 
-export default function CloudView({ hub, onPlay }) {
+// Geometry is solid by default; areas with a roof or ceiling over the play space start see-through so the tree inside
+// shows ("level:area", or a level for all its areas). From sm64-viewer's treeview.js.
+const SEE_THROUGH = new Set([
+  '6', '4', '7', '14', '28', '18', '20', '27', '8:2', '8:3', '12:2', '22:2', '5:2', '10:2', '13:3', '23:1', '36:2', '36:3', '36:4',
+]);
+const GEOM_PREFS = 'obrrt-tree:geometry';
+function geomPrefs() {
+  try { return JSON.parse(localStorage.getItem(GEOM_PREFS) ?? '{}'); } catch { return {}; }
+}
+export function defaultGeomMode(key) {
+  const saved = geomPrefs()[key];
+  if (saved) return saved;
+  return SEE_THROUGH.has(key) || SEE_THROUGH.has(key.split(':')[0]) ? 'ghost' : 'solid';
+}
+// Surface colours (treeview.js): floors light, walls darker, ceilings darkest; special surfaces by what they do.
+function surfaceColor(type, ny) {
+  if (/PAINTING/.test(type)) return '#c9a227';
+  if (/BURNING/.test(type)) return '#b8442e';
+  if (/WATER/.test(type)) return '#2f6fb0';
+  if (/WARP/.test(type)) return '#8a5cc7';
+  if (/HANGABLE/.test(type)) return '#4f8a6a';
+  if (/SLIPPERY/.test(type) && !/NOT_SLIPPERY/.test(type)) return ny > 0.5 ? '#7d8fae' : '#4a5670';
+  return ny > 0.5 ? '#6b7486' : ny < -0.5 ? '#2a2f3b' : '#454c5c';
+}
+
+export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, hybridOK = false, playFromStart = false }) {
   const v = useHub(hub);
   const box = useRef(null);
   const mount = useRef(null);
@@ -25,10 +55,14 @@ export default function CloudView({ hub, onPlay }) {
   const [mode, setMode] = useState('stars');
   const [zone, setZone] = useState('auto');
   const [geom, setGeom] = useState('solid');
+  const [edges, setEdges] = useState(true);
+  const [mirror, setMirror] = useState(false);
   const [sel, setSel] = useState(null);
   const [err, setErr] = useState('');
-  const cfg = useRef({ mode, zone, geom });
-  cfg.current = { mode, zone, geom };
+  const cfg = useRef({ mode, zone, geom, edges, mirror });
+  cfg.current = { mode, zone, geom, edges, mirror };
+  const cb = useRef({});
+  cb.current = { onGoal };
 
   // The zones with points, newest first.
   const zones = new Map();
@@ -41,6 +75,15 @@ export default function CloudView({ hub, onPlay }) {
   const autoZone = latest >= 0 ? `${hub.level[latest]}:${hub.area[latest]}` : null;
   const active = zone === 'auto' ? autoZone : zone;
 
+  // A new area: its remembered (or default) geometry mode.
+  useEffect(() => { if (active) setGeom(defaultGeomMode(active)); }, [active]);
+
+  // A human-played segment just finished: show its area.
+  const man = hub.manual;
+  useEffect(() => {
+    if (man) { setZone(`${man.level}:${man.area}`); gl.current?.focusManual(); }
+  }, [man?.at]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     let dead = false, raf = 0, cleanup = () => {};
     (async () => {
@@ -52,38 +95,90 @@ export default function CloudView({ hub, onPlay }) {
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
         renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
         el.appendChild(renderer.domElement);
+        const dom = renderer.domElement;
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x0b0e1a);
-        const camera = new THREE.PerspectiveCamera(50, 1, 20, 100000);
+        scene.background = new THREE.Color(0x0e1015);
+        const camera = new THREE.PerspectiveCamera(50, 1, 1, 1e6);
         camera.position.set(0, 4000, 6000);
-        const controls = new OrbitControls(camera, renderer.domElement);
+        const controls = new OrbitControls(camera, dom);
         controls.enableDamping = true;
-        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-        const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+        // sm64-viewer's mouse: left drag pans in the screen plane, middle drag pans across the ground (the horizontal
+        // plane), right drag orbits, the wheel zooms; a left click without dragging selects a node.
+        controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+        dom.addEventListener('pointerdown', (e) => { controls.screenSpacePanning = e.button === 0; }, true);
+        // Stop the browser's middle-click autoscroll and the context menu over the view.
+        dom.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+        dom.addEventListener('contextmenu', (e) => e.preventDefault());
+        // Everything is drawn in game units inside `world`, so mirroring is one scale.
+        const world = new THREE.Group();
+        scene.add(world);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+        const sun = new THREE.DirectionalLight(0xffffff, 0.9);
         sun.position.set(0.4, 1, 0.3);
         scene.add(sun);
+        let grid = null;
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(CAP * 3), 3));
         geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(CAP * 3), 3));
         geo.setDrawRange(0, 0);
-        const mat = new THREE.PointsMaterial({ size: 7, sizeAttenuation: false, vertexColors: true, transparent: true, opacity: 0.9 });
+        const mat = new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, vertexColors: true, transparent: true, opacity: 0.9 });
         const points = new THREE.Points(geo, mat);
         points.frustumCulled = false;
-        scene.add(points);
+        world.add(points);
+        // The human-played nodes (flag bit 1), bigger and magenta.
+        const mgeo = new THREE.BufferGeometry();
+        mgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 2048), 3));
+        mgeo.setDrawRange(0, 0);
+        const mpoints = new THREE.Points(mgeo, new THREE.PointsMaterial({ size: 11, sizeAttenuation: false, color: 0xff3df2 }));
+        mpoints.frustumCulled = false;
+        world.add(mpoints);
+        // Edges: each node to its parent (same area).
+        const egeo = new THREE.BufferGeometry();
+        egeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(CAP * 6), 3));
+        egeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(CAP * 6), 3));
+        egeo.setDrawRange(0, 0);
+        const elines = new THREE.LineSegments(egeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5 }));
+        elines.frustumCulled = false;
+        world.add(elines);
         const ray = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
-        // Selection: a ring marker and the ancestor chain.
-        const marker = new THREE.Mesh(new THREE.SphereGeometry(60, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }));
+        // Selection: a marker and the ancestor chain.
+        const marker = new THREE.Points(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]), new THREE.PointsMaterial({ size: 14, sizeAttenuation: false, color: 0xf7c948 }));
         marker.visible = false;
-        scene.add(marker);
+        marker.frustumCulled = false;
+        world.add(marker);
         const chainGeo = new THREE.BufferGeometry();
         const chainLine = new THREE.Line(chainGeo, new THREE.LineBasicMaterial({ color: 0xffffff }));
         chainLine.visible = false;
         chainLine.frustumCulled = false;
-        scene.add(chainLine);
-        let mesh = null, meshKey = null, slotOf = new Int32Array(CAP), shown = 0, builtVer = -1, builtCfg = '', fitted = null;
+        world.add(chainLine);
+        // The position goal: a ring of the objective's radius (150) and a pole.
+        const goalG = new THREE.Group();
+        goalG.add(new THREE.Mesh(new THREE.SphereGeometry(150, 16, 10), new THREE.MeshBasicMaterial({ color: 0xff8a00, wireframe: true, transparent: true, opacity: 0.7 })));
+        goalG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 700, 0)]), new THREE.LineBasicMaterial({ color: 0xff8a00 })));
+        const flag = new THREE.Mesh(new THREE.ConeGeometry(60, 160, 4), new THREE.MeshBasicMaterial({ color: 0xff8a00 }));
+        flag.position.set(0, 700, 0);
+        flag.rotation.x = Math.PI;
+        goalG.add(flag);
+        goalG.visible = false;
+        world.add(goalG);
+        // Where the last human-played segment finished: a ring that pulses, and the trail it took.
+        const finishG = new THREE.Group();
+        const fringA = new THREE.Mesh(new THREE.SphereGeometry(90, 16, 10), new THREE.MeshBasicMaterial({ color: 0xff3df2, wireframe: true }));
+        const fringB = new THREE.Mesh(new THREE.TorusGeometry(260, 14, 8, 40), new THREE.MeshBasicMaterial({ color: 0x3df2ff }));
+        fringB.rotation.x = Math.PI / 2;
+        finishG.add(fringA, fringB);
+        finishG.visible = false;
+        world.add(finishG);
+        const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x3df2ff }));
+        trail.visible = false;
+        trail.frustumCulled = false;
+        world.add(trail);
+        let geomMesh = null, geomKey = null, slotOf = new Int32Array(CAP), shown = 0, builtVer = -1, builtCfg = '', fitted = null, drawnMan = 0, drawnGoal = null;
         const cols = geo.attributes.color.array;
         const poss = geo.attributes.position.array;
+        const ecols = egeo.attributes.color.array;
+        const eposs = egeo.attributes.position.array;
         const tmp = new THREE.Color();
         const scale = (stops, t) => { const x = Math.max(0, Math.min(0.9999, t)) * (stops.length - 1); const i = Math.floor(x); return new THREE.Color(stops[i]).lerp(new THREE.Color(stops[i + 1]), x - i); };
         const palette = {
@@ -92,48 +187,65 @@ export default function CloudView({ hub, onPlay }) {
         };
 
         async function loadGeometry(key) {
-          if (meshKey === key) return;
-          meshKey = key;
-          if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); mesh = null; }
+          if (geomKey === key) { applyGeom(); return; }
+          if (geomMesh) { world.remove(geomMesh); geomMesh.traverse((o) => o.geometry?.dispose()); geomMesh = null; }
+          geomKey = key;
           if (!key) return;
           const [level, area] = key.split(':').map(Number);
           try {
             const { romGeometry } = await import('./geometry.js');
-            const g = await romGeometry(level, area);
-            if (dead || meshKey !== key || !g.t.length) return;
-            const nTri = g.t.length / 3;
-            const p = new Float32Array(nTri * 9), c = new Float32Array(nTri * 9);
-            const bad = new Set(g.types.map((nm, i) => (/DEATH|BURNING|QUICKSAND|WATER|INTANGIBLE/.test(nm) ? i : -1)).filter((i) => i >= 0));
-            for (let i = 0; i < nTri; i++) {
-              const a = [], b = [];
-              for (let k = 0; k < 3; k++) { const vi = g.t[i * 3 + k] * 3; a.push(g.v[vi], g.v[vi + 1], g.v[vi + 2]); p.set([g.v[vi], g.v[vi + 1], g.v[vi + 2]], i * 9 + k * 3); }
-              const ux = a[3] - a[0], uy = a[4] - a[1], uz = a[5] - a[2], wx = a[6] - a[0], wy = a[7] - a[1], wz = a[8] - a[2];
-              let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
-              const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
-              void b;
-              const col = bad.has(g.s[i]) ? [0.75, 0.25, 0.2] : ny > 0.7 ? [0.28, 0.5, 0.36] : ny < -0.7 ? [0.3, 0.3, 0.42] : [0.38, 0.45, 0.62];
-              const shade = 0.75 + 0.25 * Math.abs(ny);
-              for (let k = 0; k < 3; k++) c.set([col[0] * shade, col[1] * shade, col[2] * shade], i * 9 + k * 3);
+            const d = await romGeometry(level, area);
+            if (dead || geomKey !== key || !d.t.length) return;
+            const v3 = d.v, t = d.t;
+            const pos = [], col = [], c = new THREE.Color();
+            const a = new THREE.Vector3(), b = new THREE.Vector3(), e = new THREE.Vector3(), nrm = new THREE.Vector3();
+            for (let i = 0; i < t.length / 3; i++) {
+              const type = d.types[d.s[i]] ?? '';
+              if (/DEATH_PLANE/.test(type)) continue;
+              const [i0, i1, i2] = [t[3 * i], t[3 * i + 1], t[3 * i + 2]];
+              a.set(v3[3 * i0], v3[3 * i0 + 1], v3[3 * i0 + 2]); b.set(v3[3 * i1], v3[3 * i1 + 1], v3[3 * i1 + 2]); e.set(v3[3 * i2], v3[3 * i2 + 1], v3[3 * i2 + 2]);
+              nrm.subVectors(b, a).cross(new THREE.Vector3().subVectors(e, a)).normalize();
+              c.set(surfaceColor(type, nrm.y));
+              for (const p of [a, b, e]) { pos.push(p.x, p.y, p.z); col.push(c.r, c.g, c.b); }
             }
-            const mg = new THREE.BufferGeometry();
-            mg.setAttribute('position', new THREE.BufferAttribute(p, 3));
-            mg.setAttribute('color', new THREE.BufferAttribute(c, 3));
-            mg.computeBoundingSphere();
-            const solid = cfg.current.geom === 'solid';
-            mesh = new THREE.Mesh(mg, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.45, side: THREE.DoubleSide, wireframe: !solid, depthWrite: false }));
-            mesh.visible = cfg.current.geom !== 'off';
-            scene.add(mesh);
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+            g.computeVertexNormals();
+            const group = new THREE.Group();
+            group.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 })));
+            group.renderOrder = -1;
+            geomMesh = group;
+            world.add(group);
+            applyGeom();
           } catch (e) { if (!dead) setErr(`level geometry: ${e.message || e}`); }
         }
 
+        function applyGeom() {
+          if (!geomMesh) return;
+          const m = geomMesh.children[0].material;
+          const gm = cfg.current.geom;
+          geomMesh.visible = gm !== 'off';
+          m.transparent = gm === 'ghost';
+          m.opacity = gm === 'ghost' ? 0.28 : 1;
+          m.depthWrite = gm !== 'ghost';
+          m.needsUpdate = true;
+        }
+
+        function applyMirror() {
+          world.scale.z = cfg.current.mirror ? -1 : 1;
+          world.updateMatrixWorld(true);
+        }
+
+        const zoneOf = (i) => `${hub.level[i]}:${hub.area[i]}`;
         function rebuild() {
-          const { mode: m, zone: z } = cfg.current;
-          const zk = z === 'auto' ? (hub.n ? `${hub.level[(hub.n - 1) % CAP]}:${hub.area[(hub.n - 1) % CAP]}` : null) : z;
+          const { mode: m, zone: z, edges: showEdges } = cfg.current;
+          const zk = z === 'auto' ? (hub.n ? zoneOf((hub.n - 1) % CAP) : null) : z;
           const total = hub.count();
-          let k = 0, fmin = Infinity, fmax = 0;
-          for (let i = 0; i < total; i++) { if (`${hub.level[i]}:${hub.area[i]}` === zk) { if (hub.frame[i] < fmin) fmin = hub.frame[i]; if (hub.frame[i] > fmax) fmax = hub.frame[i]; } }
+          let k = 0, fmin = Infinity, fmax = 0, mk = 0, ek = 0;
+          for (let i = 0; i < total; i++) { if (zoneOf(i) === zk) { if (hub.frame[i] < fmin) fmin = hub.frame[i]; if (hub.frame[i] > fmax) fmax = hub.frame[i]; } }
           for (let i = 0; i < total; i++) {
-            if (`${hub.level[i]}:${hub.area[i]}` !== zk) continue;
+            if (zoneOf(i) !== zk) continue;
             poss[k * 3] = hub.pos[i * 3]; poss[k * 3 + 1] = hub.pos[i * 3 + 1]; poss[k * 3 + 2] = hub.pos[i * 3 + 2];
             let c;
             if (m === 'stars') c = palette.stars[hub.stars[i] % palette.stars.length];
@@ -142,6 +254,15 @@ export default function CloudView({ hub, onPlay }) {
             else c = hub.flags[i] & 1 ? palette.stars[3] : palette.stars[0];
             cols[k * 3] = c.r; cols[k * 3 + 1] = c.g; cols[k * 3 + 2] = c.b;
             slotOf[k] = i;
+            if (hub.flags[i] & 2 && mk < 2048) { mgeo.attributes.position.array.set([hub.pos[i * 3], hub.pos[i * 3 + 1], hub.pos[i * 3 + 2]], mk * 3); mk++; }
+            const p = hub.parentSlot[i];
+            if (showEdges && p >= 0 && zoneOf(p) === zk) {
+              eposs[ek * 6] = hub.pos[p * 3]; eposs[ek * 6 + 1] = hub.pos[p * 3 + 1]; eposs[ek * 6 + 2] = hub.pos[p * 3 + 2];
+              eposs[ek * 6 + 3] = hub.pos[i * 3]; eposs[ek * 6 + 4] = hub.pos[i * 3 + 1]; eposs[ek * 6 + 5] = hub.pos[i * 3 + 2];
+              tmp.set(workerColor(hub.worker[i])).multiplyScalar(0.45);
+              ecols[ek * 6] = ecols[ek * 6 + 3] = tmp.r; ecols[ek * 6 + 1] = ecols[ek * 6 + 4] = tmp.g; ecols[ek * 6 + 2] = ecols[ek * 6 + 5] = tmp.b;
+              ek++;
+            }
             k++;
           }
           shown = k;
@@ -149,47 +270,134 @@ export default function CloudView({ hub, onPlay }) {
           geo.attributes.position.needsUpdate = true;
           geo.attributes.color.needsUpdate = true;
           geo.boundingSphere = null;
-          if (zk !== fitted && k > 0) {
-            fitted = zk;
-            const box3 = new THREE.Box3();
-            for (let q = 0; q < k; q++) box3.expandByPoint(new THREE.Vector3(poss[q * 3], poss[q * 3 + 1], poss[q * 3 + 2]));
-            const c = box3.getCenter(new THREE.Vector3());
-            const r = Math.max(800, box3.getSize(new THREE.Vector3()).length() / 2);
-            controls.target.copy(c);
-            camera.position.set(c.x + r * 0.9, c.y + r * 1.1, c.z + r * 1.4);
-          }
+          mgeo.setDrawRange(0, mk);
+          mgeo.attributes.position.needsUpdate = true;
+          mgeo.boundingSphere = null;
+          egeo.setDrawRange(0, ek * 2);
+          egeo.attributes.position.needsUpdate = true;
+          egeo.attributes.color.needsUpdate = true;
+          egeo.boundingSphere = null;
+          if (zk !== fitted && k > 0) fitView(zk);
           loadGeometry(zk);
+          drawGoal();
+          drawManual();
+          doFocus();
+          const s = hub.selected;
+          select(s && s.slot != null && zoneOf(s.slot) === zk ? s.slot : null);
+        }
+
+        function fitView(zk = fitted) {
+          const kk = shown;
+          if (!kk) return;
+          fitted = zk;
+          const box3 = new THREE.Box3();
+          const mz = cfg.current.mirror ? -1 : 1;
+          for (let q = 0; q < kk; q++) box3.expandByPoint(new THREE.Vector3(poss[q * 3], poss[q * 3 + 1], mz * poss[q * 3 + 2]));
+          const c = box3.getCenter(new THREE.Vector3()), size = box3.getSize(new THREE.Vector3());
+          const r = Math.max(size.x, size.y, size.z, 500);
+          controls.target.copy(c);
+          // Behind and above the area's centre, looking towards -z (into the castle from the grounds).
+          camera.position.set(c.x, c.y + r * 0.8, c.z + mz * r * 0.9);
+          camera.near = r / 1000; camera.far = r * 50; camera.updateProjectionMatrix();
+          if (grid) { scene.remove(grid); grid.geometry.dispose(); }
+          grid = new THREE.GridHelper(Math.max(size.x, size.z) * 1.3 + 400, 24, 0x2b3242, 0x1b1f2a);
+          grid.position.set(c.x, box3.min.y - 5, c.z);
+          scene.add(grid);
+          ray.params.Points.threshold = r / 150;
+        }
+
+        // The camera to the last human-played segment's finish (once its area is the one shown), keeping its distance.
+        let pendingFocus = false;
+        function doFocus() {
+          const m = hub.manual;
+          if (!pendingFocus || !m || fitted !== `${m.level}:${m.area}`) return;
+          pendingFocus = false;
+          const t = new THREE.Vector3(m.pos[0], m.pos[1], (cfg.current.mirror ? -1 : 1) * m.pos[2]);
+          camera.position.add(t.clone().sub(controls.target));
+          controls.target.copy(t);
         }
 
         function select(slot) {
           if (slot == null) { marker.visible = false; chainLine.visible = false; return; }
           marker.position.set(hub.pos[slot * 3], hub.pos[slot * 3 + 1], hub.pos[slot * 3 + 2]);
           marker.visible = true;
-          const ch = [slot, ...hub.chain(slot)];
+          // The path from the area's entry to it (the ancestors that were sampled).
+          const ch = [slot, ...hub.chain(slot)].filter((s) => zoneOf(s) === zoneOf(slot));
           const arr = new Float32Array(ch.length * 3);
           ch.forEach((s, i) => arr.set([hub.pos[s * 3], hub.pos[s * 3 + 1], hub.pos[s * 3 + 2]], i * 3));
           chainGeo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+          chainGeo.computeBoundingSphere();
           chainLine.visible = ch.length > 1;
         }
 
-        const onClick = (ev) => {
-          const r = renderer.domElement.getBoundingClientRect();
+        function drawGoal() {
+          const g = hub.goal;
+          const zk = fitted;
+          drawnGoal = g;
+          goalG.visible = !!g && zk === `${g.level}:${g.area}`;
+          if (g) goalG.position.set(g.pos[0], g.pos[1], g.pos[2]);
+        }
+
+        function drawManual() {
+          const m = hub.manual;
+          drawnMan = m ? m.at : 0;
+          const here = m && fitted === `${m.level}:${m.area}`;
+          finishG.visible = !!here;
+          trail.visible = false;
+          if (!m) return;
+          if (here) finishG.position.set(m.pos[0], m.pos[1], m.pos[2]);
+          if (m.trail && m.trail.length >= 6 && here) {
+            trail.geometry.dispose();
+            trail.geometry = new THREE.BufferGeometry();
+            trail.geometry.setAttribute('position', new THREE.Float32BufferAttribute(m.trail, 3));
+            trail.visible = true;
+          }
+        }
+
+        const snapshot = (slot) => ({
+          slot, w: hub.worker[slot], id: hub.nodeId[slot], frame: hub.frame[slot], stars: hub.stars[slot], level: hub.level[slot], area: hub.area[slot],
+          pos: [hub.pos[slot * 3], hub.pos[slot * 3 + 1], hub.pos[slot * 3 + 2]], progress: hub.flags[slot] & 1, manual: (hub.flags[slot] >> 1) & 1,
+          chain: hub.chain(slot).length, step: hub.stepOf[slot], current: hub.isCurrent(slot),
+        });
+        const setRay = (ev) => {
+          const r = dom.getBoundingClientRect();
           mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
           ray.setFromCamera(mouse, camera);
-          ray.params.Points.threshold = Math.max(40, camera.position.distanceTo(controls.target) * 0.012);
+        };
+        const onSelect = (ev) => {
+          setRay(ev);
+          ray.params.Points.threshold = Math.max(ray.params.Points.threshold || 0, camera.position.distanceTo(controls.target) * 0.008);
           const hits = ray.intersectObject(points).filter((h) => h.index < shown);
           if (!hits.length) { hub.selected = null; setSel(null); select(null); return; }
-          // The nearest to the camera among hits near the ray.
+          // The nearest to the ray.
           const h = hits.reduce((a, b) => (b.distanceToRay < a.distanceToRay - 1e-6 ? b : a));
           const slot = slotOf[h.index];
           hub.selected = { slot };
           setSel(snapshot(slot));
           select(slot);
         };
-        const snapshot = (slot) => ({ slot, w: hub.worker[slot], id: hub.nodeId[slot], frame: hub.frame[slot], stars: hub.stars[slot], level: hub.level[slot], area: hub.area[slot], pos: [hub.pos[slot * 3], hub.pos[slot * 3 + 1], hub.pos[slot * 3 + 2]], progress: hub.flags[slot] & 1, chain: hub.chain(slot).length });
+        // Shift + right click without dragging: a position goal at the level geometry under the pointer.
+        const onGoal = (ev) => {
+          if (!geomMesh || !fitted) return;
+          setRay(ev);
+          world.updateMatrixWorld(true);
+          // The first floor under the pointer (a see-through roof or wall in front is not where Mario can stand).
+          const hits = ray.intersectObject(geomMesh, true);
+          const hit = hits.find((h) => h.face && h.face.normal.y > 0.5) || hits[0];
+          if (!hit) return;
+          const p = world.worldToLocal(hit.point.clone());
+          const [level, area] = fitted.split(':').map(Number);
+          cb.current.onGoal?.({ level, area, pos: [Math.round(p.x), Math.round(p.y), Math.round(p.z)] });
+        };
         let downAt = null;
-        renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
-        renderer.domElement.addEventListener('pointerup', (e) => { if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 4) onClick(e); downAt = null; });
+        dom.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY, e.button]; });
+        dom.addEventListener('pointerup', (e) => {
+          if (downAt && downAt[2] === e.button && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 4) {
+            if (e.button === 0) onSelect(e);
+            else if (e.button === 2 && e.shiftKey) onGoal(e);
+          }
+          downAt = null;
+        });
 
         const resize = () => {
           const w = el.clientWidth, h = Math.max(260, Math.round(w * 0.62));
@@ -200,15 +408,29 @@ export default function CloudView({ hub, onPlay }) {
         resize();
         const ro = new ResizeObserver(resize);
         ro.observe(el);
-        gl.current = { reset: () => { fitted = null; rebuild(); }, setGeom: (g) => { if (mesh) { mesh.visible = g !== 'off'; mesh.material.wireframe = g === 'wire'; } } };
+        gl.current = {
+          fit: () => fitView(fitted),
+          reset: () => { fitted = null; rebuild(); },
+          applyGeom,
+          applyMirror: () => { applyMirror(); fitView(fitted); },
+          focusManual: () => { pendingFocus = true; doFocus(); },
+          select: (slot) => { hub.selected = { slot }; setSel(snapshot(slot)); select(slot); },
+        };
         let lastBuild = 0;
         const frame = () => {
           raf = requestAnimationFrame(frame);
           if (!vis.current) return;
-          const cf = JSON.stringify(cfg.current);
+          const cf = JSON.stringify({ ...cfg.current, geom: undefined, mirror: undefined });
           const now = performance.now();
           if ((hub.cloudChanged || cf !== builtCfg) && now - lastBuild > 400) {
             hub.cloudChanged = false; builtCfg = cf; lastBuild = now; rebuild();
+          } else if ((hub.manual ? hub.manual.at : 0) !== drawnMan) drawManual();
+          else if (hub.goal !== drawnGoal) drawGoal();
+          // The finish marker pulses for a while.
+          if (finishG.visible) {
+            const age = (Date.now() - (hub.manual?.at || 0)) / 1000;
+            const s = age < 12 ? 1 + 0.25 * Math.sin(age * 6) : 1;
+            finishG.scale.setScalar(s);
           }
           controls.update();
           renderer.render(scene, camera);
@@ -218,22 +440,38 @@ export default function CloudView({ hub, onPlay }) {
           cancelAnimationFrame(raf);
           ro.disconnect();
           controls.dispose();
-          geo.dispose(); mat.dispose();
-          if (mesh) { mesh.geometry.dispose(); mesh.material.dispose(); }
+          geo.dispose(); mat.dispose(); mgeo.dispose(); egeo.dispose();
+          if (geomMesh) geomMesh.traverse((o) => o.geometry?.dispose());
           renderer.dispose();
           renderer.forceContextLoss?.();
           renderer.domElement.remove();
           gl.current = null;
         };
+        // The window's debug hook (the headless test and the console): the scene's pieces.
+        window.__cloud = { camera, controls, world, scene, get shown() { return shown; }, get fitted() { return fitted; }, THREE, project: (x, y, z) => { const v = new THREE.Vector3(x, y, z).applyMatrix4(world.matrixWorld).project(camera); const r = dom.getBoundingClientRect(); return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height]; }, get geomMesh() { return geomMesh; }, slotOf: (k) => slotOf[k] };
+        void builtVer;
       } catch (e) { setErr(String(e.message || e)); }
     })();
     return () => { dead = true; cleanup(); };
   }, []);
-  useEffect(() => { gl.current?.setGeom(geom); }, [geom]);
+  useEffect(() => { gl.current?.applyGeom(); }, [geom]);
+  useEffect(() => { gl.current?.applyMirror(); }, [mirror]);
 
   const w = sel ? hub.workers[sel.w] : null;
   const isBest = sel && w?.best && w.best.id === sel.id;
+  const bestW = (() => {
+    let bw = -1, bk = null;
+    hub.workers.forEach((x, i) => { if (x.best) { const k = [x.best.stars + x.best.keys, -x.best.frameAbs]; if (!bk || k[0] > bk[0] || (k[0] === bk[0] && k[1] > bk[1])) { bk = k; bw = i; } } });
+    return bw;
+  })();
+  const cycleGeom = () => {
+    const next = { solid: 'ghost', ghost: 'off', off: 'solid' }[geom];
+    setGeom(next);
+    if (active) { try { localStorage.setItem(GEOM_PREFS, JSON.stringify({ ...geomPrefs(), [active]: next })); } catch { /* not remembered */ } }
+  };
+  const goal = hub.goal;
   void v;
+  const canPlay = !playFromStart && hybridOK && sel && sel.current;
   return (
     <div className="viz-card viz-cloud" ref={box}>
       <h3>Search cloud <span className="muted small">{hub.n.toLocaleString()} sampled nodes{hub.n > CAP ? ` (newest ${CAP.toLocaleString()} kept)` : ''}</span></h3>
@@ -245,21 +483,31 @@ export default function CloudView({ hub, onPlay }) {
           <option value="auto">follow the search{autoZone ? ` (${levelName(+autoZone.split(':')[0])})` : ''}</option>
           {[...zones.entries()].map(([k, c]) => { const [l, a] = k.split(':'); return <option key={k} value={k}>{levelIcon(+l)} {levelName(+l)} · area {a} ({c})</option>; })}
         </select>
-        <button onClick={() => setGeom(geom === 'solid' ? 'wire' : geom === 'wire' ? 'off' : 'solid')} title="Level collision geometry (from your ROM)">Geometry: {geom}</button>
-        <button onClick={() => gl.current?.reset()}>Fit</button>
+        <button className={edges ? 'on' : ''} onClick={() => setEdges(!edges)} title="Each node's edge to its parent">Edges</button>
+        <button onClick={cycleGeom} title="Level collision geometry (from your ROM): solid, see-through or off; remembered per area">Geometry: {geom === 'ghost' ? 'see-through' : geom}</button>
+        <button className={mirror ? 'on' : ''} onClick={() => setMirror(!mirror)} title="Mirror the view (z flipped)">Mirror</button>
+        <button onClick={() => gl.current?.fit()}>Fit</button>
+        <button onClick={() => bestW >= 0 && onPlay && onPlay(bestW)} disabled={bestW < 0} title="Replay the best route so far in the game view">▶ play best</button>
       </div>
       <div ref={mount} className="viz-gl" />
       {err && <p className="error small">{err}</p>}
       <div className="viz-node">
         {sel ? (
           <>
-            <b>Node {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame} ({clock(sel.frame)}) ·
+            <b>{sel.manual ? 'Manual node' : 'Node'} {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame} ({clock(sel.frame)}) ·
             pos ({sel.pos.map((x) => Math.round(x)).join(', ')}){sel.progress ? ' · made progress' : ''} · {sel.chain} ancestor{sel.chain === 1 ? '' : 's'} sampled
             {' '}{isBest
               ? <button onClick={() => onPlay && onPlay(sel.w)}>▶ play this path</button>
-              : <span className="muted">(inputs are sent for each worker's best node only: {w?.best ? <button className="linkish" onClick={() => onPlay && onPlay(sel.w)}>play its best path</button> : 'none yet'})</span>}
+              : <span className="muted">(replay inputs: each worker's best node only{w?.best ? <> · <button className="linkish" onClick={() => onPlay && onPlay(sel.w)}>play its best path</button></> : ''})</span>}
+            {' '}{canPlay
+              ? <button className="primary" onClick={() => onPlayFrom && onPlayFrom(sel)} title="Load this node's save state and play on by hand; the played segment becomes a high-weight node of the search tree">🎮 Play from here</button>
+              : <span className="muted small">{playFromStart ? ' · "Play from the start" is on: hybrid mining is off' : !hybridOK ? ' · playing from a node needs the running auto-miner with worker sync' : ' · only the nodes of a worker\'s current search step can be played from'}</span>}
           </>
-        ) : <span className="muted">Click a node. Drag to orbit, wheel to zoom, right-drag to pan.</span>}
+        ) : <span className="muted">Click a node (left click). Left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms. Shift + right click on the level sets a position goal for the searches.</span>}
+      </div>
+      <div className="viz-node muted small">
+        {goal ? <>Position goal: ({goal.pos.join(', ')}) in {levelName(goal.level)} area {goal.area}; the searches draw Mario::PosTime objectives to it. <button className="linkish" onClick={() => onGoal && onGoal(null)}>clear</button></> : 'No position goal.'}
+        {hub.manual && <> · last played segment: {hub.manual.nid != null ? `node ${hub.manual.nid} of worker ${hub.manual.w + 1}` : 'not in the tree'}, {hub.manual.frames} frames, finished at ({hub.manual.pos.map((x) => Math.round(x)).join(', ')}){hub.manual.note ? ` · ${hub.manual.note}` : ''}</>}
       </div>
     </div>
   );

@@ -13,6 +13,11 @@ import { boardSize, setVizFlag } from './board.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
+import { Hybrid } from './hybrid.js';
+import { getPlayFromStart, setPlayFromStart, subscribePlayFromStart } from '../hybridSetting.js';
+
+/** Hybrid mining's channel to the workers (a person plays from a tree node, a position goal); see hybrid.js. */
+export const hybrid = new Hybrid();
 
 export const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
 const now = () => Date.now() / 1000;
@@ -71,6 +76,9 @@ class MinerController {
     const m = ls('sm64coin.resetMode', 'when-stuck');
     this.mode = RESET_MODES.includes(m) ? m : 'when-stuck';
     this.vizOn = ls('sm64coin.viz', '1') !== '0';
+    this.playFromStart = getPlayFromStart();
+    hybrid.onLog = (slot, text) => this.say(`worker ${slot + 1}: ${text}`);
+    subscribePlayFromStart((on) => { this.playFromStart = on; this.emit(true); });
     this.running = false;
     this.log = [];
     this.workers = [];
@@ -89,7 +97,7 @@ class MinerController {
   subscribe = (fn) => { this.subs.add(fn); return () => this.subs.delete(fn); };
   getSnapshot = () => this.snap;
   makeSnap() {
-    return { address: this.address, count: this.count, mode: this.mode, vizOn: this.vizOn, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
+    return { address: this.address, count: this.count, mode: this.mode, vizOn: this.vizOn, playFromStart: this.playFromStart, hybridOK: hybrid.available, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
   }
   /** Wakes the views: at most 4 times a second, at once when `now`. */
   emit(now = false) {
@@ -144,6 +152,15 @@ class MinerController {
     }
     this.emit(true);
   }
+  /** "Play from the start": hybrid mining off, classic manual mining from the block's beginning (remembered). */
+  setPlayFromStart(on) { setPlayFromStart(on); }
+  /** A position goal for the searches ({level, area, pos} from the visualiser's shift + right click) or null. */
+  setGoal(goal) {
+    hybrid.setGoal(goal);
+    this.hub.setGoal(goal);
+    if (goal) this.say(`position goal: ${goal.pos.map((x) => Math.round(x)).join(', ')} (level ${goal.level}, area ${goal.area}): the searches draw Mario::PosTime objectives to it`);
+    else this.say('position goal cleared');
+  }
   /** The Auto-mine page is on screen (the views redraw); off screen the data still collects. */
   setViewing(on) { this.hub.live = on; if (on) this.hub.notify(); }
 
@@ -175,6 +192,7 @@ class MinerController {
     if (c.mockStop) c.mockStop();
     for (const w of c.pool) if (w) w.terminate();
     c.pool = [];
+    hybrid.detach();
     clearInterval(c.watch);
     clearInterval(c.tick);
     this.c = null;
@@ -280,7 +298,8 @@ class MinerController {
     // Checkpoint sync between the workers (their searches' best checkpoints, see rrt::mine):
     // needs a SharedArrayBuffer, i.e. a cross-origin-isolated page.
     const board = isolated ? new SharedArrayBuffer(boardSize(count)) : null;
-    if (board) { c.board = board; c.count = count; setVizFlag(board, count, this.vizOn); } else c.board = null;
+    if (board) { c.board = board; c.count = count; setVizFlag(board, count, this.vizOn); hybrid.attach(board, count); hybrid.setGoal(hub.goal); } else { c.board = null; hybrid.detach(); }
+    this.emit(true);
     const share = (i, m) => {
       const st = status[i].start;
       if (shared[st]) return;
@@ -315,6 +334,7 @@ class MinerController {
           return;
         }
         if (m.type === 'progress') { this.rate.add(i, m.sim); return; }
+        if (m.type === 'hybrid') { hybrid.onMessage(i, m.msg, m.state); return; }
         if (m.type === 'viz') {
           const f = /"sim_frames":(\d+)/.exec(m.line);
           if (f) this.rate.add(i, +f[1]);

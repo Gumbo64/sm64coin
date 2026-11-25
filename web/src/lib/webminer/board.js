@@ -8,11 +8,28 @@ const dec = new TextDecoder();
 
 // After the slots: Int32 control words shared by the page and every worker: [0] = the viz feed is on.
 const CTL = 64;
-export const boardSize = (slots, slotBytes = 1 << 20) => slots * slotBytes + CTL;
+// After the control words: the page's mailbox to the workers (hybrid mining: position goal, state requests, human-played
+// segments), one JSON text the page rewrites as a whole, under the same seqlock as the slots: [Int32 seq, Int32 length, bytes].
+const MAIL = 2 << 20;
+export const boardSize = (slots, slotBytes = 1 << 20) => slots * slotBytes + CTL + MAIL;
 
 /** The page's switch for the workers' viz feed (instant: the searches read it every round). */
 export function setVizFlag(sab, slots, on, slotBytes = 1 << 20) {
   Atomics.store(new Int32Array(sab, slots * slotBytes, 1), 0, on ? 1 : 0);
+}
+
+/** The page's mailbox write (hybrid mining): `obj` as JSON for every worker's next poll; false when it doesn't fit. */
+export function postMail(sab, slots, obj, slotBytes = 1 << 20) {
+  const base = slots * slotBytes + CTL;
+  const ints = new Int32Array(sab, base, 2);
+  const b = enc.encode(JSON.stringify(obj));
+  if (b.length > MAIL - HEADER) return false;
+  const s = Atomics.load(ints, 0);
+  Atomics.store(ints, 0, (s + 1) | 1);
+  new Uint8Array(sab, base + HEADER, b.length).set(b);
+  Atomics.store(ints, 1, b.length);
+  Atomics.store(ints, 0, (s + 2) & ~1);
+  return true;
 }
 
 /** The board over `sab` (boardSize(slots) bytes) for the worker at `slot`. */
@@ -37,6 +54,20 @@ export function makeBoard(sab, slot, slots, slotBytes = 1 << 20) {
     slot,
     slots: Array.from({ length: slots }, (_, i) => i),
     read,
+    /** The page's mailbox (see postMail) as parsed JSON, or null. */
+    mail() {
+      const base = slots * slotBytes + CTL;
+      const mi = new Int32Array(sab, base, 2);
+      for (let tries = 0; tries < 1000; tries++) {
+        const s1 = Atomics.load(mi, 0);
+        if (s1 === 0) return null;
+        if (s1 & 1) continue;
+        const len = Atomics.load(mi, 1);
+        const copy = bytes.slice(base + HEADER, base + HEADER + len);
+        if (Atomics.load(mi, 0) === s1) { try { return JSON.parse(dec.decode(copy)); } catch { return null; } }
+      }
+      return null;
+    },
     /** Whether the page wants the viz feed now. */
     vizOn: () => Atomics.load(ctl, 0) === 1,
     /** Publishes this worker's message (dropped when it doesn't fit). */
@@ -136,5 +167,29 @@ export function makeTreeSync(chan) {
       }
     }
     return JSON.stringify({ recs });
+  };
+}
+
+/**
+ * The workers' side of hybrid mining ("hybrid" in rrt::child::hybrid): `payload` is {tag, vkey} (the step's sync tag and
+ * the page's name of its tree). The reply is the mailbox's position goal and the commands for this step that this worker has
+ * not been given yet: "state" commands addressed to this slot and step, "insert" commands for this step's tag. A command stays in
+ * the mailbox until the page drops it (a step that comes later with that tag still gets it), and is given once.
+ */
+export function makeHybridPoll(board) {
+  const given = new Set();
+  return (payload) => {
+    const m = board.mail();
+    if (!m) return undefined;
+    const p = JSON.parse(payload);
+    const cmds = [];
+    for (const c of m.cmds || []) {
+      if (given.has(c.id)) continue;
+      const mine = c.kind === 'state' ? c.slot === board.slot && c.vkey === p.vkey : c.kind === 'insert' ? c.tag === p.tag : false;
+      if (!mine) continue;
+      given.add(c.id);
+      cmds.push(c);
+    }
+    return JSON.stringify({ goal: m.goal || null, cmds });
   };
 }
