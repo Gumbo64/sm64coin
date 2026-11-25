@@ -174,9 +174,57 @@ queue has a verdict), and one worker-side callback, `Blockchain::sm64_chain_fact
 The local miner's `submit_block` (unrestricted RPC) replays on the RPC thread
 before taking the lock (`sm64_prereplay`), so it stays synchronous.
 
+### Measured: before and after the queue (x86, v0.3 test chain)
+
+Setup as the earlier test, on the v0.3 chain: a victim `monerod` on 127.0.0.1 holding only the genesis
+block (so every claim is a 36,000-frame replay from power-on), `--max-concurrency 4`, `--sm64-solo`, an
+exclusive peer on a dead port; the queue run with `--sm64-replay-threads 4`. The claims are signed with
+throwaway keys against the victim's own templates and carry junk inputs of the claimed length
+(`pow/miner/examples/dos_claims.rs`; they replay to the end and then fail). Each source IP is its own
+127.0.x.y peer (`attack.py fluffy --ips N`). The honest block (3,957-4,277 frames, a real mined run)
+is relayed by another peer 3 s into the attack. "Before" is `hardfork-v0.3` at 3bbb414dc, "after" the
+queue. The machine was shared (a 4K render was running), so latencies carry noise; CPU is utime+stime
+of the victim.
+
+| attack | before: victim CPU | before: honest block accepted after | after: victim CPU | after: honest block accepted after |
+|---|---|---|---|---|
+| no attack | 0.35 s | 0.10 s | 0.36 s | 0.05 s |
+| 60 long fakes (36,000 frames, 60 keys), 20 IPs | 12.2 s | **8.94 s** | 13.4 s | **0.16 s** |
+| 200 short fakes (300 frames), 20 IPs | 0.55 s | 0.11 s | 0.61 s | 0.05 s |
+| 100 same-length fakes (4,000 frames), 40 IPs | 3.2 s | 0.11 s | 7.7 s | 0.05 s |
+| 100 long fakes, 100 IPs | 36.2 s | **never** (the handshake timed out after 30 s; 39 of 100 connections dropped) | 13.3 s | **0.10 s** |
+| 50 different runs of one key's template (3,000 frames), 4 IPs | 0.57 s | 0.10 s | 0.41 s | 0.05 s |
+| honest block first, then 60 long fakes, 20 IPs | 2.2 s | 1.25 s | 4.2 s | 0.68 s |
+
+Reading it:
+
+- What the queue buys is **honest-block latency under attack**: 8.9 s to 0.16 s for 60 long fakes, and
+  "never" to 0.1 s for the many-IP flood. The replays used to run one after another on the P2P threads
+  under the blockchain lock; now they run on 4 workers outside it, and the honest claim is shorter than
+  every fake, so it goes first.
+- It does **not** reduce total CPU when the fakes arrive before any honest block: every claim extends the
+  tip, so it could matter and is replayed (the numbers above are about equal, up to noise, or higher: 7.7
+  against 3.2 s for the same-length burst, because the old path drops each peer on its first invalid
+  block, so most of the burst was never replayed, while the queue has no connection to drop; the penalty
+  now falls on the source's later claims). The skip rule pays once an honest block exists: in the last row
+  the fakes after it are not replayed (CPU 4.2 s, of which part is the fakes that raced the honest
+  block's due time, against 60 x 0.2 s).
+- A worker pool is not preemptive: an honest claim that arrives while all workers are busy with
+  36,000-frame replays waits for one of them (0.68 s above, a 36,000-frame replay is about 0.2-0.6 s here).
+  On a Raspberry Pi (about 15 times slower) that wait is up to several seconds; reserving a worker for
+  short claims would bound it, and is not done.
+- The one-key rows (50 runs of one template) cost 0.41 s: the first run is replayed, the other 49 are
+  evidence checks.
+- **Raspberry Pi: not measured.** The aarch64 cross-build and a test node on the Pi did not fit the
+  release deadline.
+
+Reproduce: `net/scen.sh`-style: start the victim, `dos_claims RPC fake N FRAMES [KEYS] > claims.jsonl`,
+`dos_claims RPC honest SAVED.json > honest.jsonl`, `attack.py fluffy P2P claims.jsonl --ips N --rpc
+URL --pid PID --honest honest.jsonl`.
+
 ## What is left (not fixed here)
 
-1. **Invalid claims from many addresses (b).** Each IP gets one or two replays per day (Monero's ban: score 10 per `bad_pow`, ban above 10). Each costs up to the current limit. Replays run on the P2P threads under `m_blockchain_lock`, so they serialize: 20 IPs delayed the honest block 7 s here, which is about 100 s on a Pi. Nothing short of consensus makes an invalid claim cost the sender something. A non-consensus improvement, not done because it is a real change to Monero's block path:
+1. **(Mostly done: see "The replay queue".) Invalid claims from many addresses (b).** Each IP gets one or two replays per day (Monero's ban: score 10 per `bad_pow`, ban above 10). Each costs up to the current limit. Replays run on the P2P threads under `m_blockchain_lock`, so they serialize: 20 IPs delayed the honest block 7 s here, which is about 100 s on a Pi. Nothing short of consensus makes an invalid claim cost the sender something. A non-consensus improvement, not done because it is a real change to Monero's block path:
    - a verification worker with a bounded queue, ordered shortest claim first, then known peers before new ones;
    - replays done outside `m_blockchain_lock` (a replay only needs the parent's end state; the rules are re-checked under the lock in microseconds).
 
