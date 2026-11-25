@@ -258,8 +258,9 @@ Measured on local nodes by the audit; each fix is in pow/sm64pow (decision) with
   was 0.12 s of free CPU per 36,000-frame proof).
 - **N5** `get_sm64_cycle` with an unknown hash no longer logs a stack trace; the equivocated-tip
   warning is logged at most once a minute.
-- **N6** The xz decoder has a 128 MiB memory limit (a crafted header asked for 4 GiB; honest
-  preset-9 streams need about 65 MiB).
+- **N6** The xz decoder has a 72 MiB memory limit (a crafted header asked for 4 GiB; honest
+  preset-9 streams need about 65 MiB). A stream that needs more doesn't decode, so its proof_id is
+  the `sm64bad!` one (another block id).
 - **N7** `--sm64-replay-threads` defaults to every core but one (P2P and RPC keep a core).
 - **N9** The evidence file is written at most every 10 s.
 - **C4/C6** Miners cap the inflated parent state at 32 MiB; automine no longer panics on short

@@ -78,3 +78,22 @@ fn a_bad_encoding_first_never_blocks_the_good_one() {
         assert!(matches!(verify_block(&bid, Parent::Genesis, &seed, 1, good).unwrap(), BlockVerdict::Valid { .. }), "a good encoding after bad ones");
     }
 }
+
+/// The committed proof-id vectors (web/wallet-wasm/test/vectors.jsonl, which the wallet's C++ port
+/// is checked against) still match the native ids (e.g. after a decoder limit change).
+#[test]
+fn the_committed_proof_id_vectors_still_match() {
+    if !init() {
+        return;
+    }
+    let mut n = 0;
+    for l in include_str!("../../../web/wallet-wasm/test/vectors.jsonl").lines() {
+        let j: serde_json::Value = serde_json::from_str(l).unwrap();
+        let unhex = |s: &str| -> Vec<u8> { (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect() };
+        let blob = unhex(j["blob"].as_str().unwrap());
+        let id: String = sm64pow::proof_id(&blob).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(id, j["id"].as_str().unwrap(), "{}", j["name"]);
+        n += 1;
+    }
+    assert_eq!(n, 234);
+}

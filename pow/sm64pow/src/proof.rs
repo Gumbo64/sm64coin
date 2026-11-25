@@ -263,7 +263,7 @@ pub struct Xz;
 
 /// liblzma decoder memory limit (bytes); must stay above what a preset-9 (`-9e`) stream needs (~65 MiB).
 #[cfg(not(target_arch = "wasm32"))]
-const XZ_DECODE_MEMLIMIT: u64 = 128 << 20;
+const XZ_DECODE_MEMLIMIT: u64 = 72 << 20;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Codec for Xz {
@@ -285,7 +285,8 @@ impl Codec for Xz {
         // Never expand past the limit (a tiny stream could claim gigabytes).
         let cap = max_frames.saturating_mul(4).saturating_add(1);
         let mut raw = Vec::new();
-        // Decoder memory limit: 128 MiB. Honest streams are preset 9 (64 MiB dictionary, ~65 MiB to decode);
+        // Decoder memory limit: 72 MiB (consensus: a stream that needs more doesn't decode, so its
+        // proof_id is the "sm64bad!" one). Honest streams are preset 9 (64 MiB dictionary, ~65 MiB to decode);
         // a crafted header asking for a bigger dictionary fails instead of allocating up to ~4 GiB.
         let stream = xz2::stream::Stream::new_stream_decoder(XZ_DECODE_MEMLIMIT, 0).map_err(|e| anyhow!("xz: {e}"))?;
         xz2::read::XzDecoder::new_stream(body, stream).take(cap as u64).read_to_end(&mut raw).map_err(|e| anyhow!("xz: {e}"))?;
@@ -327,20 +328,55 @@ mod tests {
         let pads = sample();
         let blob = encode_with(&Xz, &pads);
         assert_eq!(decode(&blob, 10_000).unwrap(), pads);
-        // Same stream with the LZMA2 dictionary byte patched to 0x28 (4 GiB - 1), block-header CRC32 fixed up.
-        let mut body = blob[1..].to_vec();
-        assert_eq!(body[12 + 2], 0x21, "LZMA2 filter id");
-        body[12 + 4] = 0x28;
+        // The LZMA2 dictionary-size byte (block header, CRC32 fixed up): dict = (2 | (b & 1)) << (b / 2 + 11).
+        let with_dict = |b: u8| {
+            let mut body = blob[1..].to_vec();
+            assert_eq!(body[12 + 2], 0x21, "LZMA2 filter id");
+            body[12 + 4] = b;
+            let mut crc = !0u32;
+            for &x in &body[12..12 + 8] {
+                crc ^= x as u32;
+                for _ in 0..8 {
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+                }
+            }
+            body[12 + 8..12 + 12].copy_from_slice(&(!crc).to_le_bytes());
+            body
+        };
+        assert_eq!(blob[1 + 12 + 4], 0x1c, "the encoder's preset 9: a 64 MiB dictionary");
+        assert!(Xz.decode(&with_dict(0x1c), 10_000).is_ok(), "64 MiB (honest preset 9): decodes under 72 MiB");
+        for (b, what) in [(0x1d, "96 MiB"), (0x1e, "128 MiB"), (0x28, "4 GiB")] {
+            let err = format!("{:#}", Xz.decode(&with_dict(b), 10_000).unwrap_err());
+            assert!(err.contains("memory"), "{what}: {err}");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_stream_needing_more_than_72_mib_has_the_bad_proof_id() {
+        use crate::proof::{Proof, Start, encode_proof_with};
+        let pr = Proof { frames: sample().len() as u32, start: Start::Parent, inputs: sample() };
+        let good = encode_proof_with(&Xz, &pr);
+        // The proof blob: varint(frames) start codec body. Patch the body's dictionary byte to 96 MiB.
+        let off = good.len() - Xz.encode(&pr.inputs).len();
+        let mut bad = good.clone();
+        assert_eq!(bad[off + 12 + 2], 0x21);
+        bad[off + 12 + 4] = 0x1d;
         let mut crc = !0u32;
-        for &b in &body[12..12 + 8] {
-            crc ^= b as u32;
+        for &x in &bad[off + 12..off + 12 + 8] {
+            crc ^= x as u32;
             for _ in 0..8 {
                 crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
             }
         }
-        body[12 + 8..12 + 12].copy_from_slice(&(!crc).to_le_bytes());
-        let err = format!("{:#}", Xz.decode(&body, 10_000).unwrap_err());
-        assert!(err.contains("memory"), "{err}");
+        bad[off + 12 + 8..off + 12 + 12].copy_from_slice(&(!crc).to_le_bytes());
+        assert!(decode_proof(&bad, 10_000).is_err(), "needs 96 MiB: refused");
+        assert_ne!(crate::proof_id::proof_id(&bad), crate::proof_id::proof_id(&good), "so it can't share the run's block id");
+        let mut h = <sha3::Keccak256 as sha3::Digest>::new();
+        sha3::Digest::update(&mut h, b"sm64bad!");
+        sha3::Digest::update(&mut h, &bad);
+        let bad_id: [u8; 32] = sha3::Digest::finalize(h).into();
+        assert_eq!(crate::proof_id::proof_id(&bad), bad_id, "the sm64bad id");
     }
 
     #[test]
