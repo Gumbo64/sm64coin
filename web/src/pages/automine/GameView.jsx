@@ -124,6 +124,12 @@ export default function GameView({ hub }) {
         if (!p.raw) { note(p.wait, { prog: { frac: null } }); await sleep(700); if (dead || hub.game.id !== g1.id) return; continue; }
         // The start: the step's start state (converted for the visual game once per step), or the block's start.
         const sk = p.rootRaw ? `${g1.w}:${p.key}` : p.played === 0 ? 'block' : null;
+        if (!sk && g1.kind === 'clip') {
+          // A clip is queued with the start state it had then; without one it can never play. Move on instead of
+          // waiting on it (new clips only start when nothing is playing, so a stuck clip would stop the reel for good).
+          if (!hub.reelAdvance()) { hub.game = { id: hub.game.id + 1 }; hub.notify(); }
+          return;
+        }
         if (!sk) { note('waiting for the worker to send the step\'s start state…', { prog: { frac: null } }); await sleep(700); if (dead || hub.game.id !== g1.id) return; continue; }
         let st = snaps.get(sk);
         if (!st) {

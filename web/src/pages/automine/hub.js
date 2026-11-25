@@ -12,6 +12,8 @@ const ENV_CAP = 4000;
 // The highlight reel's queue (clips waiting for the one playing to finish), and how old a clip may be when its turn comes.
 const REEL_QUEUE = 8;
 const REEL_STALE_MS = 120000;
+// A node's inputs asked of a worker (nodePlay) and not answered by then are asked again.
+const ASK_AGAIN_MS = 5000;
 // The live game's settings (remembered in localStorage): where a replay starts playing at the game's pace ('end': the
 // last `leadSec` seconds, the prefix before runs muted at full speed; 'step': from the step's start), the playback speed,
 // which highlights the reel plays and the smallest record (frames saved) it plays (the worker sends records of 10+).
@@ -60,7 +62,7 @@ export class VizHub {
     this.dist = new Float32Array(CAP).fill(-1); // frames to go to the step's target (negative: none known)
     this.nodeId = new Int32Array(CAP);
     this.stepOf = new Uint16Array(CAP); // the worker's search-step number (w.cur.n) a node belongs to
-    this.paths = new Map(); // `${worker}:${step key}:${node id}` -> raw pads (4 bytes a frame) of a node's path from its step's root, or 'asked'
+    this.paths = new Map(); // `${worker}:${step key}:${node id}` -> raw pads (4 bytes a frame) of a node's path from its step's root, or {asked: time}
     this.parentSlot = new Int32Array(CAP).fill(-1);
     this.keyAt = new Float64Array(CAP).fill(-1);
     this.index = new Map(); // (worker, step, id) -> slot
@@ -115,6 +117,7 @@ export class VizHub {
     const w = this.workers[i];
     if (!w) return;
     this.mirrors[i] = null;
+    this.dropPaths(i);
     Object.assign(w, { start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0, fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, root: null, keys: {} });
     this.notify();
   }
@@ -151,6 +154,7 @@ export class VizHub {
       w.curN = (w.curN || 0) + 1;
       w.cur = { key: m.key, n: w.curN, step: m.step, target: m.step.target, t: 0, nodes: 0, sim: 0, best: null };
       w.keys[w.curN & 4095] = m.key;
+      this.dropPaths(i);
       w.lastSim = null;
       w.best = null;
       w.bestPads = null;
@@ -239,7 +243,7 @@ export class VizHub {
     const label = c.kind === 'place'
       ? `worker ${i + 1} reached a new place · frame ${fr.toLocaleString()} · ${where}`
       : `worker ${i + 1}: faster route, −${c.gain} frames · frame ${fr.toLocaleString()} · ${where}`;
-    const clip = { w: i, step: w.cur.n, key: m.key, id: c.id, kind: c.kind, gain: c.gain, frame: fr, played: w.played, raw, rootRaw: w.root && w.root.key === m.key ? w.root.raw : null, rootOf: w, label, at: Date.now() };
+    const clip = { w: i, step: w.cur.n, key: m.key, id: c.id, kind: c.kind, gain: c.gain, frame: fr, played: w.played, raw, rootRaw: w.root && w.root.key === m.key ? w.root.raw : null, label, at: Date.now() };
     if (!this.wanted(c.kind, c.gain)) return;
     this.reel.clips++;
     if (this.reel.follow != null && this.reel.follow !== i) return;
@@ -347,6 +351,12 @@ export class VizHub {
     this.notify();
   }
 
+  /** Forgets worker `i`'s node inputs (asked or received): its step changed, so they can't be played any more. */
+  dropPaths(i) {
+    const pre = `${i}:`;
+    for (const k of this.paths.keys()) if (k.startsWith(pre)) this.paths.delete(k);
+  }
+
   /** The inputs of node `id` (asked for with requestPath) arrived: flat [button, x, y, ...] from its step's root. */
   setPath(i, key, id, flat) {
     if (!this.enabled) return;
@@ -370,10 +380,11 @@ export class VizHub {
     if (mir) return { ...base, raw: mir };
     const pk = `${w}:${key}:${nid}`;
     const got = this.paths.get(pk);
-    if (got && got !== 'asked') return { ...base, raw: got };
-    if (!got) {
+    if (got instanceof Uint8Array) return { ...base, raw: got };
+    // Asked and not answered within a few seconds (the worker answers at its next sample, about once a second): ask again.
+    if (!got || performance.now() - got.asked > ASK_AGAIN_MS) {
       if (!this.requester || !this.requester(w, key, nid)) return { error: 'only a search\'s best node has its inputs here; switch on worker sync (the button above Start) to play any node' };
-      this.paths.set(pk, 'asked');
+      this.paths.set(pk, { asked: performance.now() });
     }
     return { wait: `asking worker ${w + 1} for the node's inputs…` };
   }
