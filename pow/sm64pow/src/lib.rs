@@ -24,7 +24,8 @@
 //!    while the game plays) and what a block id commits to.
 //! 4. [`replay`]: verifying one run (where it may start, what it must do).
 //! 5. [`cache`], [`preverify`], [`chain`]: blocks as a chain of end states:
-//!    the cache, the parallel sync pre-pass, and the verdict per block.
+//!    the cache, the parallel sync pre-pass, and the verdict per block;
+//!    [`admit`]: which blocks earn a replay at all (relay policy, docs/DOS.md).
 //! 6. [`ffi`]: the C ABI the daemon calls (`sm64pow.h`).
 //!
 //! Beside the consensus path: [`mining`] (building and sealing proofs, the
@@ -44,6 +45,7 @@ pub mod proof_id;
 pub mod statecodec;
 pub mod statemix;
 // 4-5: verification
+pub mod admit;
 pub mod cache;
 pub mod chain;
 pub mod preverify;

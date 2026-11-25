@@ -63,6 +63,20 @@ int32_t sm64pow_set_state_dir(const char *path);
 uint64_t sm64pow_preverify(size_t n, const uint8_t *ids, const uint8_t *parents, const uint8_t *seeds,
                            const uint8_t *blobs, const uint64_t *offsets, uint32_t threads);
 
+/* SM64COIN: admission policy (admit.rs, docs/DOS.md): which blocks earn a
+ * replay. Relay policy, not consensus. source: 1 relayed unasked, 2 a sync
+ * span whose last block is at height top, 3 restricted RPC; leave with the
+ * returned handle. admit_*: 1 replay, 0 skip (reason in sm64pow_last_error). */
+void *sm64pow_source_enter(const char *host, int32_t source, uint64_t top);
+void sm64pow_source_leave(void *handle);
+int32_t sm64pow_admit_alt(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames,
+                          uint64_t height, uint64_t top, const uint8_t *main_seed32);
+int32_t sm64pow_admit_relay(uint32_t frames);
+int32_t sm64pow_rpc_submit_allowed(const char *host);
+/* An RPC call that may replay (played pads, cycles, templates): draws on the RPC replay budget. */
+void *sm64pow_rpc_enter(void);
+void sm64pow_rpc_leave(void *handle);
+
 #ifdef __cplusplus
 }
 #endif
