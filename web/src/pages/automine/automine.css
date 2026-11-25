@@ -1,19 +1,10 @@
 .viz { margin-top: 12px; position: relative; }
-.viz-views { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; font-size: 13px; }
-.viz-views label { cursor: pointer; }
-.viz-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; margin-bottom: 12px; }
 .viz-card { background: #12162a; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; margin-bottom: 12px; }
-.viz-grid2 > .viz-card { margin-bottom: 0; }
 .viz-card h3 { margin: 0 0 8px; font-size: 15px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
 .viz-canvaswrap { position: relative; }
 .viz-canvaswrap .sm64canvas { width: 100%; height: auto; }
-.viz-sub { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 13px; align-items: baseline; }
-.viz-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; font-size: 13px; }
-.viz-bar button.on { background: var(--acc); color: #000; }
-.viz-bar .sep { flex: 1; }
 .viz-gl { width: 100%; border-radius: 6px; overflow: hidden; background: #0b0e1a; min-height: 260px; }
 .viz-gl canvas { display: block; width: 100% !important; touch-action: none; }
-.viz-node { margin-top: 6px; font-size: 13px; min-height: 2.6em; }
 .chip { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--mut); font-weight: 400; }
 .chip.warn { color: #f7c948; border-color: #f7c948; }
 .small { font-size: 12px; }
