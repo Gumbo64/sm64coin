@@ -48,19 +48,25 @@ namespace sm64coin
 
   crypto::hash proof_id(const std::string &proof)
   {
-    // Rust: decode_proof(blob, rules().max_frames_any()) = min(the mainnet rules' largest time limit, proof.rs MAX_FRAMES)
-    // (rules.rs: StarCycle base_frames 36000 at difficulty 1). Over it, every stateless codec is undecodable.
-    const size_t MAX_FRAMES = 36000;
+    // Rust (lib.rs proof_id), in this order:
+    // 1. proof.rs split_blob: a canonical varint(frames) <= MAX_FRAMES (1 << 20), start 0|1 and a codec id byte;
+    //    if that holds and the id is a state codec (3, 4, 5): Keccak256("sm64state" || blob), whatever the body.
+    // 2. otherwise decode_proof(blob, rules().max_frames_any()): frames over min(the mainnet rules' largest time
+    //    limit, MAX_FRAMES) is undecodable (rules.rs: StarCycle base_frames 36000 at difficulty 1).
+    const uint64_t MAX_FRAMES = 1u << 20;  // proof.rs MAX_FRAMES
+    const uint64_t MAX_FRAMES_ANY = 36000; // rules().max_frames_any()
     size_t i = 0;
     uint64_t frames;
     if (!get_varint(proof, i, frames) || frames > MAX_FRAMES || i + 2 > proof.size()) return bad(proof);
     const uint8_t start = (uint8_t)proof[i];
     const uint8_t codec = (uint8_t)proof[i + 1];
     if (start > 1) return bad(proof);
-    const std::string body = proof.substr(i + 2);
 
     if (codec == 3 || codec == 4 || codec == 5)
       return keccak_of(std::string("sm64state") + proof);
+
+    if (frames > MAX_FRAMES_ANY) return bad(proof);
+    const std::string body = proof.substr(i + 2);
 
     std::string raw; // the decoded pads, 4 bytes per input
     if (codec == 0)

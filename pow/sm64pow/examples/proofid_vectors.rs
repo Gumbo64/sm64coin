@@ -1,9 +1,10 @@
 //! proofid_vectors IN.jsonl > OUT.jsonl: test vectors for the web wallet's wasm `sm64coin::proof_id`
-//! (web/wallet-wasm/sm64coin_wasm.cpp, which must agree with `proof_id` here for every stateless codec).
+//! (web/wallet-wasm/sm64coin_wasm.cpp, which must agree with `proof_id` here for every blob).
 //! IN has lines `{"name":..,"frames":N,"start":0|1,"pads":"<hex, 4 bytes per pad>"}` (real chain proofs'
 //! decoded inputs, see web/wallet-wasm/test/make-vectors.py). Each is encoded with codecs 0, 1, 2 (plus xz
 //! variants: CRC32/no check, preset 1, a trailing stream and trailing garbage) and a set of malformed blobs
-//! derived from them. OUT has lines `{"name":..,"blob":hex,"id":hex}` with the id computed natively.
+//! derived from them, plus frame-count boundary vectors (raw/RLE/xz at 36000/36001, state codecs 3-5 up to and
+//! past 1<<20 frames) that do not depend on IN. OUT has lines `{"name":..,"blob":hex,"id":hex}` with the id computed natively.
 use sm64pow::proof::{encode_proof_with, pad_from, Proof, RunLength, Raw, Start, Xz};
 use std::io::Write;
 
@@ -95,6 +96,42 @@ fn main() {
         m("unknown-codec", [header(frames, start, 9), rawpads.clone()].concat());
         m("rle-zero-run", [header(frames, start, 1), vec![0, 1, 2, 3, 4]].concat());
     }
+    // Frame-count boundaries, independent of IN (an empty IN gives just these): the stateless codecs decode up to
+    // rules().max_frames_any() (36000) frames, while a state-coded blob (ids 3, 4, 5) hashes its bytes up to
+    // proof.rs MAX_FRAMES (1 << 20) frames, whatever its body.
+    let pads: Vec<u8> = (0..16u32).flat_map(|k| [(k & 0xff) as u8, 0x80, 0, 0]).collect();
+    let rle_run = |n: u64| {
+        let mut v = Vec::new();
+        put_varint(&mut v, n);
+        v.extend([0x00, 0x80, 0x00, 0x00]);
+        v
+    };
+    for f in [35999u64, 36000, 36001] {
+        for start in [0u8, 1] {
+            out.push((format!("bound/raw-{f}-s{start}"), [header(f, start, 0), pads.clone()].concat()));
+            out.push((format!("bound/rle-{f}-s{start}"), [header(f, start, 1), rle_run(f)].concat())); // one run of all f frames
+            out.push((format!("bound/rle-short-{f}-s{start}"), [header(f, start, 1), rle_run(7)].concat()));
+            out.push((format!("bound/xz-{f}-s{start}"), [header(f, start, 2), xz_with(&vec![0u8; 4 * f as usize], xz2::stream::Check::Crc64, 6)].concat()));
+            out.push((format!("bound/xz-short-{f}-s{start}"), [header(f, start, 2), xz_with(&pads, xz2::stream::Check::Crc64, 6)].concat()));
+        }
+    }
+    out.push(("bound/rle-over-frames".into(), [header(36000, 0, 1), rle_run(36001)].concat()));
+    out.push(("bound/raw-1M".into(), [header(1 << 20, 0, 0), pads.clone()].concat()));
+    out.push(("bound/raw-1M+1".into(), [header((1 << 20) + 1, 0, 0), pads.clone()].concat()));
+    for id in [3u8, 4, 5] {
+        for f in [0u64, 1, 35999, 36000, 36001, 100_000, (1 << 20) - 1, 1 << 20, (1 << 20) + 1, 1 << 32, u64::MAX] {
+            for start in [0u8, 1, 2] {
+                out.push((format!("bound/state{id}-{f}-s{start}"), [header(f, start, id), vec![0x5a, 0xa5, 0x00, 0xff, id]].concat()));
+            }
+        }
+        out.push((format!("bound/state{id}-empty-body"), header(36001, 0, id)));
+        out.push((format!("bound/state{id}-empty-body-1M+1"), header((1 << 20) + 1, 0, id)));
+        out.push((format!("bound/state{id}-noncanonical-varint"), [vec![0x81, 0x00, 0, id], vec![1, 2, 3]].concat()));
+        out.push((format!("bound/state{id}-over-10-byte-varint"), [vec![0xff; 10], vec![0x01, 0, id, 1, 2]].concat()));
+    }
+    out.push(("bound/no-codec-byte-36001".into(), { let mut v = Vec::new(); put_varint(&mut v, 36001); v.push(0); v }));
+    out.push(("bound/no-codec-byte-1".into(), vec![1, 0]));
+    out.push(("bound/unknown-codec-6-36001".into(), [header(36001, 0, 6), pads.clone()].concat()));
     for (name, blob) in out {
         let ok = sm64pow::proof::decode_proof(&blob, 36000).is_ok();
         println!("{{\"name\":\"{}\",\"blob\":\"{}\",\"id\":\"{}\",\"decodes\":{}}}", name, hex(&blob), hex(&sm64pow::proof_id(&blob)), ok);
