@@ -7,7 +7,8 @@
 use crate::sign::{cn_fast_hash, miner_key};
 
 pub const MAX_HEADER: usize = 128;
-pub const MAX_MINER_TX: usize = 4096;
+/// v0.4: a coinbase also pays its included proofs (about 75 bytes each, 64 at most: 4.8 kB).
+pub const MAX_MINER_TX: usize = 16384;
 pub const MAX_TX_HASHES: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,26 +247,49 @@ pub fn facts(p: &TemplateParts) -> Result<TemplateFacts, &'static str> {
     if p.header.len() > MAX_HEADER || p.miner_tx.len() > MAX_MINER_TX || p.tx_hashes.len() > MAX_TX_HASHES {
         return Err(E);
     }
-    let (timestamp, prev_id, ts_at) = parse_header(&p.header)?;
-    let (len, prefix, height, extra) = parse_miner_tx(&p.miner_tx)?;
-    if len != p.miner_tx.len() {
+    let mut leaves = vec![coinbase_hash(&p.miner_tx)?];
+    leaves.extend_from_slice(&p.tx_hashes);
+    facts_from_root(&p.header, &p.miner_tx, &tree_hash(&leaves), leaves.len() as u64)
+}
+
+/// The coinbase's transaction hash (Monero v2, RCTTypeNull: H(H(prefix) || H(0x00) || 32 zeros)).
+pub fn coinbase_hash(miner_tx: &[u8]) -> Result<[u8; 32], &'static str> {
+    let (len, prefix, ..) = parse_miner_tx(miner_tx)?;
+    if len != miner_tx.len() {
         return Err(E);
     }
-    // Monero v2 / RCTTypeNull: H(H(prefix) || H(0x00) || 32 zeros)
     let mut x = Vec::with_capacity(96);
-    x.extend_from_slice(&cn_fast_hash(&p.miner_tx[..prefix]));
+    x.extend_from_slice(&cn_fast_hash(&miner_tx[..prefix]));
     x.extend_from_slice(&cn_fast_hash(&[0]));
     x.extend_from_slice(&[0; 32]);
-    let mut leaves = vec![cn_fast_hash(&x)];
-    leaves.extend_from_slice(&p.tx_hashes);
+    Ok(cn_fast_hash(&x))
+}
+
+/// The coinbase's first extra nonce (what carries the miner key, and in v0.4 the TLVs after it).
+pub fn coinbase_nonce(miner_tx: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
+    let (_, _, _, extra) = parse_miner_tx(miner_tx)?;
+    Ok(first_extra_nonce(extra).map(|n| n.to_vec()))
+}
+
+/// [`facts`] from the header, the coinbase and the transactions' merkle root and count (the
+/// coinbase included): what a v0.4 proof record carries instead of every tx hash (records.rs).
+pub fn facts_from_root(header: &[u8], miner_tx: &[u8], root: &[u8; 32], tx_count: u64) -> Result<TemplateFacts, &'static str> {
+    if header.len() > MAX_HEADER || miner_tx.len() > MAX_MINER_TX || tx_count == 0 || tx_count > MAX_TX_HASHES as u64 + 1 {
+        return Err(E);
+    }
+    let (timestamp, prev_id, ts_at) = parse_header(header)?;
+    let (len, _, height, extra) = parse_miner_tx(miner_tx)?;
+    if len != miner_tx.len() {
+        return Err(E);
+    }
     // hashing blob with timestamp 0
-    let mut r = Rd { b: &p.header, p: ts_at };
+    let mut r = Rd { b: header, p: ts_at };
     r.varint()?;
-    let mut hb = p.header[..ts_at].to_vec();
+    let mut hb = header[..ts_at].to_vec();
     hb.push(0);
-    hb.extend_from_slice(&p.header[r.p..]);
-    hb.extend_from_slice(&tree_hash(&leaves));
-    put_varint(&mut hb, leaves.len() as u64);
+    hb.extend_from_slice(&header[r.p..]);
+    hb.extend_from_slice(root);
+    put_varint(&mut hb, tx_count);
     let key = first_extra_nonce(extra).and_then(miner_key);
     Ok(TemplateFacts { seed: cn_fast_hash(&hb), key, prev_id, height, timestamp })
 }

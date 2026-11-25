@@ -316,6 +316,63 @@ fn committed(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64
     })
 }
 
+/// The start every proof of a height must have (records.rs rule 8): power-on after the genesis
+/// block or a cycle-ending block, else the parent's end state. `parent` is block h's parent.
+/// None: that block's end state is not known (rebuild it first).
+pub fn natural_start(parent: &Parent) -> Option<Start> {
+    match parent {
+        Parent::Genesis => Some(Start::PowerOn),
+        Parent::Block { id, .. } => info(id).map(|(_, ends_cycle, _)| if ends_cycle { Start::PowerOn } else { Start::Parent }),
+    }
+}
+
+/// What replaying a block's records found (docs/V0.4-DESIGN.md section 2.4 rule 9).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecordsVerdict {
+    Valid,
+    /// Record `i`'s run is invalid: the block is invalid.
+    Invalid(usize, String),
+    /// Record `i`'s encoding doesn't decode to its committed inputs: a bad witness.
+    BadWitness(usize, String),
+    /// The parent's end state isn't cached.
+    NeedParent,
+}
+
+/// Replays the runs of records that passed `records::check` (their `facts`, their committed
+/// proof blobs), all from `parent` (block h's parent, the parent of every proof), with no time
+/// limit (a proof is bounded by the window instead), on up to `threads` threads. The verdict is
+/// the first fault in record order; valid runs are cached like blocks (by input hash), so a
+/// record seen earlier through proof gossip costs no replay.
+pub fn verify_records(parent: Parent, facts: &[crate::records::Facts], proofs: &[&[u8]], threads: usize) -> Result<RecordsVerdict> {
+    anyhow::ensure!(facts.len() == proofs.len(), "facts and proofs differ in length");
+    let n = facts.len();
+    let mut verdicts: Vec<Option<Result<CommittedVerdict>>> = (0..n).map(|_| None).collect();
+    let threads = threads.clamp(1, n.max(1));
+    std::thread::scope(|sc| {
+        let chunks: Vec<_> = verdicts.chunks_mut(n.div_ceil(threads).max(1)).enumerate().collect();
+        let per = n.div_ceil(threads).max(1);
+        for (c, slot) in chunks {
+            sc.spawn(move || {
+                for (j, v) in slot.iter_mut().enumerate() {
+                    let i = c * per + j;
+                    let f = &facts[i];
+                    let id = f.leaf(&[0; 64]); // a cache id per run (not a block id)
+                    *v = Some(rebuild_committed_block(&id, parent, &Seed(f.seed), proofs[i]));
+                }
+            });
+        }
+    });
+    for (i, v) in verdicts.into_iter().enumerate() {
+        match v.unwrap()? {
+            CommittedVerdict::Run(BlockVerdict::Valid { .. }) => {}
+            CommittedVerdict::Run(BlockVerdict::Invalid(why)) => return Ok(RecordsVerdict::Invalid(i, why)),
+            CommittedVerdict::Run(BlockVerdict::NeedParent) => return Ok(RecordsVerdict::NeedParent),
+            CommittedVerdict::BadEncoding(why) => return Ok(RecordsVerdict::BadWitness(i, why)),
+        }
+    }
+    Ok(RecordsVerdict::Valid)
+}
+
 /// A block's signed run (sign.rs): the miner key its coinbase extra nonce
 /// commits and what its signature signs. Err: the block is invalid (no key,
 /// a bad signature, a proof whose header doesn't parse). No replay.

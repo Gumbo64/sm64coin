@@ -59,6 +59,7 @@ pub mod equivocation;
 pub mod pof;
 pub mod preverify;
 pub mod queue;
+pub mod records;
 pub mod replay;
 // 6: the daemon's C ABI
 pub mod ffi;
