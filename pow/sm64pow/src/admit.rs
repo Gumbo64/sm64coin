@@ -286,6 +286,14 @@ impl Policy {
                 return Decision::Replay;
             }
         }
+        // Unasked (relayed, or restricted RPC) and on a parent deeper than our tip's parent:
+        // it can't matter alone (fork choice needs a longer chain, and a longer fork comes as a
+        // sync span), and checking it could need a rebuild of a parent state, a replay of that
+        // parent's cycle under the blockchain lock (DoS audit N1). Not replayed.
+        if matches!(ctx, Some(Context { source: Source::Relay | Source::RpcSubmit, .. })) && b.height < b.top {
+            self.skipped += 1;
+            return Decision::Skip("an unasked block on a parent below our tip's parent (a longer fork comes as a sync span)");
+        }
         // A variant or a re-stamped copy of a block we know (same seed: same
         // parent, same miner transaction): useless to fork choice unless a
         // longer chain is built on it.

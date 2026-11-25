@@ -65,6 +65,8 @@ int32_t sm64pow_stale_block(const uint8_t *id32, uint64_t timestamp);
 int32_t sm64pow_restamp_preferred(const uint8_t *tip32, const uint8_t *hash32, uint64_t timestamp, const uint8_t *id32);
 /* Restricted RPC: the most seconds ahead of arrival a submitted run may be due. */
 uint64_t sm64pow_rpc_submit_ahead(void);
+/* An already queued claim sent again by this thread's source (a fallback if the first source is penalised). */
+void sm64pow_queue_also(const uint8_t *id32);
 /* One run per key (equivocation.rs): 0 bad signature, 1 the template's first run,
  * 2 the same run again, 3 a different run (equivocation; evidence queued for relay), -1 error. */
 int32_t sm64pow_note_claim(const uint8_t *hash32, const uint8_t *proof, size_t len,

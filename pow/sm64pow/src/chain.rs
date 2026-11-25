@@ -110,6 +110,26 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
             }
         }
     }
+    let key = run_key(parent, start, seed, blob);
+    // The time limit before the replay (so a replay's verdict never depends on
+    // the timestamp, and can be remembered by run). Checked BEFORE the parent's
+    // state is needed: a run over the limit, or one that already failed, must
+    // never make the daemon rebuild a parent state (a replay of the parent's
+    // cycle under the blockchain lock; DoS audit N1). A restart's limit (below)
+    // is never larger, so the verdicts are unchanged.
+    let claimed = match (&state, &pr) {
+        (Some((frames, ..)), _) => *frames,
+        (None, Some(pr)) => pr.frames,
+        _ => unreachable!(),
+    };
+    if difficulty.is_some() && claimed > limit {
+        return Ok(BlockVerdict::Invalid(format!("{claimed} frames exceeds the limit of {limit}")));
+    }
+    // The same run already failed a replay (the same block sent again, or a re-stamped copy).
+    if let Some(why) = known_invalid(&key) {
+        crate::admit::note_invalid();
+        return Ok(BlockVerdict::Invalid(why));
+    }
     let (game, before) = match start_game(start, parent, parent_state(parent), difficulty.is_some())? {
         None => return Ok(BlockVerdict::NeedParent),
         Some(Err(why)) => return Ok(BlockVerdict::Invalid(why)),
@@ -128,21 +148,9 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
             (g, p)
         }
     };
-    let key = run_key(parent, start, seed, blob);
-    // The time limit before the replay (so a replay's verdict never depends on
-    // the timestamp, and can be remembered by run).
-    let claimed = match (&state, &pr) {
-        (Some((frames, ..)), _) => *frames,
-        (None, Some(pr)) => pr.frames,
-        _ => unreachable!(),
-    };
+    // (the claimed length and a known-invalid run were checked before the parent's state was needed)
     if difficulty.is_some() && claimed > limit {
         return Ok(BlockVerdict::Invalid(format!("{claimed} frames exceeds the limit of {limit}")));
-    }
-    // The same run already failed a replay (the same block sent again, or a re-stamped copy).
-    if let Some(why) = known_invalid(&key) {
-        crate::admit::note_invalid();
-        return Ok(BlockVerdict::Invalid(why));
     }
     // RPC calls that replay draw on a budget (crate::admit::RpcScope).
     let timer = crate::admit::rpc_replay_gate().map_err(|e| anyhow::anyhow!(e))?;

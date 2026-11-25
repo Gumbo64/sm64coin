@@ -153,6 +153,9 @@ pub fn could_matter(c: Chain, job: &Job, now: u64) -> Result<(), &'static str> {
 struct Entry {
     job: Job,
     queued: f64,
+    /// Other sources that sent the same claim while it waited ([`Queue::also`]): if this
+    /// job's source is penalised, the claim stays, attributed to one of them.
+    others: Vec<Option<Context>>,
 }
 
 #[derive(Default)]
@@ -325,7 +328,7 @@ impl Queue {
             let el = job.eligible();
             st.eligible.get_or_insert_with(|| Bounded::new(IDS)).insert(job.id, el);
             *st.per_source.entry(src).or_insert(0) += 1;
-            st.waiting.push(Entry { job, queued: t });
+            st.waiting.push(Entry { job, queued: t, others: Vec::new() });
         }
         self.start();
         self.work.notify_all();
@@ -333,6 +336,18 @@ impl Queue {
             self.done.notify_all();
         }
         Ok(())
+    }
+
+    /// Another source (this thread's context) sent claim `id`, which is already waiting:
+    /// remembered as a fallback source for it (at most 4).
+    pub fn also(&self, id: &[u8; 32], ctx: Option<Context>) {
+        let mut st = self.st.lock().unwrap();
+        if let Some(e) = st.waiting.iter_mut().find(|e| e.job.id == *id) {
+            let same = |c: &Option<Context>| c.as_ref().map(|c| (&c.host, &c.source)) == ctx.as_ref().map(|c| (&c.host, &c.source));
+            if e.others.len() < 4 && !same(&e.job.ctx) && !e.others.iter().any(same) {
+                e.others.push(ctx);
+            }
+        }
     }
 
     /// When claim `id` became eligible here (queued or replayed by this queue), if known.
@@ -417,11 +432,32 @@ impl Queue {
                 let times = st.maps().3.get(&src).map_or(0, |b| b.1);
                 let secs = (PENALTY_SECONDS * f64::powi(2.0, times.min(8) as i32)).min(86400.0);
                 st.maps().3.insert(src.clone(), (t + secs, times + 1));
-                // Its other waiting claims go too, without a replay.
+                // Its other waiting claims go too, without a replay, unless another source sent the
+                // same claim (an attacker relaying an honest block first must not get it dropped).
                 let mut i = 0;
                 while i < st.waiting.len() {
                     if accountable(&st.waiting[i].job) && source_of(&st.waiting[i].job) == src {
+                        let others = std::mem::take(&mut st.waiting[i].others);
+                        let base = st.waiting[i].job.clone();
+                        let pick = others.into_iter().find(|c| {
+                            let probe = Job { ctx: c.clone(), ..base.clone() };
+                            let h = source_of(&probe);
+                            !accountable(&probe) || !matches!(st.bad.as_ref().and_then(|b| b.get(&h)), Some(&(until, _)) if t < until)
+                        });
+                        if let Some(c) = pick {
+                            let old = source_of(&st.waiting[i].job);
+                            st.waiting[i].job.ctx = c;
+                            let new = source_of(&st.waiting[i].job);
+                            if let Some(n) = st.per_source.get_mut(&old) {
+                                *n = n.saturating_sub(1);
+                            }
+                            *st.per_source.entry(new).or_insert(0) += 1;
+                            i += 1;
+                            continue;
+                        }
+                        let id = st.waiting[i].job.id;
                         st.drop_waiting(i, "its source sent an invalid claim");
+                        st.maps().1.remove(&id); // another peer may still send it
                         purged = true;
                     } else {
                         i += 1;
@@ -540,9 +576,9 @@ mod tests {
         let t = 100.0;
         // One peer sends three 3000-frame claims, another one 3000: the others queue behind it once the first has been served.
         for (i, (f, h)) in [(3000, "a"), (3000, "a"), (3000, "a"), (3000, "b"), (9000, "c"), (500, "d")].into_iter().enumerate() {
-            st.waiting.push(Entry { job: job(i as u8, f, 10, h), queued: t + i as f64 });
+            st.waiting.push(Entry { job: job(i as u8, f, 10, h), queued: t + i as f64, others: vec![] });
         }
-        st.waiting.push(Entry { job: job(99, 100, 1_000_000, "z"), queued: t }); // not due
+        st.waiting.push(Entry { job: job(99, 100, 1_000_000, "z"), queued: t, others: vec![] }); // not due
         let first = st.pick(10, t, true).unwrap();
         assert_eq!(st.waiting[first].job.frames, 500, "the shortest claim first");
         st.waiting.swap_remove(first);
@@ -558,7 +594,7 @@ mod tests {
         assert!(st.served_now(&src, t + 3.0 * FAIR_HALF_LIFE) < 400.0);
         // Nothing is due yet for the last one.
         let mut only = State::default();
-        only.waiting.push(Entry { job: job(1, 10, 1_000_000, "x"), queued: 0.0 });
+        only.waiting.push(Entry { job: job(1, 10, 1_000_000, "x"), queued: 0.0, others: vec![] });
         assert!(only.pick(10, t, true).is_none());
         assert_eq!(only.next_due(true), Some(1_000_000));
     }
@@ -668,6 +704,26 @@ mod tests {
     }
 
     #[test]
+    fn an_attacker_relaying_an_honest_claim_first_cannot_get_it_dropped() {
+        // The attacker relays the honest claim (due later), then gets itself penalised with a junk claim due now.
+        let q = Queue::new(1, Box::new(|j: &Job| if j.frames == 666 { Verdict::Invalid("bad".into()) } else { Verdict::Valid(j.frames) }));
+        let now = unix_now();
+        q.submit(job(1, 4000, now + 2, "attacker")).unwrap();
+        q.also(&[1; 32], ctx("honest"));
+        q.submit(job(2, 666, now, "attacker")).unwrap();
+        let got = drain(&q, 2);
+        assert!(got.iter().any(|(id, v)| *id == [2; 32] && matches!(v, Verdict::Invalid(_))));
+        assert!(got.iter().any(|(id, v)| *id == [1; 32] && matches!(v, Verdict::Valid(4000))), "the honest claim stays, attributed to the honest relay: {got:?}");
+        // Without another source it is dropped, but may be sent again.
+        q.submit(job(3, 4000, now + 2, "attacker2")).unwrap();
+        q.submit(job(4, 666, now, "attacker2")).unwrap();
+        let got = drain(&q, 2);
+        assert!(got.iter().any(|(id, v)| *id == [3; 32] && matches!(v, Verdict::Skipped(_))));
+        q.submit(job(3, 4000, now + 2, "honest2")).expect("re-sendable by another peer");
+        q.stop();
+    }
+
+    #[test]
     fn a_shared_gateway_address_is_never_locked_out() {
         // Restricted RPC behind a local tunnel: every web miner is 127.0.0.1. One bad claim must not penalise it.
         let q = Queue::new(1, Box::new(|j: &Job| if j.frames == 666 { Verdict::Invalid("bad".into()) } else { Verdict::Valid(j.frames) }));
@@ -689,10 +745,10 @@ mod tests {
     #[test]
     fn one_worker_is_kept_for_short_claims() {
         let mut st = State::default();
-        st.waiting.push(Entry { job: job(1, 36000, 10, "a"), queued: 0.0 });
+        st.waiting.push(Entry { job: job(1, 36000, 10, "a"), queued: 0.0, others: vec![] });
         assert!(st.pick(10, 0.0, false).is_none(), "the reserved worker leaves a long claim alone");
         assert!(st.pick(10, 0.0, true).is_some());
-        st.waiting.push(Entry { job: job(2, 4000, 10, "b"), queued: 1.0 });
+        st.waiting.push(Entry { job: job(2, 4000, 10, "b"), queued: 1.0, others: vec![] });
         let i = st.pick(10, 0.0, false).unwrap();
         assert_eq!(st.waiting[i].job.frames, 4000);
     }

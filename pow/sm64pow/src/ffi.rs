@@ -716,6 +716,13 @@ pub extern "C" fn sm64pow_queue_wait(timeout_ms: u32, out_id32: *mut u8) -> i32 
 
 /// Whether block `id32` was replayed valid by the queue and not yet
 /// consumed: then the daemon's normal path finds the cached result. Consumes it.
+/// Claim `id`, already queued, was sent again by this thread's source: a fallback source for it.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_also(id32: *const u8) {
+    let Some(id) = (unsafe { id_arg(id32) }) else { return };
+    let _ = std::panic::catch_unwind(|| crate::queue::global().also(&id, crate::admit::context()));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_queue_take_cleared(id32: *const u8) -> i32 {
     let Some(id) = (unsafe { id_arg(id32) }) else { return 0 };

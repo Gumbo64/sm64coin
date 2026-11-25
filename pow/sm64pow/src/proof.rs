@@ -261,6 +261,10 @@ impl Codec for RunLength {
 /// proofs (poked frames repeat the previous input) do better still.
 pub struct Xz;
 
+/// liblzma decoder memory limit (bytes); must stay above what a preset-9 (`-9e`) stream needs (~65 MiB).
+#[cfg(not(target_arch = "wasm32"))]
+const XZ_DECODE_MEMLIMIT: u64 = 128 << 20;
+
 #[cfg(not(target_arch = "wasm32"))]
 impl Codec for Xz {
     fn id(&self) -> u8 {
@@ -281,7 +285,10 @@ impl Codec for Xz {
         // Never expand past the limit (a tiny stream could claim gigabytes).
         let cap = max_frames.saturating_mul(4).saturating_add(1);
         let mut raw = Vec::new();
-        xz2::read::XzDecoder::new(body).take(cap as u64).read_to_end(&mut raw).map_err(|e| anyhow!("xz: {e}"))?;
+        // Decoder memory limit: 128 MiB. Honest streams are preset 9 (64 MiB dictionary, ~65 MiB to decode);
+        // a crafted header asking for a bigger dictionary fails instead of allocating up to ~4 GiB.
+        let stream = xz2::stream::Stream::new_stream_decoder(XZ_DECODE_MEMLIMIT, 0).map_err(|e| anyhow!("xz: {e}"))?;
+        xz2::read::XzDecoder::new_stream(body, stream).take(cap as u64).read_to_end(&mut raw).map_err(|e| anyhow!("xz: {e}"))?;
         if raw.len() >= cap {
             bail!("proof expands past {max_frames} frames");
         }
@@ -311,6 +318,29 @@ mod tests {
             assert!(decode(&blob, pads.len() - 1).is_err(), "{} limit", c.name());
         }
         assert_eq!(decode(&encode_with(&Raw, &[]), 10).unwrap(), vec![]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn xz_decoder_memory_is_limited() {
+        // An honest preset-9 (-9e, 64 MiB dictionary) stream still decodes.
+        let pads = sample();
+        let blob = encode_with(&Xz, &pads);
+        assert_eq!(decode(&blob, 10_000).unwrap(), pads);
+        // Same stream with the LZMA2 dictionary byte patched to 0x28 (4 GiB - 1), block-header CRC32 fixed up.
+        let mut body = blob[1..].to_vec();
+        assert_eq!(body[12 + 2], 0x21, "LZMA2 filter id");
+        body[12 + 4] = 0x28;
+        let mut crc = !0u32;
+        for &b in &body[12..12 + 8] {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+            }
+        }
+        body[12 + 8..12 + 12].copy_from_slice(&(!crc).to_le_bytes());
+        let err = format!("{:#}", Xz.decode(&body, 10_000).unwrap_err());
+        assert!(err.contains("memory"), "{err}");
     }
 
     #[test]
