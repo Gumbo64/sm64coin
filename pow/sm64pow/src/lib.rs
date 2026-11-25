@@ -14,7 +14,8 @@
 //! tour. The modules, bottom layer first (each uses only the ones above it in
 //! this list):
 //!
-//! 1. [`seed`], [`rules`](mod@rules), [`hold`], [`proof`]: pure, no game. The seed; the
+//! 1. [`seed`], [`sign`], [`rules`](mod@rules), [`hold`], [`proof`]: pure, no game. The seed; the
+//!    miner key and block signature (signed proofs, v0.3); the
 //!    consensus parameters as functions (time limit, retarget, restarts);
 //!    the hold policy; the proof blob and its stateless codecs (0 raw,
 //!    1 run-length, 2 xz).
@@ -25,7 +26,9 @@
 //! 4. [`replay`]: verifying one run (where it may start, what it must do).
 //! 5. [`cache`], [`preverify`], [`chain`]: blocks as a chain of end states:
 //!    the cache, the parallel sync pre-pass, and the verdict per block;
-//!    [`admit`]: which blocks earn a replay at all (relay policy, docs/DOS.md).
+//!    [`admit`]: which blocks earn a replay at all (relay policy, docs/DOS.md);
+//!    [`equivocation`]: two signed runs for one template (relay policy);
+//!    [`pof`]: publish-on-find's displacement window and the freshness bound.
 //! 6. [`ffi`]: the C ABI the daemon calls (`sm64pow.h`).
 //!
 //! Beside the consensus path: [`mining`] (building and sealing proofs, the
@@ -37,6 +40,7 @@ pub mod hold;
 pub mod proof;
 pub mod rules;
 pub mod seed;
+pub mod sign;
 // 2: the game
 pub mod emulator;
 pub mod game;
@@ -48,6 +52,8 @@ pub mod statemix;
 pub mod admit;
 pub mod cache;
 pub mod chain;
+pub mod equivocation;
+pub mod pof;
 pub mod preverify;
 pub mod replay;
 // 6: the daemon's C ABI

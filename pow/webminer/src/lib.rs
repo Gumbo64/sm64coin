@@ -112,6 +112,10 @@ pub struct MineRequest {
     pub seed_chunk: usize,
     #[serde(default = "seed_weight_default")]
     pub seed_weight: f64,
+    /// The template's miner secret key (hex; v0.3 signed proofs): a found run comes back signed
+    /// (`MineResult::sig`). The seed already covers the key (it is in the coinbase).
+    #[serde(default)]
+    pub miner_secret: String,
 }
 fn guide_weight_default() -> f64 {
     20.0
@@ -168,6 +172,39 @@ pub struct MineResult {
     pub pads: String,
     pub keys: Vec<String>,
     pub starts: Vec<usize>,
+    /// The block's `sm64_sig` (hex, 64 bytes) over this proof, when the request had a `miner_secret`.
+    pub sig: String,
+}
+
+fn secret_from_hex(h: &str) -> Result<sm64pow::sign::Keypair, JsError> {
+    let b = hex::decode(h).map_err(err)?;
+    let b: [u8; 32] = b.try_into().map_err(|_| err("miner secret must be 32 bytes"))?;
+    sm64pow::sign::Keypair::from_secret(&b).ok_or_else(|| err("invalid miner secret"))
+}
+
+/// A fresh miner key from 32 bytes of entropy (crypto.getRandomValues): JSON
+/// `{secret_hex, public_hex, extra_nonce_hex}`; `extra_nonce_hex` (0x64 || public key) goes into
+/// `get_block_template`'s `extra_nonce`, so the key is chosen before the run is played.
+#[wasm_bindgen]
+pub fn miner_keypair(entropy: &[u8]) -> Result<String, JsError> {
+    let e: [u8; 32] = entropy.try_into().map_err(|_| err("entropy must be 32 bytes"))?;
+    let k = sm64pow::sign::Keypair::from_entropy(&e).ok_or_else(|| err("zero entropy"))?;
+    serde_json::to_string(&serde_json::json!({
+        "secret_hex": hex::encode(k.secret),
+        "public_hex": hex::encode(k.public),
+        "extra_nonce_hex": hex::encode(k.extra_nonce()),
+    }))
+    .map_err(err)
+}
+
+/// The block signature (`sm64_sig`, hex) for sealed proof `proof` on the template with seed
+/// `seed_hex` (its `sm64_seed_hash`), signed with the template's miner secret.
+#[wasm_bindgen]
+pub fn sign_proof(secret_hex: &str, seed_hex: &str, proof: &[u8]) -> Result<String, JsError> {
+    let k = secret_from_hex(secret_hex)?;
+    let seed: [u8; 32] = hex::decode(seed_hex).map_err(err)?.try_into().map_err(|_| err("seed must be 32 bytes"))?;
+    let sig = sm64pow::mining::sign_proof(&k, &seed, proof).map_err(err)?;
+    Ok(hex::encode(sig))
 }
 
 /// Mines one block (the native automine's `rrt::mine` with its options), returning the sealed
@@ -221,10 +258,15 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
     let out = match attempt {
         Attempt::Found(m) => {
             let proof = sm64pow::seal_proof_at(start, parent.as_ref(), &seed, &params, &m.pads).map_err(err)?;
-            MineResult { status: "found".into(), why: String::new(), proof: hex::encode(proof), frames: m.pads.len(), sim_frames: m.sim_frames, pads: pads_to_hex(&m.pads), keys: m.keys.clone(), starts: m.starts.clone() }
+            let sig = if r.miner_secret.is_empty() {
+                String::new()
+            } else {
+                hex::encode(sm64pow::mining::sign_proof(&secret_from_hex(&r.miner_secret)?, &seed.0, &proof).map_err(err)?)
+            };
+            MineResult { status: "found".into(), why: String::new(), proof: hex::encode(proof), sig, frames: m.pads.len(), sim_frames: m.sim_frames, pads: pads_to_hex(&m.pads), keys: m.keys.clone(), starts: m.starts.clone() }
         }
-        Attempt::Gave(why) => MineResult { status: "gave".into(), why, proof: String::new(), frames: 0, sim_frames: 0, pads: String::new(), keys: Vec::new(), starts: Vec::new() },
-        Attempt::NoRoute(why) => MineResult { status: "noroute".into(), why, proof: String::new(), frames: 0, sim_frames: 0, pads: String::new(), keys: Vec::new(), starts: Vec::new() },
+        Attempt::Gave(why) => MineResult { status: "gave".into(), why, proof: String::new(), frames: 0, sim_frames: 0, pads: String::new(), keys: Vec::new(), starts: Vec::new(), sig: String::new() },
+        Attempt::NoRoute(why) => MineResult { status: "noroute".into(), why, proof: String::new(), frames: 0, sim_frames: 0, pads: String::new(), keys: Vec::new(), starts: Vec::new(), sig: String::new() },
     };
     serde_json::to_string(&out).map_err(err)
 }

@@ -15,6 +15,40 @@ int32_t sm64pow_init(const char *rom_path);
  * -1 internal error; reason in sm64pow_last_error. Caches the end state. */
 int64_t sm64pow_verify_block(const uint8_t *id32, const uint8_t *parent32, uint64_t gap_seconds,
                              const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len);
+/* SM64COIN v0.3, signed proofs (sign.rs): as sm64pow_verify_block, but first
+ * checks that the coinbase extra nonce commits a miner key (0x64 || key32) and
+ * that sig64 signs (seed, proof_id, frames) with it; no replay if not.
+ * difficulty 0 (rebuild) skips the signature. */
+int64_t sm64pow_verify_signed_block(const uint8_t *id32, const uint8_t *parent32, uint64_t gap_seconds,
+                                    const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len,
+                                    const uint8_t *nonce, size_t nonce_len, const uint8_t *sig64);
+/* 1 the block's signature is valid, 0 not (reason in sm64pow_last_error). */
+int32_t sm64pow_check_signature(const uint8_t *hash32, const uint8_t *proof, size_t len,
+                                const uint8_t *nonce, size_t nonce_len, const uint8_t *sig64);
+/* Equivocation (equivocation.rs, relay policy): a second run for the template of
+ * our accepted block. 0 same run, 1 shorter (ignored), 2 longer (ignored), 3 bad
+ * signature, 4 equivocation (272 bytes of evidence to out; relay), 5 known evidence, -1 error. */
+int32_t sm64pow_judge_sibling(const uint8_t *hash32, const uint8_t *nonce, size_t nonce_len,
+                              const uint8_t *main_proof, size_t main_len, const uint8_t *main_sig64,
+                              const uint8_t *alt_proof, size_t alt_len, const uint8_t *alt_sig64,
+                              uint8_t *out, size_t cap);
+/* Evidence from a peer: 1 new and valid (relay it), 0 not. */
+int32_t sm64pow_evidence_received(const uint8_t *bytes, size_t len);
+/* SM64COIN v0.3 publish-on-find (pof.rs, relay / fork-choice policy). note_eligible:
+ * block id32 became eligible now (valid, fitting by the node's clock). displaces: 1
+ * when eligible sibling alt32 replaces our childless tip32 (a strictly shorter run of
+ * another key inside the 60 s window, or a fresh block against a stale tip).
+ * pof_candidate: 1 when such a sibling is worth a replay. stale: 1 when a block
+ * stamped timestamp is stale now (not relayed). */
+void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp);
+int32_t sm64pow_displaces(const uint8_t *tip32, const uint8_t *alt32);
+int32_t sm64pow_pof_candidate(const uint8_t *tip32, uint32_t frames, uint64_t timestamp);
+int32_t sm64pow_stale(uint64_t timestamp);
+/* The next new evidence to relay to peers (272 bytes to out); 0: none. */
+size_t sm64pow_take_evidence(uint8_t *out, size_t cap);
+/* Where to build when the tip (tip_seed32) is childless: -1 the tip, i the i-th of
+ * the n blocks at its height (sibling_seeds), n its parent. */
+int64_t sm64pow_choose_parent(const uint8_t *tip_seed32, const uint8_t *sibling_seeds, size_t n);
 int32_t sm64pow_has_state(const uint8_t *id32);
 size_t sm64pow_end_state_gz(const uint8_t *id32, uint8_t *out, size_t cap);
 int32_t sm64pow_block_progress(const uint8_t *id32, uint32_t *stars, uint32_t *keys, int32_t *grand_star, int32_t *ends_cycle);

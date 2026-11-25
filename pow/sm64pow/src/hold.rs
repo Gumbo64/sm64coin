@@ -20,22 +20,43 @@ use crate::rules::active as rules;
 /// long even at its own timestamp and the normal path rejects it).
 /// `Some(t)`: hold it until `t`, the first second the run fits by the node's
 /// clock; stamping a block ahead of the clock therefore gains nothing.
+///
+/// Publish-on-find (v0.3): miners submit a run when they find it, stamped
+/// with the second it becomes valid, up to [`MAX_HOLD_AHEAD_SECONDS`] ahead;
+/// the node holds it *and relays it at once* (`Blockchain::sm64_hold`), so
+/// every node sees pending runs, and processes it when it is eligible: when
+/// it fits by the node's clock and its stamp is within the consensus future
+/// limit ([`FUTURE_LIMIT_SECONDS`]). Stamped further ahead than
+/// `MAX_HOLD_AHEAD_SECONDS`: `None` (the normal path rejects it).
 pub fn hold_until(difficulty: u64, parent_ts: u64, block_ts: u64, now: u64, frames: u32, restart_delay: u64) -> Option<u64> {
     let r = rules();
     let limit_at = |t: u64| -> u32 {
         let gap = t.saturating_sub(parent_ts);
         if gap < restart_delay { 0 } else { r.max_frames(difficulty, gap - restart_delay) }
     };
-    if frames <= limit_at(now) || frames > limit_at(block_ts) {
+    if frames > limit_at(block_ts) || block_ts > now.saturating_add(MAX_HOLD_AHEAD_SECONDS) {
         return None;
     }
-    let (mut lo, mut hi) = (now, block_ts.max(now + 1));
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if frames <= limit_at(mid) { hi = mid } else { lo = mid }
-    }
-    Some(hi)
+    // Consensus accepts a stamp at most FUTURE_LIMIT_SECONDS ahead of the clock.
+    let stamp_ok = block_ts.saturating_sub(FUTURE_LIMIT_SECONDS);
+    let fits = if frames <= limit_at(now) {
+        now
+    } else {
+        let (mut lo, mut hi) = (now, block_ts.max(now + 1));
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if frames <= limit_at(mid) { hi = mid } else { lo = mid }
+        }
+        hi
+    };
+    let due = fits.max(stamp_ok);
+    if due <= now { None } else { Some(due) }
 }
+
+/// The consensus future-time limit (`CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT` in
+/// the fork's cryptonote_config.h; must be equal).
+pub const FUTURE_LIMIT_SECONDS: u64 = 120;
+pub use crate::rules::MAX_HOLD_AHEAD_SECONDS;
 
 #[cfg(test)]
 mod hold_tests {
@@ -53,8 +74,17 @@ mod hold_tests {
         assert!(frames > r.max_frames(d, o + 29));
         // Stamped o + 30 s after the parent but arriving at o + 10: held until the node's clock says o + 30.
         assert_eq!(hold_until(d, parent, parent + o + 30, parent + o + 10, frames, 0), Some(parent + o + 30));
-        // Stamped further ahead: still only valid from o + 30 on.
+        // Stamped further ahead: held until the stamp is within the consensus future limit.
         assert_eq!(hold_until(d, parent, parent + o + 150, parent + o + 10, frames, 0), Some(parent + o + 30));
+        assert_eq!(hold_until(d, parent, parent + o + 400, parent + o + 10, frames, 0), Some(parent + o + 400 - FUTURE_LIMIT_SECONDS));
+        // Publish-on-find: found long before it is valid, stamped at its valid time: held until then.
+        let late = r.max_frames(d, o + 1000);
+        let valid_at = (o..o + 2000).find(|&t| r.max_frames(d, t) >= late).unwrap();
+        assert_eq!(hold_until(d, parent, parent + valid_at, parent + o, late, 0), Some(parent + valid_at));
+        // Too far ahead to hold: the normal path rejects it.
+        assert_eq!(hold_until(d, parent, parent + o + 10 + MAX_HOLD_AHEAD_SECONDS + 1, parent + o + 10, frames, 0), None);
+        // Fits by the clock but stamped beyond the future limit: held until the stamp is acceptable.
+        assert_eq!(hold_until(d, parent, parent + o + 300, parent + o + 100, frames, 0), Some(parent + o + 300 - FUTURE_LIMIT_SECONDS));
         // Arriving when it already fits: processed now.
         assert_eq!(hold_until(d, parent, parent + o + 30, parent + o + 31, frames, 0), None);
         // Too long even at its own timestamp: not held (the normal path rejects it).
@@ -64,6 +94,7 @@ mod hold_tests {
         // At difficulty 1 the limit grows too (the start offset): a 2-minute run waits until it fits.
         let two_min = 2 * 60 * 30;
         let due = hold_until(1, parent, parent + o, parent, two_min, 0).expect("held at difficulty 1");
-        assert!(r.max_frames(1, due - parent) >= two_min && r.max_frames(1, due - parent - 1) < two_min);
+        let fit = (0..o).find(|&t| r.max_frames(1, t) >= two_min).unwrap();
+        assert_eq!(due, (parent + fit).max(parent + o - FUTURE_LIMIT_SECONDS), "until it fits and its stamp is within the future limit");
     }
 }

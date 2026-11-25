@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { getNode } from '../lib/rpc.js';
 import { loadStored, saveStored, forgetStored } from '../lib/wallet/store.js';
 import * as eng from '../lib/wallet/engine.js';
+import { BLOCK_TARGET_SECONDS } from '../lib/rules.js';
 import * as pk from '../lib/wallet/passkey.js';
 
 // A lite wallet in the browser: the fork's wallet2 (WebAssembly, in a web worker) scans the chain
@@ -57,7 +58,7 @@ export default function Wallet() {
 
   const persist = useCallback(async (wallet, addr, vo) => {
     const data = await eng.exportData(wallet);
-    await saveStored({ ...data, address: addr, viewOnly: vo, passkey: passkeyRef.current });
+    await saveStored({ ...data, chain: await eng.chainId(), address: addr, viewOnly: vo, passkey: passkeyRef.current });
   }, []);
 
   const refresh = useCallback(async (wallet) => {
@@ -420,7 +421,7 @@ function Txs({ snap }) {
                   <td>{r.height ?? 'pool'}</td>
                   <td>{r.miner ? '★ mined reward' : net >= 0n ? 'received' : 'sent'}</td>
                   <td className="mono">{net >= 0n ? '+' : '-'}{eng.fmt(net >= 0n ? net : -net)}{net < 0n && r.fee ? ` (+${eng.fmt(r.fee)} fee)` : ''}</td>
-                  <td>{r.failed ? 'failed' : !r.confirmed ? 'pending' : r.locked ? (r.unlockIn > 0 ? `unlocks in ${r.unlockIn} block${r.unlockIn === 1 ? '' : 's'}` : 'unlocking') : 'unlocked'}</td>
+                  <td>{r.failed ? 'failed' : !r.confirmed ? 'pending' : r.locked ? (r.unlockIn > 0 ? `unlocks in ${r.unlockIn} block${r.unlockIn === 1 ? '' : 's'} (about ${Math.round(r.unlockIn * BLOCK_TARGET_SECONDS / 60)} min)` : 'unlocking') : 'unlocked'}</td>
                   <td className="mono">{r.hash && <Link to={`/block/${r.height}`} title={r.hash}>{r.hash.slice(0, 10)}…</Link>}</td>
                 </tr>
               );

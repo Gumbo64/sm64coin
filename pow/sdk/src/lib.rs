@@ -6,7 +6,8 @@
 //! Grand Star). The SDK handles the rest:
 //! the controller perturbation (generated outside the game, the consensus contract, taken
 //! from `sm64pow` so it cannot drift), block templates from the daemon,
-//! interruption when a new block arrives, local verification and submission.
+//! interruption when a new block arrives, local verification, signing (v0.3: every
+//! block is signed by a per-template miner key) and submission.
 //!
 //! ```no_run
 //! use sm64coin_sdk::*;
@@ -32,9 +33,10 @@ mod daemon;
 mod env;
 mod miner;
 
-pub use daemon::{Cycle, CycleBlock, Daemon, Template, cycle_end_state, get_timestamp, seal, set_timestamp};
+pub use daemon::{Cycle, CycleBlock, Daemon, Template, cycle_end_state, get_timestamp, seal, set_timestamp, sign_proof};
 pub use env::{MiningEnv, Snapshot, Task};
-pub use miner::{Bot, MinerConfig, PracticeReport, practice, run_miner, run_miner_with};
+pub use miner::{Bot, MinerConfig, PracticeReport, practice, run_miner, run_miner_keyed, run_miner_with};
+pub use sm64pow::sign::Keypair;
 pub use sm64_binds::{GamePad, GameState, SM64Game, buttons};
 pub use sm64pow::game::Progress;
 pub use sm64pow::{Params, Seed, Verdict, proof};

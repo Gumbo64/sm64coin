@@ -275,17 +275,57 @@ pub const STAR_CYCLE: StarCycle = StarCycle {
     burst: 2,
     timing_mix: 1,
     pad_mix: 1,
-    target: 300,
     retarget_window: 60,
     retarget_cut: 6,
+    // ==== v0.3 CHOSEN PARAMETERS (owner's decisions from the fairness research:
+    // pow/tools/auction/headstart/FAIRNESS.md on branch fairness-research 9ce5c91;
+    // SLOWDECAY.md; docs/V0.3-NEW-CHAIN.md). Everything (daemon, miners, RPC,
+    // explorer, rules.js, rules.py) reads them from here; the relay-policy
+    // constants of the same decision are below STAR_CYCLE (POF_WINDOW_SECONDS,
+    // FRESHNESS_SECONDS, MAX_HOLD_AHEAD_SECONDS).
+    //
+    // Block time 20 min (v0.2: 5 min): the only rule lever that moves the
+    // fairness cliff (a miner earns its share while its mean search time is
+    // under ~1.5x the block interval; one-thread natives ~860 s, browser
+    // workers ~1700 s). Must equal DIFFICULTY_TARGET_V1/V2 in the fork's
+    // cryptonote_config.h.
+    target: 1200,
+    // The limit curve: unchanged (FAIRNESS.md section 9, SLOWDECAY.md): no
+    // grace (the auction; the test below keeps it), one halving per 60 s,
+    // starting 20 halvings below the retarget's. With 1200 s blocks the
+    // retarget settles where the shortest finished run fits ~1200 s after the
+    // parent (difficulty ~2^16 for ~2500-frame runs), not at difficulty 1;
+    // a longer decay_halving would only slow the selection (measured: no gain).
     decay_grace: 0,
     decay_halving: 60,
     start_halvings: 20,
-    restart_base_seconds: 3600,
-    restart_point_seconds: 60,
-    restart_max_seconds: 2 * 3600,
-    launch_timestamp: 1_795_380_000, // 2026-11-22 (the frame-length auction's network)
+    // Restarts scale with the block time: 12 block times as on v0.2 (1 h at
+    // 5 min), so a slow network (difficulty pinned at 1, blocks over an hour)
+    // doesn't throw its progress away. OPEN for the owner: 4 h is a long stall.
+    restart_base_seconds: 4 * 3600,
+    restart_point_seconds: 240,
+    restart_max_seconds: 8 * 3600,
+    // ==== end v0.3 CHOSEN PARAMETERS
+    // PENDING (v0.3 new chain): set to the new chain's launch (unix seconds) once the owner picks the date.
+    // Until then v0.2's floor (2026-11-22), so private test networks can mine today.
+    launch_timestamp: 1_795_380_000,
 };
+
+/// Publish-on-find (v0.3, relay policy; FAIRNESS.md sections 6-7, 9): a run
+/// is relayed when it is found and becomes eligible when it fits the limit;
+/// within this many seconds of the first eligible block on a parent (by this
+/// node's clock), a strictly shorter eligible sibling with another miner key
+/// displaces it (pof.rs). 60: removes the head start and stops selfish mining
+/// paying up to 40 % of the compute; 120 makes private chains easier.
+pub const POF_WINDOW_SECONDS: u64 = 60;
+/// Freshness bound (relay policy, FAIRNESS.md section 8): a block stamped more
+/// than this before its arrival is stale: not relayed, and it loses a
+/// same-height tie to a fresh sibling while it has no child.
+pub const FRESHNESS_SECONDS: u64 = 60;
+/// Publish-on-find: how far ahead of the node's clock a found run may be
+/// stamped (its validity time) and still be held and relayed (consensus still
+/// only accepts a block once its stamp is within the 120 s future limit).
+pub const MAX_HOLD_AHEAD_SECONDS: u64 = 3600;
 
 impl Rules for StarCycle {
     fn name(&self) -> &'static str {

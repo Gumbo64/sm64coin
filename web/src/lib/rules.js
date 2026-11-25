@@ -19,14 +19,18 @@ export function successFor(rulesName) {
 // base_frames in rules.rs). Past this a run can never become valid.
 export const MAX_RUN_FRAMES = 20 * 60 * 30;
 
+// Seconds between blocks the retarget aims for (StarCycle::target in rules.rs; display only,
+// e.g. a wait-time estimate: the daemon's get_info block_target is the authority).
+export const BLOCK_TARGET_SECONDS = 1200;
+
 // A power-on restart (starting over when no miner can do the next star yet)
 // is judged against the limit this many seconds earlier, so it is allowed
 // that long after the parent: a base plus a price per progress point thrown
 // away, capped (StarCycle::restart_delay in pow/sm64pow/src/rules.rs; display
 // only, the template's sm64_power_on_at is authoritative).
-export const RESTART_BASE_SECONDS = 3600;
-export const RESTART_POINT_SECONDS = 60;
-export const RESTART_MAX_SECONDS = 2 * 3600;
+export const RESTART_BASE_SECONDS = 4 * 3600; // v0.3: 12 block times (20-min blocks)
+export const RESTART_POINT_SECONDS = 240;
+export const RESTART_MAX_SECONDS = 8 * 3600;
 export function restartDelay(points) {
   return Math.min(RESTART_BASE_SECONDS + points * RESTART_POINT_SECONDS, Math.max(RESTART_MAX_SECONDS, RESTART_BASE_SECONDS));
 }

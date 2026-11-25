@@ -4,6 +4,7 @@ import { Recorder } from '../lib/recorder.js';
 import CycleTimeline from '../lib/CycleTimeline.jsx';
 import LimitChart from '../lib/LimitChart.jsx';
 import { daemon } from '../lib/rpc.js';
+import { newMinerKey, templateParams, signRun } from '../lib/minerkey.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { prepareStart } from '../lib/cycle.js';
 import { withConfig } from '../lib/task.js';
@@ -132,7 +133,9 @@ function Miner() {
         let ts = Math.max(Math.floor(Date.now() / 1000), r.validAt, templateTimestamp(t.blocktemplate_blob));
         if (st.kind === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
         const blob = withTimestamp(t.blocktemplate_blob, ts);
-        await daemon('submit_block', [seal(blob, proofFromRun(done.pads, done.poked, st.kind === 'power-on'))]);
+        const proof = proofFromRun(done.pads, done.poked, st.kind === 'power-on');
+        const sig = await signRun(t.minerKey, t.sm64_seed_hash, proof);
+        await daemon('submit_block', [seal(blob, proof, sig)]);
         setLast((l) => ({ ...l, result: 'accepted' }));
         announceMined(t.height, t.expected_reward);
         say(ts > Date.now() / 1000 + 1
@@ -172,7 +175,9 @@ function Miner() {
           let t;
           try {
             const paysTo = addr.current;
-            t = await daemon('get_block_template', { wallet_address: paysTo, reserve_size: 0 });
+            const key = await newMinerKey(); // v0.3: this template's miner key, chosen before the run is played
+            t = await daemon('get_block_template', templateParams(paysTo, key));
+            t.minerKey = key;
             t.paysTo = paysTo; // the template's coinbase pays this address
           } catch (e) { say(String(e)); await sleep(3000); continue; }
           const won = successFor(t.sm64_rules);
@@ -211,7 +216,7 @@ function Miner() {
           // When does a run this long become valid? (The limit grows with time.)
           let validAt = 0;
           try {
-            const q = await daemon('get_block_template', { wallet_address: t.paysTo, reserve_size: 0, sm64_frames: nFrames });
+            const q = await daemon('get_block_template', templateParams(t.paysTo, t.minerKey, { sm64_frames: nFrames }));
             validAt = q.sm64_valid_at || 0;
           } catch (e) { say(`could not ask when the run is valid: ${e}`); }
           if (stopped) break;
@@ -631,7 +636,7 @@ function Help() {
         is submitted automatically then, unless another block lands first (a run is for one parent block; then you
         start the next block from that one). Ties go to the shorter run: of several runs waiting, the shortest
         becomes valid first.</p>
-      <p><b>If the chain stalls</b> (no block for an hour, e.g. nobody can get past a hard spot), a block may start over
+      <p><b>If the chain stalls</b> (no block for 4 hours, e.g. nobody can get past a hard spot), a block may start over
         from power-on instead: the "Reset cycle" button here turns on (it counts down until then). The Grand Star also ends the
         cycle by itself.</p>
       <p><b>Game keys</b> (sm64-port defaults; a gamepad works too): WASD stick · <b>I</b> = A · <b>J</b> = B ·

@@ -6,6 +6,7 @@ import time
 
 from . import rules
 from .daemon import Daemon
+from .sign import Keypair
 from .env import MiningEnv, Task, load_rom
 
 
@@ -27,14 +28,14 @@ def practice(bot, seed=1, difficulty=1, stop=lambda: False, task=None):
             "pads_raw": env.proof_raw(), "env": env}
 
 
-def wait_until_valid(d, address, t, frames, stop, log=print, poll=2):
+def wait_until_valid(d, address, t, frames, stop, log=print, poll=2, key=None):
     """Waits until a run of `frames` frames (over the template's limit) is valid: the daemon's
     `sm64_valid_at` (or, if it does not say, `rules.valid_after` on the retarget difficulty).
     Returns the unix time to timestamp the block with, or None if `stop()` (a new block) came first
     or the run can never be valid."""
     at = 0
     try:
-        at = d.valid_at(address, frames)
+        at = d.valid_at(address, key or t.key, frames)
     except (OSError, RuntimeError, KeyError):
         pass
     if not at and t.parent_timestamp:
@@ -51,19 +52,23 @@ def wait_until_valid(d, address, t, frames, stop, log=print, poll=2):
     return max(int(time.time()), at)
 
 
-def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_frames=None):
+def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_frames=None, next_key=None):
     """Mines with `bot`: template -> bot -> submit, restarting on a new block. The block is
     played from the parent's end state (rebuilt from the daemon's cycle) or power-on, and stamped
     with the time of submission. `play_frames` lets the bot play past the template's limit
     (e.g. 36000, the most any difficulty ever allows): a winning run over the limit waits until the
     limit has grown to it (the time limit grows every second after a grace period), if no block
-    arrives meanwhile."""
+    arrives meanwhile. Every block is signed by a per-template key (v0.3): a fresh `Keypair.generate()`
+    each round, or `next_key(round) -> Keypair` (e.g. the secret a group leader shared)."""
     load_rom(rom)
     d = Daemon(daemon_url)
     mined = 0
+    rounds = 0
     while True:
         try:
-            task, t = d.get_task(address, play_frames=play_frames)
+            key = next_key(rounds) if next_key else Keypair.generate()
+            rounds += 1
+            task, t = d.get_task(address, key, play_frames=play_frames)
         except OSError as e:
             log(f"daemon: {e}; retrying in 5 s")
             time.sleep(5)

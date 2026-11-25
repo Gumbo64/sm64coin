@@ -8,6 +8,7 @@
 import { daemon } from '../rpc.js';
 import { getCycle } from '../replay/client.js';
 import { hexToBytes, seal, withTimestamp, templateTimestamp } from '../proof.js';
+import { newMinerKey, templateParams, signRun } from '../minerkey.js';
 import { frames as fmtFrames } from '../format.js';
 import { boardSize, setVizFlag, patchMail } from './board.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
@@ -257,7 +258,10 @@ class MinerController {
     this.setPhase('loading');
     let t;
     try {
-      t = await daemon('get_block_template', { wallet_address: address, reserve_size: 0 });
+      // v0.3: a fresh key per template, chosen before the run is played (its extra nonce is in the seed).
+      const key = await newMinerKey();
+      t = await daemon('get_block_template', templateParams(address, key));
+      t.minerKey = key; // travels with the template, hence with every run held for it
     } catch (e) {
       say(`no template: ${e}; retrying in 10 s`);
       this.fail(`no template: ${e}`);
@@ -413,7 +417,7 @@ class MinerController {
       w.onerror = (ev) => { ev.preventDefault(); w.onmessage({ data: { type: 'error', message: ev.message || 'the worker failed to start' } }); };
       w.postMessage({
         type: 'mine',
-        request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1,
+        request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, miner_secret: t.minerKey.secret_hex, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1,
           // The best run so far (same start): only a shorter one counts, biased by its objectives.
           ...(c.best && c.best.start === status[i].start ? { beat: c.best.frames, guide_keys: [...new Set(c.best.keys || [])] } : {}) },
         parentState: status[i].start === 'parent' && parentState ? parentState.slice(0) : null,
@@ -434,7 +438,7 @@ class MinerController {
     try {
       const h = await holdUntilValid({
         best: () => c.best,
-        validAt: async (frames) => (await daemon('get_block_template', { wallet_address: this.address, reserve_size: 0, sm64_frames: frames })).sm64_valid_at,
+        validAt: async (frames) => (await daemon('get_block_template', templateParams(this.address, t.minerKey, { sm64_frames: frames }))).sm64_valid_at,
         tip: async () => (await daemon('get_info')).top_block_hash,
         prevHash: t.prev_hash,
         current: () => !c.stopped && c.template === t,
@@ -470,7 +474,10 @@ class MinerController {
       let ts = Math.max(Math.floor(now()), validAt, templateTimestamp(t.blocktemplate_blob));
       // A reset cycle (power-on on an "either" template) is judged against an earlier limit and is valid from sm64_power_on_at.
       if (r.start === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
-      if (!this.noSubmit) await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), hexToBytes(r.proof))]);
+      const proof = hexToBytes(r.proof);
+      // The worker signs found runs inside the WASM (r.sig); otherwise sign here with the template's key.
+      const sig = r.sig || (await signRun(t.minerKey, t.sm64_seed_hash, proof));
+      if (!this.noSubmit) await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
       this.stats = { ...this.stats, accepted: this.stats.accepted + 1 };
       hub.submission('accepted', { height: t.height, frames: r.frames });
       announceMined(t.height, t.expected_reward);

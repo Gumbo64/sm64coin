@@ -15,7 +15,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// The network key's name; a new network (new genesis) takes a new one.
-pub const NETWORK: &str = "sm64coin-mainnet-1";
+pub const NETWORK: &str = "sm64coin-mainnet-v0.3"; // v0.3 is a new chain (v0.2: "sm64coin-mainnet-1"): v0.2 nodes never find v0.3 ones
 
 /// The key: SHA-1 of the network's name (`SM64COIN_DHT_NETWORK` overrides it, for tests).
 pub fn info_hash() -> Id {

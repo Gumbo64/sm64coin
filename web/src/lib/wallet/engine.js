@@ -4,6 +4,18 @@
 // worker that holds the wasm and all keys, 8 MB, gzips to about 3).
 import { getNode, daemon } from '../rpc.js';
 
+// v0.3 is a new chain (new genesis, block ids that also commit the miner's signature). A wallet cache
+// (scanned heights, block hashes, outputs, restore height) of the v0.2 chain must never be reused on it:
+// what is stored carries the chain id it was synced against, and a record of another chain is opened
+// without its cache and rescanned from height 0 (the keys are kept: the seed still owns the same keys).
+export const WALLET_CHAIN = 'v0.3';
+let chainP;
+/** `v0.3:<genesis hash>` of the node's chain (the constant alone if the node does not answer). */
+export function chainId() {
+  chainP ||= daemon('get_block_header_by_height', { height: 0 }).then((r) => `${WALLET_CHAIN}:${r.block_header.hash}`, () => WALLET_CHAIN);
+  return chainP;
+}
+
 const BASE = import.meta.env.BASE_URL;
 export const UNLOCK_WINDOW = 4; // SM64COIN: CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW (was 60)
 export const SPENDABLE_AGE = 10; // CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE: wallet2 also waits this long for any output
@@ -130,7 +142,14 @@ export async function restoreViewOnly(address, viewKey, password, restoreHeight)
 
 export async function openStored(rec, password) {
   const m = await loadLib();
-  return m.MoneroWalletFull.openWallet(cfg(m, { password, keysData: rec.keysData, cacheData: rec.cacheData }));
+  const chain = await chainId();
+  if (rec.chain === chain || (rec.chain && !chain.includes(':'))) {
+    return m.MoneroWalletFull.openWallet(cfg(m, { password, keysData: rec.keysData, cacheData: rec.cacheData }));
+  }
+  // A cache of another chain (no id: saved before v0.3): keys only, restore height 0, a full rescan.
+  const w = await m.MoneroWalletFull.openWallet(cfg(m, { password, keysData: rec.keysData }));
+  await w.setRestoreHeight(0);
+  return w;
 }
 
 const bytes = (v) => new Uint8Array(v.buffer, v.byteOffset, v.byteLength).slice();

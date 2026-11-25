@@ -23,12 +23,16 @@ sha3 = "0.10"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 sm64coin-perturb = { path = "../perturb" }
+# Signed proofs (sign.rs): Monero's Schnorr signatures, pure Rust so the browser miner signs too.
+curve25519-dalek = "4"
 
 # Native: sm64-binds' default backend (wasmer sys); the browser (wasm32, the web miner): wasmer's JS backend.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 sm64-binds = { workspace = true, features = ["default"] }
 # liblzma (C): the xz proof codec and the end states on disk; native only (the web miner has neither).
 xz2 = { version = "0.1", features = ["static"] }
+# Miner keys (sign::Keypair::generate).
+getrandom = "0.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 sm64-binds = { workspace = true, features = ["wasm_js"] }

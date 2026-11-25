@@ -219,3 +219,26 @@ pub fn played_wanted_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, blob
         v => Ok(Err(v)),
     }
 }
+
+/// A block's signed run (sign.rs): the miner key its coinbase extra nonce
+/// commits and what its signature signs. Err: the block is invalid (no key,
+/// a bad signature, a proof whose header doesn't parse). No replay.
+pub fn signed_run(seed: &Seed, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> std::result::Result<([u8; 32], crate::equivocation::SignedRun), String> {
+    let frames = proof::split_blob(blob).map_err(|e| format!("bad proof: {e}"))?.0;
+    let proof_id = crate::proof_id::proof_id(blob);
+    let key = crate::sign::check(&seed.0, extra_nonce, &proof_id, frames, sig)?;
+    crate::equivocation::policy().lock().unwrap().note_key(&seed.0, &key);
+    Ok((key, crate::equivocation::SignedRun { proof_id, frames, sig: *sig }))
+}
+
+/// [`verify_block`] for a signed block (every block but the genesis block
+/// from v0.3): the signature is checked first (about 0.1 ms), so a block
+/// without a valid signature by its coinbase's miner key, a third party's
+/// variant of someone else's run included, never costs a replay.
+pub fn verify_signed_block(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> Result<BlockVerdict> {
+    if let Err(why) = signed_run(seed, blob, extra_nonce, sig) {
+        crate::admit::note_invalid();
+        return Ok(BlockVerdict::Invalid(why));
+    }
+    verify_block(id, parent, seed, difficulty, blob)
+}

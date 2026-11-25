@@ -143,6 +143,178 @@ pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap
     }
 }
 
+fn sig_arg(p: *const u8) -> Option<[u8; 64]> {
+    if p.is_null() { None } else { Some(unsafe { *(p as *const [u8; 64]) }) }
+}
+
+// ---- Signed proofs (sign.rs, equivocation.rs) ----
+
+/// [`sm64pow_verify_block`] for a signed block: first checks that the
+/// coinbase extra nonce (`nonce`, `nonce_len`: the miner tx's first extra
+/// nonce) commits a miner key and that `sig64` signs (seed, proof_id, frames)
+/// with it, so a block without a valid signature is invalid without a replay.
+/// `difficulty` 0 (rebuilding an accepted block) skips the signature.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_verify_signed_block(id32: *const u8, parent32: *const u8, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, nonce: *const u8, nonce_len: usize, sig64: *const u8) -> i64 {
+    if difficulty != 0 {
+        let (Some(seed), Some(sig)) = (unsafe { id_arg(hash32) }, sig_arg(sig64)) else {
+            set_error("null seed hash or signature".into());
+            return -1;
+        };
+        let (bytes, n) = (blob_arg(proof, len), blob_arg(nonce, nonce_len));
+        match std::panic::catch_unwind(|| crate::chain::signed_run(&Seed(seed), bytes, n, &sig)) {
+            Ok(Ok(_)) => {}
+            Ok(Err(why)) => {
+                crate::admit::note_invalid();
+                set_error(why);
+                return 0;
+            }
+            Err(_) => {
+                set_error("panic while checking the signature".into());
+                return -1;
+            }
+        }
+    }
+    sm64pow_verify_block(id32, parent32, gap_seconds, hash32, difficulty, proof, len)
+}
+
+/// Whether a block's signature is valid (1) or not (0; reason in
+/// sm64pow_last_error). No replay: the sync pre-pass and the hold check it
+/// before spending one.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_check_signature(hash32: *const u8, proof: *const u8, len: usize, nonce: *const u8, nonce_len: usize, sig64: *const u8) -> i32 {
+    let (Some(seed), Some(sig)) = (unsafe { id_arg(hash32) }, sig_arg(sig64)) else { return 0 };
+    let (bytes, n) = (blob_arg(proof, len), blob_arg(nonce, nonce_len));
+    match std::panic::catch_unwind(|| crate::chain::signed_run(&Seed(seed), bytes, n, &sig)) {
+        Ok(Ok(_)) => 1,
+        Ok(Err(why)) => {
+            set_error(why);
+            0
+        }
+        Err(_) => 0,
+    }
+}
+
+/// A second run for the template (seed `hash32`, coinbase extra nonce
+/// `nonce`) of our accepted block (`main_proof`, `main_sig64`), arriving as
+/// an alternative block (`alt_proof`, `alt_sig64`). Returns 0 the same run,
+/// 1 strictly shorter (ignored: no tip takeover), 2 strictly longer
+/// (ignored), 3 a bad signature, 4 equivocation: the evidence
+/// (EVIDENCE_LEN = 272 bytes) is written to `out` if `cap` allows and kept
+/// (relay it; templates then avoid the block); 5 the same evidence again;
+/// -1 our block's own signature doesn't check (should not happen).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_judge_sibling(hash32: *const u8, nonce: *const u8, nonce_len: usize, main_proof: *const u8, main_len: usize, main_sig64: *const u8, alt_proof: *const u8, alt_len: usize, alt_sig64: *const u8, out: *mut u8, cap: usize) -> i32 {
+    let (Some(seed), Some(ms), Some(asig)) = (unsafe { id_arg(hash32) }, sig_arg(main_sig64), sig_arg(alt_sig64)) else { return -1 };
+    let n = blob_arg(nonce, nonce_len);
+    let (mp, ap) = (blob_arg(main_proof, main_len), blob_arg(alt_proof, alt_len));
+    let r = std::panic::catch_unwind(|| {
+        use crate::equivocation::{Sibling, judge_sibling};
+        let seed = Seed(seed);
+        let Ok((key, main)) = crate::chain::signed_run(&seed, mp, n, &ms) else { return (-1, None) };
+        let Ok(frames) = crate::proof::split_blob(ap).map(|x| x.0) else { return (3, None) };
+        let alt = crate::equivocation::SignedRun { proof_id: proof_id(ap), frames, sig: asig };
+        match judge_sibling(&seed.0, &key, &main, &alt) {
+            Sibling::SameRun => (0, None),
+            Sibling::LateShorter => (1, None),
+            Sibling::Longer => (2, None),
+            Sibling::BadSignature => (3, None),
+            Sibling::Equivocation(e) => {
+                let new = crate::equivocation::policy().lock().unwrap().add(e);
+                (if new { 4 } else { 5 }, Some(e.encode()))
+            }
+        }
+    });
+    match r {
+        Ok((code, ev)) => {
+            if let Some(ev) = ev {
+                copy_out(&ev, out, cap);
+            }
+            code
+        }
+        Err(_) => -1,
+    }
+}
+
+/// Evidence received from a peer (`NOTIFY_SM64_EVIDENCE`): 1 new and valid
+/// (relay it), 0 not.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_evidence_received(bytes: *const u8, len: usize) -> i32 {
+    let b = blob_arg(bytes, len);
+    std::panic::catch_unwind(|| match crate::equivocation::Evidence::decode(b) {
+        Some(e) => crate::equivocation::policy().lock().unwrap().add(e) as i32,
+        None => 0,
+    })
+    .unwrap_or(0)
+}
+
+/// The next new evidence (found here or received) to relay to peers: its
+/// 272 bytes into `out` (if `cap` allows); 0 when there is none.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_take_evidence(out: *mut u8, cap: usize) -> usize {
+    match std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().take_outbox()) {
+        Ok(Some(e)) => copy_out(&e.encode(), out, cap),
+        _ => 0,
+    }
+}
+
+// ---- Publish-on-find (pof.rs): the displacement window, the freshness bound ----
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Block `id32` (parent `parent32`, seed `hash32`, `frames`, stamped
+/// `timestamp`) is eligible now: valid and fitting by this node's clock.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_note_eligible(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64) {
+    let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
+    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible(id, parent, seed, frames, timestamp, unix_now()));
+}
+
+/// Whether eligible alternative block `alt32` replaces our childless block
+/// `tip32` at the same height (1) or not (0).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_displaces(tip32: *const u8, alt32: *const u8) -> i32 {
+    let (Some(t), Some(a)) = (unsafe { id_arg(tip32) }, unsafe { id_arg(alt32) }) else { return 0 };
+    std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().displaces(&t, &a)).unwrap_or(false) as i32
+}
+
+/// Whether a sibling of our childless tip `tip32` claiming `frames`, stamped
+/// `timestamp`, could displace it (1: worth a replay).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, frames: u32, timestamp: u64) -> i32 {
+    let Some(t) = (unsafe { id_arg(tip32) }) else { return 0 };
+    std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().candidate(&t, frames, timestamp, unix_now())).unwrap_or(false) as i32
+}
+
+/// Whether a block stamped `timestamp` arriving now is stale (the freshness
+/// bound: not relayed).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_stale(timestamp: u64) -> i32 {
+    crate::pof::stale(timestamp, unix_now()) as i32
+}
+
+/// Where a new template should build when our tip (seed `tip_seed32`) is
+/// childless: -1 on the tip; `i` on the `i`-th of the `n` blocks at the tip's
+/// height (their seeds in `sibling_seeds`, 32 bytes each) because the tip is
+/// equivocated and that one is clean; `n` on the tip's parent.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_choose_parent(tip_seed32: *const u8, sibling_seeds: *const u8, n: usize) -> i64 {
+    let Some(tip) = (unsafe { id_arg(tip_seed32) }) else { return -1 };
+    let sib: Vec<[u8; 32]> = if n == 0 || sibling_seeds.is_null() {
+        vec![]
+    } else {
+        unsafe { std::slice::from_raw_parts(sibling_seeds, 32 * n) }.chunks(32).map(|c| c.try_into().unwrap()).collect()
+    };
+    let p = crate::equivocation::policy().lock().unwrap();
+    match crate::equivocation::choose_parent(&p, &tip, &sib) {
+        None => -1,
+        Some(usize::MAX) => n as i64,
+        Some(i) => i as i64,
+    }
+}
+
 /// The parallel pre-pass of `n` blocks in chain order (a sync batch, see
 /// chain::preverify): `ids`, `parents` (`n` x 32 bytes; a parent of all zero
 /// bytes is the genesis block), `seeds` (`n` x 32), the proofs concatenated in

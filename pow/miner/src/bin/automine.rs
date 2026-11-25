@@ -143,6 +143,12 @@ struct Args {
     /// 0: wait idle, the old way.
     #[arg(long, default_value_t = 100)]
     anytime_ahead: u64,
+    /// Publish-on-find (v0.3, pof.rs): submit a run as soon as it is found, stamped with
+    /// the second it becomes valid (nodes hold it until then and relay it at once), and
+    /// again for every strictly shorter run found for the same template meanwhile.
+    /// false: the v0.2 way (submit shortly before the run is valid).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    publish_on_find: bool,
     /// Goal bias for those searches, as RRT samples its goal among random targets: `keys` the
     /// objectives that made the best run's path (their pool weight x --guide-weight, kinship
     /// waived), `points` the best run's positions as waypoint objectives (rrt::write_guide),
@@ -166,6 +172,11 @@ struct Args {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedBlock {
     template_blob: String,
+    /// v0.3: the template's seed and miner key (secret, hex), to sign at submit.
+    #[serde(default)]
+    seed_hash: String,
+    #[serde(default)]
+    key_secret: String,
     proof: String,
     frames: u32,
     parent_ts: u64,
@@ -249,7 +260,8 @@ fn main() -> Result<()> {
             "saved block {}: {} frames; difficulty {retarget}, limit now {}; stamped {ts} = now +{} s",
             b.height, b.frames, r.max_frames(retarget, now().saturating_sub(b.parent_ts)), ts as i64 - now() as i64
         );
-        match daemon.submit(&rpc::seal(&b.template_blob, &hex::decode(&b.proof)?, Some(ts))?) {
+        let key = sm64pow::sign::Keypair::from_secret(&<[u8; 32]>::try_from(hex::decode(&b.key_secret)?.as_slice())?).ok_or_else(|| anyhow::anyhow!("the saved block has no miner key"))?;
+        match daemon.submit(&rpc::seal_with(&b.template_blob, &b.seed_hash, &key, &hex::decode(&b.proof)?, Some(ts))?) {
             Ok(()) => println!("submitted"),
             Err(e) => println!("submit failed: {e}"),
         }
@@ -527,10 +539,27 @@ fn main() -> Result<()> {
         }
 
         if let Some(f) = &a.save_block {
-            let b = SavedBlock { template_blob: t.blocktemplate_blob.clone(), proof: hex::encode(&proof), frames, parent_ts: t.sm64_parent_timestamp, prev_hash: t.prev_hash.clone(), height: t.height };
+            let b = SavedBlock { template_blob: t.blocktemplate_blob.clone(), seed_hash: t.sm64_seed_hash.clone(), key_secret: t.key.as_ref().map(|k| hex::encode(k.secret)).unwrap_or_default(), proof: hex::encode(&proof), frames, parent_ts: t.sm64_parent_timestamp, prev_hash: t.prev_hash.clone(), height: t.height };
             std::fs::write(f, serde_json::to_string(&b)?)?;
             println!("  saved block {} ({frames} frames) to {f}, not submitted", t.height);
             return Ok(());
+        }
+        // Publish-on-find: send the run now, stamped with its valid time (the node holds it).
+        let retarget0 = t.sm64_retarget_difficulty.max(1);
+        let delay0 = if start == Start::PowerOn && t.sm64_start == "either" { t.sm64_restart_delay } else { 0 };
+        let pof_ahead = sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(30);
+        let mut published: Option<Vec<u8>> = None;
+        if a.publish_on_find && a.stamp_ahead == 0 {
+            let ts = valid_from(retarget0, t.sm64_parent_timestamp + delay0, frames, now()).max(now());
+            if ts <= now() + pof_ahead {
+                match daemon.submit(&rpc::seal_signed(&t, &proof, Some(ts))?) {
+                    Ok(()) => {
+                        println!("  PUBLISHED block {} at find: {frames} frames, valid at {ts} (in {} s); searching on for a shorter run", t.height, ts.saturating_sub(now()));
+                        published = Some(proof.clone());
+                    }
+                    Err(e) => println!("  publish failed: {e}"),
+                }
+            }
         }
         // Anytime mining: over the limit now, so search again (fresh trees, the guide from the
         // best run) until shortly before the best run is valid; keep the shortest.
@@ -559,7 +588,15 @@ fn main() -> Result<()> {
             if a.stamp_ahead > 0 {
                 println!("  test: submitting {} s early, stamped {ts}", a.stamp_ahead.min(ts.saturating_sub(now())));
             }
-            let ahead = if a.stamp_ahead > 0 { a.stamp_ahead } else if a.controller == "rrt" { a.anytime_ahead.min(110) } else { 0 };
+            let ahead = if a.stamp_ahead > 0 {
+                a.stamp_ahead
+            } else if a.publish_on_find {
+                pof_ahead
+            } else if a.controller == "rrt" {
+                a.anytime_ahead.min(110)
+            } else {
+                0
+            };
             while now() + ahead < ts {
                 std::thread::sleep(Duration::from_secs(1));
                 if now() % 3 == 0 && daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
@@ -577,7 +614,13 @@ fn main() -> Result<()> {
         } else {
             ts = now();
         }
-        match daemon.submit(&rpc::seal(&t.blocktemplate_blob, &proof, Some(ts))?) {
+        let sent = if published.as_deref() == Some(&proof[..]) {
+            println!("  (already published at find)");
+            Ok(())
+        } else {
+            daemon.submit(&rpc::seal_signed(&t, &proof, Some(ts))?)
+        };
+        match sent {
             Ok(()) => {
                 mined += 1;
                 // Stamped ahead of the clock: the node holds it until its run fits.

@@ -6,16 +6,8 @@
 // codecs (3+) cannot be decoded without replaying the run, so get_block fills
 // `sm64_pads` for them only with sm64_played: true (the Block page does).
 import { GamePad } from 'sm64-binds-frontend';
-
-export function hexToBytes(hex) {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
-  return out;
-}
-
-export function bytesToHex(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
+import { hexToBytes, bytesToHex, varint, seal } from './block.js';
+export { hexToBytes, bytesToHex, seal };
 
 /** Raw pads (4 bytes each: buttons u16 LE, stick x i8, stick y i8) -> GamePads. */
 export function rawToPads(hex) {
@@ -41,13 +33,6 @@ export function rawProof(pads) {
     out[o + 2] = p.stick_x & 0xff;
     out[o + 3] = p.stick_y & 0xff;
   });
-  return out;
-}
-
-function varint(n) {
-  const out = [];
-  while (n >= 0x80) { out.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); }
-  out.push(n);
   return out;
 }
 
@@ -101,21 +86,6 @@ export function templateTimestamp(templateHex) {
   let [, i] = readVarint(t, 0);
   [, i] = readVarint(t, i);
   return readVarint(t, i)[0];
-}
-
-/** The block template with `proof` in its last field (the empty proof's 0x00). */
-export function seal(templateHex, proof) {
-  const t = hexToBytes(templateHex);
-  if (t[t.length - 1] !== 0) throw new Error('template does not end with an empty proof');
-  const len = [];
-  let n = proof.length;
-  while (n >= 0x80) { len.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); }
-  len.push(n);
-  const out = new Uint8Array(t.length - 1 + len.length + proof.length);
-  out.set(t.subarray(0, t.length - 1), 0);
-  out.set(len, t.length - 1);
-  out.set(proof, t.length - 1 + len.length);
-  return bytesToHex(out);
 }
 
 /** A Mupen64 movie (.m64) of `pads`: 0x400-byte header, then per frame

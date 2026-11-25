@@ -177,3 +177,46 @@ pub fn verify_pads(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Verdic
         Err(e) => Ok(Verdict::Invalid(e.to_string())),
     }
 }
+
+/// Signs a sealed proof `blob` for the template with seed `seed` (the
+/// template's `sm64_seed_hash`, whose coinbase extra nonce committed
+/// `key.extra_nonce()`): the block's `sm64_sig` (sign.rs; v0.3).
+pub fn sign_proof(key: &crate::sign::Keypair, seed: &[u8; 32], blob: &[u8]) -> Result<[u8; 64]> {
+    let frames = proof::split_blob(blob)?.0;
+    Ok(key.sign_run(seed, &crate::proof_id::proof_id(blob), frames))
+}
+
+/// The submit-ready block: the template blob (ending with the empty proof,
+/// a 0 byte, and the empty signature, 64 zero bytes) with `proof` and its
+/// signature in their place, and the header timestamp set to `timestamp`
+/// when given (the seed excludes it, so the signature stays valid).
+pub fn seal_block(template: &[u8], proof_blob: &[u8], sig: &[u8; 64], timestamp: Option<u64>) -> Result<Vec<u8>> {
+    let n = template.len();
+    if n < 65 || template[n - 65..].iter().any(|&b| b != 0) {
+        anyhow::bail!("template does not end with an empty proof and signature; is this an SM64Coin v0.3 daemon?");
+    }
+    let mut blob = template[..n - 65].to_vec();
+    if let Some(ts) = timestamp {
+        // Header: varint major, varint minor, varint timestamp, ...
+        let vl = |b: &[u8]| b.iter().position(|x| x & 0x80 == 0).map(|i| i + 1).ok_or_else(|| anyhow::anyhow!("truncated header"));
+        let a = vl(&blob)?;
+        let b = a + vl(&blob[a..])?;
+        let c = b + vl(&blob[b..])?;
+        let mut out = blob[..b].to_vec();
+        put_varint(&mut out, ts);
+        out.extend_from_slice(&blob[c..]);
+        blob = out;
+    }
+    put_varint(&mut blob, proof_blob.len() as u64);
+    blob.extend_from_slice(proof_blob);
+    blob.extend_from_slice(sig);
+    Ok(blob)
+}
+
+fn put_varint(out: &mut Vec<u8>, mut n: u64) {
+    while n >= 0x80 {
+        out.push((n as u8) | 0x80);
+        n >>= 7;
+    }
+    out.push(n as u8);
+}

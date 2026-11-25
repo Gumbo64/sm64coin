@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sm64_binds::GamePad;
+use sm64pow::sign::Keypair;
 
 pub struct Daemon {
     url: String,
@@ -94,17 +95,20 @@ impl Daemon {
         resp.get("result").cloned().ok_or_else(|| anyhow!("{method}: no result"))
     }
 
-    /// A block template paying `address`.
-    pub fn template(&self, address: &str) -> Result<Template> {
-        let r = self.call("get_block_template", json!({"wallet_address": address, "reserve_size": 0}))?;
+    /// A block template paying `address`, for the miner key `key` (v0.3: the
+    /// daemon puts `key.extra_nonce()` into the coinbase, so the seed covers
+    /// the key; use the same key for every template call of one run).
+    pub fn template(&self, address: &str, key: &Keypair) -> Result<Template> {
+        let r = self.call("get_block_template", json!({"wallet_address": address, "extra_nonce": hex::encode(key.extra_nonce())}))?;
         Ok(serde_json::from_value(r)?)
     }
 
     /// A template that also says when a run of `frames` frames becomes valid
-    /// (`sm64_valid_at`). Only that field is meant to be used: a fresh template
-    /// may carry new mempool transactions, i.e. another seed.
-    pub fn template_valid_at(&self, address: &str, frames: u32) -> Result<Template> {
-        let r = self.call("get_block_template", json!({"wallet_address": address, "reserve_size": 0, "sm64_frames": frames}))?;
+    /// (`sm64_valid_at`). Pass the key of the run's template: only that field
+    /// is meant to be used (a fresh template may carry new mempool transactions,
+    /// i.e. another seed).
+    pub fn template_valid_at(&self, address: &str, key: &Keypair, frames: u32) -> Result<Template> {
+        let r = self.call("get_block_template", json!({"wallet_address": address, "extra_nonce": hex::encode(key.extra_nonce()), "sm64_frames": frames}))?;
         Ok(serde_json::from_value(r)?)
     }
 
@@ -154,21 +158,26 @@ impl Daemon {
     }
 }
 
-/// The template with `proof` in place of its empty proof (the blob's last
-/// field, so its final byte is the empty proof's length, 0). With
-/// `timestamp`, the header's timestamp is rewritten first (the seed doesn't
-/// include it, so a miner stamps the block "now" right before submitting).
-pub fn seal(template_hex: &str, proof: &[u8], timestamp: Option<u64>) -> Result<String> {
-    let mut blob = hex::decode(template_hex)?;
-    if blob.pop() != Some(0) {
-        bail!("template does not end with an empty proof; is this an SM64Coin daemon?");
+impl Template {
+    /// The perturbation seed (`sm64_seed_hash`) as bytes.
+    pub fn seed_bytes(&self) -> Result<[u8; 32]> {
+        hex::decode(&self.sm64_seed_hash)?.try_into().map_err(|_| anyhow!("sm64_seed_hash is not 32 bytes"))
     }
-    if let Some(ts) = timestamp {
-        blob = set_timestamp(&blob, ts)?;
-    }
-    put_varint(&mut blob, proof.len() as u64);
-    blob.extend_from_slice(proof);
-    Ok(hex::encode(blob))
+}
+
+/// Signs `proof` (a sealed proof blob) for `template` with the key whose
+/// `extra_nonce()` the template was requested with. The result is the block's
+/// `sm64_sig`; pass it to [`seal`].
+pub fn sign_proof(key: &Keypair, template: &Template, proof: &[u8]) -> Result<[u8; 64]> {
+    sm64pow::mining::sign_proof(key, &template.seed_bytes()?, proof)
+}
+
+/// The submit-ready block (hex): the template with `proof` and its signature
+/// `sig` ([`sign_proof`]) in place of the empty ones, and with the header's
+/// timestamp replaced by `timestamp` when given (the seed doesn't include it,
+/// so a miner stamps its block "now" right before submitting).
+pub fn seal(template_hex: &str, proof: &[u8], sig: &[u8; 64], timestamp: Option<u64>) -> Result<String> {
+    Ok(hex::encode(sm64pow::mining::seal_block(&hex::decode(template_hex)?, proof, sig, timestamp)?))
 }
 
 fn put_varint(out: &mut Vec<u8>, mut n: u64) {

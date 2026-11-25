@@ -1,6 +1,7 @@
 //! The [`Bot`] trait, the daemon mining loop and offline practice.
 
-use crate::daemon::{Daemon, seal};
+use crate::daemon::{Daemon, seal, sign_proof};
+use sm64pow::sign::Keypair;
 use crate::env::{MiningEnv, Task};
 use anyhow::{Result, bail};
 use sm64pow::Verdict;
@@ -67,17 +68,31 @@ fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
 /// from `get_sm64_cycle`, or power-on), run the bot while a watcher thread
 /// raises `stop` on a new block, check the proof locally, wait if the run is
 /// longer than the current time limit (it becomes valid as the limit grows),
-/// stamp the block "now", seal the proof into the template and submit. The
+/// stamp the block "now", sign the proof with the template's miner key, seal
+/// proof and signature into the template and submit. The
 /// task allows over-budget runs ([`Task::allow_over_budget`]).
 pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
+    run_miner_keyed(bot, cfg, &mut |_| Ok(Keypair::generate()))
+}
+
+/// [`run_miner_with`] with your own miner keys: `next_key(round)` is called
+/// before each template request (`round` counts from 0) and must return the
+/// key for that template. The default generates a fresh random key; a group
+/// miner returns the secret its leader shared for this template
+/// (`Keypair::from_secret`), so that any member can sign and submit. The key
+/// is committed in the coinbase, so it must be fixed before the run is played.
+pub fn run_miner_keyed(bot: &mut dyn Bot, cfg: &MinerConfig, next_key: &mut dyn FnMut(u64) -> Result<Keypair>) -> Result<()> {
     if !cfg.address.starts_with("SM6") {
         bail!("{} does not look like an SM64Coin address", cfg.address);
     }
     crate::init_rom(&cfg.rom)?;
     let daemon = Daemon::new(&cfg.daemon_url);
     let mut mined = 0u64;
+    let mut round = 0u64;
     loop {
-        let t = match daemon.template(&cfg.address) {
+        let key = next_key(round)?;
+        round += 1;
+        let t = match daemon.template(&cfg.address, &key) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("daemon: {e}; retrying in 5 s");
@@ -150,7 +165,7 @@ pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
         let retarget = task.difficulty.max(1);
         let mut ts = valid_from(retarget, t.sm64_parent_timestamp, frames, now());
         if ts > now() {
-            let asked = daemon.template_valid_at(&cfg.address, frames).map(|x| x.sm64_valid_at).unwrap_or(0);
+            let asked = daemon.template_valid_at(&cfg.address, &key, frames).map(|x| x.sm64_valid_at).unwrap_or(0);
             ts = ts.max(asked);
             if cfg.verbose {
                 println!("  {frames} frames is over the current limit; valid at {ts} (in {} s)", ts.saturating_sub(now()));
@@ -171,7 +186,8 @@ pub fn run_miner_with(bot: &mut dyn Bot, cfg: &MinerConfig) -> Result<()> {
         } else {
             ts = now();
         }
-        match daemon.submit(&seal(&t.blocktemplate_blob, &proof, Some(ts))?) {
+        let sig = sign_proof(&key, &t, &proof)?;
+        match daemon.submit(&seal(&t.blocktemplate_blob, &proof, &sig, Some(ts))?) {
             Ok(()) => {
                 mined += 1;
                 println!("  BLOCK {} ACCEPTED ({:.6} SM64)", t.height, t.expected_reward as f64 / 1e12);

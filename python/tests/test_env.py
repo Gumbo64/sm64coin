@@ -106,11 +106,11 @@ def test_success_and_cycle_end():
     assert not rules.is_success(s, s)
     assert rules.is_success(s, Progress(13, 1, False)) and rules.is_success(s, Progress(12, 2, False))
     assert not rules.ends_cycle(s) and rules.ends_cycle(Progress(70, 2, True))
-    assert rules.target_seconds() == 300
+    assert rules.target_seconds() == 1200
     # restart_waits_a_base_plus_the_progress_thrown_away
-    assert rules.restart_delay(Progress(0, 0, False)) == 3600
-    assert rules.restart_delay(Progress(10, 0, False)) == 3600 + 600
-    assert rules.restart_delay(Progress(69, 0, False)) == 7200
+    assert rules.restart_delay(Progress(0, 0, False)) == 4 * 3600
+    assert rules.restart_delay(Progress(10, 0, False)) == 4 * 3600 + 2400
+    assert rules.restart_delay(Progress(69, 0, False)) == 8 * 3600
 
 
 def test_progress_counts_stars_keys_and_the_grand_star():
@@ -163,17 +163,19 @@ def test_proof_encoding_round_trip():
     assert decode_proof(rle, 100).inputs == [p] * 50 + [GamePad(0x8000, 1, 2)] * 10
 
 
-def test_seal_rewrites_the_timestamp_and_appends_the_proof():
-    # header: major 1, minor 1, timestamp 1_000_000_000 (5 bytes), prev_id (32), nonce (4), rest, empty proof 0
+def test_seal_rewrites_the_timestamp_and_appends_proof_and_signature():
+    # header: major 1, minor 1, timestamp 1_000_000_000 (5 bytes), prev_id (32), nonce (4), rest,
+    # then the v0.3 empty proof (0) and empty signature (64 zero bytes)
     hdr = bytes([1, 1]) + varint(1_000_000_000) + bytes(32) + bytes(4) + b"tail"
-    blob = (hdr + b"\x00").hex()
-    out = bytes.fromhex(seal(blob, b"x" * 130, 5))
-    assert out == bytes([1, 1, 5]) + bytes(32) + bytes(4) + b"tail" + bytes([0x82, 0x01]) + b"x" * 130
-    out = bytes.fromhex(seal(blob, b"", 2_000_000_000))
-    assert out == bytes([1, 1]) + varint(2_000_000_000) + bytes(32) + bytes(4) + b"tail" + b"\x00"
+    blob = (hdr + b"\x00" + bytes(64)).hex()
+    sig = bytes(range(1, 65))
+    out = bytes.fromhex(seal(blob, b"x" * 130, sig, 5))
+    assert out == bytes([1, 1, 5]) + bytes(32) + bytes(4) + b"tail" + bytes([0x82, 0x01]) + b"x" * 130 + sig
+    out = bytes.fromhex(seal(blob, b"", sig, 2_000_000_000))
+    assert out == bytes([1, 1]) + varint(2_000_000_000) + bytes(32) + bytes(4) + b"tail" + b"\x00" + sig
     import time
     ts, i = 0, 2
-    out = bytes.fromhex(seal(blob, b"ab"))  # default: now
+    out = bytes.fromhex(seal(blob, b"ab", sig))  # default: now
     shift = 0
     while True:
         byte = out[i]; i += 1
@@ -182,7 +184,9 @@ def test_seal_rewrites_the_timestamp_and_appends_the_proof():
             break
     assert abs(ts - time.time()) < 5
     with pytest.raises(ValueError):
-        seal((hdr + b"\x01").hex(), b"")
+        seal((hdr + b"\x01" + bytes(64)).hex(), b"", sig)
+    with pytest.raises(ValueError):
+        seal((hdr + b"\x00").hex(), b"", sig)   # old-style unsigned template
 
 
 @need_verify

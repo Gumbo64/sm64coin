@@ -43,15 +43,19 @@ C++ glue in the fork:
    frames (they are regenerated from the seed, never stored), encodes the rest
    with every codec and keeps the smallest. The result is
    `varint(frames) || start || codec id || body`.
-4. The miner puts the blob in `block::sm64_proof` (a new last field of the
-   block blob), stamps the block "now", and calls `submit_block`. The daemon
+4. The miner puts the blob in `block::sm64_proof` (a new field of the
+   block blob), signs it (v0.3: `sm64_sig`, the last field, with the
+   throwaway key it put in the coinbase extra nonce when it asked for the
+   template; [V0.3-NEW-CHAIN.md](V0.3-NEW-CHAIN.md), `sign.rs`), stamps the
+   block "now", and calls `submit_block`. The daemon
    re-encodes a stateless proof (codecs 0-2) to the smallest of them. That
    doesn't change the block id.
 
 **Verifying** (every node, for every block):
 
-5. **Block id** = `cn_fast_hash(hashing blob || proof_id(sm64_proof))`
-   (`get_block_id_blob`). `proof_id` hashes the decoded run for codecs 0-2 and
+5. **Block id** = `cn_fast_hash(hashing blob || proof_id(sm64_proof) || sm64_sig)`
+   (`get_block_id_blob`). Before any replay, `sm64_sig` must verify with the
+   miner key the coinbase commits (`chain::verify_signed_block`). `proof_id` hashes the decoded run for codecs 0-2 and
    the canonical bytes for codecs 3-5.
 6. **Timestamp**: strictly after the parent, not before the network's launch
    (`Rules::launch_timestamp`), and at most 120 s ahead of the node's clock
@@ -75,7 +79,7 @@ C++ glue in the fork:
    verifies again. A whole cycle replays in seconds.
 10. **Fork choice and retarget**: the chain with more blocks wins, and a tie
     keeps the one seen first (`Rules::weigh_by_blocks`). Difficulty is
-    retargeted the Monero way over 60 blocks toward 300 s
+    retargeted the Monero way over 60 blocks toward 1200 s
     (`Rules::next_difficulty`). Difficulty only sets the time limit; the pokes
     are the same at every difficulty.
 
@@ -95,6 +99,7 @@ file to read.
 | 2 | `sm64pow/src/rules.rs` | 460 | **all consensus parameters** as pure functions | `STAR_CYCLE` (every constant), `StarCycle::max_frames` (the auction: the limit grows every second after the parent), `restart_delay`, `is_success`/`ends_cycle`, `monero_retarget`, and the tests at the bottom |
 | 3 | `sm64pow/src/hold.rs` | 70 | the hold policy | `hold_until`: a binary search for the first second the run fits |
 | 4 | `sm64pow/src/seed.rs` | 80 | the seed | why the timestamp is excluded |
+| 4b | `sm64pow/src/sign.rs` | 230 | signed proofs (v0.3): the miner key in the coinbase extra nonce, Monero's Schnorr signature | `message`, `check`, `Keypair::sign` (deterministic) |
 | 5 | `sm64pow/src/proof.rs` | 330 | the proof blob, codecs 0 raw / 1 run-length / 2 xz | `split_blob`, `decode_proof`, the canonical varint, the zip-bomb caps |
 | 6 | `perturb/src/lib.rs` | 420 | **the pokes** | `Perturber::new` (two xoshiro256** streams from the 32-byte seed), `pad` (only on a tick of the game clock), `is_poke` (5 bursts of 2 per 100 ticks), `settle` (the refund when the frame didn't simulate; the per-frame digest mix) |
 | 7 | `perturb/src/sm64.rs` | 330 | what is read from Mario 64's memory | `regions` and `view` (the clock and the digest), `Progress` and `points`, `Features` (the codecs' inputs) |
@@ -106,6 +111,7 @@ file to read.
 | 13 | `sm64pow/src/cache.rs` | 370 | end states between blocks (memory and disk) | `run_key`: restamped copies of a block share one entry (red team finding F1). The disk format is at the bottom |
 | 14 | `sm64pow/src/preverify.rs` | 145 | the parallel sync pre-pass | it never decides validity |
 | 14b | `sm64pow/src/admit.rs` | 590 | which blocks earn a replay at all (relay policy, not consensus; [DOS.md](DOS.md)) | `admit_alt`, `admit_relay`, `RpcScope` |
+| 14c | `sm64pow/src/equivocation.rs` | 260 | two signed runs for one template (relay policy, v0.3) | `judge_sibling`, `Evidence`, `choose_parent` |
 | 15 | `sm64pow/src/chain.rs` | 200 | **the verdict per block** | `check`: the known-run fast path (re-checks only the timestamp rules), the limit, the restart delay, `NeedParent` |
 | 16 | `sm64pow/src/ffi.rs`, `sm64pow/sm64pow.h` | 525 + 70 | the C ABI | sections: setup, verifying blocks, proof blobs, rules. Every function catches panics |
 | 17 | `monero/src/sm64coin/sm64coin.{h,cpp}` | 105 + 225 | the daemon's whole interface to proof-of-play | type adaptation only |
@@ -122,11 +128,11 @@ cycle `lib <-> chain <-> game <-> statecodec`. There is none now.
 
 ```
  6  ffi ............................................ C ABI for the daemon (sm64pow.h)
- 5  chain ── preverify ── cache .................... a block's verdict, sync pre-pass, end states
+ 5  chain ── preverify ── cache ── admit ── equivocation  a block's verdict, sync pre-pass, end states, relay policy
  4  replay ......................................... one run: start rules, replay, success on the last frame
  3  proof_id ── statecodec ......................... block-id commitment; codecs 3-5 (replay-fed)
  2  game ── emulator ............................... game + perturbation; ROM / game build
- 1  rules  hold  seed  proof ....................... pure: parameters, hold policy, seed, blob + codecs 0-2
+ 1  rules  hold  seed  sign  proof ................. pure: parameters, hold policy, seed, signatures, blob + codecs 0-2
  0  sm64coin-perturb   sm64coin-statecodec ......... pokes + memory map; pure codec models
 
  beside the consensus path: mining (sealing, standalone verify), statecodec's research tooling
@@ -171,7 +177,7 @@ markers. Here they are grouped by what they do.
 - `:44` coinbase unlock window 4 (was 60).
 - `:48` future time limit 120 s (was 2 h).
 - `:49` `SM64COIN_MAX_PROOF_BYTES`.
-- `:81-85` target 300 s, window 60, lag 0, cut 6. These must agree with `rules.rs`.
+- `:81-85` target 1200 s, window 60, lag 0, cut 6. These must agree with `rules.rs`.
 - `:166` name `sm64coin`.
 - `:228-300` address prefixes (`SM64`, `SM6i`, `SM6s`), ports 16480/26480/36480, network ids, genesis tx and nonces (the genesis coinbase is burned to the RingCT H point).
 - `src/hardforks/hardforks.cpp:35-51`: Monero's latest rules from block 1.

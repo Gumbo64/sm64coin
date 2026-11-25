@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from .proof import pad_from, varint
+from .sign import Keypair, sign_proof
 
 
 @dataclass
@@ -35,6 +36,7 @@ class Template:
     parent_keys: int = 0
     cycle_start_height: int = 0
     valid_at: int = 0               # only when asked with `frames`: when a run of that many frames is valid
+    key: Keypair = None             # the miner key the template was requested with
 
 
 @dataclass
@@ -71,10 +73,12 @@ class Daemon:
             raise RuntimeError(f"{method}: {resp['error'].get('message', 'error')}")
         return resp["result"]
 
-    def get_template(self, address, frames=None) -> Template:
-        """The block template. With `frames`, `valid_at` says when a run of that many frames
-        becomes valid (use only that field: a fresh template may carry another seed)."""
-        p = {"wallet_address": address, "reserve_size": 0}
+    def get_template(self, address, key: Keypair, frames=None) -> Template:
+        """The block template for the miner key `key` (v0.3: its `extra_nonce()` goes into the coinbase,
+        so the seed covers the key; use the same key for every template call of one run). With
+        `frames`, `valid_at` says when a run of that many frames becomes valid (use only that
+        field: a fresh template may carry another seed)."""
+        p = {"wallet_address": address, "extra_nonce": key.extra_nonce().hex()}
         if frames is not None:
             p["sm64_frames"] = int(frames)
         r = self.call("get_block_template", p)
@@ -89,11 +93,11 @@ class Daemon:
             start=r.get("sm64_start", "parent"), power_on_at=r.get("sm64_power_on_at", 0), restart_delay=r.get("sm64_restart_delay", 0),
             parent_timestamp=r.get("sm64_parent_timestamp", 0), parent_stars=r.get("sm64_parent_stars", 0),
             parent_keys=r.get("sm64_parent_keys", 0), cycle_start_height=r.get("sm64_cycle_start_height", 0),
-            valid_at=r.get("sm64_valid_at", 0))
+            valid_at=r.get("sm64_valid_at", 0), key=key)
 
-    def valid_at(self, address, frames) -> int:
+    def valid_at(self, address, key, frames) -> int:
         """Unix time from which a run of `frames` frames is valid for the next block."""
-        return self.get_template(address, frames).valid_at
+        return self.get_template(address, key, frames).valid_at
 
     def cycle(self, tip=None) -> Cycle:
         """The cycle ending at block `tip` (hash; default the chain's top): its blocks and every
@@ -109,11 +113,12 @@ class Daemon:
             stars=r.get("stars", 0), keys=r.get("keys", 0), grand_star=bool(r.get("grand_star", False)),
             ends_cycle=bool(r.get("ends_cycle", False)))
 
-    def get_task(self, address, start=None, play_frames=None):
-        """(Task, Template) for the next block. The task starts from the parent's end state
-        (rebuilt from `cycle`) or power-on, as the template allows (`start` forces one)."""
+    def get_task(self, address, key: Keypair = None, start=None, play_frames=None):
+        """(Task, Template) for the next block, requested for the miner `key` (default: a fresh
+        `Keypair.generate()`; the template keeps it as `template.key`). The task starts from the
+        parent's end state (rebuilt from `cycle`) or power-on, as the template allows (`start` forces one)."""
         from .env import Task
-        t = self.get_template(address)
+        t = self.get_template(address, key or Keypair.generate())
         s = start or ("parent" if t.start in ("parent", "either") else "power-on")
         cycle = self.cycle(t.prev_hash) if s == "parent" else None
         return Task.from_template(t, cycle, s, play_frames), t
@@ -121,27 +126,33 @@ class Daemon:
     def top_hash(self) -> str:
         return self.call("get_info").get("top_block_hash", "")
 
-    def seal(self, template, proof: bytes, timestamp=None) -> str:
-        return seal(template.blocktemplate_blob, proof, timestamp)
+    def seal(self, template, proof: bytes, timestamp=None, key: Keypair = None) -> str:
+        """The signed, submit-ready block: signs `proof` with the template's key (or `key`)."""
+        key = key or template.key
+        sig = sign_proof(key, bytes.fromhex(template.seed_hash), proof)
+        return seal(template.blocktemplate_blob, proof, sig, timestamp)
 
     def submit(self, block_hex: str):
         self.call("submit_block", [block_hex])
 
 
-def seal(template_hex: str, proof: bytes, timestamp=None) -> str:
-    """The template blob with `proof` in place of its empty proof (the blob's last byte, 0), and
-    the block header's timestamp replaced by `timestamp` (unix seconds; default: now). The seed no
-    longer depends on the timestamp, so a miner stamps its block when it submits. Header:
-    varint major, varint minor, varint timestamp, prev_id (32), nonce (4), ..."""
+def seal(template_hex: str, proof: bytes, sig: bytes, timestamp=None) -> str:
+    """The template blob (v0.3: it ends with the empty proof, a 0 byte, and the empty signature, 64
+    zero bytes) with `proof` and its signature `sig` (`sign.sign_proof`) in their place, and the block
+    header's timestamp replaced by `timestamp` (unix seconds; default: now). The seed does not depend
+    on the timestamp, so a miner stamps its block when it submits and the signature stays valid.
+    Header: varint major, varint minor, varint timestamp, prev_id (32), nonce (4), ..."""
     blob = bytes.fromhex(template_hex)
-    if not blob or blob[-1] != 0:
-        raise ValueError("template does not end with an empty proof; is this an SM64Coin daemon?")
-    blob = blob[:-1]
+    if len(blob) < 65 or any(blob[-65:]):
+        raise ValueError("template does not end with an empty proof and signature; is this an SM64Coin v0.3 daemon?")
+    if len(sig) != 64:
+        raise ValueError("a signature is 64 bytes")
+    blob = blob[:-65]
     _, i = get_varint_loose(blob, 0)   # major version
     _, i = get_varint_loose(blob, i)   # minor version
     _, j = get_varint_loose(blob, i)   # timestamp
     ts = int(time.time()) if timestamp is None else int(timestamp)
-    return (blob[:i] + varint(ts) + blob[j:] + varint(len(proof)) + bytes(proof)).hex()
+    return (blob[:i] + varint(ts) + blob[j:] + varint(len(proof)) + bytes(proof) + bytes(sig)).hex()
 
 
 def get_varint_loose(b: bytes, i: int):

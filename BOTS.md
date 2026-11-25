@@ -44,9 +44,22 @@ Simulating futures on clones or save states is allowed (it is how the built-in m
 
 Difficulty is only the time limit: 18000 frames (10 minutes at 30 fps) at difficulty 1, shrinking by 2 % per eighth of a doubling (about 15 % per doubling), floor 600 frames. The limit **grows continuously** once a block is more than 600 s old: after the grace period every second adds a little, one halving of the difficulty per 300 s (`rules().max_frames(retarget_difficulty, seconds_since_parent)`, integer arithmetic; `sm64_retarget_difficulty` in the template). So a run longer than the current limit is not lost: it becomes valid later. Ask the daemon when: `get_block_template` with the request parameter `sm64_frames: N` returns `sm64_valid_at`, the unix time from which a run of N frames is valid. Chain weight (what the best chain is) counts the effective difficulty, and blocks with the same work are tie-broken by the shorter run (fewer frames).
 
+### Signed proofs (v0.3)
+
+On the v0.3 chain every block except genesis is **signed by a per-template miner key**; old-style unsigned blocks are rejected. This stops anyone from re-publishing your run with a few different trailing inputs as a rival block.
+
+1. Before playing, generate a throwaway key (Rust `Keypair::generate()`, Python `Keypair.generate()`).
+2. Request the template with `get_block_template {wallet_address, extra_nonce: hex(0x64 || public key)}` (`key.extra_nonce()`), and **no** `reserve_size`. The daemon puts the extra nonce in the coinbase, so `sm64_seed_hash` (the perturbation seed) already covers your key. The key must be fixed before the run is played, and every template call for that run (the `sm64_frames` valid-at queries too) should pass the same `extra_nonce`.
+3. When the run is done, sign it: Rust `sign_proof(&key, &template, &proof)`, Python `sign_proof(key, seed, proof)`. The signature is Monero's Schnorr signature over `keccak256("sm64coin proof signature v1" || seed || proof_id || frames u32 LE)`; `proof_id` is what the block id commits to (`pow/sm64pow/src/proof_id.rs`, the same for codecs 0-2 whichever you pick).
+4. Seal: the v0.3 template blob ends with `00` (empty proof) and 64 zero bytes (empty `sm64_sig`); `seal` replaces them with `varint(len(proof)) || proof || sig`. Only the final block bytes change, so signing after the timestamp rewrite is fine.
+
+**Only ever submit strictly shorter runs** for a template you already submitted to: two different signed runs of the same length are equivocation evidence, and nodes then refuse to build on your block ([docs/V0.3-NEW-CHAIN.md](docs/V0.3-NEW-CHAIN.md)).
+
+`run_miner` does all of this with a fresh key per template. To use your own keys (a group leader sharing the per-template secret with its members, who each can then sign and submit): Rust `run_miner_keyed(bot, &cfg, &mut |round| Ok(Keypair::from_secret(&secret)?))`, Python `run_miner(..., next_key=lambda round: Keypair(secret))`. Python's `proof_id` handles the stateless codecs (raw, RLE, xz) only, which is what the Python SDK produces.
+
 ### Timestamps
 
-The seed does not include the timestamp, so **set the block's timestamp to "now" right before submitting**, in the template blob itself (`varint major_version, varint minor_version, varint timestamp, prev_id, nonce, ...`; rewrite the third varint) rather than fetching a new template (new mempool transactions would change the seed). The limit that applies is the one at the block's timestamp. Both SDKs: `seal(template_hex, proof, timestamp)`.
+The seed does not include the timestamp, so **set the block's timestamp to "now" right before submitting**, in the template blob itself (`varint major_version, varint minor_version, varint timestamp, prev_id, nonce, ...`; rewrite the third varint) rather than fetching a new template (new mempool transactions would change the seed). The limit that applies is the one at the block's timestamp. Both SDKs: `seal(template_hex, proof, sig, timestamp)` (the signature is covered next; the timestamp is not signed).
 
 A miner that finds an over-budget run therefore waits until `sm64_valid_at`, stamps the block then, and submits, unless the tip changes first (then the run is worthless). `run_miner` does this.
 
@@ -102,7 +115,7 @@ print(practice(bot, seed=1, difficulty=1)["success"])        # offline
 run_miner(bot, "http://127.0.0.1:16481", "SM64...")          # against a daemon
 ```
 
-`Daemon(url).get_task(address)` returns `(Task, Template)` (it fetches `get_sm64_cycle` and replays it for a parent start; `start="power-on"` overrides); `Daemon.cycle()`, `Daemon.valid_at(address, frames)`; `seal(template_hex, proof, timestamp)` and `daemon.submit(block_hex)` finish a block by hand. `run_miner` waits for over-budget runs and stamps the block. The Python SDK reimplements the perturbation (`sm64coin.perturb`, reading the game's memory through `sm64-binds`) and seals the proof itself; the tests check both against the Rust verifier. The `sm64-binds` Python package must be the one with the current game build (reinstall it from `sm64-binds/python` after a game rebuild). It has no byte-level save states, only game copies, so `env.save()` is a clone (game plus perturbation). See `python/examples/`.
+`Daemon(url).get_task(address, key)` (key: `Keypair`, default a fresh one) returns `(Task, Template)` (it fetches `get_sm64_cycle` and replays it for a parent start; `start="power-on"` overrides); `Daemon.cycle()`, `Daemon.valid_at(address, key, frames)`; `sign_proof(key, seed, proof)`, `seal(template_hex, proof, sig, timestamp)` (or `daemon.seal(template, proof, ts)`, which signs with the template's key) and `daemon.submit(block_hex)` finish a block by hand. `run_miner` waits for over-budget runs and stamps the block. The Python SDK reimplements the perturbation (`sm64coin.perturb`, reading the game's memory through `sm64-binds`) and seals the proof itself; the tests check both against the Rust verifier. The `sm64-binds` Python package must be the one with the current game build (reinstall it from `sm64-binds/python` after a game rebuild). It has no byte-level save states, only game copies, so `env.save()` is a clone (game plus perturbation). See `python/examples/`.
 
 ## Practice offline
 
