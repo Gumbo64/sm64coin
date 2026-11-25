@@ -26,7 +26,7 @@
 .tp { position: absolute; inset: 0; pointer-events: none; z-index: 2; opacity: var(--tp-op, .6); }
 .tp * { touch-action: none; user-select: none; -webkit-user-select: none; }
 .tp-left { position: absolute; pointer-events: auto; touch-action: none; }
-.tp-ghost { position: absolute; left: 50%; top: 55%; width: calc(110 * var(--u)); height: calc(110 * var(--u)); margin: calc(-55 * var(--u)) 0 0 calc(-55 * var(--u)); border-radius: 50%; border: 2px dashed rgba(255,255,255,.3); pointer-events: none; }
+.tp-ghost { position: absolute; left: calc(55 * var(--u) + 12px); top: 55%; width: calc(110 * var(--u)); height: calc(110 * var(--u)); margin: calc(-55 * var(--u)) 0 0 calc(-55 * var(--u)); border-radius: 50%; border: 2px dashed rgba(255,255,255,.3); pointer-events: none; }
 .tp-stick { position: absolute; width: calc(128 * var(--u)); height: calc(128 * var(--u)); margin: calc(-64 * var(--u)) 0 0 calc(-64 * var(--u));
   border-radius: 50%; background: rgba(255,255,255,.12); border: 2px solid rgba(255,255,255,.5); pointer-events: none; }
 .tp-knob { position: absolute; left: 50%; top: 50%; width: calc(56 * var(--u)); height: calc(56 * var(--u)); margin: calc(-28 * var(--u)); border-radius: 50%; background: rgba(255,255,255,.55); }
@@ -60,6 +60,24 @@
   .pv.imm .tp-left { left: var(--sal); top: calc(var(--sat) + var(--strip)); bottom: var(--sab); right: calc(324 * var(--u) + 16px + var(--sar)); }
   .pv.imm .tp-right { right: calc(8px + var(--sar)); bottom: calc(8px + var(--sab)); }
   .pv-hint { display: none !important; }
+  .pv.imm.bars { --barsL: 78px; }
+  .pv.imm.bars .pv-more { max-width: calc(var(--cw) - 112px); }
+  .pv.imm.nopad .pv-more { max-width: calc(100% - 16px); }
+  .pv.imm.bars .tp-left { top: calc(var(--sat) + var(--strip) + var(--barsL)); }
+  .pv-bars.l { top: calc(var(--sat) + var(--strip) + 4px); left: calc(var(--sal) + 4px); width: calc(var(--side) + 50px); }
+  .pv-bars.r { bottom: calc(var(--sab) + 8px + 250 * var(--u) + 6px); right: calc(var(--sar) + 4px); width: calc(var(--side) + 50px); }
+  /* A desktop without the touch controller: one strip under the picture, centred. */
+  .pv.imm.nopad.bars { --barsH: 42px; }
+  .gamecol.pv.imm.nopad.bars .sm64canvas { height: calc(var(--ch) - var(--barsH)); width: calc((var(--ch) - var(--barsH)) * 4 / 3); left: calc((var(--W) - (var(--ch) - var(--barsH)) * 4 / 3) / 2); }
+  .pv.imm.nopad .pv-strip { width: calc((var(--ch) - var(--barsH, 0px)) * 4 / 3); left: calc((var(--W) - (var(--ch) - var(--barsH, 0px)) * 4 / 3) / 2); }
+  .pv.imm.nopad .pv-bars { top: auto; bottom: calc(var(--sab) + 4px); width: auto; max-width: calc(50% - 8px); }
+  .pv.imm.nopad .pv-bars.l { left: auto; right: 50%; margin-right: 4px; }
+  .pv.imm.nopad .pv-bars.r { right: auto; left: 50%; margin-left: 4px; }
+  .pv.imm.nopad .pv-bars, .pv.imm.nopad .pv-bars.l { display: flex; flex-direction: row; }
+  .pv.imm.nopad .pv-bars .ui-toolbar { display: flex; flex-wrap: nowrap; }
+  .pv.imm.nopad .pv-bars .ui-btn { min-width: 34px; }
+  .pv.imm.nopad .pv-bars .minor { display: inline-block; }
+  .pv.imm.nopad .pv-bars .sl-t { display: inline; }
 }
 /* Portrait: the game on top, the controller below it (never over the picture). */
 @media (orientation: portrait) {
@@ -70,7 +88,28 @@
   .pv.imm .tp-left { left: var(--sal); top: var(--pad-top); bottom: var(--sab); right: calc(324 * var(--u) + 16px + var(--sar)); }
   .pv.imm .tp-right { right: calc(8px + var(--sar)); bottom: calc(8px + var(--sab)); }
   .pv-hint { display: flex; top: calc(var(--pad-top) + 6px); }
+  .pv.imm.bars { --bars: 74px; }
+  .pv.imm.bars { --pad-top: calc(var(--sat) + var(--strip) + var(--gh) + var(--bars)); }
+  .pv-bars { top: calc(var(--sat) + var(--strip) + var(--gh) + 3px); width: calc(50% - var(--sal) - 6px); }
+  .pv-bars.l { left: calc(var(--sal) + 4px); }
+  .pv-bars.r { right: calc(var(--sar) + 4px); }
 }
+
+/* The full-screen toolbars: compact grids of small buttons beside / under the picture. */
+.pv-bars { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; }
+.pv-bars .ui-toolbar { display: grid; grid-template-columns: repeat(auto-fill, minmax(30px, 1fr)); gap: 4px; margin: 0; }
+.pv-bars .ui-toolbar + .ui-toolbar { margin: 0; }
+.pv-bars .ui-btn { min-height: 30px; min-width: 0; padding: 2px 3px; font-size: 12px; background: rgba(20,24,48,.82); color: #fff; border: 1px solid rgba(255,255,255,.25); white-space: nowrap; }
+.pv-bars .ui-btn.on { background: var(--acc); color: #1a1a1a; }
+.pv-bars .ui-btn:disabled { opacity: .45; }
+.pv-bars .minor, .pv-bars .sl-t { display: none; }
+.pv-bars.l { display: grid; grid-template-columns: repeat(auto-fill, minmax(30px, 1fr)); gap: 4px; }
+.pv-bars.l .ui-toolbar { display: contents; }
+.pv-more { position: absolute; z-index: 4; left: 50%; transform: translateX(-50%); top: calc(var(--sat) + var(--strip) + 6px); width: max-content; max-width: calc(100% - 16px); box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px; background: rgba(10,12,24,.94); border: 1px solid rgba(255,255,255,.3); border-radius: 10px; color: #fff; }
+.pv-more .ui-toolbar { margin: 0; }
+.pv-more .ui-btn { min-height: 30px; padding: 3px 8px; font-size: 12px; }
+.pv-more .slot-info { margin: 0; font-size: 11px; }
 
 /* Not full screen: the controller is a block directly under the game (part of the game column,
    scrolls with it, covers nothing). */
@@ -78,3 +117,13 @@
   --u: min(calc(var(--tp-s, 1) * 1px), calc((100vw - 32px - 110px) / 324), 1.1px); }
 .pv:not(.imm) .tp-left { left: 0; top: 0; bottom: 0; right: calc(324 * var(--u) + 8px); border-radius: 12px; background: rgba(255,255,255,.05); border: 1px dashed rgba(255,255,255,.2); }
 .pv:not(.imm) .tp-right { right: 0; bottom: 0; }
+
+/* Hybrid play: a clear Finish (Enter) and Discard, at least 44 px tall: under the picture on the page, in the strip full screen. */
+.pv-fin { display: flex; gap: 8px; margin-top: 8px; }
+.pv-finish, .pv-discard { min-height: 44px; padding: 0 16px; font-size: 15px; font-weight: 700; border-radius: 8px; }
+.pv-fin .pv-finish { flex: 1 1 auto; background: #2e9e5b; color: #fff; }
+.pv-fin .pv-discard { flex: 0 0 auto; background: #2a2f4a; color: var(--fg); }
+.pv.imm.hy { --strip: 48px; }
+.pv-strip .pv-btn.pv-finish { width: auto; min-width: 44px; height: 44px; padding: 0 10px; font-size: 14px; background: #2e9e5b; }
+.pv-strip .pv-btn.pv-discard { width: 44px; height: 44px; font-size: 16px; }
+.pv.imm.hy .pv-btn { height: 44px; min-width: 44px; }

@@ -48,4 +48,25 @@ one.add(0, '1:0:6:1:Enter', { places: 5, records: 0, new: ['p', 'q'] }, 1); tick
 assert.equal(one.series.length, 1);
 assert.equal(one.overlap(), null);
 
+// The strip: kinds are new places / faster routes / no progress / no data; a found run is marked and the slices after it "beat" it.
+{
+  const b = new Coverage();
+  const realNow = Date.now; let clock = 1e6; Date.now = () => clock;
+  const at = (s) => { clock = 1e6 + s * 1000; };
+  at(0); b.add(0, '1:0:9:1:Stars', { places: 4, records: 0, new: ['a', 'b', 'c', 'd'] }, 1);
+  at(5); b.add(0, '1:0:9:1:Stars', { places: 7, records: 0, new: ['e', 'f', 'g'] }, 1);
+  at(16); b.add(0, '1:0:9:1:Stars', { places: 7, records: 1, new: [] }, 1);
+  at(31); b.add(0, '1:0:9:1:Stars', { places: 4, records: 1, new: [] }, 1);
+  at(100); b.runFound();
+  at(106); b.add(0, '1:0:9:1:Stars', { places: 4, records: 1, new: [] }, 1);
+  Date.now = realNow;
+  const k = b.buckets();
+  assert.equal(k[0].kind, 'new');
+  assert.equal(k[1].kind, 'faster');
+  assert.equal(k[2].kind, 'noprogress');
+  assert.equal(k[3].kind, 'none'); assert.equal(k[3].beating, false); // no sample in 45..60 s: no data
+  assert.equal(b.runs.length, 1);
+  assert.equal(k[6].run, true); assert.equal(k[6].beating, true);
+  assert.equal(k[5].beating, false);
+}
 console.log('coverage ok');

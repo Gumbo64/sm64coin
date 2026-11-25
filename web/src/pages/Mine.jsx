@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { Recorder } from '../lib/recorder.js';
+import { SAVE_KEYS, LOAD_KEYS, courseLabel } from '../lib/saveslots.js';
 import CycleTimeline from '../lib/CycleTimeline.jsx';
 import LimitChart from '../lib/LimitChart.jsx';
 import { daemon } from '../lib/rpc.js';
@@ -262,6 +263,7 @@ function Miner() {
   const gameBox = useRef(null);
   const gameVisible = useVisible(gameBox);
   const mode = play ? 'hybrid' : showAuto ? 'reel' : 'manual';
+  const groups = useControls(rec, mode === 'hybrid');
   useEffect(() => { if (!showAuto && play) { stopRef.current = 'discard'; setPlay(null); } }, [showAuto]); // eslint-disable-line react-hooks/exhaustive-deps
   const reelPlay = (w, node) => { hub.game = { id: hub.game.id + 1, kind: node ? 'node' : 'best', w, step: node?.step, nid: node?.id }; hub.found = null; hub.notify(); gameBox.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); };
   const playFrom = async (sel) => {
@@ -363,7 +365,7 @@ function Miner() {
             <span className="stat">{clock ? `${clock.speed}×` : ''}</span>
             <span className="stat">{levelName(play.msg.level)} · area {play.msg.area} · node frame {play.sel.frame}</span>
           </div>
-          <Controls rec={rec} hybrid />
+          <Controls groups={groups} />
           <p className="muted small" style={{ margin: '8px 0 0' }}>
             <b>Enter</b> (or Esc) ends the segment: it becomes a node of the search tree with a high weight and you return to the cloud. G goes back to the node's state.
           </p>
@@ -373,8 +375,7 @@ function Miner() {
   );
   const hybridActions = play && (
     <>
-      {play.phase === 'playing' && <ToolBtn on onClick={finish} title="Finish the segment: it becomes a node of the search tree (Enter)">✓ Finish ⏎</ToolBtn>}
-      <ToolBtn onClick={play.phase === 'playing' ? discard : cancelPlay} title="Throw the segment away and go back to the cloud">{play.phase === 'playing' ? '✕ Discard' : 'Cancel'}</ToolBtn>
+      {play.phase !== 'playing' && <ToolBtn onClick={cancelPlay} title="Throw the segment away and go back to the cloud">Cancel</ToolBtn>}
     </>
   );
   const manualNormal = (
@@ -394,7 +395,7 @@ function Miner() {
         {pendingRun && <span className="stat warn">pending run {frames(pendingRun.frames)}: valid in {mmss(Math.max(0, pendingRun.validAt - Date.now() / 1000))} (sent automatically; play on for a shorter one)</span>}
         {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
       </div>
-      <Controls rec={rec} />
+      <Controls groups={groups} />
     </>
   );
   const manualActions = (
@@ -428,7 +429,7 @@ function Miner() {
           <>
             {showAuto && <React.Suspense fallback={null}><VizToasts hub={hub} /></React.Suspense>}
             <Panel className="viz-game" innerRef={gameBox} title="Game" chip={chip} open={gameOpen} onToggle={() => setGameOpen(!gameOpen)} settings={gameSettings}>
-              <PlayView rec={rec} clock={clock} limit={mode === 'manual' ? lim : 0} interactive={mode !== 'reel'} onFinish={mode === 'hybrid' && play.phase === 'playing' ? finish : null}
+              <PlayView rec={rec} clock={clock} groups={mode === 'reel' ? null : groups} limit={mode === 'manual' ? lim : 0} interactive={mode !== 'reel'} onFinish={mode === 'hybrid' && play.phase === 'playing' ? finish : null} onDiscard={mode === 'hybrid' && play.phase === 'playing' ? discard : null}
                 normal={mode === 'hybrid' ? hybridNormal : mode === 'reel' ? reelNormal : manualNormal}
                 actions={mode === 'hybrid' ? hybridActions : manualActions}>
                 <EngineSlot onEngine={setEngine} onError={setEngineErr} />
@@ -574,16 +575,22 @@ function CyclePanel({ task, start }) {
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];
 
-// On-screen buttons and keyboard shortcuts for the recorder (keys the game doesn't use): grouped toolbars, playback
-// and speed (the third group, the actions, is PlayView's: new template, touch controls).
-export function Controls({ rec, hybrid = false }) {
+// On-screen buttons and keyboard shortcuts for the recorder (keys the game doesn't use), as grouped toolbars: playback,
+// speed, save states and load states (the fifth group, the actions, is PlayView's: new template, touch controls).
+// useControls returns the groups as nodes so the page shows them under the game and the full-screen view lays them out
+// around the picture.
+const fmtT = (f) => { const s = Math.floor(f / 30); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+export function useControls(rec, hybrid = false) {
   const [, force] = useState(0);
   useEffect(() => {
     const onKey = (e) => {
       const r = rec.current;
       if (!r || e.target.tagName === 'INPUT') return;
       const k = e.key;
-      if (k === 'g' || k === 'G') r.restart();
+      const mod = e.ctrlKey || e.metaKey || e.altKey;
+      if (!mod && SAVE_KEYS.includes(k.toLowerCase()) && !e.shiftKey) r.saveSlot(SAVE_KEYS.indexOf(k.toLowerCase()));
+      else if (!mod && LOAD_KEYS.includes(k) && !e.shiftKey) { if (!r.loadSlot(LOAD_KEYS.indexOf(k))) return; }
+      else if (k === 'g' || k === 'G') r.restart();
       else if (k === 'Backspace') { e.preventDefault(); r.back(e.shiftKey ? 30 : 5); }
       else if (k === '[') r.back(1);
       else if (k === 'p' || k === 'P') r.togglePause();
@@ -597,21 +604,46 @@ export function Controls({ rec, hybrid = false }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [rec, hybrid]);
   const act = (f) => () => { if (rec.current) { f(rec.current); force((x) => x + 1); } };
-  const btn = (label, tip, f, on) => <ToolBtn key={tip} title={tip} aria-label={tip} on={on} onClick={act(f)}>{label}</ToolBtn>;
-  return (
-    <>
-      <Toolbar label="Playback">
-        {btn('⟲', hybrid ? 'Back to the node\'s state (G)' : 'Restart the attempt (G)', (r) => r.restart())}
-        {[[1, '['], [5, 'Backspace'], [10, 'D-pad up'], [30, 'Shift+Backspace']].map(([s, k]) =>
-          btn(`◀${s}s`, `Back ${s} s (${k})`, (r) => r.back(s)))}
-        {btn('⏸', 'Pause / resume (P)', (r) => r.togglePause(), rec.current && rec.current.paused)}
-        {btn('▶', 'Take over during a replay (T)', (r) => r.takeOver())}
-      </Toolbar>
-      <Toolbar label="Speed">
-        {SPEEDS.map((s, i) => btn(`${s}×`, `Speed ${s}× (${i + 1})`, (r) => r.setSpeed(s), rec.current && rec.current.speed === s))}
-      </Toolbar>
-    </>
+  const btn = (label, tip, f, on, extra = {}) => <ToolBtn key={tip} title={tip} aria-label={tip} on={on} onClick={act(f)} {...extra}>{label}</ToolBtn>;
+  const r = rec.current;
+  const playback = (
+    <Toolbar label="Playback" key="playback">
+      {btn('⟲', hybrid ? 'Back to the node\'s state (G)' : 'Restart the attempt (G)', (x) => x.restart())}
+      {[[1, '['], [5, 'Backspace'], [10, 'D-pad up'], [30, 'Shift+Backspace']].map(([sec, k]) =>
+        btn(`◀${sec}s`, `Back ${sec} s (${k})`, (x) => x.back(sec), false, { className: sec === 5 ? '' : 'minor' }))}
+      {btn('⏸', 'Pause / resume (P)', (x) => x.togglePause(), r && r.paused)}
+      {btn('▶', 'Take over during a replay (T)', (x) => x.takeOver())}
+    </Toolbar>
   );
+  const speed = (
+    <Toolbar label="Speed" key="speed">
+      {SPEEDS.map((sp, i) => btn(`${sp}×`, `Speed ${sp}× (${i + 1})`, (x) => x.setSpeed(sp), r && r.speed === sp))}
+    </Toolbar>
+  );
+  const bank = r ? r.slots : null;
+  const slotTip = (i, sl) => (sl ? `slot ${i + 1}: frame ${sl.frame} (${fmtT(sl.frame)}), ${courseLabel(sl.info.course)} area ${sl.info.area}, ${sl.info.stars} stars` : `slot ${i + 1} is empty`);
+  const save = (
+    <Toolbar label="Save state" key="save">
+      {SAVE_KEYS.map((k, i) => btn(<>💾<b>{i + 1}</b></>, `Save the game and your recording to slot ${i + 1} (${k.toUpperCase()}); now: ${slotTip(i, bank && bank.get(i))}`, (x) => x.saveSlot(i), false, { className: 'slot' }))}
+    </Toolbar>
+  );
+  const load = (
+    <Toolbar label="Load state" key="load">
+      {LOAD_KEYS.map((k, i) => {
+        const sl = bank && bank.get(i);
+        return <ToolBtn key={i} className="slot" disabled={!sl} aria-label={`Load slot ${i + 1}`} title={sl ? `Load ${slotTip(i, sl)}: the game and your recording go back to it (${k})` : `Slot ${i + 1} is empty: save first (${SAVE_KEYS[i].toUpperCase()})`}
+          onClick={act((x) => x.loadSlot(i))}>⏏<b>{i + 1}</b>{sl && <span className="sl-t"> {fmtT(sl.frame)}</span>}</ToolBtn>;
+      })}
+    </Toolbar>
+  );
+  const used = bank ? bank.slots.map((sl, i) => (sl ? `${i + 1}: ${fmtT(sl.frame)} ${courseLabel(sl.info.course)}` : null)).filter(Boolean) : [];
+  const info = used.length ? <p className="muted small slot-info" key="info">Slots · {used.join(' · ')}</p> : null;
+  return { playback, speed, save, load, info };
+}
+
+// The groups, one after the other, under the game on the page.
+export function Controls({ groups }) {
+  return <>{groups.playback}{groups.speed}{groups.save}{groups.load}{groups.info}</>;
 }
 
 export function NewTemplateBtn({ rec }) {
@@ -644,6 +676,7 @@ function Help() {
       <p><b>Miner keys:</b> <b>G</b> restart the attempt (from the block's start) · <b>Backspace</b> back 5 s (<b>Shift+Backspace</b> 30 s, <b>[</b> 1 s) ·
         <b>P</b> pause · <b>T</b> or Start take over during a replay · <b>1</b>–<b>6</b> speed ¼×, ½×, 1×, 2×, 4×, 10× ·
         hold D-pad down (Left Shift) for 10× , D-pad up (R) to go back 10 s · <b>N</b> new template.</p>
+      <p><b>Save states</b> (4 slots, like an emulator): <b>Z X C V</b> (or the 💾 buttons) save slot 1–4, <b>7 8 9 0</b> (or ⏏) load it. A slot keeps the game and your recording up to that moment; loading puts both back (the recording is exactly the pads that led there, even if it is longer than your current one), and you play on, so the run is still a valid proof. Slots belong to the current attempt's block template and are cleared when it changes (a new block, a new template, Play from the start toggled). In hybrid play they are relative to the segment.</p>
       <p>Going back is instant: the game is saved every 5 s of play (in the browser), so it restores the nearest save
         and replays your inputs from there (fast, then the last 3 s at normal speed). The pokes are deterministic, so
         it is exactly the same game.</p>

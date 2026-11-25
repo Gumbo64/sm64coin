@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { miner, isAddress, isolated, enableSync, fmtRate } from '../../lib/webminer/controller.js';
+import React, { useEffect, useState } from 'react';
+import { miner, isAddress, isolated, fmtRate } from '../../lib/webminer/controller.js';
+import { syncStatus, enableSync, disableSync, takeReloadNote } from '../../lib/webminer/sync.js';
 import { SideCard, GearBtn, useStored } from '../../components/ui.jsx';
 
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -7,11 +8,28 @@ const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 // The Auto-mine card of the sidebar (like the Mine page's reset-cycle card): the big Start/Stop, the speed, the
 // counts, the reward address, and under the ⚙ the worker count, the reset policy, worker sync and the master
 // switch of the visualisations.
+// Worker sync's state and why, re-read when it may have changed; after a reload that came from the switch, the scroll position comes back.
+function useSync() {
+  const [st, setSt] = useState({ on: isolated, state: isolated ? 'on' : 'off', why: '' });
+  const [tick, setTick] = useState(0);
+  useEffect(() => { let dead = false; syncStatus().then((x) => { if (!dead) setSt(x); }); return () => { dead = true; }; }, [tick]);
+  useEffect(() => {
+    const note = takeReloadNote();
+    if (note) {
+      document.querySelector('.ui-sync')?.scrollIntoView({ block: 'center' });
+      if (note.scrollY) setTimeout(() => window.scrollTo(0, note.scrollY), 0);
+      setTick((x) => x + 1);
+    }
+  }, []);
+  return [st, () => setTick((x) => x + 1)];
+}
+
 export default function ControlCard({ s }) {
   const { address, count, running, workers, stats, mode, vizOn, fps } = s;
   const [open, setOpen] = useStored('sm64coin.autoCardOpen', false);
   const [editing, setEditing] = useState(false);
   const n = workers.length || count;
+  const [sync, recheck] = useSync();
   return (
     <SideCard className="first" title="Auto-mine" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
       {open && (
@@ -28,9 +46,9 @@ export default function ControlCard({ s }) {
           </div>
           <span className="lab">Worker sync</span>
           <div className="ctl">
-            {isolated ? <span className="muted">on: workers share their best checkpoints</span>
-              : 'serviceWorker' in navigator && !running ? <button type="button" onClick={enableSync} title="Workers share their best checkpoints (needs a page reload)">Enable (reloads the page)</button>
-                : <span className="muted">{running ? 'stop to enable' : 'not available here'}</span>}
+            {running ? <span className="muted">stop auto-mining to change it</span>
+              : sync.on || sync.state === 'blocked' || sync.state === 'pending' ? <button type="button" onClick={disableSync} title="Removes the service worker and reloads; it stays off until you enable it again">Disable (reloads)</button>
+                : <span className="muted">{sync.state === 'disabled' ? 'off by your choice (enable it below the title)' : 'see the line under the title'}</span>}
           </div>
           <span className="lab">Visualisations</span>
           <div className="ctl">
@@ -39,9 +57,12 @@ export default function ControlCard({ s }) {
           {vizOn && running && !isolated && <p className="muted small" style={{ gridColumn: '1 / -1', margin: 0 }}>Workers started before it was switched on keep sampling off until their next search (enable worker sync for an instant switch).</p>}
         </form>
       )}
-      {!open && !isolated && !running && 'serviceWorker' in navigator && (
-        <button type="button" style={{ width: '100%', marginBottom: 8 }} onClick={enableSync} title="Workers share their work, and clicking a node plays it instantly (reloads the page once)">Enable worker sync (faster; reloads once)</button>
-      )}
+      <div className={`ui-sync ${sync.on ? 'on' : 'off'}`} data-testid="sync" data-state={sync.state}>
+        <span className="chip" style={{ background: sync.on ? '#1f7a45' : '#3a3f5c', color: '#fff' }}>Worker sync: {sync.on ? 'on' : 'off'}</span>
+        <span className="muted small"> {sync.why}</span>
+        {!running && !sync.on && sync.state !== 'unsupported' && sync.state !== 'blocked' && <button type="button" className="ui-btn" style={{ width: '100%', marginTop: 4 }} onClick={() => enableSync()} title="Workers share their work and clicking a node plays it instantly; reloads the page once, it stays where it is">{sync.state === 'disabled' || sync.state === 'off' ? 'Enable worker sync (reloads once)' : 'Retry (reloads once)'}</button>}
+        {running && !sync.on && <span className="muted small"> (stop auto-mining to change it)</span>}
+      </div>
       {running ? <button className="ui-big" onClick={() => miner.stop()}>Stop auto-mining</button>
         : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start auto-mining</button>}
       <div className="ui-stat">

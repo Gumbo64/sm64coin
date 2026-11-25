@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import { resolveNode } from './lib/rpc.js';
+import { autoSync } from './lib/webminer/sync.js';
 import './index.css';
 
 // The game (emscripten) listens for keys on the whole window and cancels the
@@ -22,4 +23,6 @@ for (const type of ['keydown', 'keyup', 'keypress']) {
 
 // Your own node, else the public one (public-node.json) for this visit: decided before the
 // first page asks the chain anything (at most a few seconds).
-resolveNode().finally(() => createRoot(document.getElementById('root')).render(<App />));
+// Worker sync is on by default: the first visit of a session may reload once (before anything renders) so the page comes
+// back cross-origin isolated (lib/webminer/sync.js).
+autoSync().then((reloading) => { if (!reloading) resolveNode().finally(() => createRoot(document.getElementById('root')).render(<App />)); });

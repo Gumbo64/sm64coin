@@ -32,7 +32,6 @@ export function TouchSettings({ cfg, set }) {
       <label>Opacity <input type="range" min="0.2" max="1" step="0.05" value={cfg.opacity} onChange={(e) => set({ opacity: Number(e.target.value) })} /></label>
       <label>Size <input type="range" min="0.7" max="1.4" step="0.05" value={cfg.size} onChange={(e) => set({ size: Number(e.target.value) })} /></label>
       <label><input type="checkbox" checked={cfg.haptics} onChange={(e) => set({ haptics: e.target.checked })} /> Vibrate on press</label>
-      <label><input type="checkbox" checked={cfg.auto} onChange={(e) => set({ auto: e.target.checked })} /> Open the full-screen controller automatically on touch devices</label>
     </div>
   );
 }

@@ -7,12 +7,13 @@ import { BUCKET, BUCKET_COLORS } from './coverage.js';
 // coplanar pieces are one place), x = search time (m:ss since the round's first sample). The thick line is the union over the
 // workers on the chart's course (the one most workers are on: workers on other steps don't count, see coverage.js), the thin
 // ones are each of their own counts; "overlap" = union / the sum of their counts (near 1: the workers explore different
-// places, low: they duplicate each other). Under the plot a strip, one cell per ~15 s: exploring (new
-// floors keep appearing), refining (few new floors, but faster arrivals: records), stuck (neither). Dashed lines mark a change of course (its icon).
+// places, low: they duplicate each other). Under the plot a strip, one cell per ~15 s: new places (new
+// floors keep appearing), faster routes (few new floors, but a known spot reached >= 10 frames sooner), no progress (neither), no data
+// (no worker sample arrived in the slice). A cyan marker is where a worker found a run: from there the workers restart to beat it (a cyan line under the strip). Dashed lines mark a change of course (its icon).
 // (The time-limit chart with the workers' finished runs is lib/LimitChart.jsx, drawn by VizPanel's VizTop.)
 const W = 340, H = 236, L = 36, R = 8, T = 10, STRIP = 10, B = 22;
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-const LEGEND = [['exploring', 'new floors keep appearing'], ['refining', 'few new floors, but faster arrivals'], ['stuck', 'neither']];
+const LEGEND = [['new', 'new places', 'new floors keep appearing in this slice'], ['faster', 'faster routes', 'few new floors, but a known spot was reached at least 10 frames sooner'], ['noprogress', 'no progress', 'neither new floors nor faster routes'], ['none', 'no data', 'no worker samples arrived in this slice']];
 
 export default function CoverageView({ hub }) {
   const v = useHub(hub);
@@ -70,7 +71,13 @@ export default function CoverageView({ hub }) {
     // the status strip
     const bs = cov.buckets();
     const bw = (W - L - R) / (tMax / BUCKET);
-    bs.forEach((b) => { g.fillStyle = BUCKET_COLORS[b.kind]; g.fillRect(x(b.t0), plotB + 4, Math.max(1, bw - 1), STRIP); });
+    bs.forEach((b) => {
+      g.fillStyle = BUCKET_COLORS[b.kind]; g.fillRect(x(b.t0), plotB + 4, Math.max(1, bw - 1), STRIP);
+      if (b.beating) { g.fillStyle = '#22d3ee'; g.fillRect(x(b.t0), plotB + 4 + STRIP + 1, Math.max(1, bw - 1), 2); }
+    });
+    // runs found: a cyan marker
+    g.strokeStyle = '#22d3ee'; g.fillStyle = '#22d3ee'; g.lineWidth = 1.5;
+    for (const r of cov.runs) { g.beginPath(); g.moveTo(x(r.t), T); g.lineTo(x(r.t), plotB + STRIP + 4); g.stroke(); g.textAlign = 'left'; g.fillText('run found', Math.min(x(r.t) + 3, W - R - 46), T + 20); }
     if (hover) {
       g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = 1; g.beginPath(); g.moveTo(x(hover.t), T); g.lineTo(x(hover.t), plotB); g.stroke();
       g.fillStyle = '#fff'; g.beginPath(); g.arc(x(hover.t), y(hover.union), 4, 0, 7); g.fill();
@@ -88,7 +95,7 @@ export default function CoverageView({ hub }) {
   const ov = cov.overlap();
   const bs = cov.buckets();
   const nowKind = bs.length ? bs[bs.length - 1].kind : 'none';
-  const word = { exploring: 'exploring', refining: 'refining', stuck: 'stuck', none: '' }[nowKind];
+  const word = { new: 'finding new places', faster: 'finding faster routes', noprogress: 'making no progress', none: '' }[nowKind];
   const where = (s) => (s.of > 1 ? `${s.n} of ${s.of} workers on ${s.label}` : s.label);
   return (
     <div className="viz-card" ref={box}>
@@ -97,11 +104,12 @@ export default function CoverageView({ hub }) {
         <canvas ref={cv} style={{ width: '100%', aspectRatio: `${W} / ${H}` }} onMouseMove={onMove} onMouseLeave={() => setHover(null)} />
       </div>
       <div className="small" style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 10px', margin: '4px 0' }}>
-        {LEGEND.map(([k, t]) => <span key={k} title={t} style={{ borderLeft: `8px solid ${BUCKET_COLORS[k]}`, paddingLeft: 5 }}>{k}</span>)}
+        {LEGEND.map(([k, name, t]) => <span key={k} title={t} style={{ borderLeft: `8px solid ${BUCKET_COLORS[k]}`, paddingLeft: 5 }}>{name}</span>)}
+        {cov.runs.length > 0 && <span title="A worker found a run; the workers restart to beat it" style={{ borderLeft: '8px solid #22d3ee', paddingLeft: 5 }}>run found / beating it</span>}
       </div>
       <div className="muted small">
         {hover ? `at ${mmss(hover.t)}: ${hover.union} floors in all, ${where(hover)}${hover.n > 1 ? ` (${hover.per.map((n, i) => (n == null ? null : `w${i + 1} ${n}`)).filter(Boolean).join(', ')})` : ''}`
-          : last ? `${word ? `now ${word}. ` : ''}The chart follows the course most workers are on. Thick line: those workers together; thin: each of them. Overlap = union / sum of their counts (near 1: they explore different places; shown with 2 or more there).`
+          : last ? `${word ? `now ${word}. ` : ''}The chart follows the course most workers are on. Thick line: those workers together; thin: each of them. Overlap = union / sum of their counts (near 1: they explore different places; shown with 2 or more there). Strip: new places / faster routes / no progress / no data (no samples).${cov.runs.length ? ' Cyan: a run was found, the workers search for a shorter one.' : ''}`
             : 'The workers send their floor counts about once a second.'}
       </div>
     </div>
