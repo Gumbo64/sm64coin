@@ -10,6 +10,7 @@
 //! * [`codec`]: the [`StateCodec`] interface (streaming, frame by frame).
 //! * [`statectx`]: codec 3, an adaptive context-mixing model.
 //! * [`statemix`]: codecs 4 and 5, a stronger model (what miners seal with).
+//! * [`mix2`]: codecs 6 (polar) and 7 (square) sticks, the same model with another stick binarisation (v0.4).
 //! * this file: the registry ([`STATE_CODECS`], [`SEAL_CODECS`]).
 //!
 //! This crate is the pure part (no game, no emulator): native nodes use it through
@@ -20,6 +21,7 @@ pub mod codec;
 pub mod logistic;
 pub mod range;
 pub mod statectx;
+pub mod mix2;
 pub mod statemix;
 mod trig;
 
@@ -33,11 +35,22 @@ pub use sm64coin_perturb::Pad;
 pub use sm64coin_perturb::Pad as GamePad;
 
 /// Every state codec this build knows (accepted in blocks only when
-/// `sm64pow::statecodec::state_codec_enabled`).
-pub static STATE_CODECS: &[&dyn StateCodec] = &[&StateCtx1, &crate::statemix::VARIANTS[0], &crate::statemix::VARIANTS[1]];
+/// `sm64pow::statecodec::state_codec_enabled`; 6 and 7 only with committed inputs, see
+/// `sm64pow::statecodec::state_codec`).
+///
+/// Ids are never reused and every id is a FROZEN decoder with golden vectors (docs/V0.4-DESIGN.md
+/// section 1.5): 3 statectx1; 4, 5 statemix; 6 statemix2-polar, 7 statemix2-square (mix2.rs).
+pub static STATE_CODECS: &[&dyn StateCodec] =
+    &[&StateCtx1, &crate::statemix::VARIANTS[0], &crate::statemix::VARIANTS[1], &crate::mix2::VARIANTS[0], &crate::mix2::VARIANTS[1]];
 
 /// The codecs sealing tries (the newest family; 3 stays decodable).
 pub static SEAL_CODECS: &[&dyn StateCodec] = &[&crate::statemix::VARIANTS[0], &crate::statemix::VARIANTS[1]];
+
+/// The codecs a v0.4 (committed inputs) miner tries: all of them, the smallest wins.
+pub static SEAL_CODECS_COMMITTED: &[&dyn StateCodec] = STATE_CODECS;
+
+/// Ids that are registered but only valid where the network has committed inputs (v0.4).
+pub const COMMITTED_ONLY: &[u8] = &[6, 7];
 
 pub fn state_codec(id: u8) -> Option<&'static dyn StateCodec> {
     STATE_CODECS.iter().copied().find(|c| c.id() == id)
