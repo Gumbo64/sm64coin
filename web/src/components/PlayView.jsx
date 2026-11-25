@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Toolbar, ToolBtn } from './ui.jsx';
 import { TouchOverlay, TouchSettings, useTouchConfig, isTouchDevice } from './TouchPad.jsx';
 import { frames } from '../lib/format.js';
 import './touchpad.css';
@@ -13,7 +14,7 @@ import './touchpad.css';
 // Reusable: it needs the recorder ref (`rec`, for pause), the recorder's status (`clock`:
 // {frame, limit, paused}) and the canvas as `children` (first child), plus the normal page controls as
 // `normal` (shown when not in the play view).
-export default function PlayView({ rec, clock, limit, children, normal }) {
+export default function PlayView({ rec, clock, limit, children, normal, actions }) {
   const root = useRef(null);
   const [cfg, setCfg] = useTouchConfig();
   const [imm, setImm] = useState(false);
@@ -65,11 +66,12 @@ export default function PlayView({ rec, clock, limit, children, normal }) {
       {!imm && (
         <>
           {normal}
-          <div className="tp-bar">
-            <button className="on" onClick={() => enter(true)} title="Full-screen game with on-screen controls">⛶ Full screen{touch ? ' / touch controls' : ''}</button>
-            <button className={showPad ? 'on' : ''} onClick={() => setCfg({ pad: !showPad })} title="Show the on-screen controller under the game">🎮 Controller: {showPad ? 'on' : 'off'}</button>
-            <button onClick={() => setSettings((o) => !o)} aria-expanded={settings}>⚙ Touch settings</button>
-          </div>
+          <Toolbar label="Actions" className="tp-bar">
+            {actions}
+            <ToolBtn on onClick={() => enter(true)} title="Full-screen game with on-screen controls">⛶ Full screen</ToolBtn>
+            <ToolBtn on={showPad} onClick={() => setCfg({ pad: !showPad })} title="Show the on-screen controller under the game">🎮 Touch controls</ToolBtn>
+            <ToolBtn onClick={() => setSettings((o) => !o)} aria-expanded={settings} aria-label="Touch settings" title="Touch settings">⚙</ToolBtn>
+          </Toolbar>
           {settings && <TouchSettings cfg={cfg} set={setCfg} />}
         </>
       )}

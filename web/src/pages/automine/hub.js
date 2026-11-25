@@ -3,10 +3,22 @@
 // the only part that stays loaded when visualisations are off, and then every method returns at once.
 // Views read the public fields directly and are woken at most 4 times a second (`subscribe`).
 import { parseViz, parseLog, flatToRaw, proofInputs } from '../../lib/webminer/vizFeed.js';
+import { TreeMirror } from '../../lib/webminer/treeMirror.js';
+import { levelName } from './levels.js';
 
 /** The point cloud keeps the newest CAP sampled search nodes (a ring buffer). */
 export const CAP = 50000;
 const ENV_CAP = 4000;
+// The highlight reel's queue (clips waiting for the one playing to finish), and how old a clip may be when its turn comes.
+const REEL_QUEUE = 8;
+const REEL_STALE_MS = 120000;
+// The live game's settings (remembered in localStorage): where a replay starts playing at the game's pace ('end': the
+// last `leadSec` seconds, the prefix before runs muted at full speed; 'step': from the step's start), the playback speed,
+// which highlights the reel plays and the smallest record (frames saved) it plays (the worker sends records of 10+).
+export const SETTINGS_KEY = 'sm64coin.gameSettings';
+export const SPEEDS = [0.25, 0.5, 1, 2, 4];
+const DEFAULT_SETTINGS = { open: false, start: 'end', leadSec: 5, speed: 1, places: true, records: true, minGain: 10 };
+const loadSettings = () => { try { return { ...DEFAULT_SETTINGS, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null') || {}) }; } catch { return { ...DEFAULT_SETTINGS }; } };
 
 export class VizHub {
   constructor() {
@@ -18,6 +30,8 @@ export class VizHub {
     this.blocks = []; // our submissions this session
     this.toasts = [];
     this.round = 0;
+    this.settings = loadSettings();
+    this.reel = { on: true, follow: null, queue: [], clips: 0 }; // the highlight reel: playing on/paused, follow worker N (null: all), queued clips
     this.clear();
   }
 
@@ -28,6 +42,9 @@ export class VizHub {
     this.workers = [];
     this.runs = []; // finished runs: {t (s after the parent), frames, w}
     this.samples = []; // per-sample best: {w, frame (from the block's start), p (stars + keys), t}
+    this.reel.queue = [];
+    this.edgeBytes = 0;
+    this.hl = null; // the node the game view highlights in the cloud: {w, step, id}
     this.found = null; // the run being submitted: {w, frames, inputs, power, template, status, height}
     this.game = { id: 0 }; // what the game view plays: {id, kind: 'best'|'run', w}
     this.selected = null; // {w, id}
@@ -47,6 +64,7 @@ export class VizHub {
     this.parentSlot = new Int32Array(CAP).fill(-1);
     this.keyAt = new Float64Array(CAP).fill(-1);
     this.index = new Map(); // (worker, step, id) -> slot
+    this.mirrors = []; // per worker: the sparse mirror of its current step's search tree (lib/webminer/treeMirror.js)
     this.bumpCloud();
     this.cloudChanged = true;
   }
@@ -96,6 +114,7 @@ export class VizHub {
   restartWorker(i, start) {
     const w = this.workers[i];
     if (!w) return;
+    this.mirrors[i] = null;
     Object.assign(w, { start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0, fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, root: null, keys: {} });
     this.notify();
   }
@@ -159,11 +178,10 @@ export class VizHub {
         if (this.samples.length > ENV_CAP) this.samples.splice(0, this.samples.length - ENV_CAP);
       }
       if (m.pads) {
-        // The best improved: the game view replays it (unless a found run is on).
-        if (!this.found) this.game = { id: this.game.id + 1, kind: 'best', w: i };
         if (!prev || p > prev.stars + prev.keys) this.toast(`worker ${i + 1}: ${m.best.stars} ★${m.best.keys ? ` ${m.best.keys} 🔑` : ''} reached at frame ${w.played + m.best.frame}`, 'best');
       }
     }
+    if (m.clip) this.addClip(i, m);
     this.notify();
   }
 
@@ -187,6 +205,97 @@ export class VizHub {
     this.parentSlot[slot] = parent >= 0 ? this.index.get((w * 4096 + (step & 4095)) * 1e8 + parent) ?? -1 : -1;
     this.n++;
     this.cloudChanged = true;
+  }
+
+  /** Worker `i`'s search-tree edges (binary, lib/webminer/treeMirror.js): the page's sparse mirror of the tree. */
+  addEdges(i, key, buf) {
+    if (!this.enabled) return;
+    const m = (this.mirrors[i] ??= new TreeMirror());
+    m.add(key, buf);
+    this.edgeBytes = (this.edgeBytes || 0) + buf.byteLength;
+  }
+
+  /** The raw pads (4 bytes a frame) of node `id`'s path from the step `key`'s root of worker `w`, from the mirror; null when it isn't there. */
+  nodePath(w, key, id) {
+    return this.mirrors[w]?.path(key, id) || null;
+  }
+
+  /** The mirror's size now: {edges, bytes} over the workers. */
+  mirrorStats() {
+    let edges = 0, bytes = 0;
+    for (const m of this.mirrors) if (m) { edges += m.size; bytes += m.bytes + m.size * 96; }
+    return { edges, bytes, fed: this.edgeBytes || 0 };
+  }
+
+  // ----- the highlight reel -----
+  /** A worker reported a highlight (m.clip: a new place or a record) of its current step: queue it with its path. */
+  addClip(i, m) {
+    const c = m.clip;
+    const w = this.workers[i];
+    const raw = this.nodePath(i, m.key, c.id);
+    if (!raw || !raw.length) return;
+    const where = levelName(c.level);
+    const fr = w.played + c.frame;
+    const label = c.kind === 'place'
+      ? `worker ${i + 1} reached a new place · frame ${fr.toLocaleString()} · ${where}`
+      : `worker ${i + 1}: faster route, −${c.gain} frames · frame ${fr.toLocaleString()} · ${where}`;
+    const clip = { w: i, step: w.cur.n, key: m.key, id: c.id, kind: c.kind, gain: c.gain, frame: fr, played: w.played, raw, rootRaw: w.root && w.root.key === m.key ? w.root.raw : null, rootOf: w, label, at: Date.now() };
+    if (!this.wanted(c.kind, c.gain)) return;
+    this.reel.clips++;
+    if (this.reel.follow != null && this.reel.follow !== i) return;
+    const q = this.reel.queue;
+    q.push(clip);
+    while (q.length > REEL_QUEUE) { const k = q.findIndex((x) => x.kind !== 'place'); q.splice(k < 0 ? 0 : k, 1); }
+    this.reelKick();
+  }
+
+  /** Starts the next clip when nothing is playing (or only a best-path replay, which the reel replaces). */
+  reelKick() {
+    const g = this.game;
+    if (this.reel.on && !this.found && !g.kind) this.reelAdvance();
+  }
+
+  /** The next queued clip becomes the game; false when the reel is off or empty. Called when a clip ends (never mid-play). */
+  reelAdvance() {
+    const r = this.reel;
+    if (!r.on || this.found) return false;
+    while (r.queue.length && Date.now() - r.queue[0].at > REEL_STALE_MS) r.queue.shift();
+    const c = r.queue.shift();
+    if (!c) return false;
+    this.game = { id: this.game.id + 1, kind: 'clip', w: c.w, clip: c };
+    this.hl = { w: c.w, step: c.step, id: c.id };
+    this.notify();
+    return true;
+  }
+
+  setSettings(patch) {
+    Object.assign(this.settings, patch);
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings)); } catch { /* private window */ }
+    const s = this.settings;
+    this.reel.queue = this.reel.queue.filter((c) => this.wanted(c.kind, c.gain, s));
+    this.notify();
+  }
+
+  /** Whether the settings let a highlight of `kind` (with record gain `gain`) into the reel. */
+  wanted(kind, gain, s = this.settings) {
+    return kind === 'place' ? s.places : s.records && gain >= s.minGain;
+  }
+
+  setReel(patch) {
+    Object.assign(this.reel, patch);
+    if (patch.follow !== undefined) this.reel.queue = this.reel.queue.filter((c) => patch.follow == null || c.w === patch.follow);
+    if (this.reel.on) this.reelKick();
+    this.notify();
+  }
+
+  /** What the game view needs to play clip `c` (same shape as nodePlay's answer). */
+  clipPlay(c) {
+    return { key: c.key, played: c.played, best: null, rootRaw: c.rootRaw, raw: c.raw };
+  }
+
+  /** The cloud slot of a node (or -1). */
+  slotOf(w, step, id) {
+    return this.index.get((w * 4096 + (step & 4095)) * 1e8 + id) ?? -1;
   }
 
   /** The ancestors of `slot` that are in the buffer (sampling thins the tree), nearest first. */
@@ -257,6 +366,8 @@ export class VizHub {
     const key = wk.cur.key;
     const base = { key, played: wk.played, best: wk.best, rootRaw: wk.root && wk.root.key === key ? wk.root.raw : null };
     if (wk.best && wk.best.id === nid && wk.bestPads) return { ...base, raw: flatToRaw(wk.bestPads) };
+    const mir = this.nodePath(w, key, nid);
+    if (mir) return { ...base, raw: mir };
     const pk = `${w}:${key}:${nid}`;
     const got = this.paths.get(pk);
     if (got && got !== 'asked') return { ...base, raw: got };

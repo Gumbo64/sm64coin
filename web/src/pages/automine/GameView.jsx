@@ -3,8 +3,9 @@ import { Link } from 'react-router';
 import { GamePad } from 'sm64-binds-frontend';
 import { captureState } from '../../lib/savestate.js';
 import { useHub, useVisible } from './useHub.js';
+import { SPEEDS } from './hub.js';
+import { Panel } from '../../components/ui.jsx';
 import { loadStart, portableFromRaw } from './startState.js';
-import { levelName } from './levels.js';
 import { frames as fmtFrames } from '../../lib/format.js';
 
 // The live game: a visual engine (the same Sm64VisualEngine the Mine page plays with) replaying
@@ -47,11 +48,11 @@ export default function GameView({ hub }) {
   }, []);
 
   useEffect(() => {
-    if (ready && !gameId) setInfo({ text: 'waiting for the search to find a path…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
+    if (ready && !gameId) setInfo({ text: 'waiting for the first highlight (a new place or a faster route)…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
     if (!ready || !gameId) return undefined;
     let dead = false;
     const run = async () => {
-      const [{ restoreState }, { Perturbation, perturbReady, readProgress }, { withConfig }, { successFor }, { fastForward, muteDrawing }] = await Promise.all([
+      const [{ restoreState }, { Perturbation, perturbReady, readProgress }, { withConfig }, { successFor }, { fastForward }] = await Promise.all([
         import('../../lib/savestate.js'), import('../../lib/perturb.js'), import('../../lib/task.js'), import('../../lib/rules.js'), import('../../lib/cycle.js'),
       ]);
       await perturbReady();
@@ -75,7 +76,7 @@ export default function GameView({ hub }) {
       // 30 fps game clock on top of requestAnimationFrame.
       const pace = (() => {
         let last = performance.now(), owed = 0;
-        return () => new Promise((res) => requestAnimationFrame((now) => { owed += Math.min(now - last, 250) * 0.03; last = now; const n = Math.floor(owed); owed -= n; res(n); }));
+        return () => new Promise((res) => requestAnimationFrame((now) => { owed += Math.min(now - last, 250) * 0.03 * hub.settings.speed; last = now; const n = Math.floor(owed); owed -= n; res(n); }));
       })();
 
       if (isRun) {
@@ -117,7 +118,7 @@ export default function GameView({ hub }) {
       for (;;) {
         const g1 = hub.game;
         if (g1.kind === 'run') return;
-        let p = g1.kind === 'node' ? hub.nodePlay(g1.w, g1.step, g1.nid) : (hub.bestPlay(g1.w) || { wait: 'waiting for the search to find a path…' });
+        let p = g1.kind === 'clip' ? hub.clipPlay(g1.clip) : g1.kind === 'node' ? hub.nodePlay(g1.w, g1.step, g1.nid) : g1.kind === 'best' ? (hub.bestPlay(g1.w) || { wait: 'waiting for the search to find a path…' }) : { wait: hub.reel.on ? 'waiting for the first highlight (a new place or a faster route)…' : 'the highlight reel is paused: pick a node in the cloud' };
         let said = '';
         if (p.error) { said = p.error; p = hub.bestPlay(g1.w) || { wait: p.error }; }
         if (!p.raw) { note(p.wait, { prog: { frac: null } }); await sleep(700); if (dead || hub.game.id !== g1.id) return; continue; }
@@ -149,8 +150,19 @@ export default function GameView({ hub }) {
         const total = p.raw.length / 4;
         let i = 0;
         const myGame = g1.id;
-        const label = g1.kind === 'node' && !said ? `worker ${g1.w + 1}'s node ${g1.nid}` : `worker ${g1.w + 1}'s best path`;
+        const label = g1.kind === 'clip' ? g1.clip.label : g1.kind === 'node' && !said ? `worker ${g1.w + 1}'s node ${g1.nid}` : `worker ${g1.w + 1}'s best path`;
         setInfo({ text: label, frame: 0, total, star: false, verdict: said, prog: { frac: 0 } });
+        // Settings: the prefix runs muted at full speed up to `leadSec` before the end (the node, or the clip's highlight); only
+        // the lead-in plays at the game's pace (or the whole path does, from the step's start).
+        const cs = hub.settings;
+        const skipTo = cs.start === 'step' ? 0 : Math.max(0, total - Math.round(cs.leadSec * 30));
+        if (skipTo > 0) {
+          setInfo((x) => ({ ...x, text: `${label} · skipping ahead…` }));
+          const ok = await fastForward(e, p.raw, 0, skipTo, (d) => { i = d; setInfo((x) => ({ ...x, frame: d, prog: { frac: d / total } })); }, () => dead || hub.game.id !== myGame);
+          if (!ok || dead || hub.game.id !== myGame) return;
+          i = skipTo;
+          setInfo((x) => ({ ...x, text: label }));
+        }
         while (!dead && i < total && hub.game.id === myGame) {
           await waitVisible();
           let n = await pace();
@@ -159,10 +171,12 @@ export default function GameView({ hub }) {
         }
         if (dead || hub.game.id !== myGame) return;
         const s = frameAt();
-        const d = p.best && g1.kind !== 'node' ? Math.hypot(s.pos[0] - p.best.pos[0], s.pos[1] - p.best.pos[1], s.pos[2] - p.best.pos[2]) : 0;
-        setInfo((x) => ({ ...x, prog: null, verdict: said || (hub.mock ? 'simulated path' : g1.kind === 'node' ? 'reached the node' : d < 1 ? 'ends exactly where the search says' : `ends ${d.toFixed(0)} units from the search's position`) }));
+        const d = p.best && g1.kind === 'best' ? Math.hypot(s.pos[0] - p.best.pos[0], s.pos[1] - p.best.pos[1], s.pos[2] - p.best.pos[2]) : 0;
+        setInfo((x) => ({ ...x, prog: null, verdict: said || (hub.mock ? 'simulated path' : g1.kind === 'node' || g1.kind === 'clip' ? 'reached the node' : d < 1 ? 'ends exactly where the search says' : `ends ${d.toFixed(0)} units from the search's position`) }));
         await sleep(1200);
         if (dead || hub.game.id !== myGame) return;
+        // The reel moves on to the next queued clip once this one has played to its end (never mid-play).
+        if (hub.reelAdvance()) return;
       }
     };
     run().catch((x) => { if (!dead) setInfo({ text: `game view: ${x.message || x}`, frame: 0, total: 0, star: false, verdict: '' }); });
@@ -172,9 +186,44 @@ export default function GameView({ hub }) {
   const f = hub.found;
   const shown = kind === 'run' ? f : null;
   void v;
+  const st = hub.settings;
+  const reel = hub.reel;
   return (
-    <div className="viz-card viz-game" ref={box}>
-      <h3>Live game {kind === 'run' ? <span className="chip warn">the run being submitted</span> : hub.game.w != null && <span className="chip">{kind === 'node' ? `node ${hub.game.nid} of` : 'best path of'} worker {hub.game.w + 1}</span>}</h3>
+    <Panel className="viz-game" innerRef={box} open={st.open} onToggle={() => hub.setSettings({ open: !st.open })}
+      title="Live game" chip={kind === 'run' ? <span className="chip warn">the run being submitted</span> : hub.game.w != null && <span className="chip">{kind === 'clip' ? 'highlight of' : kind === 'node' ? `node ${hub.game.nid} of` : 'best path of'} worker {hub.game.w + 1}</span>}
+      settings={(
+        <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
+          <span className="lab">Highlight reel</span>
+          <div className="ctl">
+            <button type="button" onClick={() => hub.setReel({ on: !reel.on })} title="The reel plays what the workers find: a new place, or a faster route to a place. A clip always plays to its end.">{reel.on ? '⏸ Pause' : '▶ Resume'}</button>
+            <span className="muted">{reel.queue.length ? `${reel.queue.length} clip${reel.queue.length === 1 ? '' : 's'} queued` : 'no clips queued'} · {reel.clips} so far</span>
+          </div>
+          <span className="lab">Start point</span>
+          <div className="ctl">
+            <select value={st.start} onChange={(e) => hub.setSettings({ start: e.target.value })} aria-label="Start point">
+              <option value="end">from some seconds before the end</option>
+              <option value="step">from the step's start</option>
+            </select>
+            <label>seconds <input type="number" min="0" max="120" step="1" value={st.leadSec} disabled={st.start !== 'end'} onChange={(e) => hub.setSettings({ leadSec: Math.max(0, Math.min(120, +e.target.value || 0)) })} /></label>
+          </div>
+          <span className="lab">Playback speed</span>
+          <div className="viz-btns">{SPEEDS.map((x) => <button type="button" key={x} className={st.speed === x ? 'on' : ''} onClick={() => hub.setSettings({ speed: x })}>{x}×</button>)}</div>
+          <span className="lab">Highlights</span>
+          <div className="ctl">
+            <label><input type="checkbox" checked={st.places} onChange={(e) => hub.setSettings({ places: e.target.checked })} /> new places</label>
+            <label><input type="checkbox" checked={st.records} onChange={(e) => hub.setSettings({ records: e.target.checked })} /> records</label>
+          </div>
+          <label htmlFor="reel-gain">Smallest record</label>
+          <div className="ctl"><input id="reel-gain" type="number" min="10" max="2000" step="5" value={st.minGain} disabled={!st.records} onChange={(e) => hub.setSettings({ minGain: Math.max(10, +e.target.value || 10) })} /> <span className="muted">frames saved (the workers report 10 and up)</span></div>
+          <label htmlFor="reel-follow">Follow</label>
+          <div className="ctl">
+            <select id="reel-follow" value={reel.follow ?? ''} onChange={(e) => hub.setReel({ follow: e.target.value === '' ? null : +e.target.value })}>
+              <option value="">all workers</option>
+              {hub.workers.map((w) => <option key={w.i} value={w.i}>worker {w.i + 1}</option>)}
+            </select>
+          </div>
+        </form>
+      )}>
       <div className="viz-canvaswrap">
         <canvas ref={canvas} className="sm64canvas" />
         {info.star && <div className="starget"><span>★</span><b>STAR GET!</b></div>}
@@ -186,18 +235,10 @@ export default function GameView({ hub }) {
           <div className={info.prog.frac == null ? 'indet' : ''} style={info.prog.frac == null ? undefined : { width: `${Math.round(info.prog.frac * 100)}%` }} />
         </div>
       )}
-      <div className="viz-sub">
-        <span className={info.error ? 'error' : ''}>{info.text}</span>
-        {info.total > 0 && <span className="muted">replaying {info.frame.toLocaleString()} / {info.total.toLocaleString()} frames ({fmtFrames(info.frame)})</span>}
+      <div className="viz-status">
+        <span className={info.error ? 'error' : ''}>{info.text}{info.total > 0 && <span className="muted"> · {info.frame.toLocaleString()} / {info.total.toLocaleString()} frames</span>}{info.verdict && <span className="muted"> · {info.verdict}</span>}</span>
+        {shown && <span>run {shown.frames} frames: <b>{shown.status}</b>{shown.status === 'accepted' && <> · <Link to={`/block/${shown.height}`}>block {shown.height}'s replay →</Link></>}</span>}
       </div>
-      {info.verdict && <div className="muted small">{info.verdict}</div>}
-      {shown && (
-        <div className="viz-sub">
-          <span>run {shown.frames} frames: <b>{shown.status}</b></span>
-          {shown.status === 'accepted' && <Link to={`/block/${shown.height}`}>open block {shown.height}'s replay →</Link>}
-        </div>
-      )}
-      {!shown && hub.workers[hub.game.w]?.cur && <div className="muted small">{levelName(hub.workers[hub.game.w].cur.step.level)} · {hub.workers[hub.game.w].cur.step.goal}</div>}
-    </div>
+    </Panel>
   );
 }

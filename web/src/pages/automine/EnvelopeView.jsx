@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import LimitChart from '../../lib/LimitChart.jsx';
 import { maxFrames } from '../../lib/rules.js';
 import { useHub, useVisible } from './useHub.js';
 import { workerColor, levelName, logIcon } from './levels.js';
@@ -178,7 +177,6 @@ export default function EnvelopeView({ hub }) {
             : !view.target ? 'this step has no target to measure against (waiting for samples)'
               : `${frontNow ? `closest so far: ${Math.round(frontNow.d)} frames to go (of ${Math.round(view.target.d0)} at the step's start, frame ${frontNow.frame}); ` : ''}limit now ${limit} frames (${fmtFrames(limit)}); dots: nodes by worker; white line: the front; bands: steps of the campaign`}
       </div>
-      {t && <LimitChart difficulty={t.sm64_retarget_difficulty} parentTs={t.sm64_parent_timestamp} now={nowS} used={usedFrames} runs={hub.runs} />}
     </div>
   );
 }

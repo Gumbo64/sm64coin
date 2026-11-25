@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CAP } from './hub.js';
+import { Panel } from '../../components/ui.jsx';
 import { useHub, useVisible } from './useHub.js';
 import { levelName, levelIcon, workerColor } from './levels.js';
 
@@ -14,6 +15,9 @@ const STAR_COLORS = ['#7c8aa5', '#60a5fa', '#4ade80', '#f7c948', '#fb923c', '#f4
 const MODES = [['stars', 'Stars'], ['frame', 'Game time'], ['worker', 'Worker'], ['progress', 'Made progress']];
 const clock = (f) => { const s = f / 30; return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`; };
 
+const CLOUD_KEY = 'sm64coin.cloudSettings';
+const loadCloud = () => { try { return { open: false, mode: 'stars', geom: 'solid', ...(JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null') || {}) }; } catch { return { open: false, mode: 'stars', geom: 'solid' }; } };
+
 export default function CloudView({ hub, onPlay }) {
   const v = useHub(hub);
   const box = useRef(null);
@@ -22,9 +26,12 @@ export default function CloudView({ hub, onPlay }) {
   const vis = useRef(visible);
   vis.current = visible;
   const gl = useRef(null);
-  const [mode, setMode] = useState('stars');
+  const [saved, setSaved] = useState(loadCloud);
+  const { open, mode, geom } = saved;
+  const patch = (p) => setSaved((o) => { const n = { ...o, ...p }; try { localStorage.setItem(CLOUD_KEY, JSON.stringify(n)); } catch { /* private window */ } return n; });
+  const setMode = (m) => patch({ mode: m });
+  const setGeom = (g) => patch({ geom: g });
   const [zone, setZone] = useState('auto');
-  const [geom, setGeom] = useState('solid');
   const [sel, setSel] = useState(null);
   const [err, setErr] = useState('');
   const cfg = useRef({ mode, zone, geom });
@@ -201,7 +208,7 @@ export default function CloudView({ hub, onPlay }) {
         const ro = new ResizeObserver(resize);
         ro.observe(el);
         gl.current = { reset: () => { fitted = null; rebuild(); }, setGeom: (g) => { if (mesh) { mesh.visible = g !== 'off'; mesh.material.wireframe = g === 'wire'; } } };
-        let lastBuild = 0;
+        let lastBuild = 0, lastHl = null;
         const frame = () => {
           raf = requestAnimationFrame(frame);
           if (!vis.current) return;
@@ -209,6 +216,12 @@ export default function CloudView({ hub, onPlay }) {
           const now = performance.now();
           if ((hub.cloudChanged || cf !== builtCfg) && now - lastBuild > 400) {
             hub.cloudChanged = false; builtCfg = cf; lastBuild = now; rebuild();
+          }
+          // The node of the highlight clip being played is marked like a clicked one.
+          if (hub.hl !== lastHl) {
+            lastHl = hub.hl;
+            const hs = lastHl ? hub.slotOf(lastHl.w, lastHl.step, lastHl.id) : -1;
+            if (hs >= 0) select(hs);
           }
           controls.update();
           renderer.render(scene, camera);
@@ -235,31 +248,54 @@ export default function CloudView({ hub, onPlay }) {
   const isBest = sel && w?.best && w.best.id === sel.id;
   void v;
   return (
-    <div className="viz-card viz-cloud" ref={box}>
-      <h3>Search cloud <span className="muted small">{hub.n.toLocaleString()} sampled nodes{hub.n > CAP ? ` (newest ${CAP.toLocaleString()} kept)` : ''}</span></h3>
-      <div className="viz-bar">
-        <span className="muted">colour</span>
-        {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} onClick={() => setMode(k)}>{l}</button>)}
-        <span className="sep" />
-        <select value={zone} onChange={(e) => { setZone(e.target.value); gl.current?.reset(); }} title="Which level and area to show">
-          <option value="auto">follow the search{autoZone ? ` (${levelName(+autoZone.split(':')[0])})` : ''}</option>
-          {[...zones.entries()].map(([k, c]) => { const [l, a] = k.split(':'); return <option key={k} value={k}>{levelIcon(+l)} {levelName(+l)} · area {a} ({c})</option>; })}
-        </select>
-        <button onClick={() => setGeom(geom === 'solid' ? 'wire' : geom === 'wire' ? 'off' : 'solid')} title="Level collision geometry (from your ROM)">Geometry: {geom}</button>
-        <button onClick={() => gl.current?.reset()}>Fit</button>
+    <Panel className="viz-cloud" innerRef={box} open={open} onToggle={() => patch({ open: !open })}
+      title="Search cloud" chip={<span className="muted small">{hub.n.toLocaleString()} nodes</span>}
+      settings={(
+        <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
+          <span className="lab">Colour by</span>
+          <div className="viz-btns">{MODES.map(([k, l]) => <button type="button" key={k} className={mode === k ? 'on' : ''} onClick={() => setMode(k)}>{l}</button>)}</div>
+          <label htmlFor="cloud-zone">Level and area</label>
+          <div className="ctl">
+            <select id="cloud-zone" value={zone} onChange={(e) => { setZone(e.target.value); gl.current?.reset(); }}>
+              <option value="auto">follow the search{autoZone ? ` (${levelName(+autoZone.split(':')[0])})` : ''}</option>
+              {[...zones.entries()].map(([k, c]) => { const [l, a] = k.split(':'); return <option key={k} value={k}>{levelIcon(+l)} {levelName(+l)} · area {a} ({c})</option>; })}
+            </select>
+          </div>
+          <span className="lab">Level geometry</span>
+          <div className="viz-btns">{[['solid', 'Solid'], ['wire', 'Wireframe'], ['off', 'Off']].map(([k, l]) => <button type="button" key={k} className={geom === k ? 'on' : ''} onClick={() => setGeom(k)}>{l}</button>)}</div>
+          <span className="lab">View</span>
+          <div className="viz-btns"><button type="button" onClick={() => gl.current?.reset()}>Fit to the nodes</button></div>
+          {sel && (
+            <>
+              <span className="lab">Selected node</span>
+              <div>
+                <dl className="viz-dl" style={{ marginTop: 0 }}>
+                  <dt>Node</dt><dd>{sel.id} of worker {sel.w + 1}</dd>
+                  <dt>Where</dt><dd>{levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area})</dd>
+                  <dt>Stars</dt><dd>{sel.stars} ★{sel.progress ? ' · made progress' : ''}</dd>
+                  <dt>Frame</dt><dd>{sel.frame.toLocaleString()} ({clock(sel.frame)})</dd>
+                  <dt>Position</dt><dd>({sel.pos.map((x) => Math.round(x)).join(', ')})</dd>
+                  <dt>Ancestors</dt><dd>{sel.chain} sampled</dd>
+                </dl>
+                <div className="viz-toolbar">
+                  <button type="button" onClick={() => onPlay && onPlay(sel.w, { step: sel.step, id: sel.id })}>▶ Play {isBest ? 'this path' : 'this node'}</button>
+                  {!isBest && w?.best && <button type="button" onClick={() => onPlay && onPlay(sel.w)}>Play its best path</button>}
+                </div>
+              </div>
+            </>
+          )}
+        </form>
+      )}>
+      <div className="viz-glwrap">
+        <div ref={mount} className="viz-gl" />
+        {sel && <button className="viz-playicon" aria-label="Play this node in the game" title="Play this node in the game" onClick={() => onPlay && onPlay(sel.w, { step: sel.step, id: sel.id })}>▶</button>}
       </div>
-      <div ref={mount} className="viz-gl" />
       {err && <p className="error small">{err}</p>}
-      <div className="viz-node">
-        {sel ? (
-          <>
-            <b>Node {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame} ({clock(sel.frame)}) ·
-            pos ({sel.pos.map((x) => Math.round(x)).join(', ')}){sel.progress ? ' · made progress' : ''} · {sel.chain} ancestor{sel.chain === 1 ? '' : 's'} sampled
-            {' '}<button onClick={() => onPlay && onPlay(sel.w, { step: sel.step, id: sel.id })}>▶ play {isBest ? 'this path' : 'this node'}</button>
-            {!isBest && w?.best && <>{' '}<button className="linkish" onClick={() => onPlay && onPlay(sel.w)}>play its best path</button></>}
-          </>
-        ) : <span className="muted">Tap a node. One finger orbits, two fingers pinch to zoom and pan (mouse: drag, wheel, right-drag).</span>}
+      <div className="viz-status">
+        {sel
+          ? <span>worker {sel.w + 1} · {levelName(sel.level)} · frame {sel.frame.toLocaleString()}</span>
+          : <span className="muted">Tap a node to select it.</span>}
       </div>
-    </div>
+    </Panel>
   );
 }

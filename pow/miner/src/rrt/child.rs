@@ -615,8 +615,13 @@ fn pos_of(c: &Value) -> [f32; 3] {
 ///   // "step".target (from the first line with the feed on): {"label", "kind", "n" (candidates), "d0" (the root's
 ///   // frames to go)}, absent when the step has none
 ///   "pads": [button, stickX, stickY, ...]   // only when `best` changed: its inputs from the step's start
+///   "clip": {"kind": "place"|"record", "id", "frame" (from the step's start), "gain" (record: frames saved), "pos", "level", "area"}
+///   // a highlight (see [`Reel`]): at most one per ~2 s; the node's whole path is in the edges sent just before this line
 /// }
 /// ```
+///
+/// Before each line the sampler hands `sm64miner.viz_edges(key, bytes)` the tree edges the page's mirror lacks (every sampled
+/// node's ancestors, each edge once per step; format at [`Edges`]), so the page can rebuild any sampled node's path itself.
 pub mod viz {
     use super::*;
     use crate::sys::Instant;
@@ -630,6 +635,7 @@ pub mod viz {
     /// (`sm64miner.viz_req(key)` -> JSON ids; answered with `viz_path(key, id, flat pads)`; page-side only on cross-origin isolated pages).
     pub fn sampler(job: &Job, root: &St, state: Vec<u8>, generator: Arc<dyn obrrt_core::Generator>) -> Box<dyn FnMut(&Engine) + Send> {
         let key = format!("{}:{}:{}:{}:{:?}", job.seed, job.frame0, root.level, root.area, job.goal);
+        let key_str = key.clone();
         let mut state = Some(state);
         let mut head = serde_json::json!({ "frame0": job.frame0, "seed": job.seed, "goal": format!("{:?}", job.goal), "level": root.level, "area": root.area, "pos": root.pos });
         let (job2, root2) = (job.clone(), root.clone());
@@ -640,6 +646,8 @@ pub mod viz {
         let t0 = Instant::now();
         let mut seen = 1usize; // nodes below this index were sampled (the root isn't a sample)
         let mut best: Option<usize> = None;
+        let mut reel = Reel::new(frame0, root);
+        let mut edges = Edges::default();
         Box::new(move |e: &Engine| {
             // The page can switch the feed off while the search runs: then this is the whole cost.
             if last.elapsed().as_secs_f64() < 1.0 {
@@ -672,6 +680,7 @@ pub mod viz {
             }
             let nodes = &e.tree.nodes;
             let n = nodes.len();
+            reel.scan(nodes, n);
             let key = |i: usize| (nodes[i].st.progress(), std::cmp::Reverse(nodes[i].st.frame));
             let mut changed = false;
             for i in seen..n {
@@ -696,8 +705,20 @@ pub mod viz {
                     v
                 })
                 .collect();
+            for i in (seen..n).step_by(step) {
+                edges.add(nodes, i as u32, false);
+            }
             seen = n;
+            let clip = reel.take();
             let mut msg = serde_json::json!({ "step": head, "t": t0.elapsed().as_secs_f64(), "nodes_total": n, "sim_frames": e.total_frames_emulated(), "nodes": sample });
+            if let Some(c) = clip {
+                edges.add(nodes, c.id, true);
+                msg["clip"] = c.json();
+            }
+            if !edges.buf.is_empty() {
+                send_edges(&key_str, &edges.buf);
+                edges.buf.clear();
+            }
             if let Some(b) = best {
                 let s = &nodes[b].st;
                 msg["best"] = serde_json::json!({ "id": b, "frame": s.frame.saturating_sub(frame0), "stars": s.stars, "keys": s.keys, "pos": s.pos });
@@ -708,6 +729,171 @@ pub mod viz {
             }
             emit(&msg.to_string());
         })
+    }
+
+
+    type Nodes = [obrrt_search::tree::Node];
+
+    /// The highlight reel's detector. Over the nodes the search adds (scanned at each sample) it notices
+    ///  * a "new place": a node standing on a floor no earlier node of this step stood on. A floor is its (level, area,
+    ///    normal quantised to 0.05, plane offset n.p quantised to 50 units, moving object or none), so coplanar triangles
+    ///    count as one place;
+    ///  * a "record": a node that reached a 256-unit cell ([`obrrt_core::records::CELL`], the engine's own earliest-arrival
+    ///    grid) at least 10 frames sooner than any earlier node of the step.
+    /// At most one event leaves per 2 s (a new place beats a record; later places and bigger gains beat smaller): the best
+    /// of the window. Events before frame 45 of the step are ignored (the step's own first moves).
+    struct Reel {
+        frame0: u32,
+        scanned: usize,
+        places: std::collections::HashSet<(u16, i16, [i8; 3], i32, i32)>,
+        cells: HashMap<(u16, i16, [i32; 3]), u32>,
+        pending: Option<Clip>,
+        last: Instant,
+    }
+
+    struct Clip {
+        id: u32,
+        place: bool,
+        gain: u32,
+        frame: u32,
+        pos: [f32; 3],
+        level: u16,
+        area: i16,
+    }
+
+    impl Clip {
+        fn score(&self) -> u64 {
+            if self.place { 1_000_000 + self.frame as u64 } else { self.gain as u64 }
+        }
+        fn json(&self) -> Value {
+            serde_json::json!({ "kind": if self.place { "place" } else { "record" }, "id": self.id, "frame": self.frame, "gain": self.gain, "pos": self.pos, "level": self.level, "area": self.area })
+        }
+    }
+
+    const REEL_MIN_FRAME: u32 = 45;
+    const REEL_MIN_GAIN: u32 = 10;
+    const REEL_EVERY_S: f64 = 2.0;
+
+    /// A node's floor as a place key; None when it is airborne or over no floor.
+    fn place_key(s: &St) -> Option<(u16, i16, [i8; 3], i32, i32)> {
+        let air = s.action & 0x1C0 == 0x080;
+        let n = s.floor_normal;
+        if air || n == [0.0; 3] || s.floor_y < -10000.0 || (s.pos[1] - s.floor_y).abs() > 20.0 {
+            return None;
+        }
+        let q = |v: f32| (v * 20.0).round() as i8;
+        let obj = s.floor_obj.map_or(-1, |o| o as i32);
+        let off = if obj >= 0 { 0 } else { ((n[0] * s.pos[0] + n[1] * s.floor_y + n[2] * s.pos[2]) / 50.0).round() as i32 };
+        Some((s.level as u16, s.area as i16, [q(n[0]), q(n[1]), q(n[2])], off, obj))
+    }
+
+    impl Reel {
+        fn new(frame0: u32, root: &St) -> Reel {
+            let mut r = Reel { frame0, scanned: 1, places: Default::default(), cells: HashMap::new(), pending: None, last: Instant::now() };
+            if let Some(k) = place_key(root) {
+                r.places.insert(k);
+            }
+            r.cells.insert(Self::cell(root), 0);
+            r
+        }
+
+        fn cell(s: &St) -> (u16, i16, [i32; 3]) {
+            let c = |v: f32| (v / obrrt_core::records::CELL).floor() as i32;
+            (s.level as u16, s.area as i16, [c(s.pos[0]), c(s.pos[1]), c(s.pos[2])])
+        }
+
+        fn scan(&mut self, nodes: &Nodes, n: usize) {
+            for i in self.scanned..n {
+                let s = &nodes[i].st;
+                if !s.pos.iter().all(|v| v.is_finite()) {
+                    continue;
+                }
+                let fr = s.frame.saturating_sub(self.frame0);
+                let mut ev: Option<Clip> = None;
+                let mk = |place: bool, gain: u32| Clip { id: i as u32, place, gain, frame: fr, pos: s.pos, level: s.level as u16, area: s.area as i16 };
+                if let Some(k) = place_key(s) {
+                    if self.places.insert(k) && fr >= REEL_MIN_FRAME {
+                        ev = Some(mk(true, 0));
+                    }
+                }
+                let slot = self.cells.entry(Self::cell(s)).or_insert(u32::MAX);
+                if *slot != u32::MAX && fr >= REEL_MIN_FRAME && fr + REEL_MIN_GAIN <= *slot && ev.is_none() {
+                    ev = Some(mk(false, *slot - fr));
+                }
+                *slot = (*slot).min(fr);
+                if let Some(c) = ev {
+                    if self.pending.as_ref().is_none_or(|p| c.score() > p.score()) {
+                        self.pending = Some(c);
+                    }
+                }
+            }
+            self.scanned = n;
+        }
+
+        /// The window's best event, once 2 s have passed since the last one.
+        fn take(&mut self) -> Option<Clip> {
+            if self.pending.is_some() && self.last.elapsed().as_secs_f64() >= REEL_EVERY_S {
+                self.last = Instant::now();
+                return self.pending.take();
+            }
+            None
+        }
+    }
+
+    /// The tree edges the page's mirror lacks, as bytes (`sm64miner.viz_edges(key, bytes)`): per edge
+    /// `u32 id, u32 parent (u32::MAX: none), u16 runs`, then per run `u8 count, u16 button, i8 stickX, i8 stickY`
+    /// (the edge's pads, run-length coded; little endian). Parents precede children. An edge goes out once per step; past
+    /// [`EDGE_CAP`] bytes only the highlights' ancestors are still sent (the page asks the worker for any other node).
+    #[derive(Default)]
+    struct Edges {
+        sent: std::collections::HashSet<u32>,
+        bytes: usize,
+        buf: Vec<u8>,
+    }
+
+    const EDGE_CAP: usize = 6 << 20;
+
+    impl Edges {
+        fn add(&mut self, nodes: &Nodes, id: u32, force: bool) {
+            if !force && self.bytes > EDGE_CAP {
+                return;
+            }
+            let mut chain = Vec::new();
+            let mut at = Some(id);
+            while let Some(a) = at {
+                if a == 0 || self.sent.contains(&a) {
+                    break;
+                }
+                chain.push(a);
+                at = nodes[a as usize].parent;
+            }
+            for &a in chain.iter().rev() {
+                self.sent.insert(a);
+                let nd = &nodes[a as usize];
+                let start = self.buf.len();
+                self.buf.extend_from_slice(&a.to_le_bytes());
+                self.buf.extend_from_slice(&nd.parent.unwrap_or(u32::MAX).to_le_bytes());
+                let runs_at = self.buf.len();
+                self.buf.extend_from_slice(&[0, 0]);
+                let mut runs = 0u16;
+                let mut i = 0;
+                while i < nd.inputs.len() {
+                    let p = &nd.inputs[i];
+                    let mut c = 1;
+                    while i + c < nd.inputs.len() && c < 255 && (nd.inputs[i + c].button, nd.inputs[i + c].stick_x, nd.inputs[i + c].stick_y) == (p.button, p.stick_x, p.stick_y) {
+                        c += 1;
+                    }
+                    self.buf.push(c as u8);
+                    self.buf.extend_from_slice(&(p.button as u16).to_le_bytes());
+                    self.buf.push(p.stick_x as u8);
+                    self.buf.push(p.stick_y as u8);
+                    runs += 1;
+                    i += c;
+                }
+                self.buf[runs_at..runs_at + 2].copy_from_slice(&runs.to_le_bytes());
+                self.bytes += self.buf.len() - start;
+            }
+        }
     }
 
     /// The objectives the page's "closing in" chart measures against: the root's objectives that head for what the step
@@ -767,7 +953,16 @@ pub mod viz {
         fn js_viz_req(key: &str) -> Option<String>;
         #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_path)]
         fn js_viz_path(key: &str, id: u32, flat: &[i32]);
+        #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_edges)]
+        fn js_viz_edges(key: &str, bytes: &[u8]);
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn send_edges(key: &str, bytes: &[u8]) {
+        js_viz_edges(key, bytes);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_edges(_key: &str, _bytes: &[u8]) {}
 
     #[cfg(target_arch = "wasm32")]
     fn send_state(key: &str, bytes: &[u8]) {

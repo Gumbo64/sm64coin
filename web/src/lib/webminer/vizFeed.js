@@ -8,6 +8,7 @@
 // `step.target` ({label, kind, n, d0}: what the step heads for, e.g. "Mission 3-0 (PLUNDER IN THE SUNKEN SHIP)"
 // or "Painting bob"; d0 its frames to go from the step's root) and a node's `d` (the nearest target's estimated
 // frames to go: the search's own ETA, distance at a walking pace) are present when the step has a target.
+// `clip` (at most one per ~2 s): a highlight, see child.rs `viz`; the node's path is in the mirror (treeMirror.js).
 // Optional (not sent yet, used when present): `prefix`, the pads (same flat layout) the campaign
 // had played before this step began, so the step's best path can be replayed from the block's start.
 
@@ -27,6 +28,7 @@ export function parseViz(line) {
     nodes: m.nodes || [],
     pads: m.pads || null,
     prefix: m.prefix || null,
+    clip: m.clip || null, // the step's highlight: {kind: 'place'|'record', id, frame, gain, pos, level, area}
   };
 }
 

@@ -19,8 +19,7 @@ export default function BlocksHistory({ hub }) {
               <td>{new Date(b.at).toLocaleTimeString()}</td>
               <td>{b.height != null ? (b.status === 'accepted' ? <Link to={`/block/${b.height}`}>block {b.height}</Link> : `block ${b.height}`) : ''}</td>
               <td>{b.frames} fr ({fmtFrames(b.frames || 0)})</td>
-              <td>worker {b.w + 1}</td>
-              <td>{LABEL[b.status] || b.status}{b.note ? ` · ${String(b.note).slice(0, 80)}` : ''}</td>
+              <td title={b.note ? String(b.note).slice(0, 200) : ''}>{LABEL[b.status] || b.status}</td>
             </tr>
           ))}
         </tbody></table>

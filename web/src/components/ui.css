@@ -1,0 +1,31 @@
+.ui-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.ui-toolbar + .ui-toolbar { margin-top: 6px; }
+.ui-btn { padding: 6px 10px; font-size: 13px; background: #2a2f4a; color: var(--fg); min-height: 32px; }
+.ui-btn.on { background: var(--acc); color: #1a1a1a; }
+.ui-cols { align-items: start; }
+.ui-main, .ui-sidecol { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.ui-sidecol .card, .ui-main .viz-card { margin: 0; }
+.ui-sidecol { position: sticky; top: 12px; }
+@media (max-width: 900px) { .ui-sidecol { position: static; } }
+.ui-side h3 { margin: 0; font-size: 15px; }
+.ui-row { border-top: 1px solid var(--line); margin-top: 6px; }
+.ui-row-head { width: 100%; text-align: left; background: transparent; color: var(--fg); font-weight: 600; font-size: 14px; padding: 10px 4px; border-radius: 0; }
+.ui-row-head:hover { background: #1b2038; }
+.ui-row-head .tri { display: inline-block; width: 1.2em; color: var(--mut); }
+.ui-row-body { padding: 4px 0 12px; }
+.ui-info { position: relative; display: inline-block; }
+.ui-info-pop { position: absolute; z-index: 10; left: 0; top: 100%; width: min(420px, 80vw); background: #1a2038; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 13px; font-weight: 400; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+.ui-oneline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 10px; color: var(--mut); font-size: 13px; }
+.ui-big { width: 100%; font-size: 17px; padding: 12px 14px; }
+.ui-stat { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; color: var(--mut); margin-top: 8px; }
+.ui-stat b { color: var(--fg); font-weight: 600; }
+.ui-addr { font-size: 13px; margin-top: 8px; }
+/* Phones: the sidebar's first card (the page's control card, class "first") goes above the main column, the rest below it. */
+@media (max-width: 900px) {
+  .ui-cols { display: flex; flex-direction: column; gap: 12px; }
+  .ui-sidecol { display: contents; position: static; }
+  .ui-main { order: 2; }
+  .ui-sidecol > * { order: 3; }
+  .ui-sidecol > .first { order: 1; }
+}
+.ui-side .kv dd { word-break: normal; overflow-wrap: anywhere; }

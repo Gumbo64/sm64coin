@@ -10,6 +10,7 @@ import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import PlayView from '../components/PlayView.jsx';
+import { Toolbar, ToolBtn, Cols, Row, SideCard } from '../components/ui.jsx';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
@@ -240,7 +241,7 @@ function Miner() {
           {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
         </div>
         <Controls rec={rec} />
-      </>}>
+      </>} actions={<NewTemplateBtn rec={rec} />}>
         <canvas ref={canvas} className="sm64canvas" />
       </PlayView>
 
@@ -277,8 +278,10 @@ function Miner() {
             <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
           </dl>
         ) : <p className="muted">Getting a block template…</p>}
-        <details className="sec"><summary>How to play</summary><Help /></details>
-        <details className="sec"><summary>Debug</summary>
+      </aside>
+    </div>
+      <Row title="How to play" storeKey="mine-help"><Help /></Row>
+      <Row title="Debug" storeKey="mine-debug">
           {last && (
             <div className="debug">
               <p className="muted">Last attempt: {last.pads.length} frames · block {last.template.height} · {last.result}</p>
@@ -298,11 +301,10 @@ function Miner() {
             </div>
           )}
           <pre className="log">{log.join('\n')}</pre>
-        </details>
-        <p className="muted links"><Link to="/leaderboard">Leaderboard</Link></p>
-        <p className="muted">Rather not play by hand? Use <Link to="/automine">Auto-mine</Link>, or <a href="https://github.com/Gumbo64/sm64coin#writing-your-own-bot" target="_blank" rel="noreferrer">write a bot</a> to mine for you.</p>
-      </aside>
-    </div>
+      </Row>
+      <p className="muted small">
+        <Link to="/leaderboard">Leaderboard</Link> · Rather not play by hand? Use <Link to="/automine">Auto-mine</Link>, or <a href="https://github.com/Gumbo64/sm64coin#writing-your-own-bot" target="_blank" rel="noreferrer">write a bot</a> to mine for you.
+      </p>
     </>
   );
 }
@@ -352,8 +354,8 @@ function CyclePanel({ task, start }) {
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];
 
-// On-screen buttons and keyboard shortcuts for the recorder (keys the game
-// doesn't use).
+// On-screen buttons and keyboard shortcuts for the recorder (keys the game doesn't use): grouped toolbars, playback
+// and speed (the third group, the actions, is PlayView's: new template, touch controls).
 function Controls({ rec }) {
   const [, force] = useState(0);
   useEffect(() => {
@@ -375,22 +377,25 @@ function Controls({ rec }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [rec]);
   const act = (f) => () => { if (rec.current) { f(rec.current); force((x) => x + 1); } };
-  const btn = (label, tip, f, on) => (
-    <button key={tip} title={tip} aria-label={tip} className={on ? 'on' : ''} onClick={act(f)}>{label}</button>
-  );
+  const btn = (label, tip, f, on) => <ToolBtn key={tip} title={tip} aria-label={tip} on={on} onClick={act(f)}>{label}</ToolBtn>;
   return (
-    <div className="controls">
-      {btn('⟲', 'Restart the attempt (G)', (r) => r.restart())}
-      {[[1, '[ '], [5, 'Backspace'], [10, 'D-pad up'], [30, 'Shift+Backspace']].map(([s, k]) =>
-        btn(`◀${s}s`, `Back ${s} s (${k.trim()})`, (r) => r.back(s)))}
-      {btn('II', 'Pause / resume (P)', (r) => r.togglePause())}
-      {btn('▶ play', 'Take over during a replay (T)', (r) => r.takeOver())}
-      <span className="sep" />
-      {SPEEDS.map((s, i) => btn(`${s}×`, `Speed ${s}× (${i + 1})`, (r) => r.setSpeed(s), rec.current && rec.current.speed === s))}
-      <span className="sep" />
-      {btn('▶| new', 'New template: restart on a fresh block template (N)', (r) => r.skip())}
-    </div>
+    <>
+      <Toolbar label="Playback">
+        {btn('⟲', 'Restart the attempt (G)', (r) => r.restart())}
+        {[[1, '['], [5, 'Backspace'], [10, 'D-pad up'], [30, 'Shift+Backspace']].map(([s, k]) =>
+          btn(`◀${s}s`, `Back ${s} s (${k})`, (r) => r.back(s)))}
+        {btn('⏸', 'Pause / resume (P)', (r) => r.togglePause(), rec.current && rec.current.paused)}
+        {btn('▶', 'Take over during a replay (T)', (r) => r.takeOver())}
+      </Toolbar>
+      <Toolbar label="Speed">
+        {SPEEDS.map((s, i) => btn(`${s}×`, `Speed ${s}× (${i + 1})`, (r) => r.setSpeed(s), rec.current && rec.current.speed === s))}
+      </Toolbar>
+    </>
   );
+}
+
+export function NewTemplateBtn({ rec }) {
+  return <ToolBtn title="New template: restart on a fresh block template (N)" aria-label="New template (N)" onClick={() => rec.current && rec.current.skip()}>▶| new</ToolBtn>;
 }
 
 function Help() {

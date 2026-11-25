@@ -324,6 +324,7 @@ class MinerController {
         }
         if (m.type === 'progress') { this.rate.add(i, m.sim); return; }
         if (m.type === 'vizstate') { hub.setRoot(i, m.key, m.state); return; }
+        if (m.type === 'vizedges') { hub.addEdges(i, m.key, m.buf); return; }
         if (m.type === 'vizpath') { hub.setPath(i, m.key, m.id, m.flat); return; }
         if (m.type === 'viz') {
           const f = /"sim_frames":(\d+)/.exec(m.line);

@@ -44,7 +44,7 @@ export function makeFs(map = new Map()) {
  * compiled WebAssembly.Module, `glue` the glue's source text, `rom` the ROM bytes, `log(line)`
  * the campaign's progress.
  */
-export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false, onState = () => {}, onPath = () => {} }) {
+export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false, onState = () => {}, onPath = () => {}, onEdges = () => {} }) {
   const factory = makeFactory(glue);
   fs.write('/rom.z64', rom);
   globalThis.sm64fs = fs;
@@ -58,6 +58,8 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), sh
     viz_state: (key, bytes) => onState(key, bytes.slice()),
     viz_req: (key) => (nodeReq ? nodeReq(key) : undefined),
     viz_path: (key, id, flat) => onPath(key, id, flat.slice()),
+    // The tree edges the page's mirror lacks (rrt::child::viz Edges): binary, copied out of the wasm memory.
+    viz_edges: (key, bytes) => onEdges(key, bytes.slice()),
     // Sharing with the other workers of the page (rrt::Exchange): the block's first castle step
     // is made once; `shared` ({step, files}) is another worker's, `onShare` gets ours.
     // The tree sampler's feed (rrt::child::viz): `onViz(json line)`; on/off from the page's board flag

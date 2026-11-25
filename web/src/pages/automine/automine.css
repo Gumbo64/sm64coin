@@ -49,3 +49,26 @@
 .viz-progress > div { height: 100%; background: var(--acc); transition: width .2s linear; }
 .viz-progress > div.indet { width: 35%; animation: vizindet 1.1s ease-in-out infinite alternate; }
 @keyframes vizindet { from { margin-left: 0; } to { margin-left: 65%; } }
+
+/* Panel layout: header row (title left, tools right), the canvas, then status on its own lines; settings as a form. */
+.viz-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.viz-head h3 { margin: 0; }
+.viz-tools, .viz-toolbar, .viz-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.viz-tools button, .viz-toolbar button, .viz-btns button, .viz-settings button { padding: 6px 10px; font-size: 13px; background: #2a2f4a; color: var(--fg); min-height: 32px; }
+.viz-tools button.on, .viz-toolbar button.on, .viz-btns button.on, .viz-tools button[aria-expanded="true"] { background: var(--acc); color: #1a1a1a; }
+.viz-toolbar { margin-top: 8px; }
+.viz-settings { display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; align-items: center; background: #0e1224; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+.viz-settings > label, .viz-settings > .lab { color: var(--mut); }
+.viz-settings .ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; min-width: 0; }
+.viz-settings .ctl label { display: inline-flex; gap: 6px; align-items: center; }
+.viz-settings input[type=number] { width: 5em; }
+.viz-settings select, .viz-settings input { font-size: 13px; }
+.viz-status { margin-top: 6px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+.viz-dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 8px 0 0; font-size: 13px; }
+.viz-dl dt { color: var(--mut); }
+.viz-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .viz-settings { grid-template-columns: 1fr; gap: 4px; } .viz-settings > label, .viz-settings > .lab { margin-top: 6px; } .viz-tools button, .viz-toolbar button, .viz-btns button { min-height: 36px; } }
+.viz-gear { padding: 2px 8px !important; font-size: 16px !important; line-height: 1; min-height: 28px !important; background: transparent !important; color: var(--mut) !important; }
+.viz-gear[aria-expanded="true"] { background: #2a2f4a !important; color: var(--fg) !important; }
+.viz-glwrap { position: relative; }
+.viz-playicon { position: absolute; right: 8px; bottom: 8px; width: 34px; height: 34px; padding: 0 !important; border-radius: 50%; font-size: 14px; min-height: 34px; background: rgba(255,204,51,.92); }
