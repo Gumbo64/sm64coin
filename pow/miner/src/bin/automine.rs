@@ -231,7 +231,8 @@ fn main() -> Result<()> {
     let a = Args::parse();
     sm64coin_miner::update::spawn_check();
     if !a.address.starts_with("SM6") {
-        bail!("{} does not look like an SM64Coin address", a.address);
+        // Not a mainnet address (SM64...): a test network's (--testnet, --stagenet) is checked by the daemon.
+        eprintln!("note: {} is not a mainnet SM64Coin address; the daemon checks it for its network", a.address);
     }
     sm64pow::init(std::fs::read(&a.rom)?)?;
     let daemon = rpc::Daemon::new(&a.daemon);

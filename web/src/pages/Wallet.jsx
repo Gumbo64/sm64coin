@@ -421,7 +421,7 @@ function Txs({ snap }) {
                   <td>{r.height ?? 'pool'}</td>
                   <td>{r.miner ? '★ mined reward' : net >= 0n ? 'received' : 'sent'}</td>
                   <td className="mono">{net >= 0n ? '+' : '-'}{eng.fmt(net >= 0n ? net : -net)}{net < 0n && r.fee ? ` (+${eng.fmt(r.fee)} fee)` : ''}</td>
-                  <td>{r.failed ? 'failed' : !r.confirmed ? 'pending' : r.locked ? (r.unlockIn > 0 ? `unlocks in ${r.unlockIn} block${r.unlockIn === 1 ? '' : 's'} (about ${Math.round(r.unlockIn * BLOCK_TARGET_SECONDS / 60)} min)` : 'unlocking') : 'unlocked'}</td>
+                  <td>{r.failed ? 'failed' : !r.confirmed ? 'pending' : r.locked ? (r.unlockIn > 0 ? `unlocks in ${r.unlockIn} block${r.unlockIn === 1 ? '' : 's'} (about ${r.unlockIn * BLOCK_TARGET_SECONDS >= 7200 ? `${Math.round(r.unlockIn * BLOCK_TARGET_SECONDS / 3600)} h` : `${Math.round(r.unlockIn * BLOCK_TARGET_SECONDS / 60)} min`})` : 'unlocking') : 'unlocked'}</td>
                   <td className="mono">{r.hash && <Link to={`/block/${r.height}`} title={r.hash}>{r.hash.slice(0, 10)}…</Link>}</td>
                 </tr>
               );

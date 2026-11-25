@@ -159,7 +159,7 @@ markers. Here they are grouped by what they do.
 - `blockchain.cpp:5199` (`prepare_handle_incoming_blocks`): the parallel pre-pass of a sync batch.
 - `blockchain.cpp:1625` (`create_block_template`): a template is stamped after its parent.
 - `blockchain.cpp:954` (`recalculate_difficulties`): disabled with `if (true || ...)`.
-- `blockchain.cpp:1321` (`prevalidate_miner_transaction`): accepts coinbase unlock windows of 4 and 10.
+- `blockchain.cpp:1321` (`prevalidate_miner_transaction`): the coinbase unlock window (72 blocks; only the genesis coinbase carries 10).
 - `blockchain.cpp:5656` (`load_compiled_in_block_hashes`): Monero's compiled-in hashes are disabled.
 - `blockchain.h:55, 341-355, 1259-1261`: declarations of the hooks and the held-block map.
 - `src/cryptonote_core/cryptonote_core.cpp:96-122, 339, 349`: `--sm64-rom` and `--sm64-solo`.
@@ -174,7 +174,7 @@ markers. Here they are grouped by what they do.
 
 **Chain parameters** (`src/cryptonote_config.h`)
 
-- `:44` coinbase unlock window 4 (was 60).
+- `:44` coinbase unlock window 72 (Monero: 60; v0.2: 4).
 - `:48` future time limit 120 s (was 2 h).
 - `:49` `SM64COIN_MAX_PROOF_BYTES`.
 - `:81-85` target 1200 s, window 60, lag 0, cut 6. These must agree with `rules.rs`.
