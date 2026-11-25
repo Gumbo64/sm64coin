@@ -60,6 +60,12 @@ pub const RESERVED_FRAMES: u32 = 9000;
 const IDS: usize = 8192;
 /// How much longer an unknown source's claim counts when ordering (frames).
 pub const UNKNOWN_SOURCE_FRAMES: f64 = 2000.0;
+/// All sources that never sent a valid claim share one replay budget (frames): a burst of
+/// this many, refilled at [`UNKNOWN_FRAMES_PER_MIN`]. A Sybil burst from fresh addresses
+/// (the Pi measurement: 100 same-length claims from 40 addresses, 211 s of CPU) is bounded by
+/// it, whatever the number of addresses; known peers and miners are not.
+pub const UNKNOWN_FRAMES: f64 = 8.0 * 36000.0;
+pub const UNKNOWN_FRAMES_PER_MIN: f64 = 2.0 * 36000.0;
 const SOURCES: usize = 4096;
 
 /// What a replay of a claim needs, as known when it arrived.
@@ -196,6 +202,8 @@ struct State {
     eligible: Option<Bounded<[u8; 32], u64>>,
     /// Sources that sent a claim that verified valid.
     trusted: Option<Bounded<String, ()>>,
+    /// The unknown sources' shared budget ([`UNKNOWN_FRAMES`]).
+    unknown: Option<admit::Bucket>,
     /// Per source: frames replayed for it (decaying), and when that was.
     served: Option<Bounded<String, (f64, f64)>>,
     /// Per source: refused until, and how often it offended.
@@ -387,6 +395,13 @@ impl Queue {
                     }
                     _ => return refund(Refused::Full),
                 }
+            }
+            if accountable && st.trusted.as_ref().is_none_or(|m| m.get(&src).is_none()) {
+                let b = st.unknown.get_or_insert_with(|| admit::Bucket::new(UNKNOWN_FRAMES, UNKNOWN_FRAMES_PER_MIN, t));
+                if !b.positive(t) {
+                    return refund(Refused::Budget("the replay budget of sources without a valid claim yet is used up"));
+                }
+                b.charge(job.frames as f64, t);
             }
             st.maps().1.insert(job.id, ());
             let el = job.eligible();
