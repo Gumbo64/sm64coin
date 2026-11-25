@@ -54,7 +54,7 @@ void sm64pow_note_history(const uint8_t *id32, const uint8_t *parent32, const ui
  * another key inside the 60 s window, or a fresh block against a stale tip).
  * pof_candidate: 1 when such a sibling is worth a replay. stale: 1 when a block
  * stamped timestamp is stale now (not relayed). */
-void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64, const uint8_t *proof, size_t len); /* sig64, proof: the block's sm64_sig and sm64_proof (the equal-length tie-break: canonical proof size, then the template seed's hash) */
+void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64, const uint8_t *proof, size_t len); /* sig64, proof: the block's sm64_sig and sm64_proof (the equal-length tie-break: canonical proof size, then the signature's hash) */
 int32_t sm64pow_displaces(const uint8_t *tip32, const uint8_t *alt32);
 int32_t sm64pow_pof_candidate(const uint8_t *tip32, const uint8_t *id32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64, const uint8_t *proof, size_t len);
 int32_t sm64pow_stale(uint64_t timestamp);

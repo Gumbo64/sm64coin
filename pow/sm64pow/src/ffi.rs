@@ -147,14 +147,6 @@ fn sig_arg(p: *const u8) -> Option<[u8; 64]> {
     if p.is_null() { None } else { Some(unsafe { *(p as *const [u8; 64]) }) }
 }
 
-/// The tie-break of a block (pof.rs [`tie_of`](crate::pof::tie_of)): unknown unless it is signed.
-fn tie_arg(sig64: *const u8, proof: *const u8, len: usize, seed: &[u8; 32]) -> crate::pof::Tie {
-    if sig_arg(sig64).is_none() {
-        return crate::pof::NO_TIE;
-    }
-    std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), seed)).unwrap_or(crate::pof::NO_TIE)
-}
-
 // ---- Signed proofs (sign.rs, equivocation.rs) ----
 
 /// [`sm64pow_verify_block`] for a signed block: first checks that the
@@ -375,7 +367,7 @@ pub extern "C" fn sm64pow_fork_choice(main_len: u64, main_seeds: *const u8, n_ma
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_note_history(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8, proof: *const u8, len: usize) {
     let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
-    let tie = tie_arg(sig64, proof, len, &seed);
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &s)).unwrap_or(crate::pof::NO_TIE));
     let at = timestamp.min(unix_now());
     let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible_tie(id, parent, seed, frames, timestamp, at, tie));
 }
@@ -390,8 +382,8 @@ fn unix_now() -> u64 {
 /// `timestamp`) is eligible now: valid and fitting by this node's clock.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_note_eligible(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8, proof: *const u8, len: usize) {
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &s)).unwrap_or(crate::pof::NO_TIE));
     let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
-    let tie = tie_arg(sig64, proof, len, &seed);
     // A block that came in a sync span (we asked for it: it is history) counts as eligible at its own
     // stamp: neither stale nor opening a window now. Otherwise a node that just synced (or restarted)
     // would treat its tip as stale and let any fresh sibling a peer sends it displace the tip.
@@ -412,8 +404,8 @@ pub extern "C" fn sm64pow_displaces(tip32: *const u8, alt32: *const u8) -> i32 {
 /// `timestamp`, could displace it (1: worth a replay).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, id32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8, proof: *const u8, len: usize) -> i32 {
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &s)).unwrap_or(crate::pof::NO_TIE));
     let (Some(t), Some(id), Some(seed)) = (unsafe { id_arg(tip32) }, unsafe { id_arg(id32) }, unsafe { id_arg(hash32) }) else { return 0 };
-    let tie = tie_arg(sig64, proof, len, &seed);
     // Judged at the time block `id` became eligible here (a claim the queue replayed late still counts).
     let at = eligible_at(&id);
     std::panic::catch_unwind(|| crate::pof::sibling_could_matter(&t, &seed, frames, &tie, timestamp, at)).unwrap_or(false) as i32
@@ -647,8 +639,8 @@ pub extern "C" fn sm64pow_queue_set_threads(n: u32) {
 
 #[allow(clippy::too_many_arguments)]
 fn queue_job(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64, sig64: *const u8) -> Option<crate::queue::Job> {
+    let tie = sig_arg(sig64).map_or(crate::pof::NO_TIE, |s| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &s)).unwrap_or(crate::pof::NO_TIE));
     let (id, parent_id, seed) = unsafe { (id_arg(id32)?, id_arg(parent32)?, id_arg(hash32)?) };
-    let tie = tie_arg(sig64, proof, len, &seed);
     let parent = if genesis_parent != 0 { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: parent_id, gap_seconds } };
     Some(crate::queue::Job { id, parent, parent_id, seed: Seed(seed), difficulty, blob: blob_arg(proof, len).to_vec(), frames, tie, stamp, due, arrived: unix_now(), ctx: crate::admit::context() })
 }

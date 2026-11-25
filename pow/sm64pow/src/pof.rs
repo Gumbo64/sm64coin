@@ -15,7 +15,7 @@
 //!   this node opens a window of [`POF_WINDOW_SECONDS`] (30 s, this node's
 //!   clock). A sibling (same parent, so the same height) that becomes
 //!   eligible inside the window, carries **strictly fewer frames** (at equal
-//!   frames: a smaller canonical proof size, then a lower cn_fast_hash(seed)) than our
+//!   frames: a lower cn_fast_hash(sm64_sig)) than our
 //!   current block at that height, and has **another miner key** (another
 //!   template: a different seed) displaces it: the node reorganises to it
 //!   ([`Policy::displaces`]). After the window, or once our block has a
@@ -58,7 +58,7 @@ pub struct Seen {
     pub stale: bool,
     /// Its timestamp.
     pub stamp: u64,
-    /// The equal-length tie-break ([`Tie`]: the canonical proof size, then cn_fast_hash(seed);
+    /// The equal-length tie-break ([`Tie`]: the canonical proof size, then cn_fast_hash(sm64_sig);
     /// lower wins; [`NO_TIE`] when unknown).
     pub tie: Tie,
 }
@@ -87,7 +87,7 @@ impl Policy {
         self.note_eligible_tie(id, parent, seed, frames, stamp, now, NO_TIE)
     }
 
-    /// [`Policy::note_eligible`] with the block's tie-break hash, `cn_fast_hash(seed)` ([`tie_of`]).
+    /// [`Policy::note_eligible`] with the block's tie-break hash, `cn_fast_hash(sm64_sig)` ([`tie_of`]).
     #[allow(clippy::too_many_arguments)]
     pub fn note_eligible_tie(&mut self, id: [u8; 32], parent: [u8; 32], seed: [u8; 32], frames: u32, stamp: u64, now: u64, tie: Tie) {
         let (blocks, first) = self.maps();
@@ -152,7 +152,7 @@ impl Policy {
 
 /// The equal-length tie-break between siblings of different keys: the smaller canonical proof
 /// size wins ([`canonical_size`]: simpler, more compressible inputs, smaller blocks), then the
-/// lower `cn_fast_hash(seed)` of the template. Ordered by (size, hash).
+/// lower `cn_fast_hash(sm64_sig)`. Ordered by (size, hash).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tie {
     pub size: u32,
@@ -162,10 +162,9 @@ pub struct Tie {
 /// "Unknown": never wins a tie.
 pub const NO_TIE: Tie = Tie { size: u32::MAX, hash: [0xff; 32] };
 
-/// A block's tie-break: its proof's [`canonical_size`] and `cn_fast_hash(seed)`, the template's
-/// seed, fixed before any search (one ticket per template; the signature is grindable, the seed is not).
-pub fn tie_of(proof: &[u8], seed: &[u8; 32]) -> Tie {
-    Tie { size: canonical_size(proof), hash: crate::sign::cn_fast_hash(seed) }
+/// A block's tie-break: its proof's [`canonical_size`] and `cn_fast_hash(sm64_sig)`.
+pub fn tie_of(proof: &[u8], sig: &[u8; 64]) -> Tie {
+    Tie { size: canonical_size(proof), hash: crate::sign::cn_fast_hash(sig) }
 }
 
 /// The size of a proof that every node sees the same for the same block id. The block id commits
@@ -191,10 +190,10 @@ pub fn canonical_size(blob: &[u8]) -> u32 {
 }
 
 /// Inside the window, between siblings of different keys: strictly fewer frames wins; at equal
-/// frames, the smaller canonical proof size, then the lower hash of the template's seed, at every node whatever
+/// frames, the smaller canonical proof size, then the lower signature hash, at every node whatever
 /// the arrival order (the auction-smoothness simulation: window-edge splits 0.8 % -> 0). Only the
 /// run's owner can change its inputs or signature; grinding them is real optimisation (simpler
-/// inputs); the seed is fixed before any search, so the final key cannot be ground.
+/// inputs) or only matters for exact ties.
 fn beats(frames: u32, tie: &Tie, their_frames: u32, their_tie: &Tie) -> bool {
     frames < their_frames || (frames == their_frames && *tie != NO_TIE && tie < their_tie)
 }
@@ -282,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_lengths_of_different_keys_go_to_the_lower_seed_hash_whatever_the_order() {
+    fn equal_lengths_of_different_keys_go_to_the_lower_signature_hash_whatever_the_order() {
         let t0 = 3_000_000;
         let (lo, hi) = (Tie { size: 100, hash: [1u8; 32] }, Tie { size: 100, hash: [2u8; 32] });
         for first_low in [true, false] {
@@ -301,16 +300,6 @@ mod tests {
         q.note_eligible_tie(id(51), P, id(151), 3000, t0 + POF_WINDOW_SECONDS + 1, t0 + POF_WINDOW_SECONDS + 1, lo);
         assert!(!q.displaces(&id(50), &id(51)));
         assert!(!q.candidate(&id(50), 3000, t0 + 1, t0 + 1), "no tie-break hash: never wins a tie");
-    }
-
-    #[test]
-    fn the_final_key_is_the_hash_of_the_seed_and_ignores_everything_the_owner_can_regrind() {
-        let seed = [7u8; 32];
-        let proof = [0u8; 8]; // not a decodable proof: size u32::MAX, the same for both
-        let t = tie_of(&proof, &seed);
-        assert_eq!(t.hash, crate::sign::cn_fast_hash(&seed));
-        assert_eq!(t, tie_of(&proof, &seed));
-        assert_ne!(t.hash, tie_of(&proof, &[8u8; 32]).hash);
     }
 
     #[test]
