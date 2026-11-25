@@ -204,11 +204,7 @@ export class VizHub {
         if (!prev || p > prev.stars + prev.keys) this.toast(`worker ${i + 1}: ${m.best.stars} ★${m.best.keys ? ` ${m.best.keys} 🔑` : ''} reached at frame ${w.played + m.best.frame}`, 'best');
       }
     }
-    if (m.cov) {
-      let lead = null;
-      for (const x of this.workers) if (x.cur && (!lead || x.stepNo > lead.stepNo)) lead = x;
-      this.cover.add(i, m.key, m.cov, lead ? lead.cur.key : m.key, this.workers.length, lead ? lead.stepNo : w.stepNo);
-    }
+    if (m.cov) this.cover.add(i, m.key, m.cov, this.workers.length, (k) => this.workers[k]?.stepNo || 0);
     if (m.clip) this.addClip(i, m);
     this.notify();
   }

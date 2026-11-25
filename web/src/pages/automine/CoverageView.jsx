@@ -5,9 +5,10 @@ import { BUCKET, BUCKET_COLORS } from './coverage.js';
 
 // The sidebar's "Places reached" chart: y = distinct floors the searches reached in the step (the highlight reel's floors:
 // coplanar pieces are one place), x = search time (m:ss since the round's first sample). The thick line is the union over the
-// workers, the thin ones are each worker's own count; "overlap" = union / the sum of the workers' counts (near 1: the workers
-// explore different places, low: they duplicate each other). Under the plot a strip, one cell per ~15 s: exploring (new
-// floors keep appearing), refining (few new floors, but faster arrivals: records), stuck (neither). Dashed lines mark step changes.
+// workers on the chart's course (the one most workers are on: workers on other steps don't count, see coverage.js), the thin
+// ones are each of their own counts; "overlap" = union / the sum of their counts (near 1: the workers explore different
+// places, low: they duplicate each other). Under the plot a strip, one cell per ~15 s: exploring (new
+// floors keep appearing), refining (few new floors, but faster arrivals: records), stuck (neither). Dashed lines mark a change of course (its icon).
 // (The time-limit chart with the workers' finished runs is lib/LimitChart.jsx, drawn by VizPanel's VizTop.)
 const W = 340, H = 236, L = 36, R = 8, T = 10, STRIP = 10, B = 22;
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -50,18 +51,19 @@ export default function CoverageView({ hub }) {
     for (let t = 0; t <= tMax; t += xs) g.fillText(mmss(t), x(t), H - 6);
     // step changes
     g.setLineDash([3, 3]); g.strokeStyle = 'rgba(200,210,235,.45)';
-    for (const m of cov.markers) { g.beginPath(); g.moveTo(x(m.t), T); g.lineTo(x(m.t), plotB + STRIP + 4); g.stroke(); g.fillStyle = '#aab3c8'; g.textAlign = 'left'; g.fillText(m.label.replace('step ', 's'), x(m.t) + 2, T + 8); }
+    for (const m of cov.markers) { g.beginPath(); g.moveTo(x(m.t), T); g.lineTo(x(m.t), plotB + STRIP + 4); g.stroke(); g.fillStyle = '#aab3c8'; g.textAlign = 'left'; g.fillText(m.icon || m.label, x(m.t) + 2, T + 8); }
     g.setLineDash([]);
     // lines (broken at step changes)
     const line = (val, color, w) => {
       g.strokeStyle = color; g.lineWidth = w; g.beginPath();
       let pk = null;
-      series.forEach((s, i) => { const px = x(s.t), py = y(val(s)); if (i === 0 || s.key !== pk) g.moveTo(px, py); else g.lineTo(px, py); pk = s.key; });
+      // (a worker not on the chart's place has no value: its line breaks there)
+      series.forEach((s) => { const v = val(s); if (v == null) { pk = null; return; } const px = x(s.t), py = y(v); if (s.key !== pk) g.moveTo(px, py); else g.lineTo(px, py); pk = s.key; });
       g.stroke();
     };
     const nW = last ? last.per.length : 0;
     g.globalAlpha = 0.8;
-    for (let k = 0; k < nW; k++) line((s) => s.per[k] || 0, workerColor(k), 1);
+    for (let k = 0; k < nW; k++) line((s) => s.per[k], workerColor(k), 1);
     g.globalAlpha = 1;
     line((s) => s.union, '#fff', 2.5);
     if (last) { g.fillStyle = '#fff'; g.beginPath(); g.arc(x(last.t), y(last.union), 3.5, 0, 7); g.fill(); }
@@ -87,9 +89,10 @@ export default function CoverageView({ hub }) {
   const bs = cov.buckets();
   const nowKind = bs.length ? bs[bs.length - 1].kind : 'none';
   const word = { exploring: 'exploring', refining: 'refining', stuck: 'stuck', none: '' }[nowKind];
+  const where = (s) => (s.of > 1 ? `${s.n} of ${s.of} workers on ${s.label}` : s.label);
   return (
     <div className="viz-card" ref={box}>
-      <h3>Places reached <span className="muted small">{last ? `${last.union} floors${ov != null ? ` · overlap ${ov.toFixed(2)}` : ''}` : 'waiting for samples'}</span></h3>
+      <h3>Places reached <span className="muted small">{last ? `${last.union} floors · ${where(last)}${ov != null ? ` · overlap ${ov.toFixed(2)}` : ''}` : 'waiting for samples'}</span></h3>
       <div className="viz-canvaswrap2">
         <canvas ref={cv} style={{ width: '100%', aspectRatio: `${W} / ${H}` }} onMouseMove={onMove} onMouseLeave={() => setHover(null)} />
       </div>
@@ -97,8 +100,8 @@ export default function CoverageView({ hub }) {
         {LEGEND.map(([k, t]) => <span key={k} title={t} style={{ borderLeft: `8px solid ${BUCKET_COLORS[k]}`, paddingLeft: 5 }}>{k}</span>)}
       </div>
       <div className="muted small">
-        {hover ? `at ${mmss(hover.t)}: ${hover.union} floors in all${hover.per.length > 1 ? ` (${hover.per.map((n, i) => `w${i + 1} ${n}`).join(', ')})` : ''}`
-          : last ? `${word ? `now ${word}. ` : ''}Thick line: all workers together; thin: each worker. Overlap = union / sum of the workers' counts (near 1: they explore different places).`
+        {hover ? `at ${mmss(hover.t)}: ${hover.union} floors in all, ${where(hover)}${hover.n > 1 ? ` (${hover.per.map((n, i) => (n == null ? null : `w${i + 1} ${n}`)).filter(Boolean).join(', ')})` : ''}`
+          : last ? `${word ? `now ${word}. ` : ''}The chart follows the course most workers are on. Thick line: those workers together; thin: each of them. Overlap = union / sum of their counts (near 1: they explore different places; shown with 2 or more there).`
             : 'The workers send their floor counts about once a second.'}
       </div>
     </div>
