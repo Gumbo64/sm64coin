@@ -91,7 +91,9 @@ impl Daemon {
 
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
         let body = json!({"jsonrpc": "2.0", "id": 0, "method": method, "params": params});
-        let resp: Value = self.agent.post(&format!("{}/json_rpc", self.url)).send_json(body)?.into_json()?;
+        // The answer is read through a size limit: a hostile node can't stream us out of memory.
+        let r = self.agent.post(&format!("{}/json_rpc", self.url)).send_json(body)?;
+        let resp: Value = serde_json::from_reader(std::io::Read::take(r.into_reader(), 64 << 20))?;
         if let Some(e) = resp.get("error") {
             bail!("{method}: {}", e.get("message").and_then(|m| m.as_str()).unwrap_or("error"));
         }
