@@ -61,11 +61,13 @@ const IDS: usize = 8192;
 /// How much longer an unknown source's claim counts when ordering (frames).
 pub const UNKNOWN_SOURCE_FRAMES: f64 = 2000.0;
 /// All sources that never sent a valid claim share one replay budget (frames): a burst of
-/// this many, refilled at [`UNKNOWN_FRAMES_PER_MIN`]. A Sybil burst from fresh addresses
-/// (the Pi measurement: 100 same-length claims from 40 addresses, 211 s of CPU) is bounded by
-/// it, whatever the number of addresses; known peers and miners are not.
+/// this many, refilled at [`UNKNOWN_FRAMES_PER_MIN`]. Claims beyond it are still queued but rank
+/// last ([`OVER_BUDGET_FRAMES`]): a Sybil burst from fresh addresses can't delay a claim within
+/// the budget or from a known source, and is skipped once a valid block exists at its height.
 pub const UNKNOWN_FRAMES: f64 = 8.0 * 36000.0;
 pub const UNKNOWN_FRAMES_PER_MIN: f64 = 2.0 * 36000.0;
+/// How much longer a claim queued over that budget counts when ordering.
+pub const OVER_BUDGET_FRAMES: f64 = 1_000_000.0;
 const SOURCES: usize = 4096;
 
 /// What a replay of a claim needs, as known when it arrived.
@@ -188,6 +190,8 @@ struct Entry {
     /// Other sources that sent the same claim while it waited ([`Queue::also`]): if this
     /// job's source is penalised, the claim stays, attributed to one of them.
     others: Vec<Option<Context>>,
+    /// Extra rank (frames) for a claim queued over the unknown sources' budget.
+    over: f64,
 }
 
 #[derive(Default)]
@@ -280,7 +284,7 @@ impl State {
             // claim counts as UNKNOWN_SOURCE_FRAMES longer): a burst from fresh addresses queues
             // behind a known miner's or relay's claim of the same length.
             let unknown = if !src.is_empty() && self.trusted.as_ref().is_none_or(|m| m.get(&src).is_none()) { UNKNOWN_SOURCE_FRAMES } else { 0.0 };
-            let key = (frames + self.served_now(&src, t) + unknown, queued, i);
+            let key = (frames + self.served_now(&src, t) + unknown + self.waiting[i].over, queued, i);
             if best.is_none_or(|b| (key.0, key.1) < (b.0, b.1)) {
                 best = Some(key);
             }
@@ -396,10 +400,14 @@ impl Queue {
                     _ => return refund(Refused::Full),
                 }
             }
+            // Over the unknown sources' shared budget: still queued (an honest block relayed by a
+            // fresh peer must not be lost), but ranked behind everything else, so it is replayed only
+            // if nothing better is waiting, and skipped for free once a valid block exists at its height.
+            let mut over = 0.0;
             if accountable && st.trusted.as_ref().is_none_or(|m| m.get(&src).is_none()) {
                 let b = st.unknown.get_or_insert_with(|| admit::Bucket::new(UNKNOWN_FRAMES, UNKNOWN_FRAMES_PER_MIN, t));
                 if !b.positive(t) {
-                    return refund(Refused::Budget("the replay budget of sources without a valid claim yet is used up"));
+                    over = OVER_BUDGET_FRAMES;
                 }
                 b.charge(job.frames as f64, t);
             }
@@ -407,7 +415,7 @@ impl Queue {
             let el = job.eligible();
             st.eligible.get_or_insert_with(|| Bounded::new(IDS)).insert(job.id, el);
             *st.per_source.entry(src).or_insert(0) += 1;
-            st.waiting.push(Entry { job, queued: t, others: Vec::new() });
+            st.waiting.push(Entry { job, queued: t, others: Vec::new(), over });
         }
         self.start();
         self.work.notify_all();
@@ -660,9 +668,9 @@ mod tests {
         let t = 100.0;
         // One peer sends three 3000-frame claims, another one 3000: the others queue behind it once the first has been served.
         for (i, (f, h)) in [(3000, "a"), (3000, "a"), (3000, "a"), (3000, "b"), (9000, "c"), (500, "d")].into_iter().enumerate() {
-            st.waiting.push(Entry { job: job(i as u8, f, 10, h), queued: t + i as f64, others: vec![] });
+            st.waiting.push(Entry { job: job(i as u8, f, 10, h), queued: t + i as f64, others: vec![], over: 0.0 });
         }
-        st.waiting.push(Entry { job: job(99, 100, 1_000_000, "z"), queued: t, others: vec![] }); // not due
+        st.waiting.push(Entry { job: job(99, 100, 1_000_000, "z"), queued: t, others: vec![], over: 0.0 }); // not due
         let first = st.pick(10, t, true).unwrap();
         assert_eq!(st.waiting[first].job.frames, 500, "the shortest claim first");
         st.waiting.swap_remove(first);
@@ -678,7 +686,7 @@ mod tests {
         assert!(st.served_now(&src, t + 3.0 * FAIR_HALF_LIFE) < 400.0);
         // Nothing is due yet for the last one.
         let mut only = State::default();
-        only.waiting.push(Entry { job: job(1, 10, 1_000_000, "x"), queued: 0.0, others: vec![] });
+        only.waiting.push(Entry { job: job(1, 10, 1_000_000, "x"), queued: 0.0, others: vec![], over: 0.0 });
         assert!(only.pick(10, t, true).is_none());
         assert_eq!(only.next_due(true), Some(1_000_000));
     }
@@ -825,8 +833,8 @@ mod tests {
     #[test]
     fn known_sources_rank_ahead_of_unknown_ones() {
         let mut st = State::default();
-        st.waiting.push(Entry { job: job(1, 4000, 10, "fresh"), queued: 0.0, others: vec![] });
-        st.waiting.push(Entry { job: job(2, 4000, 10, "known"), queued: 1.0, others: vec![] });
+        st.waiting.push(Entry { job: job(1, 4000, 10, "fresh"), queued: 0.0, others: vec![], over: 0.0 });
+        st.waiting.push(Entry { job: job(2, 4000, 10, "known"), queued: 1.0, others: vec![], over: 0.0 });
         st.trusted.get_or_insert_with(|| Bounded::new(16)).insert("known".to_string(), ());
         let i = st.pick(10, 0.0, true).unwrap();
         assert_eq!(source_of(&st.waiting[i].job), "known");
@@ -854,10 +862,10 @@ mod tests {
     #[test]
     fn one_worker_is_kept_for_short_claims() {
         let mut st = State::default();
-        st.waiting.push(Entry { job: job(1, 36000, 10, "a"), queued: 0.0, others: vec![] });
+        st.waiting.push(Entry { job: job(1, 36000, 10, "a"), queued: 0.0, others: vec![], over: 0.0 });
         assert!(st.pick(10, 0.0, false).is_none(), "the reserved worker leaves a long claim alone");
         assert!(st.pick(10, 0.0, true).is_some());
-        st.waiting.push(Entry { job: job(2, 4000, 10, "b"), queued: 1.0, others: vec![] });
+        st.waiting.push(Entry { job: job(2, 4000, 10, "b"), queued: 1.0, others: vec![], over: 0.0 });
         let i = st.pick(10, 0.0, false).unwrap();
         assert_eq!(st.waiting[i].job.frames, 4000);
     }
