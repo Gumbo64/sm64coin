@@ -8,11 +8,28 @@ const dec = new TextDecoder();
 
 // After the slots: Int32 control words shared by the page and every worker: [0] = the viz feed is on.
 const CTL = 64;
-export const boardSize = (slots, slotBytes = 1 << 20) => slots * slotBytes + CTL;
+// After the control words: the page's mailbox to the workers (requests for a search node's inputs), one JSON text
+// the page rewrites as a whole under the same seqlock: [Int32 seq, Int32 length, bytes].
+const MAIL = 256 << 10;
+export const boardSize = (slots, slotBytes = 1 << 20) => slots * slotBytes + CTL + MAIL;
 
 /** The page's switch for the workers' viz feed (instant: the searches read it every round). */
 export function setVizFlag(sab, slots, on, slotBytes = 1 << 20) {
   Atomics.store(new Int32Array(sab, slots * slotBytes, 1), 0, on ? 1 : 0);
+}
+
+/** The page's mailbox write: `obj` as JSON for every worker's next poll; false when it doesn't fit. */
+export function postMail(sab, slots, obj, slotBytes = 1 << 20) {
+  const base = slots * slotBytes + CTL;
+  const ints = new Int32Array(sab, base, 2);
+  const b = enc.encode(JSON.stringify(obj));
+  if (b.length > MAIL - HEADER) return false;
+  const s = Atomics.load(ints, 0);
+  Atomics.store(ints, 0, (s + 1) | 1);
+  new Uint8Array(sab, base + HEADER, b.length).set(b);
+  Atomics.store(ints, 1, b.length);
+  Atomics.store(ints, 0, (s + 2) & ~1);
+  return true;
 }
 
 /** The board over `sab` (boardSize(slots) bytes) for the worker at `slot`. */
@@ -37,6 +54,20 @@ export function makeBoard(sab, slot, slots, slotBytes = 1 << 20) {
     slot,
     slots: Array.from({ length: slots }, (_, i) => i),
     read,
+    /** The page's mailbox (see postMail) as parsed JSON, or null. */
+    mail() {
+      const base = slots * slotBytes + CTL;
+      const mi = new Int32Array(sab, base, 2);
+      for (let tries = 0; tries < 1000; tries++) {
+        const s1 = Atomics.load(mi, 0);
+        if (s1 === 0) return null;
+        if (s1 & 1) continue;
+        const len = Atomics.load(mi, 1);
+        const copy = bytes.slice(base + HEADER, base + HEADER + len);
+        if (Atomics.load(mi, 0) === s1) { try { return JSON.parse(dec.decode(copy)); } catch { return null; } }
+      }
+      return null;
+    },
     /** Whether the page wants the viz feed now. */
     vizOn: () => Atomics.load(ctl, 0) === 1,
     /** Publishes this worker's message (dropped when it doesn't fit). */
@@ -136,5 +167,25 @@ export function makeTreeSync(chan) {
       }
     }
     return JSON.stringify({ recs });
+  };
+}
+
+/**
+ * The page's node-path requests for this worker's search (`viz_req` in rrt::child::viz): the mailbox holds
+ * {reqs: [{id, slot, key, nid}]}; the reply is the JSON list of node ids asked of this slot for the step `key`
+ * that this worker has not been given yet.
+ */
+export function makeNodeRequests(board) {
+  const given = new Set();
+  return (key) => {
+    const m = board.mail();
+    if (!m || !m.reqs) return undefined;
+    const ids = [];
+    for (const r of m.reqs) {
+      if (given.has(r.id) || r.slot !== board.slot || r.key !== key) continue;
+      given.add(r.id);
+      ids.push(r.nid);
+    }
+    return ids.length ? JSON.stringify(ids) : undefined;
   };
 }

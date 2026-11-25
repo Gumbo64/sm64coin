@@ -9,7 +9,7 @@ import { daemon } from '../rpc.js';
 import { getCycle } from '../replay/client.js';
 import { hexToBytes, seal, withTimestamp, templateTimestamp } from '../proof.js';
 import { frames as fmtFrames } from '../format.js';
-import { boardSize, setVizFlag } from './board.js';
+import { boardSize, setVizFlag, postMail } from './board.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
@@ -82,6 +82,7 @@ class MinerController {
     this.timer = null;
     this.snap = this.makeSnap();
     this.hub.setEnabled(this.vizOn);
+    this.hub.requester = (w, key, nid) => this.askNode(w, key, nid);
     window.addEventListener('beforeunload', () => this.stop());
   }
 
@@ -143,6 +144,13 @@ class MinerController {
       for (const w of c.pool) if (w) w.postMessage({ type: 'viz', on });
     }
     this.emit(true);
+  }
+  /** Asks worker `w`'s search for the inputs of node `nid` of its step `key` (through the board: isolated pages only); false without one. */
+  askNode(w, key, nid) {
+    const c = this.c;
+    if (!c || !c.board) return false;
+    c.reqs = [...(c.reqs || []).slice(-40), { id: (c.reqSeq = (c.reqSeq || 0) + 1), slot: w, key, nid }];
+    return postMail(c.board, c.count, { reqs: c.reqs });
   }
   /** The Auto-mine page is on screen (the views redraw); off screen the data still collects. */
   setViewing(on) { this.hub.live = on; if (on) this.hub.notify(); }
@@ -315,6 +323,8 @@ class MinerController {
           return;
         }
         if (m.type === 'progress') { this.rate.add(i, m.sim); return; }
+        if (m.type === 'vizstate') { hub.setRoot(i, m.key, m.state); return; }
+        if (m.type === 'vizpath') { hub.setPath(i, m.key, m.id, m.flat); return; }
         if (m.type === 'viz') {
           const f = /"sim_frames":(\d+)/.exec(m.line);
           if (f) this.rate.add(i, +f[1]);

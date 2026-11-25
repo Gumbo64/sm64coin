@@ -221,7 +221,8 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
 
     sm64pow::init(crate::sys::fs::read(&job.rom)?)?;
     let mut g = sm64pow::generator()?.create_game()?;
-    g.load_state(&SaveState::from_bytes(crate::sys::fs::read(&job.state_file)?)?)?;
+    let state_bytes = crate::sys::fs::read(&job.state_file)?;
+    g.load_state(&SaveState::from_bytes(state_bytes.clone())?)?;
     let game = SM64MiningGame { game: g, pert: job.pert.clone() };
     check_layout(&game)?;
     let root = read_state(&game, job.frame0, true);
@@ -232,7 +233,7 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     let save = game.save_state();
     let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator)?;
     if job.viz {
-        engine.on_round = Some(viz::sampler(job, &root));
+        engine.on_round = Some(viz::sampler(job, &root, state_bytes));
     } else {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -619,7 +620,13 @@ pub mod viz {
 
     const NODES: usize = 500;
 
-    pub fn sampler(job: &Job, root: &St) -> Box<dyn FnMut(&Engine) + Send> {
+    /// `state`: the step's start state (the SaveState bytes the step loaded). It is offered to the page once per step
+    /// (`sm64miner.viz_state(key, bytes)`, key = the viz feed's step key) so the page can start the game at the step's
+    /// root and replay only the step's own inputs. The page can also ask for the inputs of a sampled node of this tree
+    /// (`sm64miner.viz_req(key)` -> JSON ids; answered with `viz_path(key, id, flat pads)`; page-side only on cross-origin isolated pages).
+    pub fn sampler(job: &Job, root: &St, state: Vec<u8>) -> Box<dyn FnMut(&Engine) + Send> {
+        let key = format!("{}:{}:{}:{}:{:?}", job.seed, job.frame0, root.level, root.area, job.goal);
+        let mut state = Some(state);
         let head = serde_json::json!({ "frame0": job.frame0, "seed": job.seed, "goal": format!("{:?}", job.goal), "level": root.level, "area": root.area, "pos": root.pos });
         let (frame0, root_prog) = (job.frame0, root.progress());
         let mut last = Instant::now();
@@ -639,6 +646,15 @@ pub mod viz {
                 return;
             }
             last = Instant::now();
+            if let Some(st) = state.take() {
+                send_state(&key, &st);
+            }
+            for id in requested(&key) {
+                if (id as usize) < e.tree.nodes.len() {
+                    let flat: Vec<i32> = e.tree.path(id).iter().flat_map(|p| [p.button as i32, p.stick_x as i32, p.stick_y as i32]).collect();
+                    send_path(&key, id, &flat);
+                }
+            }
             let nodes = &e.tree.nodes;
             let n = nodes.len();
             let key = |i: usize| (nodes[i].st.progress(), std::cmp::Reverse(nodes[i].st.frame));
@@ -684,6 +700,39 @@ pub mod viz {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn emit(_line: &str) {}
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_state)]
+        fn js_viz_state(key: &str, bytes: &[u8]);
+        #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_req)]
+        fn js_viz_req(key: &str) -> Option<String>;
+        #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_path)]
+        fn js_viz_path(key: &str, id: u32, flat: &[i32]);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn send_state(key: &str, bytes: &[u8]) {
+        js_viz_state(key, bytes);
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn send_path(key: &str, id: u32, flat: &[i32]) {
+        js_viz_path(key, id, flat);
+    }
+    /// The node ids the page asked this step's tree for (empty natively and without the page's board).
+    #[cfg(target_arch = "wasm32")]
+    fn requested(key: &str) -> Vec<u32> {
+        js_viz_req(key).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_state(_key: &str, _bytes: &[u8]) {}
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_path(_key: &str, _id: u32, _flat: &[i32]) {}
+    #[cfg(not(target_arch = "wasm32"))]
+    fn requested(_key: &str) -> Vec<u32> {
+        Vec::new()
+    }
 
     /// Native: about once a second the frames this step has simulated so far go into `path` (a bare number), where the
     /// parent (`run_child`) reads them for the miner's frames/s counter ([`super::super::SIM_FRAMES`]).

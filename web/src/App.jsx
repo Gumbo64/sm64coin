@@ -19,12 +19,14 @@ export default function App() {
     <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '')}>
       <header className="nav">
         <span className="brand">★ SM64Coin</span>
-        <NavLink to="/" end>Explorer</NavLink>
-        <NavLink to="/mine">Mine</NavLink>
-        <NavLink to="/wallet">Wallet</NavLink>
-        <NavLink to="/leaderboard">Leaderboard</NavLink>
-        <NavLink to="/network">Network</NavLink>
-        <NavLink to="/info">Info</NavLink>
+        <nav className="tabs" aria-label="Pages">
+          <NavLink to="/" end>Explorer</NavLink>
+          <NavLink to="/mine">Mine</NavLink>
+          <NavLink to="/wallet">Wallet</NavLink>
+          <NavLink to="/leaderboard">Leaderboard</NavLink>
+          <NavLink to="/network">Network</NavLink>
+          <NavLink to="/info">Info</NavLink>
+        </nav>
         <MinerLight />
       </header>
       <UpdateBanner />

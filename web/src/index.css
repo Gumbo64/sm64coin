@@ -5,6 +5,7 @@ a { color: var(--acc); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .nav { display:flex; gap:20px; align-items:center; padding:12px 24px; border-bottom:1px solid var(--line); background:#12162a; }
 .nav .brand { font-weight:700; color:var(--acc); margin-right:12px; }
+.nav .tabs { display:flex; gap:20px; align-items:center; min-width:0; }
 .nav a { color: var(--mut); }
 .nav a.active { color: var(--fg); font-weight:600; }
 main { max-width:1200px; margin:0 auto; padding:20px 24px; }
@@ -148,7 +149,7 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 
 /* The current time limit on the cycle timeline (Mine page). */
 .timeline .limitmark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #6ea8fe; pointer-events: auto; }
-.timeline .limitmark span { position: absolute; top: -18px; left: 4px; font-size: 11px; color: #6ea8fe; white-space: nowrap; }
+.timeline .limitmark span { position: absolute; top: -18px; right: 4px; text-align: right; font-size: 11px; color: #6ea8fe; white-space: nowrap; }
 .timeline .limitmark.passed { background: var(--red); }
 .timeline .limitmark.passed span { color: var(--red); }
 .timeline .over-limit { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(255,107,107,0.10) 0 6px, transparent 6px 12px); pointer-events: none; }
@@ -161,3 +162,35 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .update-banner { position: relative; background: #1b2540; border-bottom: 1px solid var(--acc); padding: 6px 40px 6px 16px; font-size: 13px; text-align: center; }
 .update-banner.required { background: #4a1a1a; border-bottom-color: #ff6b6b; }
 .update-banner .close { position: absolute; right: 10px; top: 3px; background: transparent; color: var(--fg); font-size: 18px; padding: 0 6px; }
+
+/* Phones: the header is two rows (brand + status light, then the page tabs as a scrollable row), the page has no
+   horizontal overflow (tables and wide blocks scroll inside their own box), touch targets are at least 40 px. */
+html { -webkit-text-size-adjust: 100%; }
+@media (max-width: 700px) {
+  .nav { flex-wrap: wrap; gap: 6px 10px; padding: 8px 12px 0; }
+  .nav .brand { margin-right: 0; }
+  .nav .minerlight { margin-left: auto; min-height: 32px; }
+  .nav .tabs { order: 3; flex: 1 0 100%; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; margin: 0 -12px; padding: 0 12px; -webkit-overflow-scrolling: touch; }
+  .nav .tabs::-webkit-scrollbar { display: none; }
+  .nav .tabs a { flex: 0 0 auto; padding: 10px 10px; min-height: 40px; white-space: nowrap; border-bottom: 2px solid transparent; }
+  .nav .tabs a.active { border-bottom-color: var(--acc); }
+  main { padding: 12px 12px; }
+  .card { padding: 12px 12px; }
+  .banner { top: 96px; }
+  table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  th, td { padding: 6px 8px; }
+  .kv { grid-template-columns: 1fr; gap: 0; }
+  .kv dt { margin-top: 6px; }
+  input, select, textarea { max-width: 100%; font-size: 16px; }
+  button { min-height: 40px; }
+  .controls button, .viz-bar button { min-height: 36px; }
+  .stats { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .search { flex-wrap: wrap; }
+  .log, pre, .seedbox { max-width: 100%; overflow-x: auto; }
+  .replay-host { min-height: 480px; height: auto; }
+  .replay-host .topbar { flex-wrap: wrap; row-gap: 4px; }
+  .replay-host .topbar .title { max-width: 100%; }
+  .replay-host .body { flex-direction: column; }
+  .replay-host .panel { width: 100%; max-width: 100%; max-height: none; }
+  .replay-host .stage { min-height: 260px; }
+}

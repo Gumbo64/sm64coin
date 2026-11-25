@@ -186,7 +186,7 @@ export default function CloudView({ hub, onPlay }) {
           setSel(snapshot(slot));
           select(slot);
         };
-        const snapshot = (slot) => ({ slot, w: hub.worker[slot], id: hub.nodeId[slot], frame: hub.frame[slot], stars: hub.stars[slot], level: hub.level[slot], area: hub.area[slot], pos: [hub.pos[slot * 3], hub.pos[slot * 3 + 1], hub.pos[slot * 3 + 2]], progress: hub.flags[slot] & 1, chain: hub.chain(slot).length });
+        const snapshot = (slot) => ({ slot, w: hub.worker[slot], id: hub.nodeId[slot], step: hub.stepOf[slot], frame: hub.frame[slot], stars: hub.stars[slot], level: hub.level[slot], area: hub.area[slot], pos: [hub.pos[slot * 3], hub.pos[slot * 3 + 1], hub.pos[slot * 3 + 2]], progress: hub.flags[slot] & 1, chain: hub.chain(slot).length });
         let downAt = null;
         renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
         renderer.domElement.addEventListener('pointerup', (e) => { if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 4) onClick(e); downAt = null; });
@@ -255,11 +255,10 @@ export default function CloudView({ hub, onPlay }) {
           <>
             <b>Node {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame} ({clock(sel.frame)}) ·
             pos ({sel.pos.map((x) => Math.round(x)).join(', ')}){sel.progress ? ' · made progress' : ''} · {sel.chain} ancestor{sel.chain === 1 ? '' : 's'} sampled
-            {' '}{isBest
-              ? <button onClick={() => onPlay && onPlay(sel.w)}>▶ play this path</button>
-              : <span className="muted">(inputs are sent for each worker's best node only: {w?.best ? <button className="linkish" onClick={() => onPlay && onPlay(sel.w)}>play its best path</button> : 'none yet'})</span>}
+            {' '}<button onClick={() => onPlay && onPlay(sel.w, { step: sel.step, id: sel.id })}>▶ play {isBest ? 'this path' : 'this node'}</button>
+            {!isBest && w?.best && <>{' '}<button className="linkish" onClick={() => onPlay && onPlay(sel.w)}>play its best path</button></>}
           </>
-        ) : <span className="muted">Click a node. Drag to orbit, wheel to zoom, right-drag to pan.</span>}
+        ) : <span className="muted">Tap a node. One finger orbits, two fingers pinch to zoom and pan (mouse: drag, wheel, right-drag).</span>}
       </div>
     </div>
   );

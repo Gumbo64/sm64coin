@@ -41,6 +41,8 @@ export class VizHub {
     this.area = new Uint8Array(CAP);
     this.flags = new Uint8Array(CAP);
     this.nodeId = new Int32Array(CAP);
+    this.stepOf = new Uint16Array(CAP); // the worker's search-step number (w.cur.n) a node belongs to
+    this.paths = new Map(); // `${worker}:${step key}:${node id}` -> raw pads (4 bytes a frame) of a node's path from its step's root, or 'asked'
     this.parentSlot = new Int32Array(CAP).fill(-1);
     this.keyAt = new Float64Array(CAP).fill(-1);
     this.index = new Map(); // (worker, step, id) -> slot
@@ -84,7 +86,7 @@ export class VizHub {
     this.t0 = Date.now() / 1000;
     this.workers = starts.map((start, i) => ({
       i, start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0,
-      fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, found: false, runs: 0,
+      fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, root: null, keys: {}, found: false, runs: 0,
     }));
     this.notify();
   }
@@ -93,7 +95,7 @@ export class VizHub {
   restartWorker(i, start) {
     const w = this.workers[i];
     if (!w) return;
-    Object.assign(w, { start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0, fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null });
+    Object.assign(w, { start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0, fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, root: null, keys: {} });
     this.notify();
   }
 
@@ -128,6 +130,7 @@ export class VizHub {
     if (!w.cur || w.cur.key !== m.key) {
       w.curN = (w.curN || 0) + 1;
       w.cur = { key: m.key, n: w.curN, step: m.step, t: 0, nodes: 0, sim: 0, best: null };
+      w.keys[w.curN & 4095] = m.key;
       w.lastSim = null;
       w.best = null;
       w.bestPads = null;
@@ -178,6 +181,7 @@ export class VizHub {
     this.area[slot] = area;
     this.flags[slot] = flags;
     this.nodeId[slot] = id;
+    this.stepOf[slot] = step & 4095;
     this.parentSlot[slot] = parent >= 0 ? this.index.get((w * 4096 + (step & 4095)) * 1e8 + parent) ?? -1 : -1;
     this.n++;
     this.cloudChanged = true;
@@ -224,11 +228,48 @@ export class VizHub {
 
   select(sel) { this.selected = sel; this.notify(); }
 
-  /** Pads of worker `i`'s best path: {raw, played, prefixRaw|null} or null. */
+  /** A worker's step start state arrived (SaveState bytes of the headless game); only the newest step's is kept. */
+  setRoot(i, key, raw) {
+    const w = this.workers[i];
+    if (!w || !this.enabled) return;
+    w.root = { key, raw };
+    this.notify();
+  }
+
+  /** The inputs of node `id` (asked for with requestPath) arrived: flat [button, x, y, ...] from its step's root. */
+  setPath(i, key, id, flat) {
+    if (!this.enabled) return;
+    this.paths.set(`${i}:${key}:${id}`, flatToRaw(flat));
+    this.notify();
+  }
+
+  /**
+   * What the game view needs to play a node of worker `w`'s current step: {raw (pads from the step's root), rootRaw
+   * (the step's start state, or null: the block's start when the step starts at frame 0), key, played, best} or {wait: why}
+   * (the node's inputs are being asked of the worker) or {error: why}.
+   */
+  nodePlay(w, stepN, nid) {
+    const wk = this.workers[w];
+    if (!wk || !wk.cur) return { wait: 'waiting for the search…' };
+    if ((stepN & 4095) !== (wk.cur.n & 4095)) return { error: 'that node belongs to a search step that is over: its start state is gone. Pick a node of the current step (or play the best path).' };
+    const key = wk.cur.key;
+    const base = { key, played: wk.played, best: wk.best, rootRaw: wk.root && wk.root.key === key ? wk.root.raw : null };
+    if (wk.best && wk.best.id === nid && wk.bestPads) return { ...base, raw: flatToRaw(wk.bestPads) };
+    const pk = `${w}:${key}:${nid}`;
+    const got = this.paths.get(pk);
+    if (got && got !== 'asked') return { ...base, raw: got };
+    if (!got) {
+      if (!this.requester || !this.requester(w, key, nid)) return { error: 'only a search\'s best node has its inputs here; switch on worker sync (the button above Start) to play any node' };
+      this.paths.set(pk, 'asked');
+    }
+    return { wait: `asking worker ${w + 1} for the node's inputs…` };
+  }
+
+  /** Pads of worker `i`'s best path. */
   bestPlay(i) {
     const w = this.workers[i];
-    if (!w || !w.bestPads) return null;
-    const bs = w.bestStep;
-    return { raw: flatToRaw(w.bestPads), played: bs.played, prefixRaw: bs.prefix ? flatToRaw(bs.prefix) : null, best: w.best };
+    if (!w || !w.bestPads || !w.cur) return null;
+    const p = this.nodePlay(i, w.cur.n, w.best.id);
+    return p.raw ? p : null;
   }
 }

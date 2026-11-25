@@ -23,7 +23,7 @@ export default function VizPanel({ hub, mode }) {
   const on = (k) => !off[k];
   const toggle = (k) => setOff((o) => { const n = { ...o, [k]: !o[k] }; try { localStorage.setItem('sm64coin.vizViews', JSON.stringify(n)); } catch { /* private window */ } return n; });
   const toasts = hub.toasts.filter((t) => Date.now() - t.at < 7000);
-  const play = (w) => { hub.game = { id: hub.game.id + 1, kind: 'best', w }; hub.found = null; hub.notify(); };
+  const play = (w, node) => { hub.game = { id: hub.game.id + 1, kind: node ? 'node' : 'best', w, step: node?.step, nid: node?.id }; hub.found = null; hub.notify(); };
   const fallback = <div className="viz-card"><p className="muted">Loading…</p></div>;
   return (
     <div className="viz">
