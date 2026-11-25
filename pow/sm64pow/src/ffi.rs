@@ -162,7 +162,7 @@ pub extern "C" fn sm64pow_verify_signed_block(id32: *const u8, parent32: *const 
             return -1;
         };
         let (bytes, n) = (blob_arg(proof, len), blob_arg(nonce, nonce_len));
-        match std::panic::catch_unwind(|| crate::chain::signed_run(&Seed(seed), bytes, n, &sig)) {
+        match std::panic::catch_unwind(|| crate::chain::claim_signed_run(&Seed(seed), bytes, n, &sig)) {
             Ok(Ok(_)) => {}
             Ok(Err(why)) => {
                 crate::admit::note_invalid();
@@ -195,14 +195,40 @@ pub extern "C" fn sm64pow_check_signature(hash32: *const u8, proof: *const u8, l
     }
 }
 
-/// A second run for the template (seed `hash32`, coinbase extra nonce
-/// `nonce`) of our accepted block (`main_proof`, `main_sig64`), arriving as
-/// an alternative block (`alt_proof`, `alt_sig64`). Returns 0 the same run,
-/// 1 strictly shorter (ignored: no tip takeover), 2 strictly longer
-/// (ignored), 3 a bad signature, 4 equivocation: the evidence
-/// (EVIDENCE_LEN = 272 bytes) is written to `out` if `cap` allows and kept
-/// (relay it; templates then avoid the block); 5 the same evidence again;
-/// -1 our block's own signature doesn't check (should not happen).
+/// The one-run-per-key rule (equivocation.rs) for a block whose signature
+/// is checked here: the coinbase extra nonce `nonce`, `proof`, `sig64`, for
+/// the template with seed `hash32`. Returns 0 for a bad signature (the block
+/// is invalid; reason in sm64pow_last_error), 1 the first run seen for the
+/// template (its claim), 2 the same run again (a duplicate), 3 a different
+/// run: equivocation. Then the evidence is kept and queued for relay
+/// ([`sm64pow_take_evidence`]); the caller does not replay this block.
+/// -1 on an internal error. No replay.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_note_claim(hash32: *const u8, proof: *const u8, len: usize, nonce: *const u8, nonce_len: usize, sig64: *const u8) -> i32 {
+    let (Some(seed), Some(sig)) = (unsafe { id_arg(hash32) }, sig_arg(sig64)) else { return -1 };
+    let (bytes, n) = (blob_arg(proof, len), blob_arg(nonce, nonce_len));
+    match std::panic::catch_unwind(|| crate::chain::claim_signed_run(&Seed(seed), bytes, n, &sig)) {
+        Ok(Ok(crate::equivocation::Claim::First)) => 1,
+        Ok(Ok(crate::equivocation::Claim::Same)) => 2,
+        Ok(Ok(crate::equivocation::Claim::Equivocation(_))) => 3,
+        Ok(Err(why)) => {
+            crate::admit::note_invalid();
+            set_error(why);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// Another run for the template (seed `hash32`, coinbase extra nonce
+/// `nonce`) of a block already in our chain (`main_proof`, `main_sig64`),
+/// arriving as an alternative block (`alt_proof`, `alt_sig64`): the fallback
+/// of [`sm64pow_note_claim`] after a restart, when the claims are forgotten.
+/// Returns 0 the same run, 3 a bad signature, 4 equivocation (any other
+/// signed run, whatever its length): the evidence (EVIDENCE_LEN = 272 bytes)
+/// is written to `out` if `cap` allows and kept (relay it; templates then
+/// avoid the block); 5 the same evidence again; -1 our block's own signature
+/// doesn't check (should not happen).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_judge_sibling(hash32: *const u8, nonce: *const u8, nonce_len: usize, main_proof: *const u8, main_len: usize, main_sig64: *const u8, alt_proof: *const u8, alt_len: usize, alt_sig64: *const u8, out: *mut u8, cap: usize) -> i32 {
     let (Some(seed), Some(ms), Some(asig)) = (unsafe { id_arg(hash32) }, sig_arg(main_sig64), sig_arg(alt_sig64)) else { return -1 };
@@ -216,8 +242,6 @@ pub extern "C" fn sm64pow_judge_sibling(hash32: *const u8, nonce: *const u8, non
         let alt = crate::equivocation::SignedRun { proof_id: proof_id(ap), frames, sig: asig };
         match judge_sibling(&seed.0, &key, &main, &alt) {
             Sibling::SameRun => (0, None),
-            Sibling::LateShorter => (1, None),
-            Sibling::Longer => (2, None),
             Sibling::BadSignature => (3, None),
             Sibling::Equivocation(e) => {
                 let new = crate::equivocation::policy().lock().unwrap().add(e);
@@ -432,6 +456,121 @@ pub extern "C" fn sm64pow_rpc_leave(handle: *mut std::ffi::c_void) {
     if !handle.is_null() {
         drop(unsafe { Box::from_raw(handle as *mut crate::admit::RpcScope) });
     }
+}
+
+// ---- The replay queue (queue.rs, docs/DOS.md) ----
+
+/// What the daemon says about the blocks at a job's height (queue.rs
+/// `Chain`): given a parent id, 0 the parent is not in our main chain, 1 it is
+/// our tip, 2 it has a main-chain child, whose id and frames go to the out
+/// parameters. Called from the queue's worker threads, never under the
+/// queue's lock.
+pub type FactsCb = extern "C" fn(parent32: *const u8, child_id32: *mut u8, child_frames: *mut u32) -> i32;
+
+/// Sets the callback the queue asks what is at a job's height. Call once at start-up.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_set_facts(cb: FactsCb) {
+    use crate::queue::Chain;
+    let f = move |p: &[u8; 32]| -> Chain {
+        let (mut id, mut frames) = ([0u8; 32], 0u32);
+        match cb(p.as_ptr(), id.as_mut_ptr(), &mut frames) {
+            1 => Chain::Tip,
+            2 => Chain::Child { id, frames },
+            _ => Chain::Unknown,
+        }
+    };
+    crate::queue::global().set_facts(std::sync::Arc::new(f));
+}
+
+/// How many replay workers (default: every core). Before the first job.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_set_threads(n: u32) {
+    crate::queue::global().set_threads(n as usize);
+}
+
+fn queue_job(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64) -> Option<crate::queue::Job> {
+    let (id, parent_id, seed) = unsafe { (id_arg(id32)?, id_arg(parent32)?, id_arg(hash32)?) };
+    let parent = if genesis_parent != 0 { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: parent_id, gap_seconds } };
+    Some(crate::queue::Job { id, parent, parent_id, seed: Seed(seed), difficulty, blob: blob_arg(proof, len).to_vec(), frames, stamp, due, ctx: crate::admit::context() })
+}
+
+fn verdict_code(v: &crate::queue::Verdict) -> i32 {
+    use crate::queue::Verdict::*;
+    match v {
+        Valid(_) => {
+            1
+        }
+        Invalid(why) => {
+            set_error(why.clone());
+            0
+        }
+        Skipped(why) => {
+            set_error((*why).into());
+            2
+        }
+        Process => 3,
+    }
+}
+
+/// Queues a claim: block `id32` on `parent32` (`genesis_parent` 1 when that
+/// is the genesis block), `gap_seconds` after it, seed `hash32`, retarget
+/// `difficulty`, the proof, its claimed `frames`, the block's `stamp`, and the
+/// unix second it is `due`. The source is this thread's (sm64pow_source_enter).
+/// 0 queued, 1 already known, 2 the queue (or this source's share) is full, 3
+/// this source sent an invalid claim recently (reason in sm64pow_last_error).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_submit(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64) -> i32 {
+    use crate::queue::Refused;
+    let Some(job) = queue_job(id32, parent32, genesis_parent, gap_seconds, hash32, difficulty, proof, len, frames, stamp, due) else { return 2 };
+    match crate::queue::global().submit(job) {
+        Ok(()) => 0,
+        Err(Refused::Known) => 1,
+        Err(Refused::Full) => {
+            set_error("the replay queue is full".into());
+            2
+        }
+        Err(Refused::Penalty) => {
+            set_error("this source sent an invalid claim recently".into());
+            3
+        }
+    }
+}
+
+/// Replays a claim now on the calling thread (the local miner's
+/// `submit_block`, outside any lock): the decision and replay of a queued
+/// job. 1 valid (its end state is cached; [`sm64pow_queue_take_cleared`] then
+/// says so), 0 invalid, 2 skipped (it cannot matter), 3 not decided here
+/// (process it the normal way).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_replay_now(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64) -> i32 {
+    let Some(job) = queue_job(id32, parent32, genesis_parent, gap_seconds, hash32, difficulty, proof, len, frames, stamp, 0) else { return 3 };
+    match std::panic::catch_unwind(|| crate::queue::global().replay_now(job)) {
+        Ok(v) => verdict_code(&v),
+        Err(_) => 3,
+    }
+}
+
+/// The next finished claim, waiting up to `timeout_ms`: writes its id to
+/// `out_id32` and returns its verdict (1 valid, 0 invalid, 2 skipped, 3 not
+/// decided here: process it normally; reason in sm64pow_last_error), or -1
+/// when none finished.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_wait(timeout_ms: u32, out_id32: *mut u8) -> i32 {
+    match crate::queue::global().wait_ready(std::time::Duration::from_millis(timeout_ms as u64)) {
+        Some((id, v)) => {
+            unsafe { std::ptr::copy_nonoverlapping(id.as_ptr(), out_id32, 32) };
+            verdict_code(&v)
+        }
+        None => -1,
+    }
+}
+
+/// Whether block `id32` was replayed valid by the queue and not yet
+/// consumed: then the daemon's normal path finds the cached result. Consumes it.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_take_cleared(id32: *const u8) -> i32 {
+    let Some(id) = (unsafe { id_arg(id32) }) else { return 0 };
+    crate::queue::global().take_cleared(&id) as i32
 }
 
 /// Keeps the last few blocks' end states in directory `path` (NUL-terminated)

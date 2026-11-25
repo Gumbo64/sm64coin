@@ -152,3 +152,87 @@ fn a_signature_over_another_proof_or_template_fails() {
     assert!(matches!(r1, BlockVerdict::Invalid(_)) && matches!(r2, BlockVerdict::Invalid(_)));
     assert_eq!(replays(), before);
 }
+
+#[test]
+fn one_run_per_key_on_real_blocks_whatever_the_length() {
+    use sm64pow::equivocation::{Claim, policy};
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    if !init() {
+        return;
+    }
+    let c = chain();
+    let mut evidence = 0;
+    for b in c.iter().take(12) {
+        let miner = Keypair::from_entropy(&[0x40 + b.height as u8; 32]).unwrap();
+        let nonce = miner.extra_nonce();
+        // (its own template: the other tests of this process already used the real seeds)
+        let mut s = b.seed;
+        s.0[0] ^= 0x77;
+        let sign = |p: &[u8]| sm64pow::mining::sign_proof(&miner, &s.0, p).unwrap();
+        // The first run is the template's claim; the same run again is a duplicate.
+        assert_eq!(sm64pow::chain::claim_signed_run(&s, &b.proof, &nonce, &sign(&b.proof)), Ok(Claim::First));
+        assert_eq!(sm64pow::chain::claim_signed_run(&s, &b.proof, &nonce, &sign(&b.proof)), Ok(Claim::Same));
+        // Any other run the miner signs for the template is equivocation: a valid variant of the same
+        // length, and a truncated (shorter) proof, which needn't even be a valid run.
+        for v in variants(&b.proof) {
+            let r = sm64pow::chain::claim_signed_run(&s, &v, &nonce, &sign(&v));
+            assert!(matches!(r, Ok(Claim::Equivocation(e)) if e.verify()), "block {}: {r:?}", b.height);
+            evidence += 1;
+        }
+        let p = policy().lock().unwrap();
+        assert!(p.avoid(&s.0), "block {}: the template is avoided while childless", b.height);
+        // The real block still verifies: consensus never rejects for equivocation.
+        drop(p);
+        let real = sm64pow::mining::sign_proof(&miner, &b.seed.0, &b.proof).unwrap();
+        let r = verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, &nonce, &real).unwrap();
+        assert!(matches!(r, BlockVerdict::Valid { .. }), "block {}: {r:?}", b.height);
+    }
+    eprintln!("{evidence} second runs of 12 templates: all evidence, the blocks still valid");
+}
+
+#[test]
+fn queue_replays_real_blocks_outside_the_lock_and_the_check_then_finds_the_result() {
+    use sm64pow::queue::{Chain, Job, Verdict, global};
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    if !init() {
+        return;
+    }
+    let c = chain();
+    // A chain of 8 blocks, the first from power-on: replay each through the queue one after another
+    // (each needs its parent's state), then do what the daemon does under its lock: verify.
+    global().set_facts(std::sync::Arc::new(|_| Chain::Tip));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let (mut queue_replays, mut lock_replays) = (0u64, 0u64);
+    for b in c.iter().take(8) {
+        let miner = Keypair::from_entropy(&[0x80 + b.height as u8; 32]).unwrap();
+        let sig = sm64pow::mining::sign_proof(&miner, &b.seed.0, &b.proof).unwrap();
+        let before = replays();
+        let parent_id = match b.parent {
+            Parent::Genesis => [0; 32],
+            Parent::Block { id, .. } => id,
+        };
+        let frames = sm64pow::proof::split_blob(&b.proof).unwrap().0;
+        let job = Job { id: b.id, parent: b.parent, parent_id, seed: b.seed, difficulty: b.difficulty, blob: b.proof.clone(), frames, stamp: now, due: now, ctx: None };
+        let t = Instant::now();
+        global().submit(job).unwrap();
+        let (id, v) = loop {
+            if let Some(r) = global().wait_ready(std::time::Duration::from_secs(60)) {
+                break r;
+            }
+        };
+        let replay_time = t.elapsed();
+        assert_eq!(id, b.id);
+        assert!(matches!(v, Verdict::Valid(f) if f == frames), "block {}: {v:?}", b.height);
+        assert!(global().take_cleared(&b.id));
+        queue_replays += replays() - before;
+        let before = replays();
+        let t = Instant::now();
+        let r = verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, &miner.extra_nonce(), &sig).unwrap();
+        assert!(matches!(r, BlockVerdict::Valid { frames: f, .. } if f == frames), "block {}: {r:?}", b.height);
+        lock_replays += replays() - before;
+        eprintln!("block {}: {frames} frames, queue {:.0} ms, the check under the lock {:.1} ms", b.height, replay_time.as_secs_f64() * 1e3, t.elapsed().as_secs_f64() * 1e3);
+    }
+    // (other tests of this process may have cached some of these runs already)
+    assert!(queue_replays <= 8, "at most one replay per block, in the queue");
+    assert_eq!(lock_replays, 0, "the check under the blockchain lock replays nothing");
+}

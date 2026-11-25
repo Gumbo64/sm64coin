@@ -103,6 +103,13 @@ impl<K: Hash + Eq + Clone, V> Bounded<K, V> {
             }
         }
     }
+    pub fn remove(&mut self, k: &K) -> Option<V> {
+        let v = self.map.remove(k);
+        if v.is_some() {
+            self.order.retain(|o| o != k);
+        }
+        v
+    }
     pub fn entry_or(&mut self, k: K, f: impl FnOnce() -> V) -> &mut V {
         if !self.map.contains_key(&k) {
             self.insert(k.clone(), f());
