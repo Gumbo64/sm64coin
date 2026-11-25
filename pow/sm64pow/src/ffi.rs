@@ -688,6 +688,10 @@ pub extern "C" fn sm64pow_queue_submit(id32: *const u8, parent32: *const u8, gen
             set_error(why.into());
             2
         }
+        Err(Refused::Hopeless(why)) => {
+            set_error(why.into());
+            2
+        }
     }
 }
 

@@ -15,7 +15,12 @@ use sm64pow::proof::{Proof, Start, encode_proof};
 use sm64pow::sign::Keypair;
 use sm64_binds::GamePad;
 
-const ADDR: &str = "SM64RtPqsHM63LZn2u9Myx9HtC4kjhu1h98SRtJz9USB7NZAoCMdZSBD7D1L2DWu9uCYZFUSVKytreuzEMJ6VjBU2tbjKqevFH";
+const MAINNET_ADDR: &str = "SM64RtPqsHM63LZn2u9Myx9HtC4kjhu1h98SRtJz9USB7NZAoCMdZSBD7D1L2DWu9uCYZFUSVKytreuzEMJ6VjBU2tbjKqevFH";
+
+/// The reward address for templates: $SM64_ADDR (a test network's) or a mainnet one.
+fn addr() -> String {
+    std::env::var("SM64_ADDR").unwrap_or_else(|_| MAINNET_ADDR.into())
+}
 
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
@@ -37,7 +42,7 @@ fn main() -> Result<()> {
     let a: Vec<String> = std::env::args().collect();
     let d = Daemon::new(&a[1]);
     let height = d.height()?; // the next block's height
-    let top = d.call("get_block_template", json!({"wallet_address": ADDR}))?;
+    let top = d.call("get_block_template", json!({"wallet_address": addr()}))?;
     let start = match top["sm64_start"].as_str().unwrap_or("parent") {
         "power-on" => Start::PowerOn,
         _ => Start::Parent,
@@ -58,14 +63,14 @@ fn main() -> Result<()> {
             let pool: Vec<Keypair> = (0..keys).map(|_| Keypair::generate()).collect();
             let one = Keypair::generate();
             // samekey: one template, N different signed runs.
-            let one_t = if mode == "samekey" { Some(d.template_for(ADDR, one.clone())?) } else { None };
+            let one_t = if mode == "samekey" { Some(d.template_for(&addr(), one.clone())?) } else { None };
             for i in 0..n {
                 let (t, key) = match &one_t {
                     Some(t) => (t.clone(), one.clone()),
                     None => {
                         let k = if keys > 0 { pool[i as usize % keys].clone() } else { Keypair::generate() };
                         // A key reused for several templates would be equivocation: its claims share a template only if the daemon returns the same one (same extra nonce): fine, they are then different runs of one seed.
-                        (d.template_for(ADDR, k.clone())?, k)
+                        (d.template_for(&addr(), k.clone())?, k)
                     }
                 };
                 let proof = junk(frames, i + 1, start);

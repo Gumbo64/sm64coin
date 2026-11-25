@@ -58,6 +58,8 @@ pub const PENALTY_SECONDS: f64 = 600.0;
 /// for longer than one short replay.
 pub const RESERVED_FRAMES: u32 = 9000;
 const IDS: usize = 8192;
+/// How much longer an unknown source's claim counts when ordering (frames).
+pub const UNKNOWN_SOURCE_FRAMES: f64 = 2000.0;
 const SOURCES: usize = 4096;
 
 /// What a replay of a claim needs, as known when it arrived.
@@ -123,6 +125,28 @@ pub enum Refused {
     Penalty,
     /// Its source's replay budget (admit.rs) is used up.
     Budget(&'static str),
+    /// It can't be valid by its own claim (cheap arithmetic, no replay).
+    Hopeless(&'static str),
+}
+
+/// Claims shorter than this are not replayed unasked (the limit's floor, 20 s of play: no star
+/// is reachable that fast; a junk claim of a few hundred frames would cost a replay's fixed
+/// overhead for nothing).
+pub const MIN_CLAIM_FRAMES: u32 = crate::rules::STAR_CYCLE.min_frames;
+
+/// Whether a claim could be valid at all, from what it claims (no replay): at least
+/// [`MIN_CLAIM_FRAMES`], and not longer than the limit at its own stamp (a restart's limit is
+/// never larger, so this never refuses a valid block).
+pub fn plausible(job: &Job) -> Result<(), &'static str> {
+    if job.frames < MIN_CLAIM_FRAMES {
+        return Err("claims fewer frames than any star needs");
+    }
+    if let Parent::Block { gap_seconds, .. } = job.parent {
+        if job.frames > crate::rules::active().max_frames(job.difficulty.max(1), gap_seconds) {
+            return Err("claims more frames than the limit at its own timestamp");
+        }
+    }
+    Ok(())
 }
 
 impl Job {
@@ -170,6 +194,8 @@ struct State {
     known: Option<Bounded<[u8; 32], ()>>,
     /// Ids queued or replayed: when they became eligible here.
     eligible: Option<Bounded<[u8; 32], u64>>,
+    /// Sources that sent a claim that verified valid.
+    trusted: Option<Bounded<String, ()>>,
     /// Per source: frames replayed for it (decaying), and when that was.
     served: Option<Bounded<String, (f64, f64)>>,
     /// Per source: refused until, and how often it offended.
@@ -190,6 +216,8 @@ pub struct Queue {
     replay: Box<Replay>,
     threads: AtomicUsize,
     started: OnceLock<()>,
+    /// Refuse implausible claims ([`plausible`]) on submit (the process's queue does; unit tests' don't).
+    pub check_plausible: std::sync::atomic::AtomicBool,
     /// Counters for logs and tests.
     pub replayed: AtomicUsize,
     pub skipped: AtomicUsize,
@@ -240,7 +268,11 @@ impl State {
                 continue;
             }
             let (frames, queued, src) = (self.waiting[i].job.frames as f64, self.waiting[i].queued, source_of(&self.waiting[i].job));
-            let key = (frames + self.served_now(&src, t), queued, i);
+            // Sources whose claims verified before rank ahead of unknown ones (an unknown source's
+            // claim counts as UNKNOWN_SOURCE_FRAMES longer): a burst from fresh addresses queues
+            // behind a known miner's or relay's claim of the same length.
+            let unknown = if !src.is_empty() && self.trusted.as_ref().is_none_or(|m| m.get(&src).is_none()) { UNKNOWN_SOURCE_FRAMES } else { 0.0 };
+            let key = (frames + self.served_now(&src, t) + unknown, queued, i);
             if best.is_none_or(|b| (key.0, key.1) < (b.0, b.1)) {
                 best = Some(key);
             }
@@ -277,6 +309,7 @@ impl Queue {
             replay,
             threads: AtomicUsize::new(threads.max(1)),
             started: OnceLock::new(),
+            check_plausible: std::sync::atomic::AtomicBool::new(false),
             replayed: AtomicUsize::new(0),
             skipped: AtomicUsize::new(0),
         })
@@ -301,6 +334,9 @@ impl Queue {
         let t = admit::now();
         let src = source_of(&job);
         let accountable = accountable(&job);
+        if job.ctx.is_some() && self.check_plausible.load(Ordering::Relaxed) {
+            plausible(&job).map_err(Refused::Hopeless)?;
+        }
         if let admit::Decision::Skip(why) = admit::gate_relay(job.ctx.as_ref()) {
             return Err(Refused::Budget(why));
         }
@@ -494,6 +530,9 @@ impl Queue {
             }
             Verdict::Valid(_) => {
                 st.maps().0.insert(job.id, ());
+                if !src.is_empty() {
+                    st.trusted.get_or_insert_with(|| Bounded::new(SOURCES)).insert(src.clone(), ());
+                }
             }
             _ => {}
         }
@@ -554,7 +593,9 @@ pub fn global() -> &'static Arc<Queue> {
     static Q: OnceLock<Arc<Queue>> = OnceLock::new();
     Q.get_or_init(|| {
         let n = std::thread::available_parallelism().map_or(4, |n| n.get());
-        Queue::new(n, Box::new(replay_job))
+        let q = Queue::new(n, Box::new(replay_job));
+        q.check_plausible.store(true, Ordering::Relaxed);
+        q
     })
 }
 
@@ -749,6 +790,31 @@ mod tests {
         assert!(got.iter().any(|(id, v)| *id == [3; 32] && matches!(v, Verdict::Skipped(_))));
         q.submit(job(3, 4000, now + 2, "honest2")).expect("re-sendable by another peer");
         q.stop();
+    }
+
+    #[test]
+    fn hopeless_claims_cost_nothing() {
+        let q = Queue::new(1, valid_replay());
+        q.check_plausible.store(true, Ordering::Relaxed);
+        let now = unix_now();
+        assert!(matches!(q.submit(job(1, 300, now, "a")), Err(Refused::Hopeless(_))), "below any star's length");
+        let mut long = job(2, 36000, now, "a");
+        long.parent = Parent::Block { id: [9; 32], gap_seconds: 10 };
+        assert!(matches!(q.submit(long), Err(Refused::Hopeless(_))), "over the limit at its own stamp");
+        let mut ok = job(3, 3000, now, "a");
+        ok.parent = Parent::Block { id: [9; 32], gap_seconds: 100_000 };
+        q.submit(ok).unwrap();
+        q.stop();
+    }
+
+    #[test]
+    fn known_sources_rank_ahead_of_unknown_ones() {
+        let mut st = State::default();
+        st.waiting.push(Entry { job: job(1, 4000, 10, "fresh"), queued: 0.0, others: vec![] });
+        st.waiting.push(Entry { job: job(2, 4000, 10, "known"), queued: 1.0, others: vec![] });
+        st.trusted.get_or_insert_with(|| Bounded::new(16)).insert("known".to_string(), ());
+        let i = st.pick(10, 0.0, true).unwrap();
+        assert_eq!(source_of(&st.waiting[i].job), "known");
     }
 
     #[test]
