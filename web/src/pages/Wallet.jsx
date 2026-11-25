@@ -257,6 +257,7 @@ function Onboard({ run, adopt, busy }) {
           <b>Passkey wallet (experimental, optional)</b>
           <p className="muted">Instead of a password, a passkey on this device (synced by your password manager or phone) makes and opens the wallet; the same passkey opens the same wallet on any device, on this website only. Nothing about the passkey is sent anywhere.</p>
           <p className="walleterr">If you delete the passkey, the coins are lost unless you saved the seed words. Export them from the wallet page.</p>
+          <p className="muted small" data-testid="passkey-site">The passkey wallet is tied to this site's address, <span className="mono">{window.location.hostname}</span> (gumbo64.github.io is shared by every GitHub Pages site of that account), and the same passkey opens a different wallet on any other site address; to move the wallet elsewhere, export its seed words.</p>
           <button disabled={busy} onClick={pkCreate}>Create passkey wallet (experimental)</button>{' '}
           <button disabled={busy} onClick={pkOpen}>Open with passkey</button>
         </div>
@@ -475,7 +476,9 @@ const NAME_KEY = 'sm64coin.boardName';
 function Board({ w, run }) {
   const [name, setName] = useState(() => { try { return localStorage.getItem(NAME_KEY) || ''; } catch { return ''; } });
   const [msg, setMsg] = useState('');
+  const [confirm, setConfirm] = useState(false);
   const join = () => run('Signing and submitting', async () => {
+    setConfirm(false);
     const n = name.trim();
     try { localStorage.setItem(NAME_KEY, n); } catch { /* storage unavailable */ }
     await eng.boardJoin(w, n);
@@ -484,15 +487,24 @@ function Board({ w, run }) {
   return (
     <div className="card">
       <h3>Leaderboard</h3>
-      <p className="walleterr">Joining shares this wallet's secret view key with the node, which can then see all incoming payments to it (not spend). Fine for your own node.</p>
+      <p className="walleterr">Joining sends this wallet's private view key to the node. The view key lets the node see every incoming payment to this wallet; it cannot spend.</p>
       <p className="muted">
         Opt in to show your blocks on the <Link to="/leaderboard">Leaderboard</Link>. The entry is signed here with your
         spend key (only you can name this address); to count your blocks, nodes are given your address and secret view key,
         so anyone can then see all incoming payments to this wallet (not spend). Use a dedicated mining wallet. An entry
         cannot be removed once shared, only renamed.
       </p>
-      <input placeholder="display name" value={name} maxLength={32} onChange={(e) => setName(e.target.value)} />{' '}
-      <button disabled={!name.trim()} onClick={join}>Join / rename</button>
+      <input placeholder="display name" value={name} maxLength={32} onChange={(e) => { setName(e.target.value); setConfirm(false); }} />{' '}
+      {!confirm && <button disabled={!name.trim()} onClick={() => setConfirm(true)}>Join / rename…</button>}
+      {confirm && (
+        <div className="notice" data-testid="board-confirm">
+          Join as <b>{name.trim()}</b>: this sends the wallet's <b>private view key</b> to the node, with the address and the
+          signed name. With the view key the node, and every node it shares the entry with, can see all incoming payments
+          to this wallet; it cannot spend them. This cannot be undone.<br />
+          <button onClick={join}>Send the view key and join</button>{' '}
+          <button onClick={() => setConfirm(false)}>Cancel</button>
+        </div>
+      )}
       {msg && <p>{msg}</p>}
     </div>
   );
