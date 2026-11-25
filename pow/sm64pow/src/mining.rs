@@ -102,8 +102,8 @@ pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>
     let pr = proof_from_played_at(start, parent, seed, p, played)?;
     let mut best = proof::encode_proof(&pr);
     if statecodec::state_codec_enabled() {
-        for c in statecodec::SEAL_CODECS {
-            let b = statecodec::encode_proof_state(*c, parent, seed, p, &pr)?;
+        // One replay feeds every encoder (the committed header does not depend on the encoding).
+        for b in statecodec::encode_proof_states(statecodec::seal_codecs(), parent, seed, p, &pr)? {
             if b.len() < best.len() {
                 best = b;
             }
