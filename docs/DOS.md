@@ -134,6 +134,46 @@ attack.py fluffy 127.0.0.1:P2P var33.jsonl --ips 4 --rpc http://127.0.0.1:RPC/js
 
 `chain.jsonl` is one `get_block` per line, with id, prev, ts, nonce, proof, blob and miner_tx_hash.
 
+## The replay queue (v0.3: "What is left" 1 and 2, done)
+
+Blocks that arrive one at a time (a relayed block, a fluffy block, `submit_block`)
+are no longer replayed on the thread that received them, under the blockchain
+lock. Sync batches still use the parallel pre-pass. The code is
+`pow/sm64pow/src/queue.rs`; the Monero side is `Blockchain::sm64_hold` /
+`sm64_hold_alt` (queue a claim), `core::sm64_release` (add and relay when the
+queue has a verdict), and one worker-side callback, `Blockchain::sm64_chain_facts`.
+
+1. **Arrival** (under the lock, about 0.2 ms, no replay): parse; signature
+   (`sign.rs`); the one-run-per-key rule (a second different run of a template
+   is evidence, not replayed, not relayed); the per-source frame budget
+   (`admit_relay`, unchanged).
+2. **Queue by due time** (`hold_until`: the run must fit the limit by this
+   node's clock). The queue holds at most 256 claims, 16 per source; a source
+   whose claim replayed invalid is refused for 10 minutes, doubling.
+3. **Due: skip unless it could matter.** The worker asks the daemon what is at
+   that height. A claim extending the tip is replayed. A sibling of our block
+   there is replayed only if it has strictly fewer frames (the signed claimed
+   count) and is inside the displacement window (`pof::candidate`), otherwise it
+   is dropped without a replay. So once an honest block exists, every longer
+   fake costs nothing.
+4. **Replay on a worker pool** (`--sm64-replay-threads`, default every core),
+   outside every lock, shortest claim first with a per-source fair share: a
+   claim's priority is its frames plus the frames already replayed for its
+   source (half-life 60 s). Candidates for one height share the parent's end
+   state and are independent.
+5. **Release.** A releaser thread takes the verdict: invalid or skipped
+   claims are dropped; a valid one is added (the check under the lock finds
+   the cached run, 0.1-0.2 ms, no replay) and **relayed only then**.
+   Consequences: a held run is not relayed before it is due and replayed; and
+   a peer that sent an invalid claim is no longer dropped and banned by the
+   P2P layer (the replay is asynchronous), it is refused by the queue
+   instead. Its budget is spent either way.
+6. A claim the queue cannot decide (parent state not cached) falls back to the
+   old path under the lock (`sm64_bypass_scope`).
+
+The local miner's `submit_block` (unrestricted RPC) replays on the RPC thread
+before taking the lock (`sm64_prereplay`), so it stays synchronous.
+
 ## What is left (not fixed here)
 
 1. **Invalid claims from many addresses (b).** Each IP gets one or two replays per day (Monero's ban: score 10 per `bad_pow`, ban above 10). Each costs up to the current limit. Replays run on the P2P threads under `m_blockchain_lock`, so they serialize: 20 IPs delayed the honest block 7 s here, which is about 100 s on a Pi. Nothing short of consensus makes an invalid claim cost the sender something. A non-consensus improvement, not done because it is a real change to Monero's block path:
