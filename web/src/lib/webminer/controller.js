@@ -305,8 +305,13 @@ class MinerController {
     };
     // Each worker searches on its own: one that ends without a run (or fails) starts again with
     // a new salt, after a pause that grows if it keeps failing; the first run found wins.
+    // One worker per slot: a launch replaces whatever the slot had (a pending relaunch, or a worker that share()
+    // restarted while this slot's relaunch timer was still pending), and messages from a replaced worker are ignored.
     const launch = (i) => {
-      if (c.stopped || c.template !== t) return;
+      clearTimeout(status[i].relaunch);
+      status[i].relaunch = null;
+      if (c.stopped || c.template !== t || c.submitting === t) return;
+      if (c.pool[i]) c.pool[i].terminate();
       const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
       c.pool[i] = w;
       const sh = shared[status[i].start] || null;
@@ -315,7 +320,7 @@ class MinerController {
       if (sh) status[i].gotShared = true;
       w.onmessage = (e) => {
         const m = e.data;
-        if (c.stopped || c.template !== t) return;
+        if (c.stopped || c.template !== t || c.pool[i] !== w) return;
         if (this.phase === 'loading') this.setPhase('mining');
         if (m.type === 'log') {
           status[i].line = m.line;
@@ -345,6 +350,10 @@ class MinerController {
           say(`worker ${i + 1}: run found, ${r.frames} frames (${fmtFrames(r.frames)}), ${(r.sim_frames / 1e6).toFixed(0)} M frames searched`);
           c.pool.forEach((x) => x && x.terminate());
           c.pool = [];
+          // No relaunch while this run is submitted: the other slots' pending relaunch timers would start workers
+          // on this template again (and a run they found would be submitted a second time). submit() ends with round().
+          c.submitting = t;
+          status.forEach((s) => { clearTimeout(s.relaunch); s.relaunch = null; });
           this.setPhase('found');
           this.submit(c, t, { ...r, start: status[i].start });
           return;
@@ -363,8 +372,10 @@ class MinerController {
           say(`worker ${i + 1}: no run from the parent (${r.why}); reset policy ${this.mode}: next attempt from power-on (reset cycle)`);
         }
         show();
-        setTimeout(() => launch(i), Math.min(60, 2 ** status[i].fails) * 1000);
+        status[i].relaunch = setTimeout(() => launch(i), Math.min(60, 2 ** status[i].fails) * 1000);
       };
+      // A worker that never ran (its module failed to load) is a failed search too, not a dead slot.
+      w.onerror = (ev) => { ev.preventDefault(); w.onmessage({ data: { type: 'error', message: ev.message || 'the worker failed to start' } }); };
       w.postMessage({
         type: 'mine',
         request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1 },
