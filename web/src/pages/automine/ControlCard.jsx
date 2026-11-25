@@ -42,8 +42,8 @@ export default function ControlCard({ s }) {
       {!open && !isolated && !running && 'serviceWorker' in navigator && (
         <button type="button" style={{ width: '100%', marginBottom: 8 }} onClick={enableSync} title="Workers share their work, and clicking a node plays it instantly (reloads the page once)">Enable worker sync (faster; reloads once)</button>
       )}
-      {running ? <button className="ui-big" onClick={() => miner.stop()}>Stop</button>
-        : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start mining</button>}
+      {running ? <button className="ui-big" onClick={() => miner.stop()}>Stop auto-mining</button>
+        : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start auto-mining</button>}
       <div className="ui-stat">
         <span><b>{running && fps > 0 ? `${fmtRate(fps)} frames/s` : '—'}</b></span>
         <span>{n} worker{n === 1 ? '' : 's'} · {stats.found} run{stats.found === 1 ? '' : 's'} found · {stats.accepted} block{stats.accepted === 1 ? '' : 's'}</span>

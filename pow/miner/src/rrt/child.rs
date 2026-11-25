@@ -246,6 +246,12 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
             engine.on_sync = Some(tsync::hook(job, ex.clone(), &root, sync_stats.clone()));
         }
     }
+    // Hybrid mining (the page's human-played nodes, state requests and position goal): needs the step's tag.
+    if !job.sync_tag.is_empty() {
+        if let Some(ex) = EXCHANGE.get() {
+            engine.on_hybrid = Some(hybrid::hook(job, ex.clone(), &root));
+        }
+    }
     engine.run()?;
     let sync_out = (job.sync_secs > 0.0 && engine.on_sync.is_some()).then(|| {
         let mut s = sync_stats.lock().unwrap().clone();
@@ -1052,7 +1058,7 @@ pub mod tsync {
         progress: (u8, i16),
     }
 
-    fn enc(p: &[GamePad]) -> String {
+    pub fn enc(p: &[GamePad]) -> String {
         use std::fmt::Write;
         let mut s = String::with_capacity(p.len() * 8);
         for g in p {
@@ -1061,7 +1067,7 @@ pub mod tsync {
         s
     }
 
-    fn dec(s: &str, max: usize) -> Option<Vec<GamePad>> {
+    pub fn dec(s: &str, max: usize) -> Option<Vec<GamePad>> {
         if s.len() % 8 != 0 || s.len() / 8 > max || !s.is_ascii() {
             return None;
         }
@@ -1124,5 +1130,136 @@ pub mod tsync {
                 println!("tree sync {}: offered {}, received {}, added {} ({} frames replayed)", s.rounds, recs.len(), r.recs.len(), got, e.total_frames_emulated() - before);
             }
         })
+    }
+}
+
+/// Hybrid mining in the browser build: the page's person plays from a node of this search's tree and the result
+/// joins the tree; a position goal biases the objectives. Everything goes through the exchange (the page's board,
+/// see web/src/lib/webminer/board.js `hybrid`), polled about every half second from the engine's round loop:
+///
+/// * `exchange("hybrid", {tag, vkey})` replies `{goal: {level, area, pos} | null, cmds: [...]}`: the position goal
+///   (set on the engine each step) and the commands for this search that were not delivered before:
+///   `{kind: "state", id, nid}` (the page wants node `nid`'s state: answered with `"hybrid_out"` `{kind: "state", ...}`:
+///   the game state and perturbation of the node, its path from the step's root) and
+///   `{kind: "insert", id, path, seg, weight}` (the played segment `seg`, hex pads, from the node reached by `path`, hex pads
+///   from the step's root: added as a boosted manual node, [`Engine::insert_manual`]; answered with `{kind: "inserted", ...}`).
+/// * `tag` is the step's sync tag (same step input and played prefix: the workers whose trees are the same step),
+///   `vkey` the page's name of this search's step (`seed:frame0:level:area:goal`, as its viz feed names it).
+pub mod hybrid {
+    use super::*;
+    use crate::sys::Instant;
+    use obrrt_search::engine::{Engine, ManualInsert};
+
+    #[derive(Deserialize)]
+    struct GoalIn {
+        level: u16,
+        area: u8,
+        pos: [f32; 3],
+    }
+
+    #[derive(Deserialize)]
+    #[serde(tag = "kind")]
+    enum Cmd {
+        #[serde(rename = "state")]
+        State { id: u64, nid: u32 },
+        #[serde(rename = "insert")]
+        Insert { id: u64, path: String, seg: String, #[serde(default = "default_weight")] weight: f64 },
+    }
+    fn default_weight() -> f64 {
+        8.0
+    }
+
+    #[derive(Deserialize, Default)]
+    struct Reply {
+        #[serde(default)]
+        goal: Option<GoalIn>,
+        #[serde(default)]
+        cmds: Vec<Cmd>,
+    }
+
+    pub fn vkey(job: &Job, root: &St) -> String {
+        format!("{}:{}:{}:{}:{:?}", job.seed, job.frame0, root.level, root.area, job.goal)
+    }
+
+    pub fn hook(job: &Job, ex: super::super::Exchange, root: &St) -> Box<dyn FnMut(&mut Engine) + Send> {
+        let (tag, vkey, frame0, max_pads) = (job.sync_tag.clone(), vkey(job, root), root.frame, job.max_path as usize);
+        let poll = serde_json::json!({ "tag": tag, "vkey": vkey }).to_string();
+        let mut last = Instant::now();
+        let mut first = true;
+        let mut goal: Option<([u16; 2], [f32; 3])> = None;
+        let (mut said, mut said_at) = ((0usize, 0u64, 0u64), Instant::now());
+        Box::new(move |e: &mut Engine| {
+            if !first && last.elapsed().as_secs_f64() < 0.5 {
+                return;
+            }
+            first = false;
+            last = Instant::now();
+            let Some(reply) = ex("hybrid", &poll) else { return };
+            let Ok(r) = serde_json::from_str::<Reply>(&reply) else { return };
+            let g = r.goal.map(|g| ([g.level, g.area as u16], g.pos));
+            if g != goal {
+                goal = g;
+                e.set_pos_goal(g.map(|(z, p)| ((z[0], z[1] as u8), p)));
+                println!("position goal: {g:?}");
+                said = (0, 0, 0);
+            }
+            // What the goal's PosTime objectives have done so far (the page logs it), every few seconds when it changed.
+            if goal.is_some() && said_at.elapsed().as_secs_f64() > 5.0 {
+                let st = e.pos_goal_stats();
+                if st != said {
+                    said = st;
+                    said_at = Instant::now();
+                    let text = format!("position goal: {} Mario::PosTime objectives drawn to it, {} attempts, {} succeeded (a faster arrival)", st.0, st.1, st.2);
+                    ex("hybrid_out", &serde_json::json!({ "kind": "log", "text": text }).to_string());
+                }
+            }
+            for c in r.cmds {
+                let out = match c {
+                    Cmd::State { id, nid } => state(e, id, nid, &tag, &vkey, frame0),
+                    Cmd::Insert { id, path, seg, weight } => insert(e, id, &path, &seg, weight, &tag, frame0, max_pads),
+                };
+                ex("hybrid_out", &out.to_string());
+            }
+        })
+    }
+
+    fn state(e: &mut Engine, id: u64, nid: u32, tag: &str, vkey: &str, frame0: u32) -> serde_json::Value {
+        let res = (|| -> anyhow::Result<serde_json::Value> {
+            let save = crate::hook::mining_save(&e.node_state(nid)?)?;
+            let st = &e.tree.nodes[nid as usize].st;
+            Ok(serde_json::json!({
+                "kind": "state", "id": id, "ok": true, "tag": tag, "vkey": vkey, "nid": nid,
+                "frame": st.frame - frame0, "level": st.level, "area": st.area, "pos": st.pos, "stars": st.stars,
+                "path": tsync::enc(&e.node_path(nid)),
+                "pert": serde_json::to_string(&save.pert)?,
+                "state": hex::encode(save.game.into_bytes()),
+            }))
+        })();
+        res.unwrap_or_else(|err| serde_json::json!({ "kind": "state", "id": id, "ok": false, "why": format!("{err:#}") }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert(e: &mut Engine, id: u64, path: &str, seg: &str, weight: f64, tag: &str, frame0: u32, max_pads: usize) -> serde_json::Value {
+        let (Some(mut pads), Some(seg)) = (tsync::dec(path, max_pads), tsync::dec(seg, max_pads)) else {
+            return serde_json::json!({ "kind": "inserted", "id": id, "ok": false, "why": "unreadable pads" });
+        };
+        pads.extend(seg);
+        if pads.len() > max_pads {
+            return serde_json::json!({ "kind": "inserted", "id": id, "ok": false, "why": "past the longest possible run" });
+        }
+        match e.insert_manual(&pads, weight) {
+            Ok(ManualInsert::Added(n)) => {
+                let node = &e.tree.nodes[n as usize];
+                let st = &node.st;
+                println!("manual node {n}: {} frames from its parent {:?}, frame {}, level {} pos {:?}, boost {weight}", node.inputs.len(), node.parent, st.frame, st.level, st.pos);
+                serde_json::json!({
+                    "kind": "inserted", "id": id, "ok": true, "tag": tag, "nid": n, "parent": node.parent,
+                    "frame": st.frame - frame0, "level": st.level, "area": st.area, "pos": st.pos, "stars": st.stars, "keys": st.keys,
+                })
+            }
+            Ok(ManualInsert::Known) => serde_json::json!({ "kind": "inserted", "id": id, "ok": false, "why": "already in the tree" }),
+            Ok(ManualInsert::Dead) => serde_json::json!({ "kind": "inserted", "id": id, "ok": false, "why": "the played segment ends in a dead state" }),
+            Err(err) => serde_json::json!({ "kind": "inserted", "id": id, "ok": false, "why": format!("{err:#}") }),
+        }
     }
 }

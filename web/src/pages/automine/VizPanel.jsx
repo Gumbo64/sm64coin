@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import './automine.css';
 import { useHub } from './useHub.js';
 import BlocksHistory from './BlocksHistory.jsx';
@@ -8,31 +8,20 @@ import { SideCard } from '../../components/ui.jsx';
 import { frames as fmtFrames, coins } from '../../lib/format.js';
 import { secondsUntilAllowed } from '../../lib/resetPolicy.js';
 
-// The Auto-mine page's visualisations (only loaded, and only running, when they are switched on). Two pieces the page
-// composes: VizMain (the main column: the live game, the 3D search cloud below it) and VizSide (the sidebar below the
-// control card: the time-limit chart, the block's numbers, the progress chart, the blocks mined).
-const GameView = React.lazy(() => import('./GameView.jsx'));
-const CloudView = React.lazy(() => import('./CloudView.jsx'));
+// The Mine page's auto-mining side cards (only loaded, and only running, when the visualisations are switched on):
+// the time-limit chart, the block's numbers, the "Closing in" chart and the blocks mined (VizSide), and the toasts.
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-const fallback = <div className="viz-card"><p className="muted">Loading…</p></div>;
 
-export function VizMain({ hub }) {
-  const v = useHub(hub);
-  void v;
+export function VizToasts({ hub }) {
+  useHub(hub);
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick((x) => x + 1), 2000); return () => clearInterval(id); }, []);
   const toasts = hub.toasts.filter((t) => Date.now() - t.at < 7000);
-  const play = (w, node) => { hub.game = { id: hub.game.id + 1, kind: node ? 'node' : 'best', w, step: node?.step, nid: node?.id }; hub.found = null; hub.notify(); };
-  return (
-    <>
-      <div className="viz-toasts" aria-live="polite">{toasts.map((t) => <div key={t.id} className={`viz-toast ${t.kind}`}>{t.kind === 'found' ? '★ ' : ''}{t.text}</div>)}</div>
-      <Suspense fallback={fallback}><GameView hub={hub} /></Suspense>
-      <Suspense fallback={fallback}><CloudView hub={hub} onPlay={play} /></Suspense>
-    </>
-  );
+  return <div className="viz-toasts" aria-live="polite">{toasts.map((t) => <div key={t.id} className={`viz-toast ${t.kind}`}>{t.kind === 'found' ? '★ ' : ''}{t.text}</div>)}</div>;
 }
 
-export function VizSide({ hub, mode }) {
+/** The time-limit chart and the block's numbers, from the auto-miner's template. */
+export function VizTop({ hub, mode }) {
   const v = useHub(hub);
   void v;
   const [, tick] = useState(0);
@@ -56,6 +45,14 @@ export function VizSide({ hub, mode }) {
           </dl>
         ) : <p className="muted">Getting a block template…</p>}
       </SideCard>
+    </>
+  );
+}
+
+/** The "Closing in" chart and the blocks this session mined. */
+export function VizBottom({ hub }) {
+  return (
+    <>
       <EnvelopeView hub={hub} />
       <BlocksHistory hub={hub} />
     </>

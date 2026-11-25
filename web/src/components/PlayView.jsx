@@ -14,7 +14,7 @@ import './touchpad.css';
 // Reusable: it needs the recorder ref (`rec`, for pause), the recorder's status (`clock`:
 // {frame, limit, paused}) and the canvas as `children` (first child), plus the normal page controls as
 // `normal` (shown when not in the play view).
-export default function PlayView({ rec, clock, limit, children, normal, actions }) {
+export default function PlayView({ rec, clock, limit, children, normal, actions, interactive = true, onFinish = null }) {
   const root = useRef(null);
   const [cfg, setCfg] = useTouchConfig();
   const [imm, setImm] = useState(false);
@@ -22,7 +22,7 @@ export default function PlayView({ rec, clock, limit, children, normal, actions 
   const [settings, setSettings] = useState(false);
   const autoDone = useRef(false);
   const touch = isTouchDevice();
-  const showPad = cfg.pad == null ? touch : cfg.pad; // the in-page controller under the game
+  const showPad = interactive && (cfg.pad == null ? touch : cfg.pad); // the in-page controller under the game
 
   const enter = (gesture) => {
     setImm(true);
@@ -66,13 +66,13 @@ export default function PlayView({ rec, clock, limit, children, normal, actions 
       {!imm && (
         <>
           {normal}
-          <Toolbar label="Actions" className="tp-bar">
+          {interactive && <Toolbar label="Actions" className="tp-bar">
             {actions}
             <ToolBtn on onClick={() => enter(true)} title="Full-screen game with on-screen controls">⛶ Full screen</ToolBtn>
             <ToolBtn on={showPad} onClick={() => setCfg({ pad: !showPad })} title="Show the on-screen controller under the game">🎮 Touch controls</ToolBtn>
             <ToolBtn onClick={() => setSettings((o) => !o)} aria-expanded={settings} aria-label="Touch settings" title="Touch settings">⚙</ToolBtn>
-          </Toolbar>
-          {settings && <TouchSettings cfg={cfg} set={setCfg} />}
+          </Toolbar>}
+          {interactive && settings && <TouchSettings cfg={cfg} set={setCfg} />}
         </>
       )}
       {imm && (
@@ -81,6 +81,7 @@ export default function PlayView({ rec, clock, limit, children, normal, actions 
             <button className="pv-btn" onClick={pauseMenu} aria-label="Pause and open the page controls">II</button>
             <div className={`pv-bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
             <span className="pv-text">{lim ? `${used}/${lim}` : used} · {lim ? (over ? `+${used - lim}` : `${frames(Math.max(0, lim - used))} left`) : ''}{clock && clock.paused ? ' · PAUSED' : ''}</span>
+            {onFinish && <button className="pv-btn" onClick={onFinish} aria-label="Finish the segment and return to the search" title="Finish (Enter)">✓</button>}
             <button className="pv-btn" onClick={leave} aria-label="Exit full screen">✕</button>
           </div>
           <TouchOverlay cfg={cfg} />

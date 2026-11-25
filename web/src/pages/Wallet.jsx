@@ -330,7 +330,7 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
         <p className="mono break addr">{address}</p>
         <div className="controls">
           <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(address)}>Copy</button>
-          <Link to={`/automine?address=${address}`}><button>Auto-mine to it</button></Link>
+          <Link to={`/mine?address=${address}`}><button>Auto-mine to it</button></Link>
           <Link to={`/mine?address=${address}`}><button>Mine to it</button></Link>
         </div>
         <p className="muted">The Mine and Auto-mine pages now pay their rewards to this address.</p>

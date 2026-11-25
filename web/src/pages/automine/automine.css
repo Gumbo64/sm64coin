@@ -63,3 +63,19 @@
 .viz-gear[aria-expanded="true"] { background: #2a2f4a !important; color: var(--fg) !important; }
 .viz-glwrap { position: relative; }
 .viz-playicon { position: absolute; right: 8px; bottom: 8px; width: 34px; height: 34px; padding: 0 !important; border-radius: 50%; font-size: 14px; min-height: 34px; background: rgba(255,204,51,.92); }
+.hy-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(5, 7, 14, .88); display: flex; align-items: flex-start; justify-content: center; overflow: auto; padding: 16px; }
+.hy-card { background: #12162a; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; width: min(980px, 100%); }
+.hy-card h3 { margin: 0 0 8px; font-size: 15px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.hy-game { background: #000; border-radius: 6px; overflow: hidden; }
+.hy-game canvas { display: block; width: 100%; height: auto; }
+.hy-wait { max-width: 520px; margin: 12vh auto; }
+.viz-bar button.primary, .viz-node button.primary, .controls button.primary { background: var(--acc); color: #000; }
+.viz-bar button:disabled { opacity: .45; cursor: default; }
+.switch-row { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+
+/* The unified Mine page: the shared game canvas, the reel's star overlay, disabled toolbar buttons. */
+.engine-slot { display: contents; }
+.gamecol.pv:not(.imm) { position: relative; }
+.starget.reelstar { inset: 0 0 auto 0; aspect-ratio: 4 / 3; }
+.ui-btn:disabled, .viz-toolbar button:disabled { opacity: .45; cursor: default; }
+.viz-game .budget { margin-top: 8px; }

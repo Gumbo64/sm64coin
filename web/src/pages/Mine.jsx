@@ -5,13 +5,22 @@ import CycleTimeline from '../lib/CycleTimeline.jsx';
 import LimitChart from '../lib/LimitChart.jsx';
 import { daemon } from '../lib/rpc.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
-import { createEngine, prepareStart } from '../lib/cycle.js';
+import { prepareStart } from '../lib/cycle.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import PlayView from '../components/PlayView.jsx';
-import { Toolbar, ToolBtn, Cols, Row, SideCard } from '../components/ui.jsx';
+import EngineSlot, { acquireEngine } from '../components/EngineSlot.jsx';
+import { Toolbar, ToolBtn, Cols, Row, SideCard, Panel, InfoPop, useStored } from '../components/ui.jsx';
 import RomGate from '../lib/RomGate.jsx';
+import { miner, hybrid, isAddress } from '../lib/webminer/controller.js';
+import { useMiner } from '../lib/webminer/useMiner.js';
+import { encPads } from '../lib/webminer/hybrid.js';
+import { setPlayFromStart } from '../lib/hybridSetting.js';
+import { useVisible } from './automine/useHub.js';
+import ControlCard from './automine/ControlCard.jsx';
+import CampaignStrips from './automine/CampaignStrips.jsx';
+import { levelName } from './automine/levels.js';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2eHook } from '../lib/e2e.js';
@@ -27,22 +36,36 @@ export default function Mine() {
   return <RomGate><Miner /></RomGate>;
 }
 
-const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
+// The auto-miner's views, loaded only when they are needed (three.js, the visual game's reel, the charts).
+const CloudView = React.lazy(() => import('./automine/CloudView.jsx'));
+const ReelView = React.lazy(() => import('./automine/GameView.jsx'));
+const ReelSettings = React.lazy(() => import('./automine/GameView.jsx').then((m) => ({ default: m.ReelSettings })));
+const ReelChip = React.lazy(() => import('./automine/GameView.jsx').then((m) => ({ default: m.ReelChip })));
+const HybridDriver = React.lazy(() => import('./automine/HybridPlay.jsx'));
+const VizTop = React.lazy(() => import('./automine/VizPanel.jsx').then((m) => ({ default: m.VizTop })));
+const VizBottom = React.lazy(() => import('./automine/VizPanel.jsx').then((m) => ({ default: m.VizBottom })));
+const VizToasts = React.lazy(() => import('./automine/VizPanel.jsx').then((m) => ({ default: m.VizToasts })));
+const loadingCard = <div className="viz-card"><p className="muted">Loading…</p></div>;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 function Miner() {
-  const canvas = useRef(null);
-  // ?address= (the GUI wallet's "Play to mine" link) beats the stored address.
-  const [address, setAddress] = useState(() => {
-    const q = new URLSearchParams(window.location.search).get('address');
-    return q && isAddress(q.trim()) ? q.trim() : localStorage.getItem('sm64coin.address') || '';
-  });
+  // The auto-miner (lib/webminer/controller.js) lives as long as the site's page: this page is its view and the manual miner's.
+  // The reward address is the controller's (?address= from the wallet's links beats the stored one there).
+  const s = useMiner();
+  const { address, running, vizOn, playFromStart, hybridOK } = s;
+  const hub = miner.hub;
   const addr = useRef(address);
   addr.current = address;
-  useEffect(() => {
-    if (isAddress(address)) localStorage.setItem('sm64coin.address', address);
-  }, [address]);
+  // The game: one engine for everything on this page (EngineSlot), driven by one of: the manual miner (the classic
+  // page: the block's start), the highlight reel (the auto-miner runs and nobody plays), or a segment played by hand from
+  // a node of the search tree (hybrid mining).
+  const [engine, setEngine] = useState(null);
+  const [engineErr, setEngineErr] = useState('');
+  // The search views (the reel, the cloud) show while the auto-miner runs with its visualisations and "Play from the start"
+  // is off; otherwise this is the classic manual miner.
+  const showAuto = running && vizOn && !playFromStart;
+  const manualActive = !showAuto;
   const [task, setTask] = useState(null);
   const [log, setLog] = useState([]);
   const [clock, setClock] = useState(null);
@@ -71,6 +94,7 @@ function Miner() {
   }, []);
 
   useEffect(() => {
+    if (!engine || !manualActive) return undefined;
     let stopped = false;
     let head = null;
     const c = ctl.current;
@@ -138,156 +162,329 @@ function Miner() {
     }, 1000);
 
     (async () => {
-      let engine;
-      try { engine = await createEngine(canvas.current); } catch (e) { say(`could not start the game: ${e}`); return; }
-      if (stopped) { engine.set_audio_enabled(0); return; }
-      while (!stopped) {
-        c.restart = false; c.discard = false;
-        if (!isAddress(addr.current)) { setPhase({ kind: 'loading' }); await sleep(1000); continue; }
-        let t;
-        try {
-          const paysTo = addr.current;
-          t = await daemon('get_block_template', { wallet_address: paysTo, reserve_size: 0 });
-          t.paysTo = paysTo; // the template's coinbase pays this address
-        } catch (e) { say(String(e)); await sleep(3000); continue; }
-        const won = successFor(t.sm64_rules);
-        if (!won) { say(`unknown rules "${t.sm64_rules}": update web/src/lib/rules.js`); return; }
-        if (head !== t.prev_hash) { c.forcePower = false; setRuns([]); }
-        head = t.prev_hash;
-        c.tipTemplate = t;
-        setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start); setPowerOnAt(t.sm64_power_on_at || 0);
-        const power = c.forcePower && t.sm64_start === 'either';
-        say(`block ${t.height}: seed ${t.sm64_seed}, limit ${frames(t.sm64_max_frames)}, ${t.sm64_random_amount} pokes/${t.sm64_window_length}, start ${power ? 'power-on (restart)' : t.sm64_start}`);
+      const release = await acquireEngine();
+      if (stopped) { release(); return; }
+      try {
+        while (!stopped) {
+          c.restart = false; c.discard = false;
+          if (!isAddress(addr.current)) { setPhase({ kind: 'loading' }); await sleep(1000); continue; }
+          let t;
+          try {
+            const paysTo = addr.current;
+            t = await daemon('get_block_template', { wallet_address: paysTo, reserve_size: 0 });
+            t.paysTo = paysTo; // the template's coinbase pays this address
+          } catch (e) { say(String(e)); await sleep(3000); continue; }
+          const won = successFor(t.sm64_rules);
+          if (!won) { say(`unknown rules "${t.sm64_rules}": update web/src/lib/rules.js`); return; }
+          if (head !== t.prev_hash) { c.forcePower = false; setRuns([]); }
+          head = t.prev_hash;
+          c.tipTemplate = t;
+          setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start); setPowerOnAt(t.sm64_power_on_at || 0);
+          const power = c.forcePower && t.sm64_start === 'either';
+          say(`block ${t.height}: seed ${t.sm64_seed}, limit ${frames(t.sm64_max_frames)}, ${t.sm64_random_amount} pokes/${t.sm64_window_length}, start ${power ? 'power-on (restart)' : t.sm64_start}`);
 
-        // The start state: power-on, or the parent block's end (fast-forward the cycle).
-        setPhase({ kind: 'ff', done: 0, total: 0 });
-        let st;
-        try {
-          st = await prepareStart(engine, t, power, (done, total) => setPhase({ kind: 'ff', done, total }), () => stopped);
-        } catch (e) { say(`could not reach the start: ${e}`); await sleep(3000); continue; }
-        if (!st) break;
-        setStart(st);
-        if (st.cycle) say(`cycle replayed to the tip: ${st.progress.stars} stars, ${st.progress.keys} keys (${st.cycle.blocks.length} blocks)`);
-        if (c.restart) continue; // a block landed meanwhile: the cache makes the next start quick
-        setPhase({ kind: 'play' });
-        const r = new Recorder(engine, withConfig(t), st, won, setClock);
-        r.setLimit(c.tipTemplate && c.tipTemplate.prev_hash === head ? c.tipTemplate.sm64_max_frames : t.sm64_max_frames);
-        rec.current = r;
-        const done = await r.run(kill);
-        rec.current = null;
-        const result = done ? 'won' : r.skipped ? 'skipped' : c.restart ? 'interrupted' : 'out of frames';
-        setLast({ template: t, pads: [...r.pads], won: !!done, result });
-        if (stopped) break;
-        if (!done) { if (!c.restart && !r.skipped) say('ran past the longest possible time limit: new attempt'); continue; }
-        const nFrames = done.pads.length;
-        say(`goal reached after ${nFrames} frames (${frames(nFrames)})`);
-        setRuns((rs) => [...rs, { t: Date.now() / 1000 - t.sm64_parent_timestamp, frames: nFrames }]);
+          // The start state: power-on, or the parent block's end (fast-forward the cycle).
+          setPhase({ kind: 'ff', done: 0, total: 0 });
+          let st;
+          try {
+            st = await prepareStart(engine, t, power, (done, total) => setPhase({ kind: 'ff', done, total }), () => stopped);
+          } catch (e) { say(`could not reach the start: ${e}`); await sleep(3000); continue; }
+          if (!st) break;
+          setStart(st);
+          if (st.cycle) say(`cycle replayed to the tip: ${st.progress.stars} stars, ${st.progress.keys} keys (${st.cycle.blocks.length} blocks)`);
+          if (c.restart) continue; // a block landed meanwhile: the cache makes the next start quick
+          setPhase({ kind: 'play' });
+          const r = new Recorder(engine, withConfig(t), st, won, setClock);
+          r.setLimit(c.tipTemplate && c.tipTemplate.prev_hash === head ? c.tipTemplate.sm64_max_frames : t.sm64_max_frames);
+          rec.current = r;
+          const done = await r.run(kill);
+          rec.current = null;
+          const result = done ? 'won' : r.skipped ? 'skipped' : c.restart ? 'interrupted' : 'out of frames';
+          setLast({ template: t, pads: [...r.pads], won: !!done, result });
+          if (stopped) break;
+          if (!done) { if (!c.restart && !r.skipped) say('ran past the longest possible time limit: new attempt'); continue; }
+          const nFrames = done.pads.length;
+          say(`goal reached after ${nFrames} frames (${frames(nFrames)})`);
+          setRuns((rs) => [...rs, { t: Date.now() / 1000 - t.sm64_parent_timestamp, frames: nFrames }]);
 
-        // When does a run this long become valid? (The limit grows with time.)
-        let validAt = 0;
-        try {
-          const q = await daemon('get_block_template', { wallet_address: t.paysTo, reserve_size: 0, sm64_frames: nFrames });
-          validAt = q.sm64_valid_at || 0;
-        } catch (e) { say(`could not ask when the run is valid: ${e}`); }
-        if (stopped) break;
-        if (validAt > Date.now() / 1000) {
-          // Over the current limit: the auction. Keep it as the pending run (the one that becomes
-          // valid soonest) and play on for a shorter one; it is sent, stamped with its valid
-          // time, once that is within the nodes' future-timestamp window (they hold it until then).
-          const p = c.pending;
-          if (p && p.t.prev_hash === t.prev_hash && p.validAt <= validAt) {
-            say(`over the limit, and your pending run (${frames(p.frames)}) becomes valid sooner: this one is dropped. Play on for a shorter run.`);
-          } else {
-            c.pending = { t, done, st, validAt, frames: nFrames };
-            setPending({ validAt, frames: nFrames });
-            say(`over the time limit by ${nFrames - (c.tipTemplate ? c.tipTemplate.sm64_max_frames : 0)} frames: kept as your pending run, valid at ${new Date(validAt * 1000).toLocaleTimeString()} and sent automatically then. Play on: a shorter run becomes valid sooner.`);
+          // When does a run this long become valid? (The limit grows with time.)
+          let validAt = 0;
+          try {
+            const q = await daemon('get_block_template', { wallet_address: t.paysTo, reserve_size: 0, sm64_frames: nFrames });
+            validAt = q.sm64_valid_at || 0;
+          } catch (e) { say(`could not ask when the run is valid: ${e}`); }
+          if (stopped) break;
+          if (validAt > Date.now() / 1000) {
+            // Over the current limit: the auction. Keep it as the pending run (the one that becomes
+            // valid soonest) and play on for a shorter one; it is sent, stamped with its valid
+            // time, once that is within the nodes' future-timestamp window (they hold it until then).
+            const p = c.pending;
+            if (p && p.t.prev_hash === t.prev_hash && p.validAt <= validAt) {
+              say(`over the limit, and your pending run (${frames(p.frames)}) becomes valid sooner: this one is dropped. Play on for a shorter run.`);
+            } else {
+              c.pending = { t, done, st, validAt, frames: nFrames };
+              setPending({ validAt, frames: nFrames });
+              say(`over the time limit by ${nFrames - (c.tipTemplate ? c.tipTemplate.sm64_max_frames : 0)} frames: kept as your pending run, valid at ${new Date(validAt * 1000).toLocaleTimeString()} and sent automatically then. Play on: a shorter run becomes valid sooner.`);
+            }
+            continue;
           }
-          continue;
+          setPhase({ kind: 'submitting' });
+          await submitRun({ t, done, st, validAt, frames: nFrames });
         }
-        setPhase({ kind: 'submitting' });
-        await submitRun({ t, done, st, validAt, frames: nFrames });
-      }
-      engine.set_audio_enabled(0);
+      } finally { engine.set_audio_enabled(0); release(); }
     })();
-    return () => { stopped = true; clearInterval(timer); clearInterval(refresh); clearInterval(pendingTimer); };
-  }, []);
+    return () => { stopped = true; clearInterval(timer); clearInterval(refresh); clearInterval(pendingTimer); setClock(null); setPhase({ kind: 'loading' }); };
+  }, [engine, manualActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
-  const [editing, setEditing] = useState(false);
   const paying = task ? task.paysTo : address;
   const pending = task && isAddress(address) && address !== task.paysTo;
-  const used = clock ? clock.frame : 0;
-  const lim = clock ? clock.limit : limit;
+
+  // The auto-miner's views: the page-side tree and the reel need the miner's hub to be collecting.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('vizmock') === '1' && !miner.running) miner.startMock({ count: 3, runAfter: Number(q.get('run') || 0) * 1000 });
+    miner.setViewing(true);
+    return () => miner.setViewing(false);
+  }, []);
+
+  // ----- hybrid mining: play by hand from a node of the search tree -----
+  // {phase: 'asking' | 'playing' | 'error', sel, msg?, state?, text?}
+  const [play, setPlay] = useState(null);
+  const stopRef = useRef(null); // 'finish' | 'discard' once the player ended the segment
+  const [playText, setPlayText] = useState('');
+  const gameBox = useRef(null);
+  const gameVisible = useVisible(gameBox);
+  const mode = play ? 'hybrid' : showAuto ? 'reel' : 'manual';
+  useEffect(() => { if (!showAuto && play) { stopRef.current = 'discard'; setPlay(null); } }, [showAuto]); // eslint-disable-line react-hooks/exhaustive-deps
+  const reelPlay = (w, node) => { hub.game = { id: hub.game.id + 1, kind: node ? 'node' : 'best', w, step: node?.step, nid: node?.id }; hub.found = null; hub.notify(); gameBox.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); };
+  const playFrom = async (sel) => {
+    const w = hub.workers[sel.w];
+    if (!w?.cur) return;
+    stopRef.current = null;
+    setClock(null);
+    setPlayText('asking the search for the node\'s state…');
+    setPlay({ phase: 'asking', sel });
+    gameBox.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    try {
+      const r = await hybrid.requestState(sel.w, sel.id, w.cur.key, 180000);
+      setPlay((p) => (p && p.sel === sel && p.phase === 'asking' ? { phase: 'playing', sel, msg: r.msg, state: r.state } : p));
+    } catch (e) {
+      setPlay((p) => (p && p.sel === sel ? { phase: 'error', sel, text: String(e.message || e) } : p));
+    }
+  };
+  // The segment ended (hotkey): back to the visualiser at once, the segment goes into the search trees meanwhile.
+  const played = async (res) => {
+    const { sel, msg } = play;
+    setPlay(null);
+    document.querySelector('.viz-cloud')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (res.discard || res.frames < 1) { hub.toast('segment discarded', 'info'); hub.notify(); return; }
+    const info = { w: sel.w, step: sel.step, nid: null, parentSlot: sel.slot, pos: res.pos, level: msg.level, area: msg.area, stars: msg.stars, frame: sel.frame + res.frames, trail: res.trail, frames: res.frames, note: 'adding it to the search tree…' };
+    hub.playedSegment(info);
+    hub.toast(`played ${res.frames} frames (${(res.frames / 30).toFixed(1)} s) from node ${sel.id}: adding it to the search trees`, 'info');
+    let first = true, added = 0;
+    const onReply = (slot, m) => {
+      if (!m.ok) return;
+      added++;
+      const own = slot === sel.w;
+      if (first || own) {
+        first = false;
+        const wk = hub.workers[slot];
+        const off = Math.hypot(m.pos[0] - res.pos[0], m.pos[1] - res.pos[1], m.pos[2] - res.pos[2]);
+        hub.playedSegment({ ...info, w: slot, step: own ? sel.step : wk?.cur?.n ?? sel.step, nid: m.nid, parentSlot: own ? sel.slot : -1, pos: m.pos, level: m.level, area: m.area, stars: m.stars, frame: (wk?.played || 0) + m.frame, trail: res.trail,
+          note: `in worker ${slot + 1}'s tree as node ${m.nid} with a high weight${off < 1 ? '; the replay in the search ends exactly where you finished' : `; WARNING: the replay in the search ends ${off.toFixed(1)} units from where you finished`}` });
+      }
+    };
+    try {
+      await hybrid.insert({ tag: msg.tag, path: msg.path, seg: encPads(res.pads), weight: 8 }, onReply, 180000);
+      hub.toast(`your segment is a node of ${added} search tree${added === 1 ? '' : 's'}: the searches start from it first`, 'found');
+    } catch (e) {
+      hub.playedSegment({ ...info, note: `not added: ${e.message || e}` });
+      hub.toast(`the segment was not added: ${e.message || e}`, 'info');
+    }
+    hub.notify();
+  };
+  const finish = () => { stopRef.current ??= 'finish'; };
+  const discard = () => { stopRef.current ??= 'discard'; };
+  const cancelPlay = () => { stopRef.current = 'discard'; setPlay(null); };
+
+  // ----- the game panel -----
+  const [gameOpen, setGameOpen] = useStored('sm64coin.gameOpen', false);
+  const used = mode === 'manual' && clock ? clock.frame : 0;
+  const lim = mode === 'manual' ? (clock ? clock.limit : limit) : null;
   const over = lim && used > lim;
+  const fromStartBtn = running ? (
+    <ToolBtn key="fs" on={playFromStart} onClick={() => setPlayFromStart(!playFromStart)}
+      title="On: classic manual mining from the block's beginning (power-on / the parent's end): no search tree, nothing to click into. Off: this panel follows the auto-miner and you can play on from any node of its search.">⏮ Play from the start</ToolBtn>
+  ) : null;
+  const hybridWhy = !hybridOK ? 'Playing from a node needs the running auto-miner with worker sync (the Auto-mine card: Enable worker sync, then Start).' : '';
+  const gameSettings = (
+    <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
+      <label htmlFor="game-pfs">Play from the start</label>
+      <div className="ctl">
+        <input id="game-pfs" type="checkbox" checked={playFromStart} title="On: manual mining ignores hybrid mining entirely: always from the block's beginning, no search tree to play from, no clicking into nodes. Off: while the auto-miner runs, click a node of the search cloud and press Play from here." onChange={(e) => setPlayFromStart(e.target.checked)} />
+        <span className="muted">{playFromStart ? 'classic manual miner, hybrid mining is off' : running ? 'hybrid: the game follows the auto-miner, click a node to play on from it' : 'applies once you start auto-mining'}</span>
+      </div>
+      {mode === 'reel' && <React.Suspense fallback={null}><ReelSettings hub={hub} /></React.Suspense>}
+    </form>
+  );
+  const chip = mode === 'reel' ? <React.Suspense fallback={null}><ReelChip hub={hub} /></React.Suspense>
+    : mode === 'hybrid' ? <span className="chip">from node {play.sel.id} of worker {play.sel.w + 1}</span> : null;
+  const hybridNormal = play && (
+    <>
+      {play.phase === 'asking' && <div className="viz-status"><span>Loading node {play.sel.id} of worker {play.sel.w + 1}: {playText}</span><span className="muted small">The search answers between two rounds (a few seconds, longer on a loaded machine).</span></div>}
+      {play.phase === 'error' && <div className="viz-status"><span className="error">Could not play from node {play.sel.id}: {play.text}</span></div>}
+      {play.phase === 'playing' && (
+        <>
+          <div className="statusbar">
+            <span className="stat" id="hy-status">{clock ? `playing: ${clock.frame} frames played (${frames(clock.frame)})` : playText || 'loading…'}</span>
+            {clock && clock.paused && <span className="stat warn">PAUSED</span>}
+            {clock && clock.mode === 'catchup' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
+            <span className="stat">{clock ? `${clock.speed}×` : ''}</span>
+            <span className="stat">{levelName(play.msg.level)} · area {play.msg.area} · node frame {play.sel.frame}</span>
+          </div>
+          <Controls rec={rec} hybrid />
+          <p className="muted small" style={{ margin: '8px 0 0' }}>
+            <b>Enter</b> (or Esc) ends the segment: it becomes a node of the search tree with a high weight and you return to the cloud. G goes back to the node's state.
+          </p>
+        </>
+      )}
+    </>
+  );
+  const hybridActions = play && (
+    <>
+      {play.phase === 'playing' && <ToolBtn on onClick={finish} title="Finish the segment: it becomes a node of the search tree (Enter)">✓ Finish ⏎</ToolBtn>}
+      <ToolBtn onClick={play.phase === 'playing' ? discard : cancelPlay} title="Throw the segment away and go back to the cloud">{play.phase === 'playing' ? '✕ Discard' : 'Cancel'}</ToolBtn>
+    </>
+  );
+  const manualNormal = (
+    <>
+      <div className="budget" title="Frames you have used of the current time limit. The limit grows from the last block's timestamp up to 20 minutes; you can play past it and wait for it to catch up.">
+        <div className={`bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
+        <span className="stat">{lim ? `${used} / ${lim} frames (${frames(used)} / ${frames(lim)})` : '—'}{over ? ` — ${used - lim} over: it becomes valid when the limit has grown to your run` : ''}</span>
+      </div>
+      <div className="statusbar">
+        <span className="stat" title="Time left before your run is over the current limit">
+          {clock && lim ? (over ? 'over budget' : `${frames(Math.max(0, lim - used))} left`) : '—'}
+        </span>
+        <span className="stat" title="Playback speed">{clock ? `${clock.speed}×` : '—'}</span>
+        {clock && clock.paused && <span className="stat warn">PAUSED</span>}
+        {clock && clock.mode === 'catchup' && phase.kind === 'play' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
+        {phase.kind === 'ff' && <span className="stat warn">fast-forwarding the cycle{phase.total ? `: ${Math.floor((phase.done / phase.total) * 100)}% (${phase.done} / ${phase.total} frames)` : '…'}</span>}
+        {pendingRun && <span className="stat warn">pending run {frames(pendingRun.frames)}: valid in {mmss(Math.max(0, pendingRun.validAt - Date.now() / 1000))} (sent automatically; play on for a shorter one)</span>}
+        {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
+      </div>
+      <Controls rec={rec} />
+    </>
+  );
+  const manualActions = (
+    <>
+      <NewTemplateBtn rec={rec} />
+      {pendingRun && <ToolBtn onClick={() => { ctl.current.discardPending = true; }} title="Throw away the pending run (over the limit when it was finished)">Discard pending run</ToolBtn>}
+      {fromStartBtn}
+    </>
+  );
+  const reelNormal = (
+    <React.Suspense fallback={<p className="muted small">Loading…</p>}>
+      <ReelView hub={hub} engine={engine} visible={gameVisible} toolbar={fromStartBtn} />
+    </React.Suspense>
+  );
+  const canPlayFrom = showAuto && hybridOK && !play;
+  const autoTemplate = hub.template;
 
   return (
     <>
-    <CycleTimeline attempt={clock ? clock.frame : 0} limit={lim || 0} />
-    <div className="mine2">
-      <PlayView rec={rec} clock={clock} limit={lim} normal={<>
-        <div className="budget" title="Frames you have used of the current time limit. The limit grows from the last block's timestamp up to 20 minutes; you can play past it and wait for it to catch up.">
-          <div className={`bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
-          <span className="stat">{lim ? `${used} / ${lim} frames (${frames(used)} / ${frames(lim)})` : '—'}{over ? ` — ${used - lim} over: it becomes valid when the limit has grown to your run` : ''}</span>
-        </div>
-        <div className="statusbar">
-          <span className="stat" title="Time left before your run is over the current limit">
-            {clock && lim ? (over ? 'over budget' : `${frames(Math.max(0, lim - used))} left`) : '—'}
-          </span>
-          <span className="stat" title="Playback speed">{clock ? `${clock.speed}×` : '—'}</span>
-          {clock && clock.paused && <span className="stat warn">PAUSED</span>}
-          {clock && clock.mode === 'catchup' && phase.kind === 'play' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
-          {phase.kind === 'ff' && <span className="stat warn">fast-forwarding the cycle{phase.total ? `: ${Math.floor((phase.done / phase.total) * 100)}% (${phase.done} / ${phase.total} frames)` : '…'}</span>}
-          {pendingRun && <span className="stat warn">pending run {frames(pendingRun.frames)}: valid in {mmss(Math.max(0, pendingRun.validAt - Date.now() / 1000))} (sent automatically; play on for a shorter one)
-            {' '}<button onClick={() => { ctl.current.discardPending = true; }}>Discard</button></span>}
-          {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
-        </div>
-        <Controls rec={rec} />
-      </>} actions={<NewTemplateBtn rec={rec} />}>
-        <canvas ref={canvas} className="sm64canvas" />
-      </PlayView>
-
-      <aside className="card side">
-        {task && <LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={used} runs={runs} />}
-        <div className="paysto-row">
-          Mining for {isAddress(paying || '') ? <span className="mono paysto" title={paying}>{short(paying)}</span> : <em>no address</em>}{' '}
-          <button className="linkish" title="Change the reward address" onClick={() => setEditing((e) => !e)}>✎ change</button>
-        </div>
-        {(editing || !isAddress(address)) && (
-          <div className="addrpop">
-            <input className="mono wide" value={address} onChange={(e) => setAddress(e.target.value.trim())} placeholder="SM64… (paste an address)" />
-            {!isAddress(address) && <p className="muted">Paste your address (in the SM64Coin wallet: Receive), or open
-              this page from the wallet's Mining → Play to mine.</p>}
-          </div>
+      <CycleTimeline attempt={mode === 'manual' && clock ? clock.frame : 0} limit={(mode === 'manual' ? lim : autoTemplate ? autoTemplate.sm64_max_frames : 0) || 0} />
+      <p className="ui-oneline">
+        Play Super Mario 64 yourself to mine blocks, or let your browser play for you (Start in the Auto-mine card).
+        <InfoPop>
+          Manual mining: you play the block's next star or key, from where the previous block ended; every attempt is sealed to a block template.
+          Auto-mining: the same campaign search as the native <code>sm64coin-automine</code> (objective-RRT, compiled to WebAssembly), one per worker; it uses a lot of CPU and keeps running while you visit other pages.
+          While it runs, this page shows its search: click a node of the cloud and <b>Play from here</b> to play on by hand; the segment you play becomes a high-weight node the search builds on. <b>Play from the start</b> turns hybrid mining off.
+        </InfoPop>
+      </p>
+      <Cols
+        main={(
+          <>
+            {showAuto && <React.Suspense fallback={null}><VizToasts hub={hub} /></React.Suspense>}
+            <Panel className="viz-game" innerRef={gameBox} title="Game" chip={chip} open={gameOpen} onToggle={() => setGameOpen(!gameOpen)} settings={gameSettings}>
+              <PlayView rec={rec} clock={clock} limit={mode === 'manual' ? lim : 0} interactive={mode !== 'reel'} onFinish={mode === 'hybrid' && play.phase === 'playing' ? finish : null}
+                normal={mode === 'hybrid' ? hybridNormal : mode === 'reel' ? reelNormal : manualNormal}
+                actions={mode === 'hybrid' ? hybridActions : manualActions}>
+                <EngineSlot onEngine={setEngine} onError={setEngineErr} />
+              </PlayView>
+              {engineErr && <p className="error">The game could not start: {engineErr}{/webgl|context/i.test(engineErr) ? ' (this browser may not allow WebGL here; try another browser or switch off battery saver)' : ''}</p>}
+              {!engine && !engineErr && <p className="muted small">Loading the game engine…</p>}
+              {mode === 'hybrid' && play.phase === 'playing' && engine && (
+                <React.Suspense fallback={null}>
+                  <HybridDriver hub={hub} engine={engine} req={play} rec={rec} stop={stopRef} setClock={(c) => setClock(c && { ...c, limit: 0 })} setStatus={setPlayText}
+                    onDone={played} onError={(text) => setPlay((p) => (p ? { phase: 'error', sel: p.sel, text } : p))} />
+                </React.Suspense>
+              )}
+            </Panel>
+            {showAuto && (
+              <React.Suspense fallback={loadingCard}>
+                <CloudView hub={hub} onPlay={reelPlay} onPlayFrom={playFrom} onGoal={(g) => miner.setGoal(g)} canPlayFrom={canPlayFrom} whyNot={hybridWhy} />
+              </React.Suspense>
+            )}
+          </>
         )}
-        {pending && (
-          <div className="notice">
-            The game in progress pays {short(task.paysTo)}; the new address applies from the next attempt
-            (the reward address is part of the block template the run is sealed to).{' '}
-            <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the attempt)</button>
-          </div>
+        side={(
+          <>
+            <ControlCard s={s} />
+            {showAuto ? (
+              <React.Suspense fallback={null}><VizTop hub={hub} mode={s.mode} /></React.Suspense>
+            ) : (
+              <>
+                {task && <SideCard><LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={clock ? clock.frame : 0} runs={runs} /></SideCard>}
+                {pending && (
+                  <div className="notice">
+                    The game in progress pays {short(task.paysTo)}; the new address applies from the next attempt
+                    (the reward address is part of the block template the run is sealed to).{' '}
+                    <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the attempt)</button>
+                  </div>
+                )}
+                {task && start ? <SideCard title="Cycle"><CyclePanel task={task} start={start} /></SideCard> : null}
+                {start && startMode !== 'power-on' && <ResetCycle start={start} startMode={startMode} powerOnAt={powerOnAt} task={task} tick={tick}
+                  onReset={() => { ctl.current.forcePower = true; ctl.current.restart = true; say('reset cycle: starting over from power-on'); }}
+                  onParent={() => { ctl.current.forcePower = false; ctl.current.restart = true; say('back to continuing from the parent\'s end state'); }} />}
+                <SideCard title="Block">
+                  {task ? (
+                    <dl className="kv">
+                      <dt>Block</dt><dd>{task.height}</dd>
+                      <dt>Difficulty</dt><dd>{task.difficulty}</dd>
+                      <dt>Time limit now</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames)</dd>
+                      <dt>Pokes</dt><dd>{task.sm64_random_amount} × {task.sm64_burst_length} frames per {task.sm64_window_length}</dd>
+                      <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
+                      <dt>Paying</dt><dd>{isAddress(paying || '') ? <span className="mono" title={paying}>{short(paying)}</span> : <em>no address</em>}</dd>
+                    </dl>
+                  ) : <p className="muted">Getting a block template…</p>}
+                </SideCard>
+              </>
+            )}
+            {running && vizOn && <React.Suspense fallback={null}><VizBottom hub={hub} /></React.Suspense>}
+          </>
         )}
-        {task && start ? <CyclePanel task={task} start={start} /> : null}
-        {start && startMode !== 'power-on' && <ResetCycle start={start} startMode={startMode} powerOnAt={powerOnAt} task={task} tick={tick}
-          onReset={() => { ctl.current.forcePower = true; ctl.current.restart = true; say('reset cycle: starting over from power-on'); }}
-          onParent={() => { ctl.current.forcePower = false; ctl.current.restart = true; say('back to continuing from the parent\'s end state'); }} />}
-        {task ? (
-          <dl className="kv">
-            <dt>Block</dt><dd>{task.height}</dd>
-            <dt>Difficulty</dt><dd>{task.difficulty}</dd>
-            <dt>Time limit now</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames)</dd>
-            <dt>Pokes</dt><dd>{task.sm64_random_amount} × {task.sm64_burst_length} frames per {task.sm64_window_length}</dd>
-            <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
-          </dl>
-        ) : <p className="muted">Getting a block template…</p>}
-      </aside>
-    </div>
+      />
+      <Row title="Workers" count={s.workers.length || undefined} storeKey="workers">
+        {s.workers.length > 0 && (
+          <table className="small">
+            <tbody>
+              {s.workers.map((w, i) => <tr key={i}><td>worker {i + 1}</td><td className="muted">salt {w.salt}{w.runs ? ` · ${w.runs} search${w.runs === 1 ? '' : 'es'} done` : ''}</td><td className="mono">{w.line}</td></tr>)}
+            </tbody>
+          </table>
+        )}
+        {vizOn && running ? <CampaignStrips hub={hub} /> : !s.workers.length && <p className="muted small">No workers running.</p>}
+      </Row>
+      <Row title="Log" storeKey="log"><pre className="log small">{s.log.join('\n') || (running ? '' : 'Nothing yet (the auto-miner\'s log).')}</pre></Row>
       <Row title="How to play" storeKey="mine-help"><Help /></Row>
       <Row title="Debug" storeKey="mine-debug">
-          {last && (
-            <div className="debug">
-              <p className="muted">Last attempt: {last.pads.length} frames · block {last.template.height} · {last.result}</p>
-              <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.m64`, toM64(last.pads))}>Download .m64 (this block's run)</button>{' '}
-              <button onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.json`, JSON.stringify({
+        {last && (
+          <div className="debug">
+            <p className="muted">Last manual attempt: {last.pads.length} frames · block {last.template.height} · {last.result}</p>
+            <Toolbar label="Debug downloads">
+              <ToolBtn onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.m64`, toM64(last.pads))}>Download .m64 (this block's run)</ToolBtn>
+              <ToolBtn onClick={() => download(`sm64coin-h${last.template.height}-${last.template.sm64_seed}.json`, JSON.stringify({
                 height: last.template.height,
                 difficulty: last.template.difficulty,
                 seed_hash: last.template.sm64_seed_hash,
@@ -298,13 +495,14 @@ function Miner() {
                 result: last.result,
                 blocktemplate_blob: last.template.blocktemplate_blob,
                 pads_raw_hex: bytesToHex(rawProof(last.pads).subarray(1)),
-              }, null, 1), 'application/json')}>Download debug JSON</button>
-            </div>
-          )}
-          <pre className="log">{log.join('\n')}</pre>
+              }, null, 1), 'application/json')}>Download debug JSON</ToolBtn>
+            </Toolbar>
+          </div>
+        )}
+        <pre className="log">{log.join('\n')}</pre>
       </Row>
       <p className="muted small">
-        <Link to="/leaderboard">Leaderboard</Link> · Rather not play by hand? Use <Link to="/automine">Auto-mine</Link>, or <a href="https://github.com/Gumbo64/sm64coin#writing-your-own-bot" target="_blank" rel="noreferrer">write a bot</a> to mine for you.
+        <Link to="/leaderboard">Leaderboard</Link> · <a href="https://github.com/Gumbo64/sm64coin#writing-your-own-bot" target="_blank" rel="noreferrer">Write a bot</a> to mine for you.
       </p>
     </>
   );
@@ -357,7 +555,7 @@ const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];
 
 // On-screen buttons and keyboard shortcuts for the recorder (keys the game doesn't use): grouped toolbars, playback
 // and speed (the third group, the actions, is PlayView's: new template, touch controls).
-function Controls({ rec }) {
+export function Controls({ rec, hybrid = false }) {
   const [, force] = useState(0);
   useEffect(() => {
     const onKey = (e) => {
@@ -369,20 +567,20 @@ function Controls({ rec }) {
       else if (k === '[') r.back(1);
       else if (k === 'p' || k === 'P') r.togglePause();
       else if (k === 't' || k === 'T') r.takeOver();
-      else if (k === 'n' || k === 'N') r.skip();
+      else if ((k === 'n' || k === 'N') && !hybrid) r.skip();
       else if (k >= '1' && k <= '6') r.setSpeed(SPEEDS[Number(k) - 1]);
       else return;
       force((x) => x + 1);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [rec]);
+  }, [rec, hybrid]);
   const act = (f) => () => { if (rec.current) { f(rec.current); force((x) => x + 1); } };
   const btn = (label, tip, f, on) => <ToolBtn key={tip} title={tip} aria-label={tip} on={on} onClick={act(f)}>{label}</ToolBtn>;
   return (
     <>
       <Toolbar label="Playback">
-        {btn('⟲', 'Restart the attempt (G)', (r) => r.restart())}
+        {btn('⟲', hybrid ? 'Back to the node\'s state (G)' : 'Restart the attempt (G)', (r) => r.restart())}
         {[[1, '['], [5, 'Backspace'], [10, 'D-pad up'], [30, 'Shift+Backspace']].map(([s, k]) =>
           btn(`◀${s}s`, `Back ${s} s (${k})`, (r) => r.back(s)))}
         {btn('⏸', 'Pause / resume (P)', (r) => r.togglePause(), rec.current && rec.current.paused)}

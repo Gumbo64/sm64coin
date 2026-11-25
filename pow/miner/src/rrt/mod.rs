@@ -120,9 +120,12 @@ fn cp_tag(played: &[GamePad], zone: u16, cp_n: usize) -> String {
 /// Switches the step's tree sync on (with `o.exchange`): the workers that are at the same point (same
 /// played prefix, zone and checkpoint count) and run the same step input share one tag.
 fn tree_sync(o: &RrtOptions, job: &mut Job, played: &[GamePad], zone: u16, cp_n: usize) {
-    if o.exchange.is_some() && o.sync_secs > 0.0 && o.sync_k > 0 {
-        job.sync_secs = o.sync_secs;
-        job.sync_k = o.sync_k.min(16);
+    if o.exchange.is_some() {
+        // The tag also names the step for the hybrid mining commands (child::hybrid), sync on or off.
+        if o.sync_secs > 0.0 && o.sync_k > 0 {
+            job.sync_secs = o.sync_secs;
+            job.sync_k = o.sync_k.min(16);
+        }
         job.sync_tag = format!("{}-{}", cp_tag(played, zone, cp_n), step_key(job));
     }
 }

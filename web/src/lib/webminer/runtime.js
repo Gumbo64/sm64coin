@@ -10,7 +10,13 @@
 // wasm-bindgen glue keeps its instance in module-level variables. The glue is self-contained, so
 // its source is turned into a factory function: each call is an independent copy.
 
-import { bestCheckpoint, makeChannel, makeTreeSync, makeNodeRequests } from './board.js';
+import { bestCheckpoint, makeChannel, makeTreeSync, makeNodeRequests, makeHybridPoll } from './board.js';
+
+function hexToBytes(h) {
+  const b = new Uint8Array(h.length / 2);
+  for (let i = 0; i < b.length; i++) b[i] = parseInt(h.substr(i * 2, 2), 16);
+  return b;
+}
 
 /** A factory of independent instances from the wasm-bindgen glue's source text. */
 export function makeFactory(glueSource) {
@@ -44,7 +50,7 @@ export function makeFs(map = new Map()) {
  * compiled WebAssembly.Module, `glue` the glue's source text, `rom` the ROM bytes, `log(line)`
  * the campaign's progress.
  */
-export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false, onState = () => {}, onPath = () => {}, onEdges = () => {} }) {
+export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false, onState = () => {}, onPath = () => {}, onEdges = () => {}, onHybrid = () => {} }) {
   const factory = makeFactory(glue);
   fs.write('/rom.z64', rom);
   globalThis.sm64fs = fs;
@@ -52,6 +58,7 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), sh
   const chan = board ? makeChannel(board) : null;
   const treeSync = chan ? makeTreeSync(chan) : null;
   const nodeReq = board ? makeNodeRequests(board) : null;
+  const hybridPoll = board ? makeHybridPoll(board) : null;
   globalThis.sm64miner = {
     log,
     // The step's start state and the inputs of nodes the page asked for (rrt::child::viz).
@@ -76,6 +83,13 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), sh
       // The search's own tree sync (rrt::child::tsync): needs the board (cross-origin isolated page);
       // without it the workers share only at step boundaries (step_get/step_put, cp_sync's absence).
       if (kind === 'tree_sync') return treeSync ? treeSync(payload) : undefined;
+      // Hybrid mining (rrt::child::hybrid): the page's mailbox in, the answers (a node's state, an inserted node) out.
+      if (kind === 'hybrid') return hybridPoll ? hybridPoll(payload) : undefined;
+      if (kind === 'hybrid_out') {
+        const m = JSON.parse(payload);
+        onHybrid(m, typeof m.state === 'string' ? hexToBytes(m.state) : null);
+        return undefined;
+      }
       if (kind === 'step_put') {
         // What the step left in the scratch (the roadmap...); not the campaign's own memory.
         const files = [...fs.map].filter(([p]) => p.startsWith('/scratch/') && !p.includes('/step-') && !p.endsWith('/campaign.json'));

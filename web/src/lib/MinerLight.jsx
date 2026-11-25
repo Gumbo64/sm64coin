@@ -11,7 +11,7 @@ const ICON = { idle: '○', loading: '◌', mining: '●', found: '◆', accepte
 export default function MinerLight() {
   const { status } = useMiner();
   return (
-    <NavLink to="/automine" className={`minerlight ${status.on ? 'on' : 'off'} ${status.kind}`} title={status.title} aria-label={`Auto-miner: ${status.title}`} role="status">
+    <NavLink to="/mine" className={`minerlight ${status.on ? 'on' : 'off'} ${status.kind}`} title={status.title} aria-label={`Auto-miner: ${status.title}`} role="status">
       <span className="ml-ico" aria-hidden="true">{ICON[status.kind]}</span>
       <span className="ml-txt">Auto-mine: {status.label}</span>
     </NavLink>

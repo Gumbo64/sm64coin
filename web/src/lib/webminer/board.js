@@ -9,9 +9,9 @@ const dec = new TextDecoder();
 // After the slots: Int32 control words shared by the page and every worker: [0] = the viz feed is on, [1] = how many
 // times the page switched it off (a worker that sees it change knows the page dropped the feed so far, see vizOn).
 const CTL = 64;
-// After the control words: the page's mailbox to the workers (requests for a search node's inputs), one JSON text
-// the page rewrites as a whole under the same seqlock: [Int32 seq, Int32 length, bytes].
-const MAIL = 256 << 10;
+// After the control words: the page's mailbox to the workers (hybrid mining: position goal, state requests, human-played
+// segments), one JSON text the page rewrites as a whole, under the same seqlock as the slots: [Int32 seq, Int32 length, bytes].
+const MAIL = 2 << 20;
 export const boardSize = (slots, slotBytes = 1 << 20) => slots * slotBytes + CTL + MAIL;
 
 /** The page's switch for the workers' viz feed (instant: the searches read it every round). */
@@ -21,7 +21,20 @@ export function setVizFlag(sab, slots, on, slotBytes = 1 << 20) {
   Atomics.store(ctl, 0, on ? 1 : 0);
 }
 
-/** The page's mailbox write: `obj` as JSON for every worker's next poll; false when it doesn't fit. */
+/** The page's mailbox write (node requests, hybrid mining): `obj` as JSON for every worker's next poll; false when it doesn't fit. */
+// The mailbox's whole content: the node-path requests ({reqs}) and hybrid mining's goal and commands ({goal, cmds}) share
+// the one text, so each writer patches this and re-posts all of it.
+const mailState = {};
+export function patchMail(sab, slots, patch) {
+  const before = { ...mailState };
+  Object.assign(mailState, patch);
+  const ok = postMail(sab, slots, mailState);
+  if (!ok) { for (const k of Object.keys(patch)) { if (k in before) mailState[k] = before[k]; else delete mailState[k]; } }
+  return ok;
+}
+/** A new run of the miner: the mailbox starts empty. */
+export function resetMail() { for (const k of Object.keys(mailState)) delete mailState[k]; }
+
 export function postMail(sab, slots, obj, slotBytes = 1 << 20) {
   const base = slots * slotBytes + CTL;
   const ints = new Int32Array(sab, base, 2);
@@ -196,5 +209,29 @@ export function makeNodeRequests(board) {
       ids.push(r.nid);
     }
     return ids.length ? JSON.stringify(ids) : undefined;
+  };
+}
+
+/**
+ * The workers' side of hybrid mining ("hybrid" in rrt::child::hybrid): `payload` is {tag, vkey} (the step's sync tag and
+ * the page's name of its tree). The reply is the mailbox's position goal and the commands for this step that this worker has
+ * not been given yet: "state" commands addressed to this slot and step, "insert" commands for this step's tag. A command stays in
+ * the mailbox until the page drops it (a step that comes later with that tag still gets it), and is given once.
+ */
+export function makeHybridPoll(board) {
+  const given = new Set();
+  return (payload) => {
+    const m = board.mail();
+    if (!m) return undefined;
+    const p = JSON.parse(payload);
+    const cmds = [];
+    for (const c of m.cmds || []) {
+      if (given.has(c.id)) continue;
+      const mine = c.kind === 'state' ? c.slot === board.slot && c.vkey === p.vkey : c.kind === 'insert' ? c.tag === p.tag : false;
+      if (!mine) continue;
+      given.add(c.id);
+      cmds.push(c);
+    }
+    return JSON.stringify({ goal: m.goal || null, cmds });
   };
 }

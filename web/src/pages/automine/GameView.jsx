@@ -4,11 +4,13 @@ import { GamePad } from 'sm64-binds-frontend';
 import { captureState } from '../../lib/savestate.js';
 import { useHub, useVisible } from './useHub.js';
 import { SPEEDS } from './hub.js';
-import { Panel } from '../../components/ui.jsx';
+import { Toolbar, ToolBtn } from '../../components/ui.jsx';
+import { acquireEngine } from '../../components/EngineSlot.jsx';
 import { loadStart, portableFor } from './startState.js';
 import { frames as fmtFrames } from '../../lib/format.js';
 
-// The live game: a visual engine (the same Sm64VisualEngine the Mine page plays with) replaying
+// The reel: the Mine page's game panel while the auto-miner runs and nobody plays: the shared visual engine (EngineSlot)
+// replaying
 //  * the best path of a worker's current search step (kind 'best'), looping from the block's start
 //    whenever the best improves, or
 //  * the exact run being submitted (kind 'run'), through the block's perturbation, until the star.
@@ -17,41 +19,77 @@ import { frames as fmtFrames } from '../../lib/format.js';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const padOf = (raw, i) => new GamePad(raw[i * 4] | (raw[i * 4 + 1] << 8), (raw[i * 4 + 2] << 24) >> 24, (raw[i * 4 + 3] << 24) >> 24);
 
-export default function GameView({ hub }) {
+/** The reel's settings form (the game panel's ⚙ while the auto-miner shows the reel). */
+export function ReelSettings({ hub }) {
+  const st = hub.settings;
+  const reel = hub.reel;
+  return (
+    <>
+      <span className="lab">Highlight reel</span>
+      <div className="ctl">
+        <button type="button" onClick={() => hub.setReel({ on: !reel.on })} title="The reel plays what the workers find: a new place, or a faster route to a place. A clip always plays to its end.">{reel.on ? '⏸ Pause' : '▶ Resume'}</button>
+        <span className="muted">{reel.queue.length ? `${reel.queue.length} clip${reel.queue.length === 1 ? '' : 's'} queued` : 'no clips queued'} · {reel.clips} so far</span>
+      </div>
+      <span className="lab">Start point</span>
+      <div className="ctl">
+        <select value={st.start} onChange={(e) => hub.setSettings({ start: e.target.value })} aria-label="Start point">
+          <option value="end">from some seconds before the end</option>
+          <option value="step">from the step's start</option>
+        </select>
+        <label>seconds <input type="number" min="0" max="120" step="1" value={st.leadSec} disabled={st.start !== 'end'} onChange={(e) => hub.setSettings({ leadSec: Math.max(0, Math.min(120, +e.target.value || 0)) })} /></label>
+      </div>
+      <span className="lab">Playback speed</span>
+      <div className="viz-btns">{SPEEDS.map((x) => <button type="button" key={x} className={st.speed === x ? 'on' : ''} onClick={() => hub.setSettings({ speed: x })}>{x}×</button>)}</div>
+      <span className="lab">Highlights</span>
+      <div className="ctl">
+        <label><input type="checkbox" checked={st.places} onChange={(e) => hub.setSettings({ places: e.target.checked })} /> new places</label>
+        <label><input type="checkbox" checked={st.records} onChange={(e) => hub.setSettings({ records: e.target.checked })} /> records</label>
+      </div>
+      <label htmlFor="reel-gain">Smallest record</label>
+      <div className="ctl"><input id="reel-gain" type="number" min="10" max="2000" step="5" value={st.minGain} disabled={!st.records} onChange={(e) => hub.setSettings({ minGain: Math.max(10, +e.target.value || 10) })} /> <span className="muted">frames saved (the workers report 10 and up)</span></div>
+      <label htmlFor="reel-follow">Follow</label>
+      <div className="ctl">
+        <select id="reel-follow" value={reel.follow ?? ''} onChange={(e) => hub.setReel({ follow: e.target.value === '' ? null : +e.target.value })}>
+          <option value="">all workers</option>
+          {hub.workers.map((w) => <option key={w.i} value={w.i}>worker {w.i + 1}</option>)}
+        </select>
+      </div>
+    </>
+  );
+}
+
+/** What the reel is playing, as the game panel's chip. */
+export function ReelChip({ hub }) {
+  const kind = hub.game.kind;
+  if (kind === 'run') return <span className="chip warn">the run being submitted</span>;
+  if (hub.game.w == null) return null;
+  return <span className="chip">{kind === 'clip' ? 'highlight of' : kind === 'node' ? `node ${hub.game.nid} of` : 'best path of'} worker {hub.game.w + 1}</span>;
+}
+
+/**
+ * The reel / node / best path / submitted run on the shared engine, below the canvas: the progress bar, the status line
+ * and the reel's toolbar. `visible`: the panel is on screen (the play pauses off screen); `toolbar`: extra buttons.
+ */
+export default function ReelView({ hub, engine, visible, toolbar }) {
   const v = useHub(hub);
-  const box = useRef(null);
-  const canvas = useRef(null);
-  const visible = useVisible(box);
   const visRef = useRef(visible);
   visRef.current = visible;
-  const eng = useRef(null);
-  const [ready, setReady] = useState(false);
-  const [err, setErr] = useState('');
-  const [slow, setSlow] = useState(false);
-  useEffect(() => { const t = setTimeout(() => setSlow(true), 15000); return () => clearTimeout(t); }, []);
+  const eng = useRef(engine);
+  eng.current = engine;
+  const ready = !!engine;
   const [info, setInfo] = useState({ text: 'loading the game…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
   const gameId = hub.game.id;
   const kind = hub.game.kind;
-
-  useEffect(() => {
-    let dead = false;
-    (async () => {
-      try {
-        const { createEngine } = await import('../../lib/cycle.js');
-        const e = await createEngine(canvas.current);
-        if (dead) { e.set_audio_enabled(0); return; }
-        eng.current = e;
-        setReady(true);
-      } catch (e) { setErr(String(e.message || e)); }
-    })();
-    return () => { dead = true; if (eng.current) { try { eng.current.set_audio_enabled(0); } catch { /* gone */ } } eng.current = null; };
-  }, []);
 
   useEffect(() => {
     if (ready && !gameId) setInfo({ text: 'waiting for the first highlight (a new place or a faster route)…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
     if (!ready || !gameId) return undefined;
     let dead = false;
     const run = async () => {
+      const release = await acquireEngine();
+      try { if (!dead) await drive(); } finally { release(); }
+    };
+    const drive = async () => {
       const [{ restoreState }, { Perturbation, perturbReady, readProgress }, { withConfig }, { successFor }, { fastForward }] = await Promise.all([
         import('../../lib/savestate.js'), import('../../lib/perturb.js'), import('../../lib/task.js'), import('../../lib/rules.js'), import('../../lib/cycle.js'),
       ]);
@@ -185,56 +223,16 @@ export default function GameView({ hub }) {
     };
     run().catch((x) => { if (!dead) setInfo({ text: `game view: ${x.message || x}`, frame: 0, total: 0, star: false, verdict: '' }); });
     return () => { dead = true; };
-  }, [ready, gameId]);
+  }, [ready, gameId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = hub.found;
   const shown = kind === 'run' ? f : null;
   void v;
-  const st = hub.settings;
   const reel = hub.reel;
   return (
-    <Panel className="viz-game" innerRef={box} open={st.open} onToggle={() => hub.setSettings({ open: !st.open })}
-      title="Live game" chip={kind === 'run' ? <span className="chip warn">the run being submitted</span> : hub.game.w != null && <span className="chip">{kind === 'clip' ? 'highlight of' : kind === 'node' ? `node ${hub.game.nid} of` : 'best path of'} worker {hub.game.w + 1}</span>}
-      settings={(
-        <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
-          <span className="lab">Highlight reel</span>
-          <div className="ctl">
-            <button type="button" onClick={() => hub.setReel({ on: !reel.on })} title="The reel plays what the workers find: a new place, or a faster route to a place. A clip always plays to its end.">{reel.on ? '⏸ Pause' : '▶ Resume'}</button>
-            <span className="muted">{reel.queue.length ? `${reel.queue.length} clip${reel.queue.length === 1 ? '' : 's'} queued` : 'no clips queued'} · {reel.clips} so far</span>
-          </div>
-          <span className="lab">Start point</span>
-          <div className="ctl">
-            <select value={st.start} onChange={(e) => hub.setSettings({ start: e.target.value })} aria-label="Start point">
-              <option value="end">from some seconds before the end</option>
-              <option value="step">from the step's start</option>
-            </select>
-            <label>seconds <input type="number" min="0" max="120" step="1" value={st.leadSec} disabled={st.start !== 'end'} onChange={(e) => hub.setSettings({ leadSec: Math.max(0, Math.min(120, +e.target.value || 0)) })} /></label>
-          </div>
-          <span className="lab">Playback speed</span>
-          <div className="viz-btns">{SPEEDS.map((x) => <button type="button" key={x} className={st.speed === x ? 'on' : ''} onClick={() => hub.setSettings({ speed: x })}>{x}×</button>)}</div>
-          <span className="lab">Highlights</span>
-          <div className="ctl">
-            <label><input type="checkbox" checked={st.places} onChange={(e) => hub.setSettings({ places: e.target.checked })} /> new places</label>
-            <label><input type="checkbox" checked={st.records} onChange={(e) => hub.setSettings({ records: e.target.checked })} /> records</label>
-          </div>
-          <label htmlFor="reel-gain">Smallest record</label>
-          <div className="ctl"><input id="reel-gain" type="number" min="10" max="2000" step="5" value={st.minGain} disabled={!st.records} onChange={(e) => hub.setSettings({ minGain: Math.max(10, +e.target.value || 10) })} /> <span className="muted">frames saved (the workers report 10 and up)</span></div>
-          <label htmlFor="reel-follow">Follow</label>
-          <div className="ctl">
-            <select id="reel-follow" value={reel.follow ?? ''} onChange={(e) => hub.setReel({ follow: e.target.value === '' ? null : +e.target.value })}>
-              <option value="">all workers</option>
-              {hub.workers.map((w) => <option key={w.i} value={w.i}>worker {w.i + 1}</option>)}
-            </select>
-          </div>
-        </form>
-      )}>
-      <div className="viz-canvaswrap">
-        <canvas ref={canvas} className="sm64canvas" />
-        {info.star && <div className="starget"><span>★</span><b>STAR GET!</b></div>}
-      </div>
-      {err && <p className="error">The game could not start: {err}{/webgl|context/i.test(err) ? ' (this browser may not allow WebGL here; try another browser or switch off battery saver)' : ''}</p>}
-      {!err && !ready && slow && <p className="muted small">Still loading the game engine: slow on phones, the first load can take a minute…</p>}
-      {info.prog && !err && (
+    <>
+      {info.star && <div className="starget reelstar"><span>★</span><b>STAR GET!</b></div>}
+      {info.prog && (
         <div className="viz-progress" role="progressbar" aria-label={info.text} aria-valuemin={0} aria-valuemax={100} aria-valuenow={info.prog.frac == null ? undefined : Math.round(info.prog.frac * 100)}>
           <div className={info.prog.frac == null ? 'indet' : ''} style={info.prog.frac == null ? undefined : { width: `${Math.round(info.prog.frac * 100)}%` }} />
         </div>
@@ -243,6 +241,10 @@ export default function GameView({ hub }) {
         <span className={info.error ? 'error' : ''}>{info.text}{info.total > 0 && <span className="muted"> · {info.frame.toLocaleString()} / {info.total.toLocaleString()} frames</span>}{info.verdict && <span className="muted"> · {info.verdict}</span>}</span>
         {shown && <span>run {shown.frames} frames: <b>{shown.status}</b>{shown.status === 'accepted' && <> · <Link to={`/block/${shown.height}`}>block {shown.height}'s replay →</Link></>}</span>}
       </div>
-    </Panel>
+      <Toolbar label="Reel">
+        <ToolBtn on={reel.on} onClick={() => hub.setReel({ on: !reel.on })} title="The highlight reel plays what the workers find (a new place, a faster route). Off: it stays on this clip.">{reel.on ? '⏸ Reel' : '▶ Reel'}</ToolBtn>
+        {toolbar}
+      </Toolbar>
+    </>
   );
 }
