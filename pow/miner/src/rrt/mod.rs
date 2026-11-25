@@ -91,6 +91,28 @@ pub struct RrtOptions {
     pub sync_k: usize,
     /// Sample the trees for a viewer (see `child::viz`; the web miner's page).
     pub viz: bool,
+    /// Anytime mining: a run of this many frames is known (0: none), so only a shorter one counts (the frame cap
+    /// is one less, and the trees go on past states that are too late, OBRRT_GOOD_MAX_FRAME) and a step that
+    /// finds none ends the search ("no shorter run").
+    pub beat: usize,
+    /// The known run's objective keys as a goal bias (OBRRT_GUIDE_KEYS, weight `guide_weight`; empty: none).
+    pub guide_keys: Vec<String>,
+    pub guide_weight: f64,
+    /// A run to go on from: its first frames (a prefix of a known run; replayed before the first step). The
+    /// searches then look for a shorter end of it: one segment of the run attacked, the rest kept.
+    pub prefix: Vec<GamePad>,
+    /// A known run to branch off (see [`SeedRun`]), its nodes every `seed_chunk` frames added to the trees that
+    /// start where the run's steps did, boosted by `seed_weight`.
+    pub seed_run: Option<SeedRun>,
+    pub seed_chunk: usize,
+    pub seed_weight: f64,
+}
+
+/// A run found earlier (by this or another search of the block): its pads and the played length at the start of each step.
+#[derive(Clone)]
+pub struct SeedRun {
+    pub pads: Vec<GamePad>,
+    pub starts: Vec<usize>,
 }
 
 /// A channel to the other searches of the block. Kinds: `"step_get"` (payload: a step's key; reply:
@@ -105,6 +127,10 @@ pub type Exchange = std::sync::Arc<dyn Fn(&str, &str) -> Option<String> + Send +
 pub struct SharedStep {
     pub key: String,
     pub out: StepOut,
+}
+
+fn same_pads(a: &[GamePad], b: &[GamePad]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x.button, x.stick_x, x.stick_y) == (y.button, y.stick_x, y.stick_y))
 }
 
 fn cp_tag(played: &[GamePad], zone: u16, cp_n: usize) -> String {
@@ -132,6 +158,9 @@ fn step_key(job: &Job) -> String {
     let mut j = job.clone();
     (j.seed, j.state_file, j.out_dir, j.viz) = (0, String::new(), String::new(), false);
     (j.sync_secs, j.sync_k, j.sync_tag) = (0.0, 0, String::new());
+    // The anytime miner's settings change what a search looks for, not which step it is: a shared first castle step stays shared.
+    j.env.retain(|(k, _)| !matches!(k.as_str(), "OBRRT_GOOD_MAX_FRAME" | "OBRRT_GUIDE_KEYS" | "OBRRT_GUIDE_WEIGHT"));
+    (j.manual, j.manual_weight) = (Vec::new(), 0.0);
     let text = serde_json::to_string(&j).unwrap_or_default();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
@@ -159,6 +188,13 @@ impl Default for RrtOptions {
             sync_secs: 0.0,
             sync_k: 0,
             viz: false,
+            beat: 0,
+            guide_keys: Vec::new(),
+            guide_weight: 20.0,
+            prefix: Vec::new(),
+            seed_run: None,
+            seed_chunk: 45,
+            seed_weight: 2.0,
         }
     }
 }
@@ -489,7 +525,10 @@ fn pause_exit(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max: usize, 
 /// Mines one block from `start` to the next progress point.
 pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Params, o: &RrtOptions, stop: &AtomicBool, mut log: impl FnMut(String)) -> Result<Attempt> {
     let t0 = Instant::now();
-    let max = if o.frame_cap > 0 { o.frame_cap } else { sm64pow::rules().max_frames_any() as usize };
+    let mut max = if o.frame_cap > 0 { o.frame_cap } else { sm64pow::rules().max_frames_any() as usize };
+    if o.beat > 0 {
+        max = max.min(o.beat - 1);
+    }
     let (mut game, before) = sm64pow::chain::mining_start(start, parent, seed, params)?;
     let mut played: Vec<GamePad> = Vec::new();
     let st = match start {
@@ -501,7 +540,16 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
     let mem_path = o.scratch.join("campaign.json");
     crate::sys::fs::create_dir_all(&o.scratch)?;
     let mut mem = Memory::load(&mem_path, &origin);
-    let env0 = env(o)?;
+    let mut env0 = env(o)?;
+    if o.beat > 0 {
+        env0.push(("OBRRT_GOOD_MAX_FRAME".into(), (o.beat - 1).to_string()));
+    }
+    if !o.guide_keys.is_empty() {
+        let gp = o.scratch.join("guide_keys.txt");
+        crate::sys::fs::write(&gp, o.guide_keys.join("\n"))?;
+        env0.push(("OBRRT_GUIDE_KEYS".into(), gp.display().to_string()));
+        env0.push(("OBRRT_GUIDE_WEIGHT".into(), o.guide_weight.to_string()));
+    }
     let rom = match &o.rom {
         Some(r) => crate::sys::fs::canonicalize(r)?.to_string_lossy().into_owned(),
         None => sm64pow::default_rom_path().ok_or_else(|| anyhow::anyhow!("no ROM (RrtOptions::rom)"))?,
@@ -526,9 +574,19 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             log(format!("resuming this block's search at frame {} (level {})", played.len(), name(read_state(&game, played.len() as u32, false).level)));
         }
     }
-    // The objectives along the stages' winning paths (the guide for the next search).
+    if o.prefix.len() > played.len() {
+        anyhow::ensure!(same_pads(&o.prefix[..played.len()], &played), "the run to go on from does not start like this block's start");
+        let rest = o.prefix[played.len()..].to_vec();
+        if replay(&mut game, &mut played, &rest, &before)? {
+            bail!("the run to go on from already makes the progress point at frame {}", played.len());
+        }
+        let s = read_state(&game, played.len() as u32, false);
+        log(format!("going on from the best run's frame {} (level {} {})", played.len(), s.level, name(s.level)));
+    }
+    // The objectives along the stages' winning paths (the guide for the next search), and where the steps started.
     let mut keys: Vec<String> = Vec::new();
-    let finish = |played: Vec<GamePad>, sim: u64, keys: Vec<String>| Attempt::Found(Mined { pads: played, seconds: t0.elapsed().as_secs_f64(), sim_frames: sim, keys });
+    let mut starts: Vec<usize> = Vec::new();
+    let finish = |played: Vec<GamePad>, sim: u64, keys: Vec<String>, starts: Vec<usize>| Attempt::Found(Mined { pads: played, seconds: t0.elapsed().as_secs_f64(), sim_frames: sim, keys, starts });
     let mut step = 0usize;
     let result = loop {
         if stop.load(Ordering::Relaxed) {
@@ -538,6 +596,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         mem.save(&mem_path, &origin);
         step += 1;
         salt += 1;
+        starts.push(played.len());
         let st = read_state(&game, played.len() as u32, true);
         let in_hub = is_hub_level(st.level);
         let mut env = env0.clone();
@@ -562,7 +621,20 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             sync_secs: 0.0,
             sync_k: 0,
             sync_tag: String::new(),
+            manual: Vec::new(),
+            manual_weight: 0.0,
         };
+        // A known run that this step starts like: the tree gets its nodes (every `seed_chunk` frames, none at its last frame).
+        if let Some(sr) = &o.seed_run {
+            let s0 = played.len();
+            if let Some(i) = sr.starts.iter().position(|&x| x == s0).filter(|_| sr.pads.len() >= s0 && same_pads(&sr.pads[..s0], &played)) {
+                let end = sr.starts.get(i + 1).copied().unwrap_or(sr.pads.len()).min(sr.pads.len());
+                let seg: Vec<(u16, i8, i8)> = sr.pads[s0..end].iter().map(|p| (p.button, p.stick_x, p.stick_y)).collect();
+                let c = o.seed_chunk.max(1);
+                job.manual = (1..).map(|k| k * c).take_while(|&n| n < seg.len()).map(|n| seg[..n].to_vec()).collect();
+                job.manual_weight = o.seed_weight;
+            }
+        }
         if in_hub || GEO_LEVELS.contains(&st.level) {
             env.push(("OBRRT_GEO".into(), "1".into()));
         }
@@ -634,6 +706,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             }
             if !out.found {
                 log(format!("  {} ({:.0} s)", out.note, t0.elapsed().as_secs_f64()));
+                if o.beat > 0 {
+                    break Attempt::Gave("no shorter run".into());
+                }
                 if castle.is_some() {
                     mem.castle_try = Some((st.stars, st.keys));
                 } else if moat {
@@ -662,7 +737,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             log(format!("  {} at frame {} (+{}), {:.1} M frames, {} nodes ({:.0} s)", name(out.level), out.frame, out.pads.len(), out.emulated as f64 / 1e6, out.nodes, t0.elapsed().as_secs_f64()));
             keys.extend(out.path_keys.iter().cloned());
             if replay(&mut game, &mut played, &child::pads_of(&out.pads), &before)? {
-                break finish(played, sim, keys);
+                break finish(played, sim, keys, starts);
             }
             guard(&game, &played, out.level, out.frame, out.pos)?;
             if job.goal == Goal::Flag {
@@ -673,7 +748,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                 bail!("the castle tree's winner is in the castle without progress");
             }
             if idle_until_controllable(&mut game, &mut played, max, &before)? {
-                break finish(played, sim, keys);
+                break finish(played, sim, keys, starts);
             }
             *mem.been.entry(out.level).or_default() += 1;
             hub = Some(ckpt);
@@ -724,7 +799,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             log(format!("  progress at frame {} (+{}), {:.1} M frames, {} nodes ({:.0} s)", out.frame, out.pads.len(), out.emulated as f64 / 1e6, out.nodes, t0.elapsed().as_secs_f64()));
             keys.extend(out.path_keys.iter().cloned());
             if replay(&mut game, &mut played, &child::pads_of(&out.pads), &before)? {
-                break finish(played, sim, keys);
+                break finish(played, sim, keys, starts);
             }
             bail!("the course tree's winner made progress but the perturbed replay did not (frame {}): a game was stepped unperturbed", played.len());
         }
@@ -754,7 +829,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         if let Some(cp) = ck {
             // No progress, but further along a goal: a fresh tree goes on from there.
             if replay(&mut game, &mut played, &child::pads_of(&cp.pads), &before)? {
-                break finish(played, sim, keys);
+                break finish(played, sim, keys, starts);
             }
             guard(&game, &played, cp.level, cp.frame, cp.pos)?;
             cp_n += 1;
@@ -775,6 +850,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             continue;
         }
         // The course gave nothing: back to the castle state before it, and skip it for now.
+        if o.beat > 0 {
+            break Attempt::Gave("no shorter run".into());
+        }
         log(format!("  {}; skipping {}, back to the castle ({:.0} s)", out.note, name(zone), t0.elapsed().as_secs_f64()));
         cp_n = 0;
         for l in std::iter::once(zone).chain(VIA.iter().filter(|v| v.1 == zone).map(|v| v.0)) {

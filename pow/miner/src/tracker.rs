@@ -535,6 +535,8 @@ pub struct Mined {
     /// rrt: the keys of the objectives that made the run's path (all stages), for the next
     /// search's guide (OBRRT_GUIDE_KEYS); empty for the other controllers.
     pub keys: Vec<String>,
+    /// rrt: the played length at the start of each campaign step (the run's segments, for sharing it).
+    pub starts: Vec<usize>,
 }
 
 struct Checkpoint {
@@ -616,7 +618,7 @@ pub fn mine(
                 sim_frames as f64 / 1e6,
                 t0.elapsed().as_secs_f64()
             ));
-            return Ok(Some(Mined { pads: played, sim_frames, seconds: t0.elapsed().as_secs_f64(), keys: Vec::new() }));
+            return Ok(Some(Mined { pads: played, sim_frames, seconds: t0.elapsed().as_secs_f64(), keys: Vec::new(), starts: Vec::new() }));
         }
 
         // Commit the first frames of the best plan, on the real game.

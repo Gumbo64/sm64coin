@@ -93,6 +93,48 @@ pub struct MineRequest {
     /// sync only runs between rounds, and BoB's step from power-on took 3-8 minutes instead of ~1).
     #[serde(default = "extra_env_default")]
     pub extra_env: String,
+    /// Anytime mining (the best run so far is known, see rrt::RrtOptions::beat): its length (0: none), its
+    /// objective keys as a goal bias, a prefix of it to go on from (hex pads), the whole run and its step starts
+    /// for the trees to branch off (hex pads).
+    #[serde(default)]
+    pub beat: usize,
+    #[serde(default)]
+    pub guide_keys: Vec<String>,
+    #[serde(default = "guide_weight_default")]
+    pub guide_weight: f64,
+    #[serde(default)]
+    pub prefix_pads: String,
+    #[serde(default)]
+    pub seed_pads: String,
+    #[serde(default)]
+    pub seed_starts: Vec<usize>,
+    #[serde(default = "seed_chunk_default")]
+    pub seed_chunk: usize,
+    #[serde(default = "seed_weight_default")]
+    pub seed_weight: f64,
+}
+fn guide_weight_default() -> f64 {
+    20.0
+}
+fn seed_chunk_default() -> usize {
+    45
+}
+fn seed_weight_default() -> f64 {
+    2.0
+}
+/// Pads as hex: per frame u16 button (little endian), stick x, stick y (the cycle's played_pads format).
+fn pads_from_hex(h: &str) -> Result<Vec<GamePad>, JsError> {
+    let b = hex::decode(h).map_err(err)?;
+    Ok(b.chunks_exact(4).map(|c| GamePad::new(u16::from_le_bytes([c[0], c[1]]), c[2] as i8, c[3] as i8)).collect())
+}
+fn pads_to_hex(p: &[GamePad]) -> String {
+    let mut b = Vec::with_capacity(p.len() * 4);
+    for g in p {
+        b.extend_from_slice(&g.button.to_le_bytes());
+        b.push(g.stick_x as u8);
+        b.push(g.stick_y as u8);
+    }
+    hex::encode(b)
 }
 fn extra_env_default() -> String {
     "OBRRT_ROUND=16".into()
@@ -122,6 +164,10 @@ pub struct MineResult {
     pub proof: String,
     pub frames: usize,
     pub sim_frames: u64,
+    /// The run (found): its pads (hex, see `pads_to_hex`), the keys of the objectives that made its path and the played length at the start of each step: what the page shares with the other workers.
+    pub pads: String,
+    pub keys: Vec<String>,
+    pub starts: Vec<usize>,
 }
 
 /// Mines one block (the native automine's `rrt::mine` with its options), returning the sealed
@@ -154,6 +200,13 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
         frame_cap: r.frame_cap,
         mem_mb: r.mem_mb,
         viz: r.viz,
+        beat: r.beat,
+        guide_keys: r.guide_keys.clone(),
+        guide_weight: r.guide_weight,
+        prefix: pads_from_hex(&r.prefix_pads)?,
+        seed_run: (!r.seed_pads.is_empty()).then(|| pads_from_hex(&r.seed_pads).map(|pads| rrt::SeedRun { pads, starts: r.seed_starts.clone() })).transpose()?,
+        seed_chunk: r.seed_chunk,
+        seed_weight: r.seed_weight,
         sync_secs: r.sync_secs,
         sync_k: r.sync_k,
         extra_env: r.extra_env.clone(),
@@ -168,10 +221,10 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
     let out = match attempt {
         Attempt::Found(m) => {
             let proof = sm64pow::seal_proof_at(start, parent.as_ref(), &seed, &params, &m.pads).map_err(err)?;
-            MineResult { status: "found".into(), why: String::new(), proof: hex::encode(proof), frames: m.pads.len(), sim_frames: m.sim_frames }
+            MineResult { status: "found".into(), why: String::new(), proof: hex::encode(proof), frames: m.pads.len(), sim_frames: m.sim_frames, pads: pads_to_hex(&m.pads), keys: m.keys.clone(), starts: m.starts.clone() }
         }
-        Attempt::Gave(why) => MineResult { status: "gave".into(), why, proof: String::new(), frames: 0, sim_frames: 0 },
-        Attempt::NoRoute(why) => MineResult { status: "noroute".into(), why, proof: String::new(), frames: 0, sim_frames: 0 },
+        Attempt::Gave(why) => MineResult { status: "gave".into(), why, proof: String::new(), frames: 0, sim_frames: 0, pads: String::new(), keys: Vec::new(), starts: Vec::new() },
+        Attempt::NoRoute(why) => MineResult { status: "noroute".into(), why, proof: String::new(), frames: 0, sim_frames: 0, pads: String::new(), keys: Vec::new(), starts: Vec::new() },
     };
     serde_json::to_string(&out).map_err(err)
 }

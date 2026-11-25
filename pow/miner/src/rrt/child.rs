@@ -106,6 +106,12 @@ pub struct Job {
     pub sync_k: usize,
     #[serde(default)]
     pub sync_tag: String,
+    /// Paths from the root (prefixes of a known run's segment) added to the tree as boosted nodes before the
+    /// search expands (a shared run: the search branches off it, see `Engine::insert_manual`), with their boost.
+    #[serde(default)]
+    pub manual: Vec<Vec<(u16, i8, i8)>>,
+    #[serde(default)]
+    pub manual_weight: f64,
 }
 
 /// The channel the step's process reaches the other workers by (set by the browser build before
@@ -245,6 +251,18 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
         if let Some(ex) = EXCHANGE.get() {
             engine.on_sync = Some(tsync::hook(job, ex.clone(), &root, sync_stats.clone()));
         }
+    }
+    if !job.manual.is_empty() {
+        let (segs, w) = (job.manual.clone(), job.manual_weight);
+        let mut done = false;
+        engine.on_hybrid = Some(Box::new(move |e| {
+            if std::mem::replace(&mut done, true) {
+                return;
+            }
+            for s in &segs {
+                let _ = e.insert_manual(&pads_of(s), w);
+            }
+        }));
     }
     engine.run()?;
     let sync_out = (job.sync_secs > 0.0 && engine.on_sync.is_some()).then(|| {
