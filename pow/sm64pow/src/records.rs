@@ -39,31 +39,67 @@ pub const MAX_FIELD: usize = 2 << 20;
 pub const MAX_PROOF: usize = 256 * 1024;
 pub const MAX_RECORDS: usize = 256;
 
-/// The v0.4 parameters the owner has not decided yet (docs/V0.4-DESIGN.md section 7: OPEN; the
-/// values are the recommendations).
+/// The v0.4 proof parameters (owner's decisions 2026-11-25, docs/V0.4-DESIGN.md section 7). The
+/// windows are in **auction time**: a run is within `s` seconds of the winner if it would have
+/// become valid at most `s` seconds after the winner's due time ([`window_frames`]), so they
+/// follow the limit curve (and any future change of its slope) by themselves. The weight window
+/// and the rewards are gates, to be set from the imitation-cost measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
-    /// At most this many records per block (OPEN: 64).
+    /// At most this many records per block (decided: 64).
     pub cap: usize,
-    /// The archive window: a record's frames at most `(100 + archive_percent)%` of the winner's (OPEN: 50).
-    pub archive_percent: u32,
-    /// The weight window (counted for fork choice), within the archive window (OPEN: 17).
-    pub weight_percent: u32,
+    /// The archive window, seconds of auction time after the winner's due time (decided: 60).
+    pub archive_seconds: u64,
+    /// The weight window (counted for fork choice), within the archive window; None: proofs weigh
+    /// nothing and fork choice is v0.3's longest chain (default 60; to narrow, or turn off, from
+    /// the imitation-cost result).
+    pub weight_seconds: Option<u64>,
 }
 
-pub const PROPOSED: Window = Window { cap: 64, archive_percent: 50, weight_percent: 17 };
+pub const PROPOSED: Window = Window { cap: 64, archive_seconds: 60, weight_seconds: Some(60) };
 
-/// Each included proof is paid `base / REWARD_DIVISOR` of new issuance, on top of the miner's
-/// unchanged `base + fees` (OPEN: 128; docs/V0.4-DESIGN.md section 3.1).
-pub const PROPOSED_REWARD_DIVISOR: u64 = 128;
+/// The first second after the parent at which a run of `frames` fits the limit at retarget
+/// `difficulty` (its due time, as `hold.rs` sees it), or None if it never does.
+pub fn due_elapsed(difficulty: u64, frames: u32) -> Option<u64> {
+    let r = crate::rules::active();
+    let (mut lo, mut hi) = (0u64, 1u64 << 40);
+    if r.max_frames(difficulty, hi) < frames {
+        return None;
+    }
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if r.max_frames(difficulty, mid) >= frames {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Some(lo)
+}
 
-/// What one included proof is paid when the block's base reward is `base`.
-pub fn proof_reward(base: u64, divisor: u64) -> u64 {
-    base / divisor.max(1)
+/// The longest run within `seconds` of auction time after a winner of `winner_frames` at
+/// `difficulty`: the limit `seconds` after the winner's due time (deterministic from the
+/// winner's frames and the parent's difficulty; the stamps don't enter, so restamping can't widen it).
+pub fn window_frames(difficulty: u64, winner_frames: u32, seconds: u64) -> u32 {
+    let r = crate::rules::active();
+    match due_elapsed(difficulty, winner_frames) {
+        Some(e) => r.max_frames(difficulty, e.saturating_add(seconds)).max(winner_frames),
+        None => winner_frames,
+    }
+}
+
+/// Each included proof is paid `base / divisor` of new issuance, on top of the miner's unchanged
+/// `base + fees` (decided: extra issuance, 128). A gate: None pays proofs nothing (to set from
+/// the imitation-cost result).
+pub const PROPOSED_REWARD_DIVISOR: Option<u64> = Some(128);
+
+/// What one included proof is paid when the block's base reward is `base` (0 with the gate off).
+pub fn proof_reward(base: u64, divisor: Option<u64>) -> u64 {
+    divisor.map_or(0, |d| base / d.max(1))
 }
 
 /// The most a coinbase with `n` included proofs may pay in all (None: overflow).
-pub fn coinbase_total(base: u64, fees: u64, n: usize, divisor: u64) -> Option<u64> {
+pub fn coinbase_total(base: u64, fees: u64, n: usize, divisor: Option<u64>) -> Option<u64> {
     base.checked_add(fees)?.checked_add(proof_reward(base, divisor).checked_mul(n as u64)?)
 }
 
@@ -409,11 +445,8 @@ pub struct Winner {
     pub key: [u8; 32],
     /// Block h's frames.
     pub frames: u32,
-}
-
-/// Whether a run of `frames` is within `percent` % of the winner's `winner` frames.
-pub fn within(frames: u32, winner: u32, percent: u32) -> bool {
-    100 * frames as u64 <= (100 + percent as u64) * winner as u64
+    /// Block h's retarget difficulty (the windows are in auction time at it).
+    pub difficulty: u64,
 }
 
 /// The structural checks of a block's records (docs/V0.4-DESIGN.md section 2.4, rules 1-8;
@@ -440,6 +473,8 @@ pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start
     if records.len() > w.cap {
         return Err(Invalid(format!("{} proofs, over the cap of {}", records.len(), w.cap)));
     }
+    let archive = window_frames(winner.difficulty, winner.frames, w.archive_seconds);
+    let weight = w.weight_seconds.map(|s| window_frames(winner.difficulty, winner.frames, s.min(w.archive_seconds)));
     let mut keys = std::collections::HashSet::new();
     let mut counted = 0;
     let mut last: Option<(u32, [u8; 32])> = None;
@@ -459,13 +494,13 @@ pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start
         if !sign::verify(&f.key, &sign::message(&f.seed, &f.run.input_hash, f.run.frames), &r.sig) {
             return Err(bad("the signature does not verify with the template's key"));
         }
-        if f.run.frames == 0 || !within(f.run.frames, winner.frames, w.archive_percent) || f.run.frames > crate::rules::active().max_frames_any() {
+        if f.run.frames == 0 || f.run.frames > archive || f.run.frames > crate::rules::active().max_frames_any() {
             return Err(bad("outside the proof window"));
         }
         if f.run.start != start {
             return Err(bad("a proof starts where the height starts (no restarts)"));
         }
-        counted += within(f.run.frames, winner.frames, w.weight_percent.min(w.archive_percent)) as usize;
+        counted += weight.is_some_and(|wf| f.run.frames <= wf) as usize;
     }
     Ok((facts, counted))
 }
@@ -500,6 +535,7 @@ mod tests {
     use sm64_binds::GamePad;
 
     const PREV: [u8; 32] = [0xab; 32];
+    const D: u64 = 1 << 16; // about where the 20-minute retarget settles
 
     fn varint(o: &mut Vec<u8>, v: u64) {
         put_varint(o, v)
@@ -562,7 +598,7 @@ mod tests {
 
     fn winner() -> (Keypair, Winner) {
         let k = Keypair::from_entropy(&[200; 32]).unwrap();
-        (k.clone(), Winner { height: 5, prev_id: PREV, key: k.public, frames: 2000 })
+        (k.clone(), Winner { height: 5, prev_id: PREV, key: k.public, frames: 2000, difficulty: D })
     }
 
     fn set(n: usize) -> (Vec<Record>, [u8; 32]) {
@@ -625,10 +661,14 @@ mod tests {
         let (rs, root) = set(8);
         let (facts, counted) = check(&rs, Some(&root), &w, Start::Parent, &PROPOSED).unwrap();
         assert_eq!(facts.len(), 8);
-        // frames 2000 + 37 i: within 17 % of 2000 (<= 2340) for i <= 9
+        // frames 2000 + 37 i (<= 2259): all within 60 s of auction time (about +17 %)
         assert_eq!(counted, 8);
-        let narrow = Window { weight_percent: 5, ..PROPOSED }; // <= 2100: i <= 2
-        assert_eq!(check(&rs, Some(&root), &w, Start::Parent, &narrow).unwrap().1, 3);
+        let w10 = window_frames(D, 2000, 10);
+        let narrow = Window { weight_seconds: Some(10), ..PROPOSED };
+        assert_eq!(check(&rs, Some(&root), &w, Start::Parent, &narrow).unwrap().1, facts.iter().filter(|f| f.run.frames <= w10).count());
+        assert!(w10 < 2259 && w10 >= 2037, "10 s: a few percent ({w10})");
+        let off = Window { weight_seconds: None, ..PROPOSED };
+        assert_eq!(check(&rs, Some(&root), &w, Start::Parent, &off).unwrap().1, 0, "the weight gate off");
         assert_eq!(check(&[], None, &w, Start::Parent, &PROPOSED).unwrap(), (vec![], 0));
     }
 
@@ -673,8 +713,9 @@ mod tests {
         assert!(inv(&[record(&wk, 5, &PREV, &run(2100, 4), 0).0], Start::Parent, &PROPOSED), "the winner's own key");
         assert!(inv(&[record(&k1, 6, &PREV, &run(2100, 1), 0).0], Start::Parent, &PROPOSED), "another height");
         assert!(inv(&[record(&k1, 5, &[1; 32], &run(2100, 1), 0).0], Start::Parent, &PROPOSED), "another parent");
-        assert!(inv(&[record(&k1, 5, &PREV, &run(3001, 1), 0).0], Start::Parent, &PROPOSED), "over 150 % of the winner");
-        assert!(!inv(&[record(&k1, 5, &PREV, &run(3000, 1), 0).0], Start::Parent, &PROPOSED), "exactly 150 %");
+        let top = window_frames(D, 2000, 60);
+        assert!(inv(&[record(&k1, 5, &PREV, &run(top + 1, 1), 0).0], Start::Parent, &PROPOSED), "after the archive window");
+        assert!(!inv(&[record(&k1, 5, &PREV, &run(top, 1), 0).0], Start::Parent, &PROPOSED), "at its edge");
         assert!(!inv(&[record(&k1, 5, &PREV, &run(1500, 1), 0).0], Start::Parent, &PROPOSED), "shorter than the winner is fine");
         assert!(inv(&[a.clone()], Start::PowerOn, &PROPOSED), "the height's natural start");
         assert!(inv(&[a.clone(), b.clone()], Start::Parent, &Window { cap: 1, ..PROPOSED }), "cap");
@@ -695,10 +736,30 @@ mod tests {
     #[test]
     fn rewards_come_on_top_of_the_miners() {
         let base = 1_125_800_000_000_000u64; // ~1125.8 SM64, v0.3's first blocks
-        assert_eq!(proof_reward(base, 128), base / 128);
-        assert_eq!(coinbase_total(base, 7, 0, 128), Some(base + 7), "no proofs: v0.3's coinbase");
-        assert_eq!(coinbase_total(base, 0, 64, 128), Some(base + base / 2), "the cap: +50 % at most");
-        assert_eq!(coinbase_total(u64::MAX, 1, 0, 128), None);
+        let d = PROPOSED_REWARD_DIVISOR;
+        assert_eq!(proof_reward(base, d), base / 128);
+        assert_eq!(coinbase_total(base, 7, 0, d), Some(base + 7), "no proofs: v0.3's coinbase");
+        assert_eq!(coinbase_total(base, 0, 64, d), Some(base + base / 2), "the cap: +50 % at most");
+        assert_eq!(coinbase_total(base, 0, 64, None), Some(base), "the reward gate off");
+        assert_eq!(coinbase_total(u64::MAX, 1, 0, d), None);
+    }
+
+    #[test]
+    fn windows_are_in_auction_time() {
+        let r = crate::rules::active();
+        for (d, f) in [(1u64, 900u32), (1, 30_000), (D, 2000), (D, 2500), (1 << 24, 700)] {
+            let e = due_elapsed(d, f).unwrap();
+            assert!(r.max_frames(d, e) >= f && (e == 0 || r.max_frames(d, e - 1) < f), "due time of {f} at {d}");
+            let w = window_frames(d, f, 60);
+            assert_eq!(w, r.max_frames(d, e + 60).max(f));
+            assert!(window_frames(d, f, 0) >= f && window_frames(d, f, 10) <= w);
+        }
+        // At equilibrium one minute of the auction is one difficulty halving's worth: about +17 %.
+        let w = window_frames(D, 2000, 60);
+        assert!((2300..=2400).contains(&w), "{w}");
+        // At the cap the window can't grow further.
+        assert_eq!(window_frames(1, 36_000, 60), 36_000);
+        assert_eq!(due_elapsed(1, 36_001), None);
     }
 
     #[test]
