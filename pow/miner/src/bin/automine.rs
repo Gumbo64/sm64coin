@@ -4,8 +4,9 @@
 //! state (power-on, or the parent's end state: the current cycle's played pads
 //! replayed unperturbed, cached per tip), play on from there to the game's
 //! next progress point (rh.rs: a route library keyed by the stars already
-//! collected), seal the proof with `seal_proof_at`, stamp the block "now" and
-//! submit. A winning run longer than the current time limit waits until the
+//! collected), seal the proof with `seal_proof_at`, sign it and submit it ONCE
+//! (one run per key: the better runs found meanwhile stay private; the best one is sent
+//! `--submit-lead` seconds before it is valid, see `signed.rs`). A winning run longer than the current time limit waits until the
 //! limit has grown to it (continuous decay, `sm64_valid_at`) unless the tip
 //! changes. A new block on the network restarts the attempt on a fresh template.
 
@@ -137,18 +138,21 @@ struct Args {
     /// Added to every search's seed (different runs from the same template, e.g. for tests).
     #[arg(long, default_value_t = 0)]
     salt: u64,
-    /// Anytime mining (rrt): a run over the current limit waits for it, and meanwhile fresh
-    /// searches from the same start look for a shorter one; the shortest is sent this many
-    /// seconds before it is valid (nodes hold it until then; at most the 120 s future limit).
-    /// 0: wait idle, the old way.
-    #[arg(long, default_value_t = 100)]
-    anytime_ahead: u64,
-    /// Publish-on-find (v0.3, pof.rs): submit a run as soon as it is found, stamped with
-    /// the second it becomes valid (nodes hold it until then and relay it at once), and
-    /// again for every strictly shorter run found for the same template meanwhile.
-    /// false: the v0.2 way (submit shortly before the run is valid).
+    /// One run per key (v0.3): the miner key signs at most ONE run per template, because
+    /// a second different signed run is equivocation and honest nodes avoid the block. So
+    /// the miner searches on privately (a run over the current limit waits for the limit to
+    /// grow, and meanwhile fresh searches look for a shorter one) and submits the best run
+    /// exactly once, this many seconds before it is valid (stamped with the second it
+    /// becomes valid; nodes hold it until then). A run that is valid now is sent at once.
+    #[arg(long, default_value_t = 5)]
+    submit_lead: u64,
+    /// Search on for a shorter run while a found run waits for the limit (rrt only).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    publish_on_find: bool,
+    anytime: bool,
+    /// Which seeds this miner already signed a run for (seed -> proof id), kept across
+    /// restarts so a restart never signs a second run for the same seed.
+    #[arg(long, default_value = "run/automine-signed.json")]
+    signed_file: String,
     /// Goal bias for those searches, as RRT samples its goal among random targets: `keys` the
     /// objectives that made the best run's path (their pool weight x --guide-weight, kinship
     /// waived), `points` the best run's positions as waypoint objectives (rrt::write_guide),
@@ -177,6 +181,10 @@ struct SavedBlock {
     seed_hash: String,
     #[serde(default)]
     key_secret: String,
+    /// The key's signature of this one run (hex, 64 bytes): the seed excludes the timestamp, so a
+    /// restamped block keeps it (the web test tooling can't sign in node).
+    #[serde(default)]
+    sig: String,
     proof: String,
     frames: u32,
     parent_ts: u64,
@@ -261,6 +269,12 @@ fn main() -> Result<()> {
             b.height, b.frames, r.max_frames(retarget, now().saturating_sub(b.parent_ts)), ts as i64 - now() as i64
         );
         let key = sm64pow::sign::Keypair::from_secret(&<[u8; 32]>::try_from(hex::decode(&b.key_secret)?.as_slice())?).ok_or_else(|| anyhow::anyhow!("the saved block has no miner key"))?;
+        let mut signed = sm64coin_miner::signed::SignedStore::open(Some(&a.signed_file));
+        let proof = hex::decode(&b.proof)?;
+        if let Err(prev) = signed.may_sign(&b.seed_hash, &proof) {
+            bail!("already signed a different run ({} frames) for this seed: not signing a second one", prev.frames);
+        }
+        signed.record(&b.seed_hash, &proof, b.frames)?;
         match daemon.submit(&rpc::seal_with(&b.template_blob, &b.seed_hash, &key, &hex::decode(&b.proof)?, Some(ts))?) {
             Ok(()) => println!("submitted"),
             Err(e) => println!("submit failed: {e}"),
@@ -310,6 +324,7 @@ fn main() -> Result<()> {
     let reset_mode: reset::ResetMode = a.reset.parse().map_err(|e: String| anyhow::anyhow!(e))?;
     println!("reset cycle policy: {:?} (--reset), parent-search time limit {} s", reset_mode, a.reset_after);
     let mut attempt = 0u64;
+    let mut signed = sm64coin_miner::signed::SignedStore::open(Some(&a.signed_file));
     let mut parent_cache: Option<ParentCache> = None;
     loop {
         attempt += 1;
@@ -539,31 +554,14 @@ fn main() -> Result<()> {
         }
 
         if let Some(f) = &a.save_block {
-            let b = SavedBlock { template_blob: t.blocktemplate_blob.clone(), seed_hash: t.sm64_seed_hash.clone(), key_secret: t.key.as_ref().map(|k| hex::encode(k.secret)).unwrap_or_default(), proof: hex::encode(&proof), frames, parent_ts: t.sm64_parent_timestamp, prev_hash: t.prev_hash.clone(), height: t.height };
+            let b = SavedBlock { template_blob: t.blocktemplate_blob.clone(), seed_hash: t.sm64_seed_hash.clone(), key_secret: t.key.as_ref().map(|k| hex::encode(k.secret)).unwrap_or_default(), sig: match &t.key { Some(k) => hex::encode(sm64pow::mining::sign_proof(k, &seed.0, &proof)?), None => String::new() }, proof: hex::encode(&proof), frames, parent_ts: t.sm64_parent_timestamp, prev_hash: t.prev_hash.clone(), height: t.height };
             std::fs::write(f, serde_json::to_string(&b)?)?;
             println!("  saved block {} ({frames} frames) to {f}, not submitted", t.height);
             return Ok(());
         }
-        // Publish-on-find: send the run now, stamped with its valid time (the node holds it).
-        let retarget0 = t.sm64_retarget_difficulty.max(1);
-        let delay0 = if start == Start::PowerOn && t.sm64_start == "either" { t.sm64_restart_delay } else { 0 };
-        let pof_ahead = sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(30);
-        let mut published: Option<Vec<u8>> = None;
-        if a.publish_on_find && a.stamp_ahead == 0 {
-            let ts = valid_from(retarget0, t.sm64_parent_timestamp + delay0, frames, now()).max(now());
-            if ts <= now() + pof_ahead {
-                match daemon.submit(&rpc::seal_signed(&t, &proof, Some(ts))?) {
-                    Ok(()) => {
-                        println!("  PUBLISHED block {} at find: {frames} frames, valid at {ts} (in {} s); searching on for a shorter run", t.height, ts.saturating_sub(now()));
-                        published = Some(proof.clone());
-                    }
-                    Err(e) => println!("  publish failed: {e}"),
-                }
-            }
-        }
         // Anytime mining: over the limit now, so search again (fresh trees, the guide from the
         // best run) until shortly before the best run is valid; keep the shortest.
-        let (m, proof, frames) = if a.controller == "rrt" && a.anytime_ahead > 0 && a.stamp_ahead == 0 {
+        let (m, proof, frames) = if a.controller == "rrt" && a.anytime && a.stamp_ahead == 0 {
             match improve(&a, &daemon, &t, start, parent_state.as_ref(), &seed, &params, attempt, m, proof)? {
                 Some(x) => x,
                 None => continue, // a new block landed: the run is void
@@ -590,12 +588,8 @@ fn main() -> Result<()> {
             }
             let ahead = if a.stamp_ahead > 0 {
                 a.stamp_ahead
-            } else if a.publish_on_find {
-                pof_ahead
-            } else if a.controller == "rrt" {
-                a.anytime_ahead.min(110)
             } else {
-                0
+                a.submit_lead.min(sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(10))
             };
             while now() + ahead < ts {
                 std::thread::sleep(Duration::from_secs(1));
@@ -608,18 +602,20 @@ fn main() -> Result<()> {
             if abandoned {
                 continue;
             }
-            if ahead == 0 {
-                ts = ts.max(now());
-            }
+            ts = ts.max(now());
         } else {
             ts = now();
         }
-        let sent = if published.as_deref() == Some(&proof[..]) {
-            println!("  (already published at find)");
-            Ok(())
-        } else {
-            daemon.submit(&rpc::seal_signed(&t, &proof, Some(ts))?)
-        };
+        // One run per key: never sign a second, different run for this seed.
+        if let Err(prev) = signed.may_sign(&t.sm64_seed_hash, &proof) {
+            println!("  already signed a different run ({} frames) for seed {}..: not signing a second one (equivocation); waiting for a new block", prev.frames, &t.sm64_seed_hash[..8]);
+            while daemon.top_hash().map(|h| h == t.tip).unwrap_or(true) {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            continue;
+        }
+        signed.record(&t.sm64_seed_hash, &proof, frames)?;
+        let sent = daemon.submit(&rpc::seal_signed(&t, &proof, Some(ts))?);
         match sent {
             Ok(()) => {
                 mined += 1;
@@ -699,7 +695,7 @@ fn guide_from(a: &Args, start: Start, parent: Option<&SaveState>, seed: &sm64pow
 }
 
 /// Anytime mining for a run `m` (sealed as `proof`) that is over the current limit: fresh
-/// searches from the same start until `anytime_ahead` s before the best run is valid. A shorter
+/// searches from the same start until `submit_lead` s before the best run is valid. A shorter
 /// run replaces the best (it is valid sooner); one valid now ends the search. Returns the best
 /// (run, proof, frames), or None if a new block landed (the run is void).
 #[allow(clippy::too_many_arguments)]
@@ -711,7 +707,7 @@ fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, par
     let mut best = (m, proof);
     let mut best_frames = best.0.pads.len() as u32;
     let mut k = 1u64;
-    let ahead = a.anytime_ahead.min(110);
+    let ahead = a.submit_lead.min(sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(10));
     while valid(best_frames) > now() + ahead {
         let deadline = valid(best_frames) - ahead;
         println!("  anytime: best {best_frames} frames, valid in {} s; search {k} for a shorter run until then", valid(best_frames).saturating_sub(now()));

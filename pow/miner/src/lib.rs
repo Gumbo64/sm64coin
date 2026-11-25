@@ -11,6 +11,7 @@ pub mod routes;
 pub mod hook;
 pub mod rh;
 pub mod reset;
+pub mod signed;
 pub mod rrt;
 
 /// The environment, files and clock the campaign uses: std's natively; in the browser build
