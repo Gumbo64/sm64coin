@@ -34,4 +34,29 @@ h.setEnabled(false);
 h.roster = null;
 h.setEnabled(true);
 assert.equal(h.workers.length, 0);
+
+// The reel replays through the step's perturbation: a clip and a node play carry the step's root state AND its perturbation,
+// and a node's recorded position is there for the replay's consistency check.
+{
+  const g = new VizHub();
+  g.setEnabled(true);
+  g.newRound({ template: { height: 1 }, starts: ['power-on'], parentRaw: null });
+  g.log(0, 'step 1: castle at frame 0, 0 stars 0 keys, budget 2.0 M frames');
+  const line = (nodes, best) => JSON.stringify({ step: { frame0: 0, seed: 7, goal: 'Stars', level: 6, area: 1, pos: [1, 2, 3] }, t: 1, nodes_total: 9, sim_frames: 10, key: 'k1', nodes, ...(best ? { best } : {}) });
+  g.ingest(0, line([[1, 0, 15, 10, 20, 30, 0, 6, 1, 0]], { id: 1, frame: 15, stars: 0, keys: 0, pos: [10, 20, 30] }));
+  g.setRoot(0, g.workers[0].cur.key, new Uint8Array([1, 2, 3]));
+  g.setPert(0, g.workers[0].cur.key, JSON.stringify({ tag: 't', pert: '{"x":1}' }));
+  assert.equal(g.workers[0].best, null, 'no progress: the first node is not a "best path"');
+  assert.deepEqual(g.nodePos(0, g.workers[0].cur.n, 1), [10, 20, 30]);
+  assert.deepEqual(g.nodePos(0, g.workers[0].cur.n, 0), [1, 2, 3]); // the step's root: the first cloud point
+  assert.equal(g.nodePos(0, g.workers[0].cur.n, 99), null);
+  g.mirrors[0] = { path: () => new Uint8Array(8) };
+  const p = g.nodePlay(0, g.workers[0].cur.n, 1);
+  assert.equal(p.rootRaw.length, 3);
+  assert.equal(p.rootPert.pert, '{"x":1}');
+  assert.equal(g.clipPlay({ key: 'k', played: 0, rootRaw: null, rootPert: { pert: 'y' }, raw: new Uint8Array(4) }).rootPert.pert, 'y');
+  // A star makes a best path.
+  g.ingest(0, line([], { id: 1, frame: 15, stars: 1, keys: 0, pos: [10, 20, 30] }));
+  assert.equal(g.workers[0].best.stars, 1);
+}
 console.log('hub ok');
