@@ -109,6 +109,9 @@ pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>
             }
         }
     }
+    if !crate::features::committed() {
+        return Ok(best);
+    }
     crate::commit::commit_layout(&best, &crate::commit::proof_hash(&pr))
 }
 
@@ -116,6 +119,13 @@ pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>
 /// codecs are decoded by replaying the run from `parent` (see
 /// [`statecodec::decode_proof_state`]). Checked against the committed input hash.
 pub fn decode_proof_any(blob: &[u8], parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params) -> Result<proof::Proof> {
+    if !crate::features::committed() {
+        return if statecodec::state_codec_enabled() && proof::split_blob(blob).is_ok_and(|b| statecodec::state_codec(b.2).is_some()) {
+            statecodec::decode_proof_state(blob, parent, seed, p)
+        } else {
+            proof::decode_proof(blob, proof::MAX_FRAMES)
+        };
+    }
     let layout = crate::commit::layout(blob)?;
     let hdr = crate::commit::header(blob)?;
     let pr = if statecodec::state_codec_enabled() && proof::split_blob(&layout).is_ok_and(|b| statecodec::state_codec(b.2).is_some()) {
@@ -131,7 +141,11 @@ pub fn decode_proof_any(blob: &[u8], parent: Option<&sm64_binds::SaveState>, see
 /// given the game states it passes through.
 pub fn seal_proof_state_at(c: &dyn statecodec::StateCodec, start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Vec<u8>> {
     let pr = proof_from_played_at(start, parent, seed, p, played)?;
-    crate::commit::commit_layout(&statecodec::encode_proof_state(c, parent, seed, p, &pr)?, &crate::commit::proof_hash(&pr))
+    let b = statecodec::encode_proof_state(c, parent, seed, p, &pr)?;
+    if !crate::features::committed() {
+        return Ok(b);
+    }
+    crate::commit::commit_layout(&b, &crate::commit::proof_hash(&pr))
 }
 
 /// [`seal_proof_at`] for a run from power-on.
@@ -162,7 +176,7 @@ impl From<chain::BlockVerdict> for Verdict {
 /// blocks in a chain (which start from their parent's end state) see
 /// [`chain::verify_block`].
 pub fn verify(seed: &Seed, difficulty: u64, blob: &[u8]) -> Result<Verdict> {
-    Ok(match chain::verify_committed_block(&[0xff; 32], chain::Parent::Genesis, seed, difficulty, blob)? {
+    Ok(match chain::verify_any(&[0xff; 32], chain::Parent::Genesis, seed, difficulty, blob)? {
         chain::CommittedVerdict::Run(v) => v.into(),
         chain::CommittedVerdict::BadEncoding(w) => Verdict::Invalid(format!("bad encoding: {w}")),
     })
@@ -189,8 +203,8 @@ pub fn verify_pads(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Verdic
 /// template's `sm64_seed_hash`, whose coinbase extra nonce committed
 /// `key.extra_nonce()`): the block's `sm64_sig` (sign.rs; v0.3).
 pub fn sign_proof(key: &crate::sign::Keypair, seed: &[u8; 32], blob: &[u8]) -> Result<[u8; 64]> {
-    let frames = crate::commit::header(blob)?.frames;
-    Ok(key.sign_run(seed, &crate::commit::proof_id(blob), frames))
+    let frames = crate::proof_id::claimed_frames(blob)?;
+    Ok(key.sign_run(seed, &crate::proof_id::active(blob), frames))
 }
 
 /// The submit-ready block: the template blob (ending with the empty proof,

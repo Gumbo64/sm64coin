@@ -182,12 +182,32 @@ pub fn tie_of(proof: &[u8], seed: &[u8; 32]) -> Tie {
 /// section 1.6 (the reference encoder; statemix codec 5 is the owner's choice, run-length is
 /// what the replay can measure today: a follow-up encodes codec 5 alongside the replay).
 pub fn canonical_size(blob: &[u8]) -> u32 {
+    if !crate::features::committed() {
+        return canonical_size_v03(blob);
+    }
     let Ok(hdr) = crate::commit::header(blob) else { return u32::MAX };
     if let Ok(crate::commit::Opened::Run(_, pr)) = crate::commit::open(blob, crate::rules::active().max_frames_any(), false) {
         return crate::proof::encode_proof_with(&crate::proof::RunLength, &pr).len().min(u32::MAX as usize - 1) as u32;
     }
     sizes().lock().unwrap_or_else(|e| e.into_inner()).get(&hdr.input_hash).copied().unwrap_or(u32::MAX)
 }
+
+/// v0.3's canonical size (committed inputs off: features.rs).
+fn canonical_size_v03(blob: &[u8]) -> u32 {
+    use crate::proof;
+    if crate::statecodec::state_codec_enabled() {
+        if let Ok((_, _, cid, _)) = proof::split_blob(blob) {
+            if crate::statecodec::state_codec(cid).is_some() {
+                return blob.len().min(u32::MAX as usize - 1) as u32;
+            }
+        }
+    }
+    match proof::decode_proof(blob, crate::rules::active().max_frames_any() as usize) {
+        Ok(p) => proof::encode_proof_with(&proof::RunLength, &p).len().min(u32::MAX as usize - 1) as u32,
+        Err(_) => u32::MAX,
+    }
+}
+
 
 fn sizes() -> &'static Mutex<Bounded<[u8; 32], u32>> {
     static S: OnceLock<Mutex<Bounded<[u8; 32], u32>>> = OnceLock::new();

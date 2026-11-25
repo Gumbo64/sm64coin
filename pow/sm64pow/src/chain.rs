@@ -305,6 +305,15 @@ pub(crate) struct Prepared {
     pub key_src: Vec<u8>,
 }
 
+/// [`prepare`] under the active features: with committed inputs off the blob is its own layout
+/// and key (v0.3), and `hdr` is None.
+pub(crate) fn prepare_any(blob: &[u8], ceiling: u32, state_ok: bool) -> std::result::Result<(Option<crate::commit::Header>, Vec<u8>, Vec<u8>), crate::commit::Fault> {
+    if !crate::features::committed() {
+        return Ok((None, blob.to_vec(), blob.to_vec()));
+    }
+    prepare(blob, ceiling, state_ok).map(|p| (Some(p.hdr), p.layout, p.key_src))
+}
+
 pub(crate) fn prepare(blob: &[u8], ceiling: u32, state_ok: bool) -> std::result::Result<Prepared, crate::commit::Fault> {
     let (hdr, layout) = match crate::commit::open(blob, ceiling, state_ok)? {
         crate::commit::Opened::Run(h, pr) => (h, proof::encode_proof_with(&proof::RunLength, &pr)),
@@ -396,9 +405,9 @@ pub fn verify_records(parent: Parent, facts: &[crate::records::Facts], proofs: &
 /// commits and what its signature signs. Err: the block is invalid (no key,
 /// a bad signature, a proof whose header doesn't parse). No replay.
 pub fn signed_run(seed: &Seed, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> std::result::Result<([u8; 32], crate::equivocation::SignedRun), String> {
-    // v0.4: the signature signs the committed header (commit.rs): no decoding.
-    let frames = crate::commit::header(blob).map_err(|e| format!("bad proof: {e}"))?.frames;
-    let proof_id = crate::commit::proof_id(blob);
+    // v0.4: the signature signs the committed header (commit.rs): no decoding (features.rs).
+    let frames = crate::proof_id::claimed_frames(blob).map_err(|e| format!("bad proof: {e}"))?;
+    let proof_id = crate::proof_id::active(blob);
     let key = crate::sign::check(&seed.0, extra_nonce, &proof_id, frames, sig)?;
     crate::equivocation::policy().lock().unwrap().note_key(&seed.0, &key);
     Ok((key, crate::equivocation::SignedRun { proof_id, frames, sig: *sig }))
@@ -424,5 +433,20 @@ pub fn verify_signed_block(id: &[u8; 32], parent: Parent, seed: &Seed, difficult
         crate::admit::note_invalid();
         return Ok(CommittedVerdict::Run(BlockVerdict::Invalid(why)));
     }
-    verify_committed_block(id, parent, seed, difficulty, blob)
+    verify_any(id, parent, seed, difficulty, blob)
+}
+
+/// [`verify_committed_block`] with committed inputs on (features.rs), else v0.3's [`verify_block`].
+pub fn verify_any(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8]) -> Result<CommittedVerdict> {
+    if crate::features::committed() { verify_committed_block(id, parent, seed, difficulty, blob) } else { Ok(CommittedVerdict::Run(verify_block(id, parent, seed, difficulty, blob)?)) }
+}
+
+/// [`rebuild_committed_block`] or v0.3's [`rebuild_block`] (features.rs).
+pub fn rebuild_any(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> Result<CommittedVerdict> {
+    if crate::features::committed() { rebuild_committed_block(id, parent, seed, blob) } else { Ok(CommittedVerdict::Run(rebuild_block(id, parent, seed, blob)?)) }
+}
+
+/// [`played_committed_block`] or v0.3's [`played_wanted_block`] (features.rs).
+pub fn played_any(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> Result<std::result::Result<Played, CommittedVerdict>> {
+    if crate::features::committed() { played_committed_block(id, parent, seed, blob) } else { Ok(played_wanted_block(id, parent, seed, blob)?.map_err(CommittedVerdict::Run)) }
 }

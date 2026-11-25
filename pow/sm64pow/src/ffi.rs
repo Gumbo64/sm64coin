@@ -6,7 +6,7 @@
 //! changing the header and the wrapper too.
 
 use crate::proof::Codec;
-use crate::commit::proof_id; // v0.4: the committed input hash (commit.rs)
+use crate::proof_id::active as proof_id; // v0.4: the committed input hash when on (features.rs)
 use crate::rules::{active as rules, params};
 use crate::seed::{Seed, seed_from_hash};
 use std::ffi::{CStr, c_char};
@@ -117,9 +117,9 @@ pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap
     let seed = Seed(seed);
     let res = std::panic::catch_unwind(|| {
         if difficulty == 0 {
-            crate::chain::rebuild_committed_block(&id, parent, &seed, bytes)
+            crate::chain::rebuild_any(&id, parent, &seed, bytes)
         } else {
-            crate::chain::verify_committed_block(&id, parent, &seed, difficulty, bytes)
+            crate::chain::verify_any(&id, parent, &seed, difficulty, bytes)
         }
     });
     use crate::chain::{BlockVerdict, CommittedVerdict};
@@ -243,7 +243,7 @@ pub extern "C" fn sm64pow_judge_sibling(hash32: *const u8, nonce: *const u8, non
         use crate::equivocation::{Sibling, judge_sibling};
         let seed = Seed(seed);
         let Ok((key, main)) = crate::chain::signed_run(&seed, mp, n, &ms) else { return (-1, None) };
-        let Ok(frames) = crate::commit::header(ap).map(|h| h.frames) else { return (3, None) };
+        let Ok(frames) = crate::proof_id::claimed_frames(ap) else { return (3, None) };
         let alt = crate::equivocation::SignedRun { proof_id: proof_id(ap), frames, sig: asig };
         match judge_sibling(&seed.0, &key, &main, &alt) {
             Sibling::SameRun => (0, None),
@@ -863,7 +863,7 @@ pub extern "C" fn sm64pow_played_block(id32: *const u8, parent32: *const u8, gap
     };
     let parent = unsafe { parent_arg(parent32, gap_seconds) };
     let bytes = blob_arg(proof, len);
-    let res = std::panic::catch_unwind(|| crate::chain::played_committed_block(&id, parent, &Seed(seed), bytes));
+    let res = std::panic::catch_unwind(|| crate::chain::played_any(&id, parent, &Seed(seed), bytes));
     match res {
         Ok(Ok(Ok(pl))) => copy_out(&crate::proof::Raw.encode(&pl.pads), out, cap),
         Ok(Ok(Err(crate::chain::CommittedVerdict::Run(crate::chain::BlockVerdict::NeedParent)))) => {
@@ -897,7 +897,7 @@ pub extern "C" fn sm64pow_wanted_block(id32: *const u8, parent32: *const u8, gap
     };
     let parent = unsafe { parent_arg(parent32, gap_seconds) };
     let bytes = blob_arg(proof, len);
-    let res = std::panic::catch_unwind(|| crate::chain::played_committed_block(&id, parent, &Seed(seed), bytes));
+    let res = std::panic::catch_unwind(|| crate::chain::played_any(&id, parent, &Seed(seed), bytes));
     match res {
         Ok(Ok(Ok(pl))) => copy_out(&crate::proof::Raw.encode(&pl.wanted()), out, cap),
         Ok(Ok(Err(crate::chain::CommittedVerdict::Run(crate::chain::BlockVerdict::NeedParent)))) => {
@@ -933,16 +933,24 @@ pub extern "C" fn sm64pow_proof_id(blob: *const u8, len: usize, out32: *mut u8) 
 /// the header doesn't parse.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_proof_start(proof: *const u8, len: usize) -> i32 {
-    crate::commit::header(blob_arg(proof, len)).map_or(-1, |h| h.start as i32)
+    let b = blob_arg(proof, len);
+    if crate::features::committed() { crate::commit::header(b).map_or(-1, |h| h.start as i32) } else { crate::proof::proof_start(b).map_or(-1, |s| s as i32) }
 }
 
 /// How many frames a proof's run lasted: its committed header (0 if it doesn't parse).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_proof_frames(blob: *const u8, len: usize) -> u32 {
-    crate::commit::header(blob_arg(blob, len)).map_or(0, |h| h.frames)
+    let b = blob_arg(blob, len);
+    if crate::features::committed() {
+        return crate::commit::header(b).map_or(0, |h| h.frames);
+    }
+    crate::proof::decode_proof(b, rules().max_frames_any() as usize).map_or_else(|_| crate::proof::split_blob(b).map_or(0, |x| if crate::statecodec::state_codec(x.2).is_some() { x.0 } else { 0 }), |pr| pr.frames)
 }
 
 fn stateless_run(blob: &[u8]) -> Result<crate::proof::Proof, String> {
+    if !crate::features::committed() {
+        return crate::proof::decode_proof(blob, rules().max_frames_any() as usize).map_err(|e| e.to_string());
+    }
     match crate::commit::open(blob, rules().max_frames_any(), false) {
         Ok(crate::commit::Opened::Run(_, pr)) => Ok(pr),
         Ok(crate::commit::Opened::State(..)) => Err("state-coded".into()),
@@ -970,7 +978,7 @@ pub extern "C" fn sm64pow_decode_raw(blob: *const u8, len: usize, out: *mut u8, 
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_reencode(blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
     match stateless_run(blob_arg(blob, len)) {
-        Ok(pr) => copy_out(&crate::commit::commit(&pr), out, cap),
+        Ok(pr) => copy_out(&if crate::features::committed() { crate::commit::commit(&pr) } else { crate::proof::encode_proof(&pr) }, out, cap),
         Err(e) => {
             set_error(e);
             usize::MAX

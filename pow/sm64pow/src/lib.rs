@@ -39,6 +39,7 @@
 
 // 1: pure
 pub mod commit;
+pub mod features;
 pub mod hold;
 pub mod payout;
 pub mod records;
@@ -77,7 +78,7 @@ pub use mining::{
 };
 /// v0.4: what a block id commits to is the committed input hash (commit.rs); `proof_id::proof_id`
 /// is the v0.3-layout id (the input hash of a stateless run), used by the codec layer and tools.
-pub use commit::proof_id;
+pub use proof_id::active as proof_id;
 pub use seed::{Seed, seed_from_hash};
 
 pub use rules::{Params, Rules, active as rules, level8, params};

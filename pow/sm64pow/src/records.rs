@@ -103,6 +103,9 @@ pub const PROPOSED_REWARD: Reward = Reward { divisor: Some(128), pot_percent: So
 
 /// What each of `n` included proofs is paid when the block's base reward is `base`.
 pub fn proof_reward(base: u64, n: usize, r: &Reward) -> u64 {
+    if !crate::features::active().proof_rewards {
+        return 0;
+    }
     let Some(d) = r.divisor else { return 0 };
     let per = base / d.max(1);
     match (r.pot_percent, n) {
@@ -472,6 +475,11 @@ pub struct Winner {
 pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start: Start, w: &Window) -> Result<(Vec<Facts>, usize), RecordFault> {
     use RecordFault::*;
     let committed = root.copied().unwrap_or([0; 32]);
+    let feats = crate::features::active();
+    if !feats.included_proofs {
+        // Stage A (features.rs): no records, and no root.
+        return if records.is_empty() && committed == [0; 32] { Ok((vec![], 0)) } else { Err(Invalid("included proofs are not active".into())) };
+    }
     if records.is_empty() {
         return if committed == [0; 32] { Ok((vec![], 0)) } else { Err(BadWitness("the block commits proofs but carries none".into())) };
     }
@@ -489,7 +497,7 @@ pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start
         return Err(Invalid(format!("{} proofs, over the cap of {}", records.len(), w.cap)));
     }
     let archive = window_frames(winner.difficulty, winner.frames, w.archive_seconds);
-    let weight = w.weight_seconds.map(|s| window_frames(winner.difficulty, winner.frames, s.min(w.archive_seconds)));
+    let weight = w.weight_seconds.filter(|_| feats.proof_weight).map(|s| window_frames(winner.difficulty, winner.frames, s.min(w.archive_seconds)));
     let mut keys = std::collections::HashSet::new();
     let mut counted = 0;
     let mut last: Option<(u32, [u8; 32])> = None;
@@ -545,6 +553,11 @@ pub struct Side {
 /// `heal_depth` (OPEN, default off), once both sides are at least that many blocks deep the
 /// heavier side wins alone. Ties keep `main`. The reorg cap (reorg.rs) is applied by the caller.
 pub fn prefer_alt(main: Side, alt: Side, heal_depth: Option<u64>) -> bool {
+    if !crate::features::active().proof_weight {
+        // Proof weight off (features.rs): v0.3's rule, longer wins (with its taint penalty).
+        let l = |s: Side| 2 * s.len as i128 - if s.tainted { 3 } else { 0 };
+        return l(alt) > l(main);
+    }
     let l = |s: Side| 2 * s.len as i128 - if s.tainted { 3 } else { 0 };
     let heavier = alt.weight > main.weight;
     (l(alt) > l(main) && heavier) || heal_depth.is_some_and(|d| main.len.min(alt.len) >= d && heavier)

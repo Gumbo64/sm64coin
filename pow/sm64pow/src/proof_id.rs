@@ -47,6 +47,17 @@ pub fn proof_id(blob: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// What a block id commits to under the active features (features.rs): the committed input hash
+/// (v0.4, commit.rs) or v0.3's [`proof_id`].
+pub fn active(blob: &[u8]) -> [u8; 32] {
+    if crate::features::committed() { crate::commit::proof_id(blob) } else { proof_id(blob) }
+}
+
+/// The run length a proof claims (what the signature signs), under the active features.
+pub fn claimed_frames(blob: &[u8]) -> anyhow::Result<u32> {
+    if crate::features::committed() { Ok(crate::commit::header(blob)?.frames) } else { Ok(proof::split_blob(blob)?.0) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -631,7 +631,7 @@ pub fn global() -> &'static Arc<Queue> {
 fn replay_job(job: &Job) -> Verdict {
     // Replays inside the job's context: invalid verdicts are counted for its source (admit.rs).
     let _g = admit::enter(job.ctx.clone());
-    match chain::verify_committed_block(&job.id, job.parent, &job.seed, job.difficulty, &job.blob) {
+    match chain::verify_any(&job.id, job.parent, &job.seed, job.difficulty, &job.blob) {
         Ok(chain::CommittedVerdict::Run(BlockVerdict::Valid { frames, .. })) => Verdict::Valid(frames),
         Ok(chain::CommittedVerdict::Run(BlockVerdict::Invalid(why))) => Verdict::Invalid(why),
         Ok(chain::CommittedVerdict::BadEncoding(why)) => Verdict::BadEncoding(why),

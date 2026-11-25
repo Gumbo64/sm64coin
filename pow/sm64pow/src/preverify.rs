@@ -20,7 +20,7 @@ use crate::cache::{REPLAYS, Summary, alias, cached, known_invalid, known_summary
 use crate::emulator::generator;
 use crate::game::{Progress, read_progress};
 use crate::proof::{self, Start};
-use crate::replay::{EndState, Parent, replay_blob_committed, start_game};
+use crate::replay::{EndState, Parent, replay_blob, replay_blob_committed, start_game};
 use crate::rules::active as rules;
 use crate::seed::Seed;
 use anyhow::Result;
@@ -53,12 +53,12 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     let ceiling0 = rules().max_frames_any();
     let mut prepared = Vec::with_capacity(batch.len());
     for b in batch {
-        match crate::chain::prepare(&b.blob, ceiling0, state_ok) {
+        match crate::chain::prepare_any(&b.blob, ceiling0, state_ok) {
             Ok(p) => prepared.push(p),
             Err(_) => break,
         }
     }
-    let converted: Vec<BatchBlock> = batch.iter().zip(&prepared).map(|(b, p)| BatchBlock { id: b.id, parent: b.parent, seed: b.seed, blob: p.layout.clone() }).collect();
+    let converted: Vec<BatchBlock> = batch.iter().zip(&prepared).map(|(b, p)| BatchBlock { id: b.id, parent: b.parent, seed: b.seed, blob: p.1.clone() }).collect();
     let batch = &converted[..];
     let prepared = &prepared[..];
     // Chains: each block continues the previous one when it starts from its end state.
@@ -119,7 +119,7 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     replayed.into_inner()
 }
 
-fn replay_chain(chain: &[(usize, &BatchBlock)], prepared: &[crate::chain::Prepared], state_ok: bool, replayed: &std::sync::atomic::AtomicUsize, first_bad: &std::sync::atomic::AtomicUsize) -> Result<()> {
+fn replay_chain(chain: &[(usize, &BatchBlock)], prepared: &[(Option<crate::commit::Header>, Vec<u8>, Vec<u8>)], state_ok: bool, replayed: &std::sync::atomic::AtomicUsize, first_bad: &std::sync::atomic::AtomicUsize) -> Result<()> {
     use std::sync::atomic::Ordering::Relaxed;
     let mut prev: Option<(SaveState, Progress, bool)> = None;
     for (k, (i, b)) in chain.iter().enumerate() {
@@ -127,7 +127,7 @@ fn replay_chain(chain: &[(usize, &BatchBlock)], prepared: &[crate::chain::Prepar
             return Ok(()); // an earlier block of the batch is invalid
         }
         let start = proof::proof_start(&b.blob)?;
-        let key = run_key(&b.parent, start, &b.seed, &prepared[*i].key_src);
+        let key = run_key(&b.parent, start, &b.seed, &prepared[*i].2);
         let last = k + 1 == chain.len();
         if known_invalid(&key).is_some() {
             first_bad.fetch_min(*i, Relaxed);
@@ -169,7 +169,11 @@ fn replay_chain(chain: &[(usize, &BatchBlock)], prepared: &[crate::chain::Prepar
         };
         replayed.fetch_add(1, Relaxed);
         REPLAYS.fetch_add(1, Relaxed);
-        let (g, now, frames) = match replay_blob_committed(game, before, &b.seed, &b.blob, &prepared[*i].hdr, state_ok)? {
+        let replayed_run = match &prepared[*i].0 {
+            Some(hdr) => replay_blob_committed(game, before, &b.seed, &b.blob, hdr, state_ok)?,
+            None => replay_blob(game, before, &b.seed, &b.blob, state_ok)?.map_err(Some),
+        };
+        let (g, now, frames) = match replayed_run {
             Ok(x) => x,
             Err(None) => {
                 // A bad encoding: not this block's verdict, and not worth remembering; stop here.
