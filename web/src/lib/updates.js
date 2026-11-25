@@ -30,11 +30,14 @@ export function isRequired(body) {
   return /^\s*Update:\s*required\s*$/im.test(String(body ?? ''));
 }
 
-// The GitHub release JSON -> { version, url, required } or null.
+const RELEASES = 'https://github.com/Gumbo64/sm64coin/releases/';
+// The GitHub release JSON -> { version, url, required } or null. The link is rendered as an href: only a page of
+// this repository's releases is used (never e.g. a javascript: URL from a tampered or cached response).
 export function summarize(rel) {
   const v = parseVersion(rel?.tag_name);
   if (!v) return null;
-  return { version: v.join('.'), url: rel.html_url || 'https://github.com/Gumbo64/sm64coin/releases/latest', required: isRequired(rel.body) };
+  const url = typeof rel.html_url === 'string' && rel.html_url.startsWith(RELEASES) ? rel.html_url : `${RELEASES}latest`;
+  return { version: v.join('.'), url, required: isRequired(rel.body) };
 }
 
 // The site's own version: the bundle's (VITE_SM64COIN_VERSION, set by the release workflow);
