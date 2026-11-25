@@ -119,6 +119,9 @@ impl<K: Hash + Eq + Clone, V> Bounded<K, V> {
     pub fn len(&self) -> usize {
         self.map.len()
     }
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.map.values()
+    }
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }

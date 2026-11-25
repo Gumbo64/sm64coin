@@ -260,31 +260,114 @@ pub extern "C" fn sm64pow_judge_sibling(hash32: *const u8, nonce: *const u8, non
     }
 }
 
-/// Evidence received from a peer (`NOTIFY_SM64_EVIDENCE`): 1 new and valid
-/// (relay it), 0 not (known, or its template's key not known yet), -1
+/// Evidence received from a peer (`NOTIFY_SM64_EVIDENCE`, self-contained:
+/// equivocation.rs `offer_wire`) from `host`, our top block at height `top`:
+/// 1 new and valid (relay it), 0 not (known, or over the peer's rate), -1
 /// forged or malformed (an honest node never relays that: drop the peer).
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_evidence_received(bytes: *const u8, len: usize) -> i32 {
+pub extern "C" fn sm64pow_evidence_received(bytes: *const u8, len: usize, host: *const c_char, top: u64) -> i32 {
     let b = blob_arg(bytes, len);
-    std::panic::catch_unwind(|| match crate::equivocation::Evidence::decode(b) {
-        Some(e) => match crate::equivocation::policy().lock().unwrap().offer(e) {
+    let h = str_arg(host);
+    std::panic::catch_unwind(|| {
+        // Per peer: a burst of 16 pieces, then 8 a minute (evidence is rare: one per equivocating template).
+        static RATE: std::sync::OnceLock<std::sync::Mutex<crate::admit::Bounded<String, crate::admit::Bucket>>> = std::sync::OnceLock::new();
+        let t = crate::admit::now();
+        let ok = RATE.get_or_init(|| std::sync::Mutex::new(crate::admit::Bounded::new(4096))).lock().unwrap().entry_or(h, || crate::admit::Bucket::new(16.0, 8.0, t)).take(1.0, t);
+        if !ok {
+            return 0;
+        }
+        match crate::equivocation::policy().lock().unwrap().offer_wire(b, top) {
             crate::equivocation::Offer::New => 1,
             crate::equivocation::Offer::Known | crate::equivocation::Offer::Pending => 0,
             crate::equivocation::Offer::Invalid => -1,
-        },
-        None => -1,
+        }
     })
     .unwrap_or(0)
 }
 
-/// The next new evidence (found here or received) to relay to peers: its
-/// 272 bytes into `out` (if `cap` allows); 0 when there is none.
+/// The next new evidence (found here or received) to relay to peers, on the
+/// wire, into `out` (if `cap` allows; at most sm64pow_evidence_max() bytes);
+/// returns its length, 0 when there is none.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_take_evidence(out: *mut u8, cap: usize) -> usize {
     match std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().take_outbox()) {
-        Ok(Some(e)) => copy_out(&e.encode(), out, cap),
+        Ok(Some(e)) => copy_out(&e, out, cap),
         _ => 0,
     }
+}
+
+/// The largest evidence message.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_evidence_max() -> usize {
+    crate::equivocation::MAX_WIRE
+}
+
+/// The evidence for template `hash32` (sent along with its block), its length; 0 none.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_evidence_for(hash32: *const u8, out: *mut u8, cap: usize) -> usize {
+    let Some(seed) = (unsafe { id_arg(hash32) }) else { return 0 };
+    match std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().wire_for(&seed)) {
+        Ok(Some(e)) => copy_out(&e, out, cap),
+        _ => 0,
+    }
+}
+
+/// The `index`-th piece of recent evidence (accused block within
+/// equivocation::RECENT_HEIGHTS of `top`), for a newly connected peer; 0: no more.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_evidence_recent(top: u64, index: usize, out: *mut u8, cap: usize) -> usize {
+    match std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().recent(top).into_iter().nth(index)) {
+        Ok(Some(e)) => copy_out(&e, out, cap),
+        _ => 0,
+    }
+}
+
+/// Keeps recent evidence in the file `path` across restarts (loads it now).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_evidence_persist(path: *const c_char) {
+    let p = str_arg(path);
+    let _ = std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().persist(p.into()));
+}
+
+/// Until sm64pow_block_scope_leave: the block this thread handles (its blob;
+/// our top block's height), so evidence formed about its template carries it.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_block_scope_enter(blob: *const u8, len: usize, top: u64) -> *mut std::ffi::c_void {
+    let b = blob_arg(blob, len);
+    match std::panic::catch_unwind(|| crate::equivocation::block_scope(b, top)) {
+        Ok(g) => Box::into_raw(Box::new(g)) as *mut std::ffi::c_void,
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_block_scope_leave(handle: *mut std::ffi::c_void) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle as *mut crate::equivocation::BlockScope) });
+    }
+}
+
+/// Fork choice with the equivocation penalty (equivocation.rs `fork_choice`):
+/// the chains above their fork point, our main chain (`main_len` blocks, the
+/// seeds of up to `n_main` of them) and the alternative (`alt_len`, `n_alt`
+/// seeds). 1: switch to the alternative.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_fork_choice(main_len: u64, main_seeds: *const u8, n_main: usize, alt_len: u64, alt_seeds: *const u8, n_alt: usize) -> i32 {
+    let seeds = |p: *const u8, n: usize| -> Vec<[u8; 32]> {
+        if p.is_null() || n == 0 { vec![] } else { unsafe { std::slice::from_raw_parts(p, 32 * n) }.chunks(32).map(|c| c.try_into().unwrap()).collect() }
+    };
+    let (m, a) = (seeds(main_seeds, n_main), seeds(alt_seeds, n_alt));
+    std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap().fork_choice(main_len, &m, alt_len, &a)).unwrap_or(alt_len > main_len) as i32
+}
+
+/// A block of our chain at startup (restart state): it counts as eligible at
+/// its own stamp for the displacement window (pof.rs), so a sibling of the
+/// tip found within the window is still judged after a restart.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_note_history(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64) {
+    let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
+    let at = timestamp.min(unix_now());
+    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible(id, parent, seed, frames, timestamp, at));
 }
 
 // ---- Publish-on-find (pof.rs): the displacement window, the freshness bound ----
@@ -392,7 +475,7 @@ pub extern "C" fn sm64pow_choose_parent(tip_seed32: *const u8, sibling_seeds: *c
 /// bytes is the genesis block), `seeds` (`n` x 32), the proofs concatenated in
 /// `blobs` with `offsets` (`n + 1` entries). Returns how many runs it replayed.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8, seeds: *const u8, blobs: *const u8, offsets: *const u64, threads: u32) -> u64 {
+pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8, seeds: *const u8, blobs: *const u8, offsets: *const u64, gaps: *const u64, threads: u32) -> u64 {
     if n == 0 || ids.is_null() || parents.is_null() || seeds.is_null() || offsets.is_null() {
         return 0;
     }
@@ -415,7 +498,9 @@ pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8
         if a > b || b > blobs.len() {
             return 0;
         }
-        let parent = if p == [0u8; 32] { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: p, gap_seconds: 0 } };
+        // `gaps` (may be null): each block's timestamp gap to its parent, u64::MAX unknown; it bounds the frames worth a replay.
+        let gap = if gaps.is_null() { u64::MAX } else { unsafe { *gaps.add(i) } };
+        let parent = if p == [0u8; 32] { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: p, gap_seconds: gap } };
         batch.push(crate::chain::BatchBlock { id, parent, seed: Seed(seed), blob: blobs[a..b].to_vec() });
     }
     std::panic::catch_unwind(|| crate::chain::preverify(&batch, threads as usize)).unwrap_or(0) as u64

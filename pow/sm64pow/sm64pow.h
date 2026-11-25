@@ -31,8 +31,23 @@ int32_t sm64pow_judge_sibling(const uint8_t *hash32, const uint8_t *nonce, size_
                               const uint8_t *main_proof, size_t main_len, const uint8_t *main_sig64,
                               const uint8_t *alt_proof, size_t alt_len, const uint8_t *alt_sig64,
                               uint8_t *out, size_t cap);
-/* Evidence from a peer: 1 new and valid (relay it), 0 not. */
-int32_t sm64pow_evidence_received(const uint8_t *bytes, size_t len); /* 1 new, 0 not, -1 forged or malformed (drop the peer) */
+/* Self-contained evidence (272 bytes + the accused template) from peer `host`, our top block at `top`:
+ * 1 new and valid (relay it), 0 not (known, or over the peer's rate), -1 forged or malformed (drop the peer). */
+int32_t sm64pow_evidence_received(const uint8_t *bytes, size_t len, const char *host, uint64_t top);
+size_t sm64pow_evidence_max(void);
+/* The evidence for template hash32 (sent along with its block): its length (copied if cap allows); 0 none. */
+size_t sm64pow_evidence_for(const uint8_t *hash32, uint8_t *out, size_t cap);
+/* The index-th piece of recent evidence (accused block within 8 heights of top), for a new peer; 0: no more. */
+size_t sm64pow_evidence_recent(uint64_t top, size_t index, uint8_t *out, size_t cap);
+/* Keeps recent evidence in the file `path` across restarts (loads it now). */
+void sm64pow_evidence_persist(const char *path);
+/* While entered: the block this thread handles (its blob, our top height), so evidence about it carries its template. */
+void *sm64pow_block_scope_enter(const uint8_t *blob, size_t len, uint64_t top);
+void sm64pow_block_scope_leave(void *handle);
+/* Fork choice with the equivocation penalty: 1 switch to the alternative chain. Seeds: 32 bytes each. */
+int32_t sm64pow_fork_choice(uint64_t main_len, const uint8_t *main_seeds, size_t n_main, uint64_t alt_len, const uint8_t *alt_seeds, size_t n_alt);
+/* A block of our chain at startup: eligible at its own stamp (the displacement window after a restart). */
+void sm64pow_note_history(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp);
 /* SM64COIN v0.3 publish-on-find (pof.rs, relay / fork-choice policy). note_eligible:
  * block id32 became eligible now (valid, fitting by the node's clock). displaces: 1
  * when eligible sibling alt32 replaces our childless tip32 (a strictly shorter run of
@@ -120,7 +135,9 @@ void sm64pow_rules_info(char *name, size_t name_cap, char *goal, size_t goal_cap
  * many), and the parallel pre-pass of a sync batch (chain::preverify). */
 int32_t sm64pow_set_state_dir(const char *path);
 uint64_t sm64pow_preverify(size_t n, const uint8_t *ids, const uint8_t *parents, const uint8_t *seeds,
-                           const uint8_t *blobs, const uint64_t *offsets, uint32_t threads);
+                           const uint8_t *blobs, const uint64_t *offsets, const uint64_t *gaps, uint32_t threads);
+/* gaps (may be NULL): each block's timestamp gap to its parent (UINT64_MAX unknown); a run longer
+ * than difficulty 1 allows at that gap is not pre-replayed. */
 
 /* SM64COIN: admission policy (admit.rs, docs/DOS.md): which blocks earn a
  * replay. Relay policy, not consensus. source: 1 relayed unasked, 2 a sync

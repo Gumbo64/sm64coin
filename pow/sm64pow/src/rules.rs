@@ -306,9 +306,10 @@ pub const STAR_CYCLE: StarCycle = StarCycle {
     restart_point_seconds: 240,
     restart_max_seconds: 8 * 3600,
     // ==== end v0.3 CHOSEN PARAMETERS
-    // PENDING (v0.3 new chain): set to the new chain's launch (unix seconds) once the owner picks the date.
-    // Until then v0.2's floor (2026-11-22), so private test networks can mine today.
-    launch_timestamp: 1_795_380_000,
+    // The v0.3 chain's launch: 2026-11-26 00:00:00 UTC. No block but the genesis block may be stamped
+    // before it on mainnet (the daemon applies the floor on mainnet only, so --testnet / --stagenet
+    // networks can run before the launch).
+    launch_timestamp: 1_795_651_200,
 };
 
 /// Publish-on-find (v0.3, relay policy; FAIRNESS.md sections 6-7, 9): a run

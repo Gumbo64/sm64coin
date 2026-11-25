@@ -53,8 +53,14 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     let first_bad = std::sync::atomic::AtomicUsize::new(usize::MAX);
     let ceiling = rules().max_frames_any();
     for (i, b) in batch.iter().enumerate() {
+        // A run longer than any difficulty allows at its gap to the parent (difficulty 1 allows the
+        // most) can't be valid: not worth a replay, whatever it claims (the sequential check rejects it).
+        let bound = match b.parent {
+            Parent::Block { gap_seconds, .. } if gap_seconds != u64::MAX => ceiling.min(rules().max_frames(1, gap_seconds)),
+            _ => ceiling,
+        };
         let start = match proof::split_blob(&b.blob) {
-            Ok((frames, start, ..)) if frames <= ceiling && frames > 0 => start,
+            Ok((frames, start, ..)) if frames <= bound && frames > 0 => start,
             _ => {
                 first_bad.fetch_min(i, std::sync::atomic::Ordering::Relaxed);
                 break;
