@@ -411,6 +411,61 @@ struct WebCfg {
     dir: PathBuf,
     rpc: String,
     leaderboard: Option<String>,
+    /// Served on all interfaces (--public): other computers use it by IP address.
+    public: bool,
+    /// The port the site is actually served on (set once bound).
+    port: u16,
+}
+
+/// Largest request body the proxies take (submit_block bodies are < ~600 KB of hex).
+const MAX_BODY: usize = 1 << 20;
+/// Largest upstream answer the proxies relay.
+const MAX_RESPONSE: u64 = 64 << 20;
+/// The daemon calls the website needs. The node's RPC is unrestricted (stop_daemon, set_bans,
+/// prune_blockchain ...), so the proxy only passes these.
+const RPC_ALLOWED: &[&str] = &[
+    "get_info", "get_block_count", "get_block", "get_block_header_by_hash", "get_block_header_by_height",
+    "get_block_headers_range", "get_block_template", "submit_block",
+];
+
+fn host_is_ip(h: &str) -> bool {
+    h.starts_with('[') || h.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// Splits `host[:port]` (host may be `[::1]`).
+fn split_host(h: &str) -> (&str, Option<&str>) {
+    if let Some(end) = h.find(']') {
+        return (&h[..=end], h[end + 1..].strip_prefix(':'));
+    }
+    match h.rsplit_once(':') {
+        Some((a, b)) => (a, Some(b)),
+        None => (h, None),
+    }
+}
+
+/// Browser-driven attacks on the local node: a foreign page can POST to 127.0.0.1 (its Origin
+/// says so), and DNS rebinding makes a foreign name resolve to us (its Host says so).
+/// None if the request is fine, else the reason.
+fn forbidden(origin: Option<&str>, host: Option<&str>, port: u16, public: bool) -> Option<&'static str> {
+    let host = host.unwrap_or("");
+    let (name, hp) = split_host(host);
+    let local = matches!(name.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "[::1]");
+    if hp.is_some_and(|p| p != port.to_string()) || (hp.is_none() && port != 80) {
+        return Some("wrong Host");
+    }
+    // With --public others come by IP address (never by a name: that is what rebinding needs).
+    if !local && !(public && host_is_ip(name)) {
+        return Some("wrong Host");
+    }
+    if let Some(o) = origin {
+        let o = o.trim_end_matches('/');
+        let own = [format!("http://localhost:{port}"), format!("http://127.0.0.1:{port}"), format!("http://[::1]:{port}")];
+        let same = public && o.eq_ignore_ascii_case(&format!("http://{host}"));
+        if !own.iter().any(|a| a.eq_ignore_ascii_case(o)) && !same {
+            return Some("foreign Origin");
+        }
+    }
+    None
 }
 
 fn header(k: &str, v: &str) -> tiny_http::Header {
@@ -422,11 +477,24 @@ fn respond_text(req: tiny_http::Request, code: u16, body: &str) {
 }
 
 fn proxy(mut req: tiny_http::Request, base: &str, rest: &str) {
+    if req.body_length().is_some_and(|n| n > MAX_BODY) {
+        return respond_text(req, 413, "request too large");
+    }
     let mut body = Vec::new();
-    let _ = req.as_reader().read_to_end(&mut body);
+    let _ = req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body);
+    if body.len() > MAX_BODY {
+        return respond_text(req, 413, "request too large");
+    }
+    if rest == "/json_rpc" {
+        // Only the calls the website makes (one object, no batches).
+        let m = serde_json::from_slice::<serde_json::Value>(&body).ok().and_then(|v| v.get("method").and_then(|m| m.as_str().map(String::from)));
+        if !m.as_deref().is_some_and(|m| RPC_ALLOWED.contains(&m)) {
+            return respond_text(req, 403, "this RPC method is not available through the website");
+        }
+    }
     let url = format!("{base}{rest}");
     let method = req.method().as_str().to_string();
-    let mut r = ureq::request(&method, &url).timeout(Duration::from_secs(120));
+    let mut r = ureq::request(&method, &url).timeout(Duration::from_secs(60));
     for h in req.headers() {
         let k = h.field.as_str().as_str().to_ascii_lowercase();
         if k == "content-type" || k == "accept" {
@@ -442,7 +510,7 @@ fn proxy(mut req: tiny_http::Request, base: &str, rest: &str) {
     let code = resp.status();
     let ct = resp.header("content-type").unwrap_or("application/json").to_string();
     let mut data = Vec::new();
-    let _ = resp.into_reader().read_to_end(&mut data);
+    let _ = resp.into_reader().take(MAX_RESPONSE).read_to_end(&mut data);
     let _ = req.respond(tiny_http::Response::from_data(data).with_status_code(code).with_header(header("Content-Type", &ct)));
 }
 
@@ -464,6 +532,10 @@ fn proxy_async(req: tiny_http::Request, base: String, rest: String) {
 }
 
 fn handle(req: tiny_http::Request, cfg: &WebCfg) {
+    let hv = |name: &'static str| req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string());
+    if let Some(why) = forbidden(hv("Origin").as_deref(), hv("Host").as_deref(), cfg.port, cfg.public) {
+        return respond_text(req, 403, why);
+    }
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').map(|(p, q)| (p.to_string(), format!("?{q}"))).unwrap_or((url.clone(), String::new()));
     if path == "/json_rpc" {
@@ -513,6 +585,8 @@ fn serve_web(host: &str, port: u16, cfg: WebCfg) -> Result<u16, String> {
     }
     let (server, port) = server.ok_or_else(|| format!("cannot serve the website on {host} (port {port} and the next ones): {last}"))?;
     let server = Arc::new(server);
+    let mut cfg = cfg;
+    cfg.port = port;
     let cfg = Arc::new(cfg);
     for _ in 0..8 {
         let (s, c) = (server.clone(), cfg.clone());
@@ -754,7 +828,7 @@ fn run(o: Opts) -> Result<(), String> {
 
         // --- website ---
         let host = if o.public { "0.0.0.0" } else { "127.0.0.1" };
-        let web_port = serve_web(host, o.web_port, WebCfg { dir: web_dir, rpc: rpc_url.clone(), leaderboard: lb_url })?;
+        let web_port = serve_web(host, o.web_port, WebCfg { dir: web_dir, rpc: rpc_url.clone(), leaderboard: lb_url, public: o.public, port: 0 })?;
         if web_port != o.web_port {
             println!("Port {} is in use by another program: the website is on {web_port} instead.", o.web_port);
         }
@@ -911,4 +985,29 @@ fn run(o: Opts) -> Result<(), String> {
     }
     let _ = std::io::stdout().flush();
     result
+}
+
+#[cfg(test)]
+mod proxy_guard_tests {
+    use super::forbidden;
+
+    #[test]
+    fn local_only() {
+        assert_eq!(forbidden(None, Some("localhost:5181"), 5181, false), None);
+        assert_eq!(forbidden(Some("http://127.0.0.1:5181"), Some("127.0.0.1:5181"), 5181, false), None);
+        assert_eq!(forbidden(None, Some("[::1]:5181"), 5181, false), None);
+        assert!(forbidden(Some("https://evil.com"), Some("localhost:5181"), 5181, false).is_some());
+        assert!(forbidden(Some("https://gumbo64.github.io"), Some("localhost:5181"), 5181, false).is_some());
+        assert!(forbidden(None, Some("evil.com:5181"), 5181, false).is_some());
+        assert!(forbidden(None, Some("localhost:80"), 5181, false).is_some());
+        assert!(forbidden(None, None, 5181, false).is_some());
+        assert!(forbidden(None, Some("192.168.1.5:5181"), 5181, false).is_some());
+    }
+
+    #[test]
+    fn public_allows_ip_hosts_only() {
+        assert_eq!(forbidden(Some("http://192.168.1.5:5181"), Some("192.168.1.5:5181"), 5181, true), None);
+        assert!(forbidden(None, Some("evil.com:5181"), 5181, true).is_some());
+        assert!(forbidden(Some("http://evil.com"), Some("192.168.1.5:5181"), 5181, true).is_some());
+    }
 }

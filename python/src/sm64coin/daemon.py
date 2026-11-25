@@ -62,6 +62,9 @@ class Cycle:
     ends_cycle: bool = False
 
 
+MAX_RESPONSE = 64 << 20
+
+
 class Daemon:
     def __init__(self, url="http://127.0.0.1:16481", timeout=60):
         self.url, self.timeout = url.rstrip("/"), timeout
@@ -69,8 +72,22 @@ class Daemon:
     def call(self, method, params=None):
         body = json.dumps({"jsonrpc": "2.0", "id": 0, "method": method, "params": params or {}}).encode()
         req = urllib.request.Request(self.url + "/json_rpc", body, {"Content-Type": "application/json"})
+        # `timeout` is per socket operation; the deadline covers the whole call, and the answer is
+        # size-limited (a hostile node can't stall or flood us).
+        deadline = time.monotonic() + self.timeout
+        chunks, size = [], 0
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            resp = json.load(r)
+            while True:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > MAX_RESPONSE:
+                    raise RuntimeError(f"{method}: response too large")
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"{method}: timed out after {self.timeout} s")
+        resp = json.loads(b"".join(chunks))
         if "error" in resp:
             raise RuntimeError(f"{method}: {resp['error'].get('message', 'error')}")
         return resp["result"]

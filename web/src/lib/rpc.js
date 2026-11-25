@@ -42,13 +42,24 @@ export const setNode = (url) => {
 };
 
 async function call(url, method, params = {}) {
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method, params }),
-  });
-  if (!r.ok) throw new Error(`${method}: HTTP ${r.status}`);
-  const j = await r.json();
+  // A node that never answers must not hang the page: abort after 60 s (the timer covers the body too).
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 60000);
+  let j;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 0, method, params }),
+      signal: ctl.signal,
+    });
+    if (!r.ok) throw new Error(`${method}: HTTP ${r.status}`);
+    const len = Number(r.headers.get('content-length') || 0);
+    if (len > 64 << 20) throw new Error(`${method}: response too large`);
+    j = await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
   if (j.error) throw new Error(`${method}: ${j.error.message}`);
   return j.result;
 }
