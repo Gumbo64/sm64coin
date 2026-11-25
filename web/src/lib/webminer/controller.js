@@ -197,7 +197,8 @@ class MinerController {
   start() {
     if (!isAddress(this.address)) { this.say('enter your SM64… address first'); return; }
     this.stop();
-    const c = { stopped: false, pool: [], attempt: 0, template: null, status: [], count: this.count };
+    this.noSubmit = false; // a mock session (?vizmock=1) earlier in this page must not keep real runs from being submitted
+    const c ={ stopped: false, pool: [], attempt: 0, template: null, status: [], count: this.count };
     this.c = c;
     this.running = true;
     this.phase = 'loading';
