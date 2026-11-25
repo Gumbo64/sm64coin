@@ -43,7 +43,7 @@ assert.ok(postMail(sab, N, { reqs: [] }, SLOT));
 assert.deepEqual(boards[2].mail(), { reqs: [] });
 assert.equal(new Int32Array(sab, N * SLOT + 64, 1)[0] % 2, 0);
 // Too big for the mailbox: refused, the old text stays.
-assert.equal(postMail(sab, N, { pad: 'x'.repeat(300 << 10) }, SLOT), false);
+assert.equal(postMail(sab, N, { pad: 'x'.repeat(3 << 20) }, SLOT), false);
 assert.deepEqual(boards[1].mail(), { reqs: [] });
 
 // Node requests: each worker gets its own slot's ids for its step key, each request once.
@@ -56,3 +56,14 @@ assert.equal(req2('k'), '[8]');
 postMail(sab, N, { reqs: [{ id: 1, slot: 1, key: 'k', nid: 7 }, { id: 4, slot: 1, key: 'k', nid: 7 }] }, SLOT);
 assert.equal(req1('k'), '[7]'); // asked again (a new request id): answered again
 console.log('board ok');
+
+// Node requests and hybrid mining's goal/commands share the one mailbox: patching one keeps the other.
+{
+  const { patchMail, resetMail } = await import('./board.js');
+  resetMail();
+  assert.ok(patchMail(sab, N, { reqs: [{ id: 9, slot: 0, key: 'k', nid: 1 }] }, SLOT));
+  assert.ok(patchMail(sab, N, { goal: { level: 1, area: 1, pos: [0, 0, 0] }, cmds: [] }, SLOT));
+  const m = boards[0].mail();
+  assert.equal(m.reqs[0].id, 9);
+  assert.equal(m.goal.level, 1);
+}

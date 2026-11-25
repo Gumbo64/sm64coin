@@ -25,10 +25,10 @@ export function setVizFlag(sab, slots, on, slotBytes = 1 << 20) {
 // The mailbox's whole content: the node-path requests ({reqs}) and hybrid mining's goal and commands ({goal, cmds}) share
 // the one text, so each writer patches this and re-posts all of it.
 const mailState = {};
-export function patchMail(sab, slots, patch) {
+export function patchMail(sab, slots, patch, slotBytes = 1 << 20) {
   const before = { ...mailState };
   Object.assign(mailState, patch);
-  const ok = postMail(sab, slots, mailState);
+  const ok = postMail(sab, slots, mailState, slotBytes);
   if (!ok) { for (const k of Object.keys(patch)) { if (k in before) mailState[k] = before[k]; else delete mailState[k]; } }
   return ok;
 }
