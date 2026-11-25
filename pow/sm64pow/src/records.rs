@@ -1,4 +1,4 @@
-//! Included proofs (v0.4, layer 5): block h+1 carries the other valid signed runs for height h
+//! Included proofs (v0.4, layer 1, pure; the replay is chain.rs's `verify_records`): block h+1 carries the other valid signed runs for height h
 //! as self-contained proof records, and fork choice weighs chains by them. docs/V0.4-DESIGN.md
 //! section 2.
 //!
@@ -21,7 +21,7 @@
 //! template's payout address, `flag || spend key || view key`, flag 1 = subaddress) and tag 0x02
 //! (32 bytes: the included-proofs root). Unknown tags are ignored (pools may add their own).
 //!
-//! Read next: chain.rs.
+//! Read next: payout.rs, then chain.rs (`verify_records`).
 
 use crate::commit::{self, Header};
 use crate::proof::Start;
@@ -52,6 +52,20 @@ pub struct Window {
 }
 
 pub const PROPOSED: Window = Window { cap: 64, archive_percent: 50, weight_percent: 17 };
+
+/// Each included proof is paid `base / REWARD_DIVISOR` of new issuance, on top of the miner's
+/// unchanged `base + fees` (OPEN: 128; docs/V0.4-DESIGN.md section 3.1).
+pub const PROPOSED_REWARD_DIVISOR: u64 = 128;
+
+/// What one included proof is paid when the block's base reward is `base`.
+pub fn proof_reward(base: u64, divisor: u64) -> u64 {
+    base / divisor.max(1)
+}
+
+/// The most a coinbase with `n` included proofs may pay in all (None: overflow).
+pub fn coinbase_total(base: u64, fees: u64, n: usize, divisor: u64) -> Option<u64> {
+    base.checked_add(fees)?.checked_add(proof_reward(base, divisor).checked_mul(n as u64)?)
+}
 
 /// A payout address a template commits (Monero's standard address or subaddress public keys).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -676,6 +690,15 @@ mod tests {
         assert!(nopay.facts().is_err());
         let l = nopay.leaf().unwrap();
         assert!(matches!(check(&[nopay], Some(&root(&[l])), &w, Start::Parent, &PROPOSED), Err(RecordFault::Invalid(_))), "authentic but no payout: invalid");
+    }
+
+    #[test]
+    fn rewards_come_on_top_of_the_miners() {
+        let base = 1_125_800_000_000_000u64; // ~1125.8 SM64, v0.3's first blocks
+        assert_eq!(proof_reward(base, 128), base / 128);
+        assert_eq!(coinbase_total(base, 7, 0, 128), Some(base + 7), "no proofs: v0.3's coinbase");
+        assert_eq!(coinbase_total(base, 0, 64, 128), Some(base + base / 2), "the cap: +50 % at most");
+        assert_eq!(coinbase_total(u64::MAX, 1, 0, 128), None);
     }
 
     #[test]

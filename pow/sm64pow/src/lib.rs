@@ -14,7 +14,9 @@
 //! tour. The modules, bottom layer first (each uses only the ones above it in
 //! this list):
 //!
-//! 1. [`seed`], [`sign`], [`rules`](mod@rules), [`hold`], [`proof`]: pure, no game. The seed; the
+//! 1. [`seed`], [`sign`], [`rules`](mod@rules), [`hold`], [`proof`]: pure, no game. v0.4:
+//!    [`commit`] (the committed proof header), [`records`] (included proofs, fork-choice weight),
+//!    [`payout`] (the outputs paying them). The seed; the
 //!    miner key and block signature (signed proofs, v0.3); the
 //!    consensus parameters as functions (time limit, retarget, restarts);
 //!    the hold policy; the proof blob and its stateless codecs (0 raw,
@@ -38,6 +40,8 @@
 // 1: pure
 pub mod commit;
 pub mod hold;
+pub mod payout;
+pub mod records;
 pub mod proof;
 pub mod template;
 pub mod reorg;
@@ -59,7 +63,6 @@ pub mod equivocation;
 pub mod pof;
 pub mod preverify;
 pub mod queue;
-pub mod records;
 pub mod replay;
 // 6: the daemon's C ABI
 pub mod ffi;
