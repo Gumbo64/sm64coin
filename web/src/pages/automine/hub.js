@@ -407,6 +407,13 @@ export class VizHub {
     for (const k of this.paths.keys()) if (k.startsWith(pre)) this.paths.delete(k);
   }
 
+  /** The step's root perturbation and sync tag (hybrid mining): {tag, pert (JSON text)} as sent with the step's start state. */
+  setPert(i, key, json) {
+    const w = this.workers[i];
+    if (!w || !this.enabled) return;
+    try { w.rootPert = { key, ...JSON.parse(json) }; } catch { /* unreadable */ }
+  }
+
   /** The inputs of node `id` (asked for with requestPath) arrived: flat [button, x, y, ...] from its step's root. */
   setPath(i, key, id, flat) {
     if (!this.enabled) return;

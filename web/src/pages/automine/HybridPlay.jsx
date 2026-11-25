@@ -10,8 +10,9 @@ import { acquireEngine } from '../../components/EngineSlot.jsx';
 //
 // `rec` (a ref) is the panel's recorder handle, `stop` (a ref) is set to 'finish' / 'discard' by the hotkey and the buttons.
 
-export default function HybridDriver({ hub, engine, req, rec, stop, setClock, setStatus, onDone, onError }) {
-  const { sel, msg, state } = req;
+export default function HybridDriver({ hub, engine, req, rec, stop, setClock, setStatus, onDone, onReady = () => {}, onError }) {
+  const { sel, state } = req;
+  const msg = req.msg;
   useEffect(() => {
     let dead = false;
     let release = null;
@@ -23,13 +24,27 @@ export default function HybridDriver({ hub, engine, req, rec, stop, setClock, se
         release = await acquireEngine();
         if (dead) return;
         await perturbReady();
-        setStatus('loading the node\'s state…');
-        const portable = await portableFromRaw(state.buffer);
-        if (dead) return;
-        restoreState(engine, null, engine.powerOn);
-        engine.load_portable_state(portable);
-        const start = { kind: 'node', state: captureState(engine, null, engine.powerOn), progress: readProgress(engine), pertBytes: new TextEncoder().encode(msg.pert) };
-        const task = withConfig(hub.template);
+        let start, task;
+        if (req.local) {
+          // The page rebuilds the node's state itself (localNode.js): no round trip to the search.
+          const { buildLocal } = await import('./localNode.js');
+          const t0 = performance.now();
+          const r = await buildLocal(engine, hub, req.sel, req.local, (i, n) => setStatus(`replaying to the node: ${Math.round((i / n) * 100)}%`), () => dead);
+          if (!r) return;
+          start = r.start; task = r.task;
+          req.msg = r.msg;
+          window.__lastNodeStart = { mode: 'local', ms: Math.round(performance.now() - t0), pert: r.msg.pert, pos: [...engine.get_game_state().pos] };
+          onReady(r.msg);
+        } else {
+          setStatus('loading the node\'s state…');
+          const portable = await portableFromRaw(state.buffer);
+          if (dead) return;
+          restoreState(engine, null, engine.powerOn);
+          engine.load_portable_state(portable);
+          start = { kind: 'node', state: captureState(engine, null, engine.powerOn), progress: readProgress(engine), pertBytes: new TextEncoder().encode(msg.pert) };
+          task = withConfig(hub.template);
+          window.__lastNodeStart = { mode: 'mailbox', pert: msg.pert, pos: [...engine.get_game_state().pos] };
+        }
 
         // The manual miner's recorder, starting from the node: its perturbation is the node's (not a fresh block start), the
         // attempt never wins, and the positions along the way are kept for the trail drawn in the visualiser.
@@ -60,7 +75,7 @@ export default function HybridDriver({ hub, engine, req, rec, stop, setClock, se
         if (dead) return;
         const p = engine.get_game_state().pos;
         const k = Math.floor(r.pads.length / 3) + 1;
-        const trail = [[msg.pos[0], msg.pos[1], msg.pos[2]], ...r.trail.slice(1, k).filter(Boolean), [p[0], p[1], p[2]]].flat();
+        const trail = [[req.msg.pos[0], req.msg.pos[1], req.msg.pos[2]], ...r.trail.slice(1, k).filter(Boolean), [p[0], p[1], p[2]]].flat();
         onDone({ discard: stop.current === 'discard', pads: r.pads.map((x) => ({ button: x.button, stick_x: x.stick_x, stick_y: x.stick_y })), frames: r.pads.length, pos: [p[0], p[1], p[2]], trail, task });
       } catch (e) { if (!dead) onError(String(e.message || e)); } finally { if (release) release(); }
     })();

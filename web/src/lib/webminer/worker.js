@@ -22,6 +22,7 @@ self.onmessage = async (e) => {
       viz: !!e.data.vizOn,
       board: e.data.board ? makeBoard(e.data.board.sab, e.data.board.slot, e.data.board.slots) : null,
       onState: (key, bytes) => self.postMessage({ type: 'vizstate', key, state: bytes }, [bytes.buffer]),
+      onPert: (key, json) => self.postMessage({ type: 'vizpert', key, json }),
       onEdges: (key, bytes) => self.postMessage({ type: 'vizedges', key, buf: bytes.buffer }, [bytes.buffer]),
       onPath: (key, id, flat) => self.postMessage({ type: 'vizpath', key, id, flat }, [flat.buffer]),
       onHybrid: (msg, state) => { delete msg.state; self.postMessage({ type: 'hybrid', msg, state }, state ? [state.buffer] : []); },

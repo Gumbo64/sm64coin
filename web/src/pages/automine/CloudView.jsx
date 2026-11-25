@@ -411,6 +411,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
           renderer.setSize(w, h);
           camera.aspect = w / h;
           camera.updateProjectionMatrix();
+          renderer.render(scene, camera); // setSize clears the canvas: redraw at once (the frame loop skips off-screen views)
         };
         resize();
         const ro = new ResizeObserver(resize);

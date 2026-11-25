@@ -683,6 +683,11 @@ pub mod viz {
             if refresh {
                 if let Ok(st) = crate::sys::fs::read(&job2.state_file) {
                     send_state(&key, &st);
+                    // With it the page can rebuild any node's exact state itself (hybrid mining: the root's perturbation
+                    // and the step's sync tag; the node's path comes from the page's tree mirror).
+                    if let Ok(p) = serde_json::to_string(&job2.pert) {
+                        send_pert(&key, &serde_json::json!({ "tag": job2.sync_tag, "pert": p }).to_string());
+                    }
                 }
                 edges = Edges::default();
             }
@@ -963,6 +968,8 @@ pub mod viz {
     extern "C" {
         #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_state)]
         fn js_viz_state(key: &str, bytes: &[u8]);
+        #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_pert)]
+        fn js_viz_pert(key: &str, json: &str);
         #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_req)]
         fn js_viz_req(key: &str) -> Option<String>;
         #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_path)]
@@ -982,6 +989,12 @@ pub mod viz {
     fn send_state(key: &str, bytes: &[u8]) {
         js_viz_state(key, bytes);
     }
+    #[cfg(target_arch = "wasm32")]
+    fn send_pert(key: &str, json: &str) {
+        js_viz_pert(key, json);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_pert(_key: &str, _json: &str) {}
     #[cfg(target_arch = "wasm32")]
     fn send_path(key: &str, id: u32, flat: &[i32]) {
         js_viz_path(key, id, flat);

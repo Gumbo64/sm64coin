@@ -50,7 +50,7 @@ export function makeFs(map = new Map()) {
  * compiled WebAssembly.Module, `glue` the glue's source text, `rom` the ROM bytes, `log(line)`
  * the campaign's progress.
  */
-export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false, onState = () => {}, onPath = () => {}, onEdges = () => {}, onHybrid = () => {} }) {
+export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false, onState = () => {}, onPert = () => {}, onPath = () => {}, onEdges = () => {}, onHybrid = () => {} }) {
   const factory = makeFactory(glue);
   fs.write('/rom.z64', rom);
   globalThis.sm64fs = fs;
@@ -63,6 +63,7 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), sh
     log,
     // The step's start state and the inputs of nodes the page asked for (rrt::child::viz).
     viz_state: (key, bytes) => onState(key, bytes.slice()),
+    viz_pert: (key, json) => onPert(key, json),
     viz_req: (key) => (nodeReq ? nodeReq(key) : undefined),
     viz_path: (key, id, flat) => onPath(key, id, flat.slice()),
     // The tree edges the page's mirror lacks (rrt::child::viz Edges): binary, copied out of the wasm memory.

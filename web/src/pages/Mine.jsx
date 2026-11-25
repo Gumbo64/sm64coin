@@ -21,6 +21,7 @@ import { useVisible } from './automine/useHub.js';
 import ControlCard from './automine/ControlCard.jsx';
 import CampaignStrips from './automine/CampaignStrips.jsx';
 import { levelName } from './automine/levels.js';
+import { localInputs } from './automine/localNode.js';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2eHook } from '../lib/e2e.js';
@@ -263,6 +264,20 @@ function Miner() {
     if (!w?.cur) return;
     stopRef.current = null;
     setClock(null);
+    // Fast path: the page has the step's start state, its root perturbation and the node's path (its tree mirror), so it
+    // rebuilds the node's state itself. Otherwise (or when that fails) the search is asked, which answers between rounds.
+    const inp = window.__forceMailbox ? null : localInputs(hub, sel);
+    if (inp) {
+      setPlayText('rebuilding the node\'s state…');
+      setPlay({ phase: 'playing', sel, local: inp, msg: { level: sel.level, area: sel.area, stars: sel.stars, pos: sel.pos } });
+      gameBox.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    playFromSearch(sel);
+  };
+  const playFromSearch = async (sel) => {
+    const w = hub.workers[sel.w];
+    if (!w?.cur) return;
     setPlayText('asking the search for the node\'s state…');
     setPlay({ phase: 'asking', sel });
     gameBox.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -418,7 +433,8 @@ function Miner() {
               {mode === 'hybrid' && play.phase === 'playing' && engine && (
                 <React.Suspense fallback={null}>
                   <HybridDriver hub={hub} engine={engine} req={play} rec={rec} stop={stopRef} setClock={(c) => setClock(c && { ...c, limit: 0 })} setStatus={setPlayText}
-                    onDone={played} onError={(text) => setPlay((p) => (p ? { phase: 'error', sel: p.sel, text } : p))} />
+                    onDone={played} onReady={(m) => setPlay((p) => (p && p.local ? { ...p, msg: m } : p))}
+                    onError={(text) => { if (play.local) { hub.toast('rebuilding the node here failed (' + text + '): asking the search instead', 'info'); playFromSearch(play.sel); } else setPlay((p) => (p ? { phase: 'error', sel: p.sel, text } : p)); }} />
                 </React.Suspense>
               )}
             </Panel>
