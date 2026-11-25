@@ -168,6 +168,8 @@ void sm64pow_rpc_leave(void *handle);
  * returns -3 for a bad encoding (committed inputs: never mark the block id invalid); the queue's
  * verdict 4 is a bad encoding too (drop the claim, not the id). */
 int32_t sm64pow_set_features(uint32_t bits);
+/* The equal-length tie-break's final key (pof::TieKey): 0 signature hash (default), 1 seed hash, 2 first seen. */
+void sm64pow_set_tie_key(uint32_t k);
 
 #ifdef __cplusplus
 }

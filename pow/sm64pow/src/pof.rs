@@ -15,7 +15,7 @@
 //!   this node opens a window of [`POF_WINDOW_SECONDS`] (30 s, this node's
 //!   clock). A sibling (same parent, so the same height) that becomes
 //!   eligible inside the window, carries **strictly fewer frames** (at equal
-//!   frames: the smaller canonical size, then the lower cn_fast_hash(seed)) than our
+//!   frames: the smaller canonical size, then the lower final key, [`TieKey`]) than our
 //!   current block at that height, and has **another miner key** (another
 //!   template: a different seed) displaces it: the node reorganises to it
 //!   ([`Policy::displaces`]). After the window, or once our block has a
@@ -58,7 +58,7 @@ pub struct Seen {
     pub stale: bool,
     /// Its timestamp.
     pub stamp: u64,
-    /// The equal-length tie-break ([`Tie`]: the canonical proof size, then cn_fast_hash(seed);
+    /// The equal-length tie-break ([`Tie`]: the canonical proof size, then the [`TieKey`];
     /// lower wins; [`NO_TIE`] when unknown).
     pub tie: Tie,
 }
@@ -152,7 +152,7 @@ impl Policy {
 
 /// The equal-length tie-break between siblings of different keys: the smaller canonical proof
 /// size wins ([`canonical_size`]: simpler, more compressible inputs, smaller blocks), then the
-/// lower `cn_fast_hash(seed)`. Ordered by (size, hash).
+/// lower final key ([`TieKey`]). Ordered by (size, hash).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tie {
     pub size: u32,
@@ -162,15 +162,47 @@ pub struct Tie {
 /// "Unknown": never wins a tie.
 pub const NO_TIE: Tie = Tie { size: u32::MAX, hash: [0xff; 32] };
 
-/// A block's tie-break: its proof's [`canonical_size`], then `cn_fast_hash(seed)`: one ticket per
-/// template, fixed before any search. v0.4 (fairness-research V04.md): the v0.3 final key,
-/// `cn_fast_hash(sm64_sig)`, is grindable by the run's owner (equal-frame variants re-signed), and
-/// near the difficulty floor, where most heights are exact ties, that made the tie a
-/// compute-weighted lottery favouring farms (a 30 % farm got 2.47x its share). Caveat: a miner
-/// can still pick among template keys before searching (one hash and one scalar multiplication
-/// per key): docs/V0.4-DESIGN.md section 1.6.
-pub fn tie_of(proof: &[u8], seed: &[u8; 32]) -> Tie {
-    Tie { size: canonical_size(proof), hash: crate::sign::cn_fast_hash(seed) }
+/// The final key of the equal-length tie-break, after the canonical size (node policy, pluggable
+/// while the fairness research on tie-break grinding runs; docs/V0.4-DESIGN.md section 1.6).
+/// Lower wins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TieKey {
+    /// v0.3's `cn_fast_hash(sm64_sig)` (the default). Grindable by the run's owner: equal-frame
+    /// variants of its run, re-signed (fairness-research V04.md: a 30 % farm got 2.47x its share
+    /// near the floor).
+    SigHash = 0,
+    /// `cn_fast_hash(seed)`: one ticket per template, but grindable before any search (a miner
+    /// picks among template keys at about one hash and one scalar multiplication per key).
+    SeedHash = 1,
+    /// No final key: an exact tie (equal frames and size) keeps the block this node saw first.
+    FirstSeen = 2,
+}
+
+static TIE_KEY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(TieKey::SigHash as u8);
+
+/// Sets this node's final tie key (start-up; all nodes of a network should agree, or exact ties
+/// can split them for a block).
+pub fn set_tie_key(k: TieKey) {
+    TIE_KEY.store(k as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn tie_key() -> TieKey {
+    match TIE_KEY.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => TieKey::SeedHash,
+        2 => TieKey::FirstSeen,
+        _ => TieKey::SigHash,
+    }
+}
+
+/// A block's tie-break: its proof's [`canonical_size`], then the [`tie_key`] of its seed or
+/// signature.
+pub fn tie_of(proof: &[u8], seed: &[u8; 32], sig: &[u8; 64]) -> Tie {
+    let hash = match tie_key() {
+        TieKey::SigHash => crate::sign::cn_fast_hash(sig),
+        TieKey::SeedHash => crate::sign::cn_fast_hash(seed),
+        TieKey::FirstSeen => [0xfe; 32], // equal for every block: the size decides, then first seen
+    };
+    Tie { size: canonical_size(proof), hash }
 }
 
 /// The size of a proof that every node sees the same for the same block id (v0.4: the id is the
@@ -264,7 +296,7 @@ impl SizeCounter {
 }
 
 /// Inside the window, between siblings of different keys: strictly fewer frames wins; at equal
-/// frames, the smaller canonical proof size, then the lower seed hash, at every node whatever
+/// frames, the smaller canonical proof size, then the lower final key, at every node whatever
 /// the arrival order (the auction-smoothness simulation: window-edge splits 0.8 % -> 0). Only the
 /// run's owner can change its inputs or signature; grinding them is real optimisation (simpler
 /// inputs) or only matters for exact ties.
@@ -390,6 +422,21 @@ mod tests {
         // Fewer frames still beats any size.
         p.note_eligible_tie(id(62), P, id(162), 2999, t0 + 4, t0 + 4, Tie { size: 5000, hash: [0xff; 32] });
         assert!(p.displaces(&id(61), &id(62)));
+    }
+
+    #[test]
+    fn the_final_tie_key_is_pluggable() {
+        let blob = crate::commit::commit_with(&crate::proof::RunLength, &crate::proof::Proof { frames: 20, start: crate::proof::Start::Parent, inputs: vec![Default::default(); 15] });
+        let (s1, s2, g1, g2) = ([1u8; 32], [2u8; 32], [3u8; 64], [4u8; 64]);
+        assert_eq!(tie_key(), TieKey::SigHash, "v0.3's default");
+        assert_ne!(tie_of(&blob, &s1, &g1).hash, tie_of(&blob, &s2, &g2).hash);
+        assert_eq!(tie_of(&blob, &s1, &g1).hash, tie_of(&blob, &s2, &g1).hash, "sig-hash ignores the seed");
+        set_tie_key(TieKey::SeedHash);
+        assert_eq!(tie_of(&blob, &s1, &g1).hash, tie_of(&blob, &s1, &g2).hash, "seed-hash ignores the signature");
+        set_tie_key(TieKey::FirstSeen);
+        let (a, b) = (tie_of(&blob, &s1, &g1), tie_of(&blob, &s2, &g2));
+        assert!(a == b && !beats(20, &a, 20, &b) && !beats(20, &b, 20, &a), "first seen: an exact tie never displaces");
+        set_tie_key(TieKey::SigHash);
     }
 
     #[test]

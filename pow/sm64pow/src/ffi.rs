@@ -372,8 +372,10 @@ pub extern "C" fn sm64pow_fork_choice(main_len: u64, main_seeds: *const u8, n_ma
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_note_history(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8, proof: *const u8, len: usize) {
     let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
-    let _ = sig64; // v0.4: the tie-break's final key is the template's seed, not the signature (pof::tie_of)
-    let tie = unsafe { id_arg(hash32) }.map_or(crate::pof::NO_TIE, |sd| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd)).unwrap_or(crate::pof::NO_TIE));
+    let tie = match (unsafe { id_arg(hash32) }, sig_arg(sig64)) {
+        (Some(sd), Some(sg)) => std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd, &sg)).unwrap_or(crate::pof::NO_TIE),
+        _ => crate::pof::NO_TIE,
+    };
     let at = timestamp.min(unix_now());
     let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible_tie(id, parent, seed, frames, timestamp, at, tie));
 }
@@ -388,8 +390,10 @@ fn unix_now() -> u64 {
 /// `timestamp`) is eligible now: valid and fitting by this node's clock.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_note_eligible(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8, proof: *const u8, len: usize) {
-    let _ = sig64; // v0.4: the tie-break's final key is the template's seed, not the signature (pof::tie_of)
-    let tie = unsafe { id_arg(hash32) }.map_or(crate::pof::NO_TIE, |sd| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd)).unwrap_or(crate::pof::NO_TIE));
+    let tie = match (unsafe { id_arg(hash32) }, sig_arg(sig64)) {
+        (Some(sd), Some(sg)) => std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd, &sg)).unwrap_or(crate::pof::NO_TIE),
+        _ => crate::pof::NO_TIE,
+    };
     let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
     // A block that came in a sync span (we asked for it: it is history) counts as eligible at its own
     // stamp: neither stale nor opening a window now. Otherwise a node that just synced (or restarted)
@@ -411,8 +415,10 @@ pub extern "C" fn sm64pow_displaces(tip32: *const u8, alt32: *const u8) -> i32 {
 /// `timestamp`, could displace it (1: worth a replay).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, id32: *const u8, hash32: *const u8, frames: u32, timestamp: u64, sig64: *const u8, proof: *const u8, len: usize) -> i32 {
-    let _ = sig64; // v0.4: the tie-break's final key is the template's seed, not the signature (pof::tie_of)
-    let tie = unsafe { id_arg(hash32) }.map_or(crate::pof::NO_TIE, |sd| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd)).unwrap_or(crate::pof::NO_TIE));
+    let tie = match (unsafe { id_arg(hash32) }, sig_arg(sig64)) {
+        (Some(sd), Some(sg)) => std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd, &sg)).unwrap_or(crate::pof::NO_TIE),
+        _ => crate::pof::NO_TIE,
+    };
     let (Some(t), Some(id), Some(seed)) = (unsafe { id_arg(tip32) }, unsafe { id_arg(id32) }, unsafe { id_arg(hash32) }) else { return 0 };
     // Judged at the time block `id` became eligible here (a claim the queue replayed late still counts).
     let at = eligible_at(&id);
@@ -647,8 +653,10 @@ pub extern "C" fn sm64pow_queue_set_threads(n: u32) {
 
 #[allow(clippy::too_many_arguments)]
 fn queue_job(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64, sig64: *const u8) -> Option<crate::queue::Job> {
-    let _ = sig64; // v0.4: the tie-break's final key is the template's seed, not the signature (pof::tie_of)
-    let tie = unsafe { id_arg(hash32) }.map_or(crate::pof::NO_TIE, |sd| std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd)).unwrap_or(crate::pof::NO_TIE));
+    let tie = match (unsafe { id_arg(hash32) }, sig_arg(sig64)) {
+        (Some(sd), Some(sg)) => std::panic::catch_unwind(|| crate::pof::tie_of(blob_arg(proof, len), &sd, &sg)).unwrap_or(crate::pof::NO_TIE),
+        _ => crate::pof::NO_TIE,
+    };
     let (id, parent_id, seed) = unsafe { (id_arg(id32)?, id_arg(parent32)?, id_arg(hash32)?) };
     let parent = if genesis_parent != 0 { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: parent_id, gap_seconds } };
     Some(crate::queue::Job { id, parent, parent_id, seed: Seed(seed), difficulty, blob: blob_arg(proof, len).to_vec(), frames, tie, stamp, due, arrived: unix_now(), ctx: crate::admit::context() })
@@ -934,6 +942,17 @@ pub extern "C" fn sm64pow_set_features(bits: u32) -> i32 {
             -1
         }
     }
+}
+
+/// The final key of the equal-length tie-break (pof::TieKey, node policy): 0 the signature's
+/// hash (v0.3, the default), 1 the seed's hash, 2 none (first seen). Unknown values: the default.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_set_tie_key(k: u32) {
+    crate::pof::set_tie_key(match k {
+        1 => crate::pof::TieKey::SeedHash,
+        2 => crate::pof::TieKey::FirstSeen,
+        _ => crate::pof::TieKey::SigHash,
+    });
 }
 
 // ---- Proof blobs (proof.rs, proof_id.rs) and the seed ----
