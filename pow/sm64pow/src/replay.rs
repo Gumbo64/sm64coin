@@ -188,6 +188,66 @@ pub(crate) fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &
     Ok(Err("no progress was made (no new star, key or Grand Star)".into()))
 }
 
+/// What a committed state-coded replay found (v0.4, commit.rs).
+pub(crate) enum Committed {
+    Ok(SM64MiningGame, Progress),
+    /// The committed run breaks a rule (its decoded inputs do hash to the committed hash).
+    Invalid(String),
+    /// The body doesn't decode to the committed inputs: nothing is said about the run.
+    BadEncoding(String),
+}
+
+/// [`replay_state`] for a committed proof (v0.4): the body is decoded frame by frame in the state
+/// it is played in, and **every** one of the committed `frames` frames is played and decoded even
+/// if the success condition holds earlier, so the decoded run is known in full and can be checked
+/// against the committed input hash. A mismatch is a bad encoding whatever the replay saw; only a
+/// matching run is judged (success first on the last frame). No canonical-encoding check: any
+/// encoding of the committed inputs is fine.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn replay_committed(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, p: &Params, hdr: &crate::commit::Header, codec: &dyn crate::statecodec::StateCodec, body: &[u8], max_frames: Option<u32>, played: Option<&mut Played>) -> Result<Committed> {
+    let r = rules();
+    let frames = hdr.frames;
+    if frames == 0 {
+        return Ok(Committed::Invalid("empty proof".into()));
+    }
+    if let Some(m) = max_frames {
+        if frames > m {
+            return Ok(Committed::Invalid(format!("{frames} frames exceeds the limit of {m}")));
+        }
+    }
+    let mut g = SM64MiningGame::from_game(game, seed, p);
+    let mut dec = codec.decoder(body);
+    let mut hash = crate::commit::InputHasher::new(frames, hdr.start);
+    let mut out = played;
+    let mut success: Option<(usize, Progress)> = None;
+    for f in 0..frames as usize {
+        let (pad, poked) = g.step_with(|ft| Ok(crate::game::from_pad(dec.pad(ft))))?;
+        if poked {
+            dec.poked();
+        } else {
+            hash.pad(&pad);
+        }
+        if let Some(o) = out.as_deref_mut() {
+            o.pads.push(pad);
+            o.poked.push(poked);
+        }
+        if success.is_none() {
+            let now = g.progress()?;
+            if r.is_success(&before, &now) {
+                success = Some((f, now));
+            }
+        }
+    }
+    if hash.finish() != hdr.input_hash {
+        return Ok(Committed::BadEncoding("the encoding does not decode to the committed inputs".into()));
+    }
+    Ok(match success {
+        None => Committed::Invalid("no progress was made (no new star, key or Grand Star)".into()),
+        Some((f, _)) if f + 1 != frames as usize => Committed::Invalid(format!("success at frame {} but the proof runs to {frames}", f + 1)),
+        Some((_, now)) => Committed::Ok(g, now),
+    })
+}
+
 /// Replays a proof blob from `game` without its block's time limit (the rules
 /// that depend on the timestamp are checked later, by [`verify_block`]), but
 /// never past the longest limit any block can have

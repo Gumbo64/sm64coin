@@ -20,7 +20,7 @@
 use crate::cache::{REPLAYS, alias, known_invalid, known_summary, parent_state, played_cached, remember, remember_invalid, remember_played, run_key};
 use crate::game::Progress;
 use crate::proof::{self, Start};
-use crate::replay::{replay, replay_state, start_game};
+use crate::replay::{Committed, replay, replay_committed, replay_state, start_game};
 use crate::rules::{active as rules, params};
 use crate::seed::Seed;
 use anyhow::Result;
@@ -41,6 +41,24 @@ pub enum BlockVerdict {
 }
 
 fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Played>, state_ok: bool) -> Result<BlockVerdict> {
+    check_with(id, parent, seed, difficulty, blob, played, state_ok, None, &mut None)
+}
+
+/// [`check`]; with `committed` (v0.4) `blob` is the v0.3 layout of a committed proof
+/// (`commit::layout`) whose stateless encoding already matched the header (`commit::open`):
+/// runs are cached by the committed input hash and the layout, and a state codec is replayed
+/// with `replay_committed` (a bad encoding sets `bad` and returns Invalid, which the caller
+/// discards).
+#[allow(clippy::too_many_arguments)]
+fn check_with(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Played>, state_ok: bool, committed: Option<&crate::commit::Header>, bad: &mut Option<String>) -> Result<BlockVerdict> {
+    let key_src: Vec<u8> = match committed {
+        // A stateless layout here is the canonical run-length one (hash-checked by commit::open), so
+        // the key is the run's. A state-coded body is only checked by its replay: keyed by its bytes
+        // too, so a known run's hit never vouches for an encoding nobody has decoded (a node must
+        // store and relay only encodings it verified).
+        Some(h) => [b"sm64cmt1".as_slice(), &h.input_hash, blob].concat(),
+        None => blob.to_vec(),
+    };
     let p = params(difficulty.unwrap_or(1));
     let elapsed = match parent {
         Parent::Block { gap_seconds, .. } => *gap_seconds,
@@ -70,7 +88,7 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
     // are checked again; the replay itself is not repeated. Not for `played`
     // (that wants the pads).
     if played.is_none() {
-        let key = run_key(parent, start, seed, blob);
+        let key = run_key(parent, start, seed, &key_src);
         if let Some(sum) = known_summary(&key) {
             if sum.start == start {
                 let mut delay = 0;
@@ -110,7 +128,7 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
             }
         }
     }
-    let key = run_key(parent, start, seed, blob);
+    let key = run_key(parent, start, seed, &key_src);
     // The time limit before the replay (so a replay's verdict never depends on
     // the timestamp, and can be remembered by run). Checked BEFORE the parent's
     // state is needed: a run over the limit, or one that already failed, must
@@ -156,13 +174,29 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
     let timer = crate::admit::rpc_replay_gate().map_err(|e| anyhow::anyhow!(e))?;
     REPLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (frames, result) = match (&state, &pr) {
-        (Some((frames, _, c, body)), _) => (*frames, replay_state(game, before, seed, &p, *frames, *c, body, difficulty.map(|_| limit), played)),
+        (Some((frames, _, c, body)), _) => match committed {
+            None => (*frames, replay_state(game, before, seed, &p, *frames, *c, body, difficulty.map(|_| limit), played)),
+            Some(h) => (
+                *frames,
+                replay_committed(game, before, seed, &p, h, *c, body, difficulty.map(|_| limit), played).map(|c| match c {
+                    Committed::Ok(g, now) => Ok((g, now)),
+                    Committed::Invalid(why) => Err(why),
+                    Committed::BadEncoding(why) => {
+                        *bad = Some(why.clone());
+                        Err(why)
+                    }
+                }),
+            ),
+        },
         (None, Some(pr)) => (pr.frames, replay(game, before, seed, &p, pr, difficulty.map(|_| limit), played)),
         _ => unreachable!(),
     };
     crate::admit::rpc_replay_done(timer);
     match result? {
         Err(why) => {
+            if bad.is_some() {
+                return Ok(BlockVerdict::Invalid(why)); // a bad encoding: nothing is remembered about the run
+            }
             remember_invalid(key, &why);
             crate::admit::note_invalid();
             Ok(BlockVerdict::Invalid(why))
@@ -226,6 +260,60 @@ pub fn played_wanted_block_opts(id: &[u8; 32], parent: Parent, seed: &Seed, blob
         }
         v => Ok(Err(v)),
     }
+}
+
+/// A committed proof's verdict (v0.4, commit.rs): the run's, or a bad encoding of it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommittedVerdict {
+    /// About the committed run (every encoding of it gets the same verdict).
+    Run(BlockVerdict),
+    /// This blob doesn't decode to the committed inputs: drop the blob (and its sender), never
+    /// the block id.
+    BadEncoding(String),
+}
+
+/// Verifies block `id` whose proof is a committed blob (v0.4, docs/V0.4-DESIGN.md section 1):
+/// the header decides the length (the limit at its stamp) and the start; the encoding must decode
+/// to the committed inputs (stateless codecs before any replay, state codecs during it, every
+/// frame); then the run is judged as v0.3 judges a run. Valid runs are cached by the committed
+/// input hash (every stateless encoding of a known run is a cache hit; a state-coded body is a
+/// hit only for the bytes that were replayed).
+pub fn verify_committed_block(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8]) -> Result<CommittedVerdict> {
+    committed(id, &parent, seed, Some(difficulty), blob, None, crate::statecodec::state_codec_enabled())
+}
+
+/// [`verify_committed_block`] with no time limit (rebuilding accepted blocks).
+pub fn rebuild_committed_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> Result<CommittedVerdict> {
+    committed(id, &parent, seed, None, blob, None, crate::statecodec::state_codec_enabled())
+}
+
+/// The pads a committed block's run played on every frame, and which were poked.
+pub fn played_committed_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: &[u8]) -> Result<std::result::Result<Played, CommittedVerdict>> {
+    let mut pl = Played::default();
+    match committed(id, &parent, seed, None, blob, Some(&mut pl), crate::statecodec::state_codec_enabled())? {
+        CommittedVerdict::Run(BlockVerdict::Valid { .. }) => Ok(Ok(pl)),
+        v => Ok(Err(v)),
+    }
+}
+
+fn committed(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Played>, state_ok: bool) -> Result<CommittedVerdict> {
+    let ceiling = match difficulty {
+        Some(_) => rules().max_frames_any(),
+        None => proof::MAX_FRAMES as u32,
+    };
+    let (hdr, layout) = match crate::commit::open(blob, ceiling, state_ok) {
+        Err(crate::commit::Fault::Invalid(why)) => return Ok(CommittedVerdict::Run(BlockVerdict::Invalid(why))),
+        Err(crate::commit::Fault::BadEncoding(why)) => return Ok(CommittedVerdict::BadEncoding(why)),
+        // Stateless: hash-checked; replay a canonical run-length layout (one cache key per run).
+        Ok(crate::commit::Opened::Run(h, pr)) => (h, proof::encode_proof_with(&proof::RunLength, &pr)),
+        Ok(crate::commit::Opened::State(h, ..)) => (h, crate::commit::layout(blob).map_err(|e| anyhow::anyhow!(e))?),
+    };
+    let mut bad = None;
+    let v = check_with(id, parent, seed, difficulty, &layout, played, state_ok, Some(&hdr), &mut bad)?;
+    Ok(match bad {
+        Some(why) => CommittedVerdict::BadEncoding(why),
+        None => CommittedVerdict::Run(v),
+    })
 }
 
 /// A block's signed run (sign.rs): the miner key its coinbase extra nonce
