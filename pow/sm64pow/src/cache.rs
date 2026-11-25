@@ -235,7 +235,7 @@ pub fn set_state_dir(dir: &std::path::Path) -> usize {
     // The browser build keeps no end states on disk.
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (dir, durable_unused());
+        let _ = dir;
         return 0;
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -260,8 +260,6 @@ pub fn set_state_dir(dir: &std::path::Path) -> usize {
     n
     }
 }
-#[cfg(target_arch = "wasm32")]
-fn durable_unused() {}
 
 fn event_bytes(e: Option<crate::game::Event>) -> [u8; 3] {
     match e {

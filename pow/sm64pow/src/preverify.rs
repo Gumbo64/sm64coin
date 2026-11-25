@@ -81,7 +81,7 @@ fn replay_chain(chain: &[&BatchBlock], state_ok: bool, replayed: &std::sync::ato
         let start = proof::proof_start(&b.blob)?;
         let key = run_key(&b.parent, start, &b.seed, &b.blob);
         let last = k + 1 == chain.len();
-        if let Some(sum) = known_summary(&key) {
+        if known_summary(&key).is_some() {
             // Already known: continue from its state if this chain needs it.
             if last {
                 alias(b.id, key);
@@ -92,10 +92,8 @@ fn replay_chain(chain: &[&BatchBlock], state_ok: bool, replayed: &std::sync::ato
                     prev = Some((s.game.clone(), s.progress, s.ends_cycle));
                     continue;
                 }
-                None => {
-                    let _ = sum;
-                    // Its state is gone: replay it below like any other.
-                }
+                // Its state is gone: replay it below like any other.
+                None => {}
             }
         }
         let (game, before) = match (start, &prev) {

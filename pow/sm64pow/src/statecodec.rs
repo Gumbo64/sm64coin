@@ -20,7 +20,7 @@
 //! feeds them game states.
 
 use crate::emulator::generator;
-use crate::game::{SM64MiningGame, mining_start};
+use crate::game::mining_start;
 use crate::proof::{Proof, Start};
 use crate::rules::{Params, params};
 use crate::seed::Seed;
@@ -77,7 +77,6 @@ impl Run {
             }
             rows.push((feat, pad, poked));
         }
-        let _ = SM64MiningGame::state;
         Ok(rows)
     }
 }

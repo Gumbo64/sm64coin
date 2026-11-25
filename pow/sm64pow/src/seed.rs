@@ -28,15 +28,6 @@ impl Seed {
         if w == 0 { 1 } else { w }
     }
 
-    /// The 8 little-endian 32-bit words the game's generator is seeded with.
-    pub fn words(&self) -> [u32; 8] {
-        let mut w = [0u32; 8];
-        for (k, x) in w.iter_mut().enumerate() {
-            *x = u32::from_le_bytes([self.0[4 * k], self.0[4 * k + 1], self.0[4 * k + 2], self.0[4 * k + 3]]);
-        }
-        w
-    }
-
     pub fn from_hex(h: &str) -> Result<Seed> {
         let mut out = [0u8; 32];
         if h.len() != 64 {

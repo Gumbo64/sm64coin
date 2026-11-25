@@ -178,10 +178,6 @@ fn btn_class(b: u16) -> usize {
     }
 }
 
-fn prev_stick(p: &GamePad) -> (i8, i8) {
-    (p.stick_x, p.stick_y)
-}
-
 fn isqrt(n: i32) -> i32 {
     (n.max(0) as u32).isqrt() as i32
 }
