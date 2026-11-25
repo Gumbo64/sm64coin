@@ -14,6 +14,7 @@ import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPoli
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
 import { e2eHook } from '../e2e.js';
+import { offerRun, holdUntilValid } from './bestRun.js';
 import { Hybrid } from './hybrid.js';
 import { getPlayFromStart, setPlayFromStart, subscribePlayFromStart } from '../hybridSetting.js';
 
@@ -30,7 +31,6 @@ export async function enableSync() {
   await navigator.serviceWorker.ready;
   window.location.reload();
 }
-const SEND_AHEAD = 100; // the nodes' future-timestamp window (120 s), with a margin
 const ls = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
 
@@ -374,7 +374,7 @@ class MinerController {
           const run = { ...r, start: status[i].start };
           const prev = c.best;
           status[i].salt += count;
-          if (prev && !(r.frames < prev.frames)) {
+          if (offerRun(prev, run).kind === 'ignored') {
             // Not shorter than the run all the workers are working to beat: the next search.
             say(`worker ${i + 1}: a run of ${r.frames} frames, not shorter than ${prev.frames}`);
             launch(i);
@@ -432,38 +432,28 @@ class MinerController {
     const { hub } = this;
     let r = c.best;
     try {
-      let validAt = 0, asked = -1, said = -1, lastTip = Date.now();
-      for (;;) {
-        if (c.stopped || c.template !== t) return;
-        r = c.best;
-        if (asked !== r.frames) {
-          try {
-            validAt = (await daemon('get_block_template', { wallet_address: this.address, reserve_size: 0, sm64_frames: r.frames })).sm64_valid_at || 0;
-          } catch { validAt = 0; /* the node decides */ }
-          asked = r.frames;
-          continue; // (c.best may have changed meanwhile)
-        }
-        if (validAt - now() <= SEND_AHEAD) break;
-        this.setPhase('held');
-        if (said !== r.frames) {
-          said = r.frames;
-          say(`the run (${r.frames} frames) is over the time limit: valid at ${new Date(validAt * 1000).toLocaleTimeString()}, held until then while the workers look for a shorter one (a new block first makes it worthless)`);
-        }
-        await new Promise((res) => setTimeout(res, Math.min(5, Math.max(1, validAt - now() - SEND_AHEAD)) * 1000));
-        if (c.stopped || c.template !== t) return;
-        // The tip is looked at every 30 s (the watch also restarts rounds, but the held run must not wait on that).
-        if (Date.now() - lastTip >= 30000) {
-          lastTip = Date.now();
-          let tip = null;
-          try { tip = (await daemon('get_info')).top_block_hash; } catch { /* node hiccup: look again next time */ }
-          if (c.stopped || c.template !== t) return;
-          if (tip && tip !== t.prev_hash) {
-            say('a new block landed while the run was held; the run was for the old tip');
-            hub.submission('stale', { height: t.height, frames: r.frames });
-            return;
-          }
-        }
+      const h = await holdUntilValid({
+        best: () => c.best,
+        validAt: async (frames) => (await daemon('get_block_template', { wallet_address: this.address, reserve_size: 0, sm64_frames: frames })).sm64_valid_at,
+        tip: async () => (await daemon('get_info')).top_block_hash,
+        prevHash: t.prev_hash,
+        current: () => !c.stopped && c.template === t,
+        sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+        now,
+        clock: () => Date.now(),
+        onHeld: (run, validAt, changed) => {
+          this.setPhase('held');
+          if (changed) say(`the run (${run.frames} frames) is over the time limit: valid at ${new Date(validAt * 1000).toLocaleTimeString()}, held until then while the workers look for a shorter one (a new block first makes it worthless)`);
+        },
+      });
+      if (h.kind === 'gone') return;
+      r = h.run;
+      if (h.kind === 'stale') {
+        say('a new block landed while the run was held; the run was for the old tip');
+        hub.submission('stale', { height: t.height, frames: r.frames });
+        return;
       }
+      const validAt = h.validAt;
       // Valid (nearly) now: no more searching, and no relaunch while this run is submitted (a run another worker found would be
       // submitted a second time). submit() ends with round().
       c.submitting = t;
