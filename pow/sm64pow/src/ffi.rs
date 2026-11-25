@@ -7,6 +7,8 @@ use crate::seed::{Seed, seed_from_hash};
 use std::ffi::{CStr, c_char};
 use std::cell::RefCell;
 
+// ---- Setup and errors ----
+
 thread_local! {
     /// Per thread, so concurrent verifications don't clobber each other.
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -49,6 +51,21 @@ pub extern "C" fn sm64pow_init(rom_path: *const c_char) -> i32 {
     }
 }
 
+/// Copies this thread's last error message (NUL terminated, truncated to `cap`).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_last_error(buf: *mut c_char, cap: usize) -> usize {
+    let msg = LAST_ERROR.with(|e| e.borrow().clone());
+    if buf.is_null() || cap == 0 {
+        return msg.len();
+    }
+    let n = msg.len().min(cap - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(msg.as_ptr(), buf as *mut u8, n);
+        *buf.add(n) = 0;
+    }
+    n
+}
+
 /// Verifies a proof for the block whose hashing blob hashes to `hash32`
 /// (32 bytes, the perturbation's seed). Returns the number of frames (> 0) when valid, 0 when
 /// invalid, -1 on an internal error. The reason is in `sm64pow_last_error`.
@@ -63,6 +80,19 @@ unsafe fn parent_arg(parent32: *const u8, gap_seconds: u64) -> crate::chain::Par
         Some(id) => crate::chain::Parent::Block { id, gap_seconds },
     }
 }
+
+fn blob_arg<'a>(blob: *const u8, len: usize) -> &'a [u8] {
+    if blob.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(blob, len) } }
+}
+
+fn copy_out(bytes: &[u8], out: *mut u8, cap: usize) -> usize {
+    if !out.is_null() && cap >= bytes.len() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
+    }
+    bytes.len()
+}
+
+// ---- Verifying blocks: the chain of game states (chain.rs) ----
 
 /// Verifies block `id32` (seed `hash32`, proof) on top of `parent32` (null:
 /// the genesis block) timestamped `gap_seconds` after it, at effective
@@ -110,17 +140,6 @@ pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap
     }
 }
 
-/// Keeps the last few blocks' end states in directory `path` (NUL-terminated)
-/// and loads those already there. Returns how many were loaded, -1 on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_set_state_dir(path: *const c_char) -> i32 {
-    if path.is_null() {
-        return -1;
-    }
-    let Ok(p) = (unsafe { std::ffi::CStr::from_ptr(path) }).to_str() else { return -1 };
-    std::panic::catch_unwind(|| crate::chain::set_state_dir(std::path::Path::new(p)) as i32).unwrap_or(-1)
-}
-
 /// The parallel pre-pass of `n` blocks in chain order (a sync batch, see
 /// chain::preverify): `ids`, `parents` (`n` x 32 bytes; a parent of all zero
 /// bytes is the genesis block), `seeds` (`n` x 32), the proofs concatenated in
@@ -155,6 +174,25 @@ pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8
     std::panic::catch_unwind(|| crate::chain::preverify(&batch, threads as usize)).unwrap_or(0) as u64
 }
 
+/// Keeps the last few blocks' end states in directory `path` (NUL-terminated)
+/// and loads those already there. Returns how many were loaded, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_set_state_dir(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    let Ok(p) = (unsafe { std::ffi::CStr::from_ptr(path) }).to_str() else { return -1 };
+    std::panic::catch_unwind(|| crate::chain::set_state_dir(std::path::Path::new(p)) as i32).unwrap_or(-1)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
+    match unsafe { id_arg(id32) } {
+        Some(id) => crate::chain::cached(&id).is_some() as i32,
+        None => 0,
+    }
+}
+
 /// Whether block `id32`'s end state is cached (1) or not (0).
 /// Block `id32`'s cached end state (the game's save state), gzip; for get_sm64_state. Same
 /// return convention as `sm64pow_decode_raw`; SIZE_MAX when it isn't cached.
@@ -166,14 +204,6 @@ pub extern "C" fn sm64pow_end_state_gz(id32: *const u8, out: *mut u8, cap: usize
             set_error("the block's end state isn't cached".into());
             usize::MAX
         }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_has_state(id32: *const u8) -> i32 {
-    match unsafe { id_arg(id32) } {
-        Some(id) => crate::chain::cached(&id).is_some() as i32,
-        None => 0,
     }
 }
 
@@ -207,205 +237,6 @@ pub extern "C" fn sm64pow_block_event(id32: *const u8, out: *mut c_char, cap: us
         }
     }
     name.len()
-}
-
-/// A proof's start: 0 from the parent's end state, 1 from power-on, -1 if it
-/// doesn't decode.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_proof_start(proof: *const u8, len: usize) -> i32 {
-    crate::proof::proof_start(blob_arg(proof, len)).map_or(-1, |s| s as i32)
-}
-
-/// The time limit (frames) of a block at retarget `difficulty` timestamped
-/// `elapsed_seconds` after its parent (continuous in time).
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_max_frames(difficulty: u64, elapsed_seconds: u64) -> u32 {
-    rules().max_frames(difficulty, elapsed_seconds)
-}
-
-/// The hold policy (`chain::hold_until`): 0 to process the block now, else
-/// the unix second until which to hold it. `restart_delay` 0 for no restart.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_hold_until(difficulty: u64, parent_ts: u64, block_ts: u64, now: u64, frames: u32, restart_delay: u64) -> u64 {
-    crate::chain::hold_until(difficulty, parent_ts, block_ts, now, frames, restart_delay).unwrap_or(0)
-}
-
-/// Whether fork choice counts blocks (`Rules::weigh_by_blocks`).
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_weigh_by_blocks() -> bool {
-    rules().weigh_by_blocks()
-}
-
-/// No block but the genesis block may be timestamped before this.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_launch_timestamp() -> u64 {
-    rules().launch_timestamp()
-}
-
-/// How many seconds earlier a power-on restart on top of a parent with this
-/// progress takes its limit (`Rules::restart_delay`); -1: not allowed.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_restart_delay(stars: u32, keys: u32, grand_star: bool) -> i64 {
-    let p = crate::rules::Progress { stars, keys, grand_star, star_flags: [0; 26] };
-    rules().restart_delay(&p).map_or(-1, |c| c.min(i64::MAX as u64) as i64)
-}
-
-/// The poke streams' mix intervals at `difficulty` (simulated frames between
-/// mixes of the game state into the timing and pad streams; 0: never).
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_mix(difficulty: u64, timing_mix: *mut u32, pad_mix: *mut u32) {
-    let p = params(difficulty);
-    unsafe {
-        if !timing_mix.is_null() {
-            *timing_mix = p.rng.timing_mix;
-        }
-        if !pad_mix.is_null() {
-            *pad_mix = p.rng.pad_mix;
-        }
-    }
-}
-
-/// The task at `difficulty`: frame limit, random frames per window, window
-/// length and burst length.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_params(
-    difficulty: u64,
-    max_frames: *mut u32,
-    random_amount: *mut u32,
-    window_length: *mut u32,
-    burst_length: *mut u32,
-) {
-    let p = params(difficulty);
-    unsafe {
-        if !max_frames.is_null() {
-            *max_frames = p.max_frames;
-        }
-        if !random_amount.is_null() {
-            *random_amount = p.rng.random_amount;
-        }
-        if !window_length.is_null() {
-            *window_length = p.rng.window_length;
-        }
-        if !burst_length.is_null() {
-            *burst_length = p.rng.random_burst_length;
-        }
-    }
-}
-
-/// Copies this thread's last error message (NUL terminated, truncated to `cap`).
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_last_error(buf: *mut c_char, cap: usize) -> usize {
-    let msg = LAST_ERROR.with(|e| e.borrow().clone());
-    if buf.is_null() || cap == 0 {
-        return msg.len();
-    }
-    let n = msg.len().min(cap - 1);
-    unsafe {
-        std::ptr::copy_nonoverlapping(msg.as_ptr(), buf as *mut u8, n);
-        *buf.add(n) = 0;
-    }
-    n
-}
-
-/// The RNG seed for a block from `cn_fast_hash(hashing blob)` (32 bytes).
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_seed(hash32: *const u8) -> u32 {
-    let h: &[u8; 32] = unsafe { &*(hash32 as *const [u8; 32]) };
-    seed_from_hash(h)
-}
-
-/// What a block id commits to for this proof blob (32 bytes into `out32`).
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_proof_id(blob: *const u8, len: usize, out32: *mut u8) {
-    let bytes: &[u8] = if blob.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(blob, len) } };
-    let id = std::panic::catch_unwind(|| proof_id(bytes)).unwrap_or([0xff; 32]);
-    unsafe { std::ptr::copy_nonoverlapping(id.as_ptr(), out32, 32) };
-}
-
-/// The retargeted difficulty. `timestamps` and `cumulative` (as low/high
-/// 64-bit halves) are `n` blocks, oldest first.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_next_difficulty(
-    timestamps: *const u64,
-    cumulative_lo: *const u64,
-    cumulative_hi: *const u64,
-    n: usize,
-) -> u64 {
-    if n == 0 || timestamps.is_null() || cumulative_lo.is_null() || cumulative_hi.is_null() {
-        return 1;
-    }
-    let (ts, lo, hi) = unsafe {
-        (
-            std::slice::from_raw_parts(timestamps, n),
-            std::slice::from_raw_parts(cumulative_lo, n),
-            std::slice::from_raw_parts(cumulative_hi, n),
-        )
-    };
-    let cd: Vec<u128> = lo.iter().zip(hi).map(|(&l, &h)| ((h as u128) << 64) | l as u128).collect();
-    std::panic::catch_unwind(|| rules().next_difficulty(ts, &cd)).unwrap_or(1).max(1)
-}
-
-/// The difficulty a block must meet, given the retargeted one and the
-/// seconds between the block's timestamp and its parent's.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_effective_difficulty(difficulty: u64, elapsed_seconds: u64) -> u64 {
-    rules().effective_difficulty(difficulty, elapsed_seconds).max(1)
-}
-
-/// Wanted seconds between blocks.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_target_seconds() -> u64 {
-    rules().target_seconds()
-}
-
-/// Copies the active rules' name and goal (NUL terminated) for the RPC.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_rules_info(name: *mut c_char, name_cap: usize, goal: *mut c_char, goal_cap: usize) {
-    fn put(s: &str, buf: *mut c_char, cap: usize) {
-        if buf.is_null() || cap == 0 {
-            return;
-        }
-        let n = s.len().min(cap - 1);
-        unsafe {
-            std::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
-            *buf.add(n) = 0;
-        }
-    }
-    put(rules().name(), name, name_cap);
-    put(rules().goal(), goal, goal_cap);
-}
-
-fn copy_out(bytes: &[u8], out: *mut u8, cap: usize) -> usize {
-    if !out.is_null() && cap >= bytes.len() {
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
-    }
-    bytes.len()
-}
-
-fn blob_arg<'a>(blob: *const u8, len: usize) -> &'a [u8] {
-    if blob.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(blob, len) } }
-}
-
-/// Decodes a proof blob to its inputs (the non-poked frames' pads, 4 bytes
-/// each, codec-free). Returns the byte length (call with `out` NULL to size
-/// the buffer; nothing is written unless `cap` is big enough), or
-/// `usize::MAX` if the blob does not decode.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_decode_raw(blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
-    match crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize) {
-        Ok(pr) => copy_out(&crate::proof::Raw.encode(&pr.inputs), out, cap),
-        Err(e) => {
-            set_error(e.to_string());
-            usize::MAX
-        }
-    }
-}
-
-/// How many frames a proof's run lasted (0 if it doesn't decode).
-#[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_proof_frames(blob: *const u8, len: usize) -> u32 {
-    let b = blob_arg(blob, len);
-    crate::proof::decode_proof(b, rules().max_frames_any() as usize).map_or_else(|_| crate::proof::split_blob(b).map_or(0, |x| if crate::statecodec::state_codec(x.2).is_some() { x.0 } else { 0 }), |pr| pr.frames)
 }
 
 /// The pads block `id32`'s run played on every frame, pokes regenerated
@@ -476,6 +307,45 @@ pub extern "C" fn sm64pow_wanted_block(id32: *const u8, parent32: *const u8, gap
     }
 }
 
+// ---- Proof blobs (proof.rs, proof_id.rs) and the seed ----
+
+/// What a block id commits to for this proof blob (32 bytes into `out32`).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_proof_id(blob: *const u8, len: usize, out32: *mut u8) {
+    let bytes: &[u8] = if blob.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(blob, len) } };
+    let id = std::panic::catch_unwind(|| proof_id(bytes)).unwrap_or([0xff; 32]);
+    unsafe { std::ptr::copy_nonoverlapping(id.as_ptr(), out32, 32) };
+}
+
+/// A proof's start: 0 from the parent's end state, 1 from power-on, -1 if it
+/// doesn't decode.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_proof_start(proof: *const u8, len: usize) -> i32 {
+    crate::proof::proof_start(blob_arg(proof, len)).map_or(-1, |s| s as i32)
+}
+
+/// How many frames a proof's run lasted (0 if it doesn't decode).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_proof_frames(blob: *const u8, len: usize) -> u32 {
+    let b = blob_arg(blob, len);
+    crate::proof::decode_proof(b, rules().max_frames_any() as usize).map_or_else(|_| crate::proof::split_blob(b).map_or(0, |x| if crate::statecodec::state_codec(x.2).is_some() { x.0 } else { 0 }), |pr| pr.frames)
+}
+
+/// Decodes a proof blob to its inputs (the non-poked frames' pads, 4 bytes
+/// each, codec-free). Returns the byte length (call with `out` NULL to size
+/// the buffer; nothing is written unless `cap` is big enough), or
+/// `usize::MAX` if the blob does not decode.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_decode_raw(blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
+    match crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize) {
+        Ok(pr) => copy_out(&crate::proof::Raw.encode(&pr.inputs), out, cap),
+        Err(e) => {
+            set_error(e.to_string());
+            usize::MAX
+        }
+    }
+}
+
 /// Re-encodes a proof blob with the smallest codec (the block id does not
 /// change). Same return convention as `sm64pow_decode_raw`.
 #[unsafe(no_mangle)]
@@ -485,6 +355,127 @@ pub extern "C" fn sm64pow_reencode(blob: *const u8, len: usize, out: *mut u8, ca
         Err(e) => {
             set_error(e.to_string());
             usize::MAX
+        }
+    }
+}
+
+/// The RNG seed for a block from `cn_fast_hash(hashing blob)` (32 bytes).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_seed(hash32: *const u8) -> u32 {
+    let h: &[u8; 32] = unsafe { &*(hash32 as *const [u8; 32]) };
+    seed_from_hash(h)
+}
+
+// ---- The rules (rules.rs) and the hold policy (hold.rs) ----
+
+/// The retargeted difficulty. `timestamps` and `cumulative` (as low/high
+/// 64-bit halves) are `n` blocks, oldest first.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_next_difficulty(
+    timestamps: *const u64,
+    cumulative_lo: *const u64,
+    cumulative_hi: *const u64,
+    n: usize,
+) -> u64 {
+    if n == 0 || timestamps.is_null() || cumulative_lo.is_null() || cumulative_hi.is_null() {
+        return 1;
+    }
+    let (ts, lo, hi) = unsafe {
+        (
+            std::slice::from_raw_parts(timestamps, n),
+            std::slice::from_raw_parts(cumulative_lo, n),
+            std::slice::from_raw_parts(cumulative_hi, n),
+        )
+    };
+    let cd: Vec<u128> = lo.iter().zip(hi).map(|(&l, &h)| ((h as u128) << 64) | l as u128).collect();
+    std::panic::catch_unwind(|| rules().next_difficulty(ts, &cd)).unwrap_or(1).max(1)
+}
+
+/// The difficulty a block must meet, given the retargeted one and the
+/// seconds between the block's timestamp and its parent's.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_effective_difficulty(difficulty: u64, elapsed_seconds: u64) -> u64 {
+    rules().effective_difficulty(difficulty, elapsed_seconds).max(1)
+}
+
+/// Wanted seconds between blocks.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_target_seconds() -> u64 {
+    rules().target_seconds()
+}
+
+/// The time limit (frames) of a block at retarget `difficulty` timestamped
+/// `elapsed_seconds` after its parent (continuous in time).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_max_frames(difficulty: u64, elapsed_seconds: u64) -> u32 {
+    rules().max_frames(difficulty, elapsed_seconds)
+}
+
+/// The hold policy (`chain::hold_until`): 0 to process the block now, else
+/// the unix second until which to hold it. `restart_delay` 0 for no restart.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_hold_until(difficulty: u64, parent_ts: u64, block_ts: u64, now: u64, frames: u32, restart_delay: u64) -> u64 {
+    crate::chain::hold_until(difficulty, parent_ts, block_ts, now, frames, restart_delay).unwrap_or(0)
+}
+
+/// Whether fork choice counts blocks (`Rules::weigh_by_blocks`).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_weigh_by_blocks() -> bool {
+    rules().weigh_by_blocks()
+}
+
+/// No block but the genesis block may be timestamped before this.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_launch_timestamp() -> u64 {
+    rules().launch_timestamp()
+}
+
+/// How many seconds earlier a power-on restart on top of a parent with this
+/// progress takes its limit (`Rules::restart_delay`); -1: not allowed.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_restart_delay(stars: u32, keys: u32, grand_star: bool) -> i64 {
+    let p = crate::rules::Progress { stars, keys, grand_star, star_flags: [0; 26] };
+    rules().restart_delay(&p).map_or(-1, |c| c.min(i64::MAX as u64) as i64)
+}
+
+/// The task at `difficulty`: frame limit, random frames per window, window
+/// length and burst length.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_params(
+    difficulty: u64,
+    max_frames: *mut u32,
+    random_amount: *mut u32,
+    window_length: *mut u32,
+    burst_length: *mut u32,
+) {
+    let p = params(difficulty);
+    unsafe {
+        if !max_frames.is_null() {
+            *max_frames = p.max_frames;
+        }
+        if !random_amount.is_null() {
+            *random_amount = p.rng.random_amount;
+        }
+        if !window_length.is_null() {
+            *window_length = p.rng.window_length;
+        }
+        if !burst_length.is_null() {
+            *burst_length = p.rng.random_burst_length;
+        }
+    }
+}
+
+/// The poke streams' mix intervals at `difficulty` (simulated frames between
+/// mixes of the game state into the timing and pad streams; 0: never).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_mix(difficulty: u64, timing_mix: *mut u32, pad_mix: *mut u32) {
+    let p = params(difficulty);
+    unsafe {
+        if !timing_mix.is_null() {
+            *timing_mix = p.rng.timing_mix;
+        }
+        if !pad_mix.is_null() {
+            *pad_mix = p.rng.pad_mix;
         }
     }
 }
@@ -510,4 +501,21 @@ pub extern "C" fn sm64pow_probs(difficulty: u64, a: *mut f32, b: *mut f32, z: *m
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_reseed_frames(difficulty: u64) -> u32 {
     params(difficulty).reseed_frames
+}
+
+/// Copies the active rules' name and goal (NUL terminated) for the RPC.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_rules_info(name: *mut c_char, name_cap: usize, goal: *mut c_char, goal_cap: usize) {
+    fn put(s: &str, buf: *mut c_char, cap: usize) {
+        if buf.is_null() || cap == 0 {
+            return;
+        }
+        let n = s.len().min(cap - 1);
+        unsafe {
+            std::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
+            *buf.add(n) = 0;
+        }
+    }
+    put(rules().name(), name, name_cap);
+    put(rules().goal(), goal, goal_cap);
 }
