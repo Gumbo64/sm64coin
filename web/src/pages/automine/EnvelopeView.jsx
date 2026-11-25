@@ -12,7 +12,8 @@ import { frames as fmtFrames } from '../../lib/format.js';
 // (the block is valid where a run reaches the star before it). A new step has a new target: the chart resets.
 // (The time-limit chart with the workers' finished runs is lib/LimitChart.jsx, drawn by VizPanel's VizSide.)
 
-const W = 640, H = 240, L = 44, R = 10, T = 10, B = 26;
+// Drawn for the sidebar (about 310 px wide; stacked full width on phones): at 640 px wide its 10 px text was scaled to about 5 px.
+const W = 340, H = 220, L = 40, R = 8, T = 10, B = 24;
 const BAND = ['#94a3b8', '#60a5fa', '#a78bfa', '#4ade80', '#fb923c', '#f472b6'];
 const COURSE_LEVEL = [9, 24, 12, 5, 4, 7, 22, 8, 23, 10, 11, 36, 13, 14, 15];
 const PAINTING = { bob: 'Bob-omb Battlefield', wf: "Whomp's Fortress", jrb: 'Jolly Roger Bay', ccm: 'Cool, Cool Mountain', bbh: "Big Boo's Haunt", hmc: 'Hazy Maze Cave', lll: 'Lethal Lava Land', ssl: 'Shifting Sand Land', ddd: 'Dire, Dire Docks', sl: "Snowman's Land", wdw: 'Wet-Dry World', ttm: 'Tall, Tall Mountain', thi: 'Tiny-Huge Island', ttc: 'Tick Tock Clock', rr: 'Rainbow Ride' };
