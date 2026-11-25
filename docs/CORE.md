@@ -57,8 +57,8 @@ C++ glue in the fork:
    (`get_block_id_blob`). Before any replay, `sm64_sig` must verify with the
    miner key the coinbase commits (`chain::verify_signed_block`). `proof_id` hashes the decoded run for codecs 0-2 and
    the canonical bytes for codecs 3-5.
-6. **Timestamp**: strictly after the parent, not before the network's launch
-   (`Rules::launch_timestamp`), and at most 120 s ahead of the node's clock
+6. **Timestamp**: strictly after the parent (v0.4: no launch-time floor; `Rules::launch_timestamp` is 0),
+   and at most 120 s ahead of the node's clock
    (`Blockchain::sm64_check_timestamp`, `CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT`).
 7. **Hold** (relay policy, not consensus): a block extending the tip that is
    valid at its own timestamp but too long for the limit by the node's clock
@@ -150,7 +150,7 @@ markers. Here they are grouped by what they do.
 - `src/CMakeLists.txt:93`, `src/cryptonote_basic/CMakeLists.txt:69`: add and link the `sm64coin` library.
 - `src/cryptonote_basic/cryptonote_basic.h:594-612`: `block::sm64_proof`, the new last field of the block blob (at most `SM64COIN_MAX_PROOF_BYTES` = 256 KiB).
 - `src/cryptonote_basic/cryptonote_format_utils.cpp:1479-1500`: `get_block_id_blob`: the block id also commits to `proof_id(sm64_proof)`.
-- `src/cryptonote_core/blockchain.cpp:5836-6117`: the hooks: `sm64_parent_timestamp`, `sm64_check_timestamp` (after the parent, not before launch), `sm64_effective_difficulty`, `sm64_seed` (timestamp zeroed), `sm64_parent_ref`, `sm64_rebuild`, `sm64_check_proof`, `sm64_played`, `sm64_cycle`, `sm64_progress`, `sm64_hold`, `sm64_take_due`, `sm64_held_until`.
+- `src/cryptonote_core/blockchain.cpp:5836-6117`: the hooks: `sm64_parent_timestamp`, `sm64_check_timestamp` (after the parent), `sm64_effective_difficulty`, `sm64_seed` (timestamp zeroed), `sm64_parent_ref`, `sm64_rebuild`, `sm64_check_proof`, `sm64_played`, `sm64_cycle`, `sm64_progress`, `sm64_hold`, `sm64_take_due`, `sm64_held_until`.
 - `blockchain.cpp:4113, 4131, 4183` (`handle_block_to_main_chain`): timestamp check, retarget difficulty, `sm64_check_proof` in place of `check_hash`.
 - `blockchain.cpp:1931, 1949, 1976` (`handle_alternative_block`): the same three for alternative chains.
 - `blockchain.cpp:2110`: fork choice by block count (`weigh_by_blocks`) instead of cumulative difficulty.
