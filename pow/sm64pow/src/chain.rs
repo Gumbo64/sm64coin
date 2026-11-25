@@ -231,12 +231,23 @@ pub fn signed_run(seed: &Seed, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) 
     Ok((key, crate::equivocation::SignedRun { proof_id, frames, sig: *sig }))
 }
 
+/// [`signed_run`] and the one-run-per-key rule (equivocation.rs): what this
+/// signed run is for its template, the first run seen, a copy, or a second
+/// different run (evidence is kept and queued for relay). No replay; the
+/// block is not judged valid or invalid by it (consensus never rejects a
+/// block for equivocation: only relay and building policy follow).
+pub fn claim_signed_run(seed: &Seed, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> std::result::Result<crate::equivocation::Claim, String> {
+    let (key, run) = signed_run(seed, blob, extra_nonce, sig)?;
+    Ok(crate::equivocation::policy().lock().unwrap_or_else(|e| e.into_inner()).claim(&seed.0, &key, &run))
+}
+
 /// [`verify_block`] for a signed block (every block but the genesis block
 /// from v0.3): the signature is checked first (about 0.1 ms), so a block
 /// without a valid signature by its coinbase's miner key, a third party's
-/// variant of someone else's run included, never costs a replay.
+/// variant of someone else's run included, never costs a replay. A block that
+/// passes also counts as its template's run for the one-run-per-key rule.
 pub fn verify_signed_block(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> Result<BlockVerdict> {
-    if let Err(why) = signed_run(seed, blob, extra_nonce, sig) {
+    if let Err(why) = claim_signed_run(seed, blob, extra_nonce, sig) {
         crate::admit::note_invalid();
         return Ok(BlockVerdict::Invalid(why));
     }

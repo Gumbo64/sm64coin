@@ -1,34 +1,40 @@
-//! Equivocation: one miner key, two runs for the same template (layer 5,
-//! relay policy in the style of admit.rs; nothing here changes validity).
+//! Equivocation: one miner key, one run per template (layer 5, relay policy
+//! in the style of admit.rs; nothing here changes validity).
 //!
 //! With signed proofs (sign.rs) only the miner can make another valid run
 //! for its template, and the template commits the key, so "same key" and
-//! "same seed" are the same thing. What a miner may do with that:
+//! "same seed" are the same thing. **One run per key**: a miner signs at
+//! most one run for its template. Any two signed runs of one seed that
+//! differ (another `proof_id`, or another length) are equivocation, whatever
+//! their lengths and whether or not either block is valid yet. There is no
+//! length comparison and no "a shorter run replaces the held one": a miner
+//! that wants to keep improving keeps its improvements private and
+//! publishes its best run once, just before it is due (docs/V0.3-NEW-CHAIN.md,
+//! "Why one run per key"). A re-sent copy of the same run (same `proof_id`
+//! and length; signatures are deterministic, so also the same block, or the
+//! same run restamped) is just a duplicate.
 //!
-//! - **Before its block is valid** (held: hold.rs, `Blockchain::sm64_hold`)
-//!   it may submit any number of strictly shorter runs for the template;
-//!   each replaces the held one ([`held_replaces`]). That is the auction
-//!   working: never misbehaviour.
-//! - **After a block for the template is accepted** (it is in our chain),
-//!   another run for the same template arrives as an alternative block
-//!   at the same height ([`judge_sibling`]):
-//!   - the same run (same proof_id: a copy, a restamp): ignored;
-//!   - strictly shorter: ignored, no penalty, no tip takeover (otherwise a
-//!     miner could drip-feed late overrides of its own block);
-//!   - the same length, another run: **equivocation**. An honest miner only
-//!     ever signs strictly shorter runs, so two signed runs of one length
-//!     are proof of a deliberate split (e.g. A to half the network, A' to the
-//!     other half). The node keeps compact [`Evidence`] (both signed runs),
-//!     relays it (`NOTIFY_SM64_EVIDENCE`: [`Policy::take_outbox`], docs/V0.3-NEW-CHAIN.md) and
-//!     refuses to build on that template's block while it is childless
-//!     ([`Policy::avoid`], [`choose_parent`]): miners build a sibling, and
-//!     the equivocator's block loses the race;
-//!   - strictly longer: ignored. See [`LONGER_IS_EVIDENCE`] for why it is
-//!     not evidence by default.
+//! What a node does ([`Policy::claim`], called for every block whose
+//! signature checked, on arrival and again when it is verified, and
+//! [`judge_sibling`] for a block already in our chain):
+//!
+//! - the first signed run it sees for a seed is the **claim**: it goes
+//!   through the normal path (held until due, replayed, accepted);
+//! - a second, different signed run for the seed is **not replayed and not
+//!   relayed** as a block; the node keeps compact [`Evidence`] (272 bytes: tag,
+//!   seed, key, two `(proof_id, frames, sig)`, verifiable without the
+//!   blocks), logs it, relays it (`NOTIFY_SM64_EVIDENCE`:
+//!   [`Policy::take_outbox`]);
+//! - the **first run stays as it was**: held as normal, accepted when due. But
+//!   once a template has evidence, the node refuses to build on that
+//!   template's block while it is childless ([`Policy::avoid`],
+//!   [`choose_parent`]): miners build a sibling, and the equivocator's block
+//!   loses the race. Nothing is penalised on the relaying peer (an honest
+//!   node may relay either run).
 //!
 //! Evidence verifies without the blocks: both signatures sign
 //! `(seed, proof_id, frames)` ([`crate::sign::message`]). Whether the key is
-//! the template's own is checked against the coinbase of our block with that
+//! the template's own is checked against the coinbase of the block with that
 //! seed ([`Policy::note_key`]), so evidence about a seed we never saw waits.
 //!
 //! Read next: chain.rs.
@@ -36,15 +42,6 @@
 use crate::admit::Bounded;
 use crate::sign;
 use std::sync::{Mutex, OnceLock};
-
-/// Whether a strictly longer second run (after the first was accepted) is
-/// equivocation evidence too. The design list says "equal-or-longer"; it is
-/// off because an honest miner produces exactly that pattern: it submits run
-/// A, then a shorter A' before either is valid; A' becomes valid first and
-/// propagates, but a node that held A and had not seen A' when A became due
-/// relays A, and a third node then sees A (longer) after A' (accepted).
-/// Equal lengths never happen honestly. Turn it on only with a margin rule.
-pub const LONGER_IS_EVIDENCE: bool = false;
 
 const SEEDS: usize = 65536;
 
@@ -70,21 +67,19 @@ const EVIDENCE_TAG: &[u8; 8] = b"sm64ev1\0";
 pub const EVIDENCE_LEN: usize = 8 + 32 + 32 + 2 * (32 + 4 + 64);
 
 impl Evidence {
-    /// Whether this is evidence at all: two different runs, lengths that an
-    /// honest miner never signs in this order, both signed by `key`.
+    /// Whether this is evidence at all: two different runs (another
+    /// `proof_id` or another length), both signed by `key` for `seed`.
     pub fn verify(&self) -> bool {
-        if self.a.proof_id == self.b.proof_id {
+        if self.a.proof_id == self.b.proof_id && self.a.frames == self.b.frames {
             return false;
         }
-        let lengths = self.a.frames == self.b.frames || LONGER_IS_EVIDENCE;
-        lengths
-            && sign::verify(&self.key, &sign::message(&self.seed, &self.a.proof_id, self.a.frames), &self.a.sig)
+        sign::verify(&self.key, &sign::message(&self.seed, &self.a.proof_id, self.a.frames), &self.a.sig)
             && sign::verify(&self.key, &sign::message(&self.seed, &self.b.proof_id, self.b.frames), &self.b.sig)
     }
 
     /// The order of the two runs doesn't matter: `a` is the smaller proof_id.
     fn canonical(mut self) -> Self {
-        if self.b.proof_id < self.a.proof_id {
+        if (self.b.proof_id, self.b.frames) < (self.a.proof_id, self.a.frames) {
             std::mem::swap(&mut self.a, &mut self.b);
         }
         self
@@ -118,29 +113,20 @@ impl Evidence {
     }
 }
 
-/// Whether a new run for the template of a held (not yet valid) block
-/// replaces it: strictly shorter only.
-pub fn held_replaces(held_frames: u32, new_frames: u32) -> bool {
-    new_frames < held_frames
-}
-
-/// What to do with a second run for the template of an accepted block.
+/// What to do with another run for the template of a block in our chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sibling {
-    /// The same run (a copy or a restamp).
+    /// The same run (a copy or a restamp): a duplicate.
     SameRun,
-    /// Strictly shorter, arriving after the block was accepted: ignored.
-    LateShorter,
-    /// Strictly longer: ignored.
-    Longer,
     /// The signature doesn't verify: an invalid block.
     BadSignature,
-    /// Two signed runs of the same length (or longer, see [`LONGER_IS_EVIDENCE`]).
+    /// Two different signed runs of one template: one run per key.
     Equivocation(Evidence),
 }
 
 /// Judges `new` against `accepted` (our block for the same template, `seed`,
-/// whose coinbase commits `key`).
+/// whose coinbase commits `key`): the same run is a duplicate, any other
+/// signed run is equivocation, whatever its length.
 pub fn judge_sibling(seed: &[u8; 32], key: &[u8; 32], accepted: &SignedRun, new: &SignedRun) -> Sibling {
     if new.proof_id == accepted.proof_id && new.frames == accepted.frames {
         return Sibling::SameRun;
@@ -148,17 +134,24 @@ pub fn judge_sibling(seed: &[u8; 32], key: &[u8; 32], accepted: &SignedRun, new:
     if !sign::verify(key, &sign::message(seed, &new.proof_id, new.frames), &new.sig) {
         return Sibling::BadSignature;
     }
-    if new.frames < accepted.frames {
-        return Sibling::LateShorter;
-    }
-    if new.frames > accepted.frames && !LONGER_IS_EVIDENCE {
-        return Sibling::Longer;
-    }
     Sibling::Equivocation(Evidence { seed: *seed, key: *key, a: *accepted, b: *new }.canonical())
+}
+
+/// What [`Policy::claim`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Claim {
+    /// The first signed run seen for this template (now its claim).
+    First,
+    /// The same run again.
+    Same,
+    /// A different run than the claim: evidence (already kept, queued for relay when new).
+    Equivocation(Evidence),
 }
 
 /// What the node knows: template keys and evidence. One per process ([`policy`]).
 pub struct Policy {
+    /// The first signed run seen per template.
+    claims: Bounded<[u8; 32], SignedRun>,
     /// The miner key of every template whose signature we checked.
     keys: Bounded<[u8; 32], [u8; 32]>,
     evidence: Bounded<[u8; 32], Evidence>,
@@ -170,7 +163,7 @@ pub struct Policy {
 
 impl Default for Policy {
     fn default() -> Self {
-        Policy { keys: Bounded::new(SEEDS), evidence: Bounded::new(SEEDS), outbox: Vec::new(), received: 0 }
+        Policy { claims: Bounded::new(SEEDS), keys: Bounded::new(SEEDS), evidence: Bounded::new(SEEDS), outbox: Vec::new(), received: 0 }
     }
 }
 
@@ -178,6 +171,24 @@ impl Policy {
     /// A signature checked: template `seed` commits miner key `key`.
     pub fn note_key(&mut self, seed: &[u8; 32], key: &[u8; 32]) {
         self.keys.insert(*seed, *key);
+    }
+
+    /// A run whose signature checked (`key` is its coinbase's miner key):
+    /// the first for its seed is the claim; any different one is
+    /// equivocation, and its evidence is kept and queued for relay.
+    pub fn claim(&mut self, seed: &[u8; 32], key: &[u8; 32], run: &SignedRun) -> Claim {
+        match self.claims.get(seed).copied() {
+            None => {
+                self.claims.insert(*seed, *run);
+                Claim::First
+            }
+            Some(first) if first.proof_id == run.proof_id && first.frames == run.frames => Claim::Same,
+            Some(first) => {
+                let e = Evidence { seed: *seed, key: *key, a: first, b: *run }.canonical();
+                self.add(e);
+                Claim::Equivocation(e)
+            }
+        }
     }
 
     /// Takes evidence (found here or received from a peer). True when it is
@@ -241,16 +252,41 @@ mod tests {
     }
 
     #[test]
-    fn shorter_runs_supersede_only_while_held() {
-        assert!(held_replaces(1000, 999));
-        assert!(!held_replaces(1000, 1000));
-        assert!(!held_replaces(1000, 1001));
+    fn any_second_different_run_is_equivocation_whatever_its_length() {
         let k = Keypair::from_entropy(&[1; 32]).unwrap();
         let seed = [9; 32];
         let a = run(&k, &seed, 1, 1000);
-        assert_eq!(judge_sibling(&seed, &k.public, &a, &run(&k, &seed, 2, 900)), Sibling::LateShorter, "after acceptance: ignored, never misbehaviour");
         assert_eq!(judge_sibling(&seed, &k.public, &a, &a), Sibling::SameRun);
-        assert_eq!(judge_sibling(&seed, &k.public, &a, &run(&k, &seed, 3, 1100)), Sibling::Longer);
+        for (pid, frames) in [(2, 900), (3, 1000), (4, 1100)] {
+            assert!(matches!(judge_sibling(&seed, &k.public, &a, &run(&k, &seed, pid, frames)), Sibling::Equivocation(e) if e.verify()), "shorter, equal, longer: all evidence ({frames})");
+        }
+        // The same proof at another length (the length is signed too) is another run.
+        let b = run(&k, &seed, 1, 999);
+        assert!(matches!(judge_sibling(&seed, &k.public, &a, &b), Sibling::Equivocation(e) if e.verify()));
+    }
+
+    #[test]
+    fn the_first_claim_stands_and_a_different_second_run_is_evidence_once() {
+        let k = Keypair::from_entropy(&[6; 32]).unwrap();
+        let (seed, other) = ([5; 32], [6; 32]);
+        let mut p = Policy::default();
+        p.note_key(&seed, &k.public);
+        let first = run(&k, &seed, 1, 1000);
+        assert_eq!(p.claim(&seed, &k.public, &first), Claim::First);
+        assert_eq!(p.claim(&seed, &k.public, &first), Claim::Same, "a re-sent copy is a duplicate");
+        assert!(!p.avoid(&seed) && p.take_outbox().is_none());
+        // Another template of the same key is its own claim (it is another seed).
+        assert_eq!(p.claim(&other, &k.public, &run(&k, &other, 1, 10)), Claim::First);
+        // A shorter run: not a replacement, evidence.
+        let shorter = run(&k, &seed, 2, 600);
+        let Claim::Equivocation(e) = p.claim(&seed, &k.public, &shorter) else { panic!("shorter is evidence too") };
+        assert!(e.verify() && p.avoid(&seed));
+        assert_eq!(p.take_outbox(), Some(e));
+        // A third run, or the second again: the evidence is kept, relayed once.
+        assert!(matches!(p.claim(&seed, &k.public, &run(&k, &seed, 3, 5000)), Claim::Equivocation(_)));
+        assert!(matches!(p.claim(&seed, &k.public, &shorter), Claim::Equivocation(_)));
+        assert_eq!(p.take_outbox(), None);
+        assert_eq!(p.received, 1);
     }
 
     #[test]
