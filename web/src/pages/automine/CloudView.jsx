@@ -439,7 +439,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
           const p = layers[i].p;
           const [level, area] = fitted.split(':').map(Number);
           cb.current.onGoal?.({ level, area, pos: [Math.round(p.x), Math.round(p.y), Math.round(p.z)] });
-          cb.current.note?.(layers.length > 1 ? `floor ${i + 1} of ${layers.length} here (the same spot again picks the next floor down)` : '');
+          cb.current.note?.(`Floor ${i + 1}/${layers.length}`);
         };
         let downAt = null;
         // Touch: no shift key, so a long press (~500 ms, one finger, moved < 8 px) on the level sets the goal, and the
@@ -615,7 +615,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
         {sel ? (
           <span><b>{sel.manual ? 'Manual node' : 'Node'} {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame.toLocaleString()} ({clock(sel.frame)}){sel.progress ? ' · made progress' : ''}</span>
         ) : <span className="muted">{goalArm ? 'Tap the level where the goal should be.' : isTouchDevice() ? 'Tap a node to select it; long-press the level to set a goal.' : 'Click a node to select it; shift + click on the level sets a position goal.'}</span>}
-        {goal && <span className="muted small">Position goal ({goal.pos.join(', ')}) in {levelName(goal.level)}, area {goal.area}: the searches draw Mario::PosTime objectives to it.{goalNote ? ` ${goalNote}` : ''}</span>}
+        {goal && <span className="muted small">{goalNote ? <b title="Which floor layer under the pointer the goal landed on (top = 1); the same spot again within 3 s picks the next one down">{goalNote} · </b> : null}Position goal ({goal.pos.join(', ')}) in {levelName(goal.level)}, area {goal.area}: the searches draw Mario::PosTime objectives to it.</span>}
         {hub.manual && <span className="muted small">Last played segment: {hub.manual.nid != null ? `node ${hub.manual.nid} of worker ${hub.manual.w + 1}` : 'not in the tree'}, {hub.manual.frames} frames, finished at ({hub.manual.pos.map((x) => Math.round(x)).join(', ')}){hub.manual.note ? ` · ${hub.manual.note}` : ''}</span>}
       </div>
       <Toolbar label="Node actions">
