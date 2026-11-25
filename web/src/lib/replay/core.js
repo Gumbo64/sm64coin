@@ -27,7 +27,7 @@ export function blockProof(blk) {
   return bytes.slice(end - blk.sm64_proof_bytes, end);
 }
 
-/** `varint(frames) || start (0 parent, 1 power-on) || codec || body` (pow/sm64pow/src/proof.rs). */
+/** `varint(frames) || start (0 parent, 1 power-on) || input_hash (32) || codec || body` (v0.4, pow/sm64pow/src/commit.rs). */
 export function splitProof(p) {
   let frames = 0, shift = 0, i = 0;
   for (;;) {
@@ -37,8 +37,8 @@ export function splitProof(p) {
     shift += 7;
     if (!(b & 0x80)) break;
   }
-  if (i + 2 > p.length) throw new Error('bad proof: header');
-  return { frames, start: p[i], codec: p[i + 1], body: p.subarray(i + 2) };
+  if (i + 34 > p.length) throw new Error('bad proof: header');
+  return { frames, start: p[i], hash: p.subarray(i + 1, i + 33), codec: p[i + 33], body: p.subarray(i + 34) };
 }
 
 export const STATE_CODEC_MIN = 3;

@@ -62,13 +62,14 @@ export function flatToRaw(flat) {
   return out;
 }
 
-/** The unpoked inputs of a submitted proof (proofFromRun's layout: varint frames, start byte, codec 0, raw pads). */
+/** The unpoked inputs of a submitted proof (proofFromRun's layout: varint frames, start byte, input_hash (32), codec 0, raw pads). */
 export function proofInputs(hex) {
   const b = new Uint8Array(hex.length / 2);
   for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substr(i * 2, 2), 16);
   let i = 0, frames = 0, mul = 1;
   for (;;) { const x = b[i++]; frames += (x & 0x7f) * mul; if (x < 0x80) break; mul *= 128; }
   const power = b[i++] === 1;
+  i += 32; // the committed input_hash
   const codec = b[i++];
   if (codec !== 0) throw new Error(`proof codec ${codec}`);
   const pads = [];
