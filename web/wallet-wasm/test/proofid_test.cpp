@@ -1,5 +1,5 @@
-// proofid_test VECTORS.jsonl: sm64coin::proof_id (sm64coin_wasm.cpp, xz-embedded) against the ids the Rust
-// crate computed natively (pow/sm64pow/examples/proofid_vectors.rs). Prints a line per mismatch and a total.
+// proofid_test VECTORS.jsonl: sm64coin::proof_id (sm64coin_wasm.cpp) against the ids the Rust
+// crate computed natively (pow/sm64pow/examples/proofid_vectors_v04.rs, vectors-v04.jsonl). Prints a line per mismatch and a total.
 #include <cstdio>
 #include <cstring>
 #include <fstream>

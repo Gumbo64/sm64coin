@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   # The engine's proof_id (web/wallet-wasm/sm64coin_wasm.cpp) against ids the Rust crate computed
-  # (web/wallet-wasm/test/vectors.jsonl, from pow/sm64pow/examples/proofid_vectors.rs): a wallet that hashes
+  # (web/wallet-wasm/test/vectors-v04.jsonl, from pow/sm64pow/examples/proofid_vectors_v04.rs): a wallet that hashes
   # a proof differently computes other block ids. Native build (asan/ubsan), a few seconds. Not
   # continue-on-error: a drift shows as a failed job (the callers still build the site, see their `if`).
   proof-id:
