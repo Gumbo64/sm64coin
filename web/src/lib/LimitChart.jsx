@@ -8,6 +8,8 @@ import { maxFrames, MAX_RUN_FRAMES, MIN_RUN_FRAMES } from './rules.js';
 // Drawn for the Mine page's side column (about 310 px wide), so text stays at its size.
 const W = 320, H = 180, L = 44, R = 8, T = 8, B = 24;
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+// Axis labels: m:ss under an hour, then h:mm ("5:48" would read as minutes).
+const tickLabel = (s, step) => (step >= 3600 || s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}` : mmss(s));
 const fmin = (f) => `${(f / 1800).toFixed(f < 1800 ? 1 : 0)} min`;
 
 export default function LimitChart({ difficulty, parentTs, now, used, runs }) {
@@ -35,7 +37,8 @@ export default function LimitChart({ difficulty, parentTs, now, used, runs }) {
   }
   if (best !== Infinity) env += `L${x(Math.min(elapsed, tMax))},${y(best)}`;
   const yTicks = [600, 1800, 5400, 18000, 36000];
-  const xStep = tMax > 3600 ? 1200 : tMax > 1500 ? 600 : tMax > 600 ? 300 : tMax > 240 ? 120 : 60;
+  // At most ~5 labels whatever the span (the chart is ~270 px wide; long gaps since the parent run to hours).
+  const xStep = [60, 120, 300, 600, 1200, 1800, 3600, 7200, 10800, 21600, 43200, 86400].find((s) => tMax / s <= 5) ?? 86400 * Math.ceil(tMax / 86400 / 5);
   const xTicks = Array.from({ length: Math.floor(tMax / xStep) + 1 }, (_, i) => i * xStep);
   const limitNow = maxFrames(difficulty, elapsed);
   const onMove = (e) => {
@@ -57,7 +60,7 @@ export default function LimitChart({ difficulty, parentTs, now, used, runs }) {
       <svg viewBox={`0 0 ${W} ${H}`} onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img"
         aria-label={`Time limit now ${fmin(limitNow)} at difficulty ${difficulty}, ${mmss(elapsed)} after the last block`}>
         {yTicks.map((f) => <g key={f}><line x1={L} x2={W - R} y1={y(f)} y2={y(f)} className="grid" /><text x={L - 6} y={y(f) + 4} textAnchor="end" className="tick">{fmin(f)}</text></g>)}
-        {xTicks.map((t) => <text key={t} x={x(t)} y={H - 8} textAnchor="middle" className="tick">{mmss(t)}</text>)}
+        {xTicks.map((t) => <text key={t} x={x(t)} y={H - 8} textAnchor="middle" className="tick">{tickLabel(t, xStep)}</text>)}
         <path d={area} className="valid" />
         <path d={line} className="lim" />
         <line x1={x(Math.min(elapsed, tMax))} x2={x(Math.min(elapsed, tMax))} y1={T} y2={H - B} className="now" />
