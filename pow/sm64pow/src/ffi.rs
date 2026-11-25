@@ -1324,7 +1324,10 @@ pub extern "C" fn sm64pow_pool_offer(record: *const u8, len: usize) -> i32 {
     let b = blob_arg(record, len);
     match std::panic::catch_unwind(|| crate::pool::offer(b)) {
         Ok(Ok(Offer::New)) => 1,
-        Ok(Ok(Offer::Ignored)) => 0,
+        Ok(Ok(Offer::Ignored)) => {
+            set_error(crate::pool::IGNORED_WHY.with(|c| c.get()).to_string());
+            0
+        }
         Ok(Ok(Offer::Invalid(why))) => {
             set_error(why);
             -1

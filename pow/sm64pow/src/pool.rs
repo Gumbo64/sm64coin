@@ -100,8 +100,8 @@ impl Pool {
             while self.tips.len() > KEEP_TIPS {
                 self.tips.pop_front();
             }
+            self.relay.clear(); // what waited was for another tip (the daemon re-announces its tip often: only a new one clears)
         }
-        self.relay.clear(); // what waited was for another tip
         Ok(())
     }
 
@@ -112,29 +112,29 @@ impl Pool {
     /// The cheap checks (no replay). Ok(Admitted): replay it, then [`Pool::insert`].
     pub fn admit(&mut self, bytes: &[u8], judge: &dyn Judge) -> Result<Admitted, Offer> {
         if !crate::features::active().included_proofs {
-            return Err(Offer::Ignored);
+            return Err(ignored("included proofs are off"));
         }
         let window = self.window;
-        let Some(tip) = self.tips.back_mut() else { return Err(Offer::Ignored) };
+        let Some(tip) = self.tips.back_mut() else { return Err(ignored("no tip yet")) };
         let rec = records::decode_one(bytes).map_err(|e| Offer::Invalid(e.to_string()))?;
         let facts = rec.facts().map_err(|e| Offer::Invalid(e.to_string()))?;
         let w = &tip.winner;
         if facts.height != w.height || facts.prev_id != w.prev_id {
-            return Err(Offer::Ignored); // another height or parent: not for our tip
+            return Err(ignored("not for our tip (another height or parent)")); // another height or parent: not for our tip
         }
         if facts.key == w.key || facts.run.input_hash == w.input_hash {
-            return Err(Offer::Ignored); // the tip's own key or run
+            return Err(ignored("the tip's own key or run")); // the tip's own key or run
         }
         if tip.keys.contains(&facts.key) || tip.runs.contains(&facts.run.input_hash) {
-            return Err(Offer::Ignored); // one proof per key, one run once; the first stays
+            return Err(ignored("known (one proof per key, one run once)")); // one proof per key, one run once; the first stays
         }
         let archive = records::window_frames(w.difficulty, w.frames, window.archive_seconds);
         if facts.run.frames == 0 || facts.run.frames > archive || facts.run.frames > crate::rules::active().max_frames_any() {
-            return Err(Offer::Ignored); // outside our window (may be inside another tip's)
+            return Err(ignored("outside the proof window")); // outside our window (may be inside another tip's)
         }
         let order = (facts.run.frames, cn_fast_hash(&facts.seed));
         if tip.entries.len() >= window.cap && order > tip.entries[window.cap - 1].order {
-            return Err(Offer::Ignored); // the best `cap` would never include it
+            return Err(ignored("worse than the best cap records")); // the best `cap` would never include it
         }
         if !crate::sign::verify(&facts.key, &crate::sign::message(&facts.seed, &facts.run.input_hash, facts.run.frames), &rec.sig) {
             return Err(Offer::Invalid("the signature does not verify with the template's key".into()));
@@ -145,7 +145,7 @@ impl Pool {
             Some(_) => {}
         }
         if tip.replays >= REPLAY_BUDGET_PER_CAP * window.cap {
-            return Err(Offer::Ignored);
+            return Err(ignored("the replay budget for this parent is spent"));
         }
         tip.replays += 1;
         let leaf = facts.leaf(&rec.sig);
@@ -241,6 +241,16 @@ impl Pool {
 
 /// Offers `bytes` to `pool`: the cheap checks under its lock, the replay outside it (a replay
 /// takes seconds and templates must not wait for it), the insert under it again.
+thread_local! {
+    /// Why this thread's last offer was ignored (node logs; `sm64pow_pool_offer` reports it).
+    pub static IGNORED_WHY: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+fn ignored(why: &'static str) -> Offer {
+    IGNORED_WHY.with(|c| c.set(why));
+    Offer::Ignored
+}
+
 pub fn offer_with(pool: &Mutex<Pool>, bytes: &[u8], judge: &dyn Judge) -> anyhow::Result<Offer> {
     let a = match pool.lock().unwrap_or_else(|e| e.into_inner()).admit(bytes, judge) {
         Ok(a) => a,
