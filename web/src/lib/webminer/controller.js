@@ -397,11 +397,21 @@ class MinerController {
       try {
         validAt = (await daemon('get_block_template', { wallet_address: this.address, reserve_size: 0, sm64_frames: r.frames })).sm64_valid_at || 0;
       } catch { /* the node decides */ }
-      while (validAt - now() > SEND_AHEAD) {
+      for (let held = false; validAt - now() > SEND_AHEAD; held = true) {
         if (c.stopped || c.template !== t) return;
         this.setPhase('held');
-        say(`the run is over the time limit: valid at ${new Date(validAt * 1000).toLocaleTimeString()}, held until then (a new block first makes it worthless)`);
+        if (!held) say(`the run is over the time limit: valid at ${new Date(validAt * 1000).toLocaleTimeString()}, held until then (a new block first makes it worthless)`);
         await new Promise((res) => setTimeout(res, Math.min(30, validAt - now() - SEND_AHEAD) * 1000));
+        // The watch only restarts rounds that have workers (none while holding): look for a new tip here, or the
+        // miner would sit idle on a worthless run until its valid time.
+        let tip = null;
+        try { tip = (await daemon('get_info')).top_block_hash; } catch { /* node hiccup: look again next time */ }
+        if (c.stopped || c.template !== t) return;
+        if (tip && tip !== t.prev_hash) {
+          say('a new block landed while the run was held; the run was for the old tip');
+          hub.submission('stale', { height: t.height, frames: r.frames });
+          return;
+        }
       }
       this.setPhase('submitting');
       const info = await daemon('get_info');
