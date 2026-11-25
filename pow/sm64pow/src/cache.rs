@@ -17,10 +17,13 @@
 use crate::game::Progress;
 use crate::proof::Start;
 use crate::replay::{EndState, Parent, Played};
-use crate::emulator::generator;
 use crate::seed::Seed;
-use crate::game::read_progress;
+// Only the end states on disk (not in the browser build) need these.
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{emulator::generator, game::read_progress};
+#[cfg(not(target_arch = "wasm32"))]
 use anyhow::Result;
+#[cfg(not(target_arch = "wasm32"))]
 use sm64_binds::SaveState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
