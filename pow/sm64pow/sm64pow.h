@@ -171,6 +171,16 @@ int32_t sm64pow_set_features(uint32_t bits);
 /* The equal-length tie-break's final key (pof::TieKey): 0 signature hash (default), 1 seed hash, 2 first seen. */
 void sm64pow_set_tie_key(uint32_t k);
 
+/* v0.4 codec negotiation (codecs.rs, node policy): this node's advert (NOTIFY_SM64_CODECS, (id, version)
+ * pairs); a peer's set (32 bytes, a bit per id) from its advert (len 0: the baseline 0-2); what sending a
+ * blob to a peer needs (0 nothing, 1 a stateless transcode, 2 the run's inputs first: sm64pow_wanted_block);
+ * the blob re-encoded for the peer (same header, same block id; 0: send as is; SIZE_MAX error); a blob's codec id. */
+size_t sm64pow_codecs_advert(uint8_t *out, size_t cap);
+void sm64pow_codecs_mask(const uint8_t *advert, size_t len, uint8_t *out32);
+int32_t sm64pow_codecs_need(const uint8_t *proof, size_t len, const uint8_t *mask32);
+size_t sm64pow_transcode(const uint8_t *proof, size_t len, const uint8_t *inputs, size_t inputs_len, const uint8_t *mask32, uint8_t *out, size_t cap);
+int32_t sm64pow_proof_codec(const uint8_t *proof, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

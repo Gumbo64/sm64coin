@@ -1022,6 +1022,63 @@ pub extern "C" fn sm64pow_reencode(blob: *const u8, len: usize, out: *mut u8, ca
     }
 }
 
+// ---- Codec negotiation (codecs.rs, v0.4 node policy) ----
+
+fn mask_arg(mask32: *const u8) -> crate::codecs::Mask {
+    if mask32.is_null() {
+        return crate::codecs::Mask::baseline();
+    }
+    crate::codecs::Mask(unsafe { *(mask32 as *const [u8; 32]) })
+}
+
+/// This node's codec advert (NOTIFY_SM64_CODECS: `(id, version)` pairs). Same return convention
+/// as `sm64pow_decode_raw`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_codecs_advert(out: *mut u8, cap: usize) -> usize {
+    copy_out(&crate::codecs::advert(), out, cap)
+}
+
+/// A peer's codec set (32 bytes, one bit per id) from its advert (`len` 0: the baseline).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_codecs_mask(advert: *const u8, len: usize, out32: *mut u8) {
+    let m = crate::codecs::peer_mask(blob_arg(advert, len));
+    unsafe { std::ptr::copy_nonoverlapping(m.0.as_ptr(), out32, 32) };
+}
+
+/// What sending `blob` to a peer with set `mask32` (NULL: the baseline) needs: 0 nothing, 1 a
+/// stateless transcode, 2 the run's inputs first (state-coded; `sm64pow_wanted_block`).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_codecs_need(blob: *const u8, len: usize, mask32: *const u8) -> i32 {
+    crate::codecs::need(blob_arg(blob, len), &mask_arg(mask32)) as i32
+}
+
+/// The codec id of a committed proof blob, -1 if it has none.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_proof_codec(blob: *const u8, len: usize) -> i32 {
+    let b = blob_arg(blob, len);
+    if crate::features::committed() {
+        crate::codecs::codec_of(b).map_or(-1, |c| c as i32)
+    } else {
+        crate::proof::split_blob(b).map_or(-1, |x| x.2 as i32)
+    }
+}
+
+/// `blob` re-encoded for a peer with set `mask32` (the same header, so the same block id), in the
+/// smallest stateless codec it decodes; `inputs` (4 bytes per non-poked frame, may be NULL) for a
+/// state-coded blob. Same return convention as `sm64pow_decode_raw`; 0 bytes: send it as is.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_transcode(blob: *const u8, len: usize, inputs: *const u8, inputs_len: usize, mask32: *const u8, out: *mut u8, cap: usize) -> usize {
+    let ins = if inputs.is_null() { None } else { Some(blob_arg(inputs, inputs_len)) };
+    match crate::codecs::transcode(blob_arg(blob, len), ins, &mask_arg(mask32)) {
+        Ok(None) => 0,
+        Ok(Some(b)) => copy_out(&b, out, cap),
+        Err(e) => {
+            set_error(e.to_string());
+            usize::MAX
+        }
+    }
+}
+
 /// The first word of a seed hash (32 bytes), for display (see `seed_from_hash`).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_seed(hash32: *const u8) -> u32 {

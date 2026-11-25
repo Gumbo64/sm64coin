@@ -38,6 +38,7 @@
 //! [`statecodec`].
 
 // 1: pure
+pub mod codecs;
 pub mod commit;
 pub mod features;
 pub mod hold;

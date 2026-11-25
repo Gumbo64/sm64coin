@@ -202,7 +202,7 @@ pub fn open(blob: &[u8], max_frames: u32, state_ok: bool) -> std::result::Result
         return Err(Fault::Invalid(format!("{} frames exceeds the limit of {max_frames}", h.frames)));
     }
     let (&cid, body) = enc.split_first().ok_or_else(|| Fault::BadEncoding("no encoding".into()))?;
-    if state_ok && crate::statecodec::state_codec_enabled() && crate::statecodec::state_codec(cid).is_some() {
+    if state_ok && crate::statecodec::state_codec_enabled() && crate::statecodec::state_codec(cid).is_some() && crate::codecs::decodes(cid) {
         return Ok(Opened::State(h, cid, body));
     }
     let inputs = proof::decode(enc, h.frames as usize).map_err(|e| Fault::BadEncoding(format!("{e:#}")))?;
