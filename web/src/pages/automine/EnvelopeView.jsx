@@ -4,14 +4,13 @@ import { useHub, useVisible } from './useHub.js';
 import { workerColor, levelName, logIcon } from './levels.js';
 import { frames as fmtFrames } from '../../lib/format.js';
 
-// The within-block views of the automated miner:
-//  1. "Closing in on the star": the current search step's sampled nodes, x = frames of the block, y = how far the
-//     step's target still is (the search's own estimate, in frames of walking: the nearest of the step's target
-//     objectives, a star or the castle's painting). One dot per sampled node (colour: worker), the white line is
-//     the front (the least that was left to go by each frame, over all workers), the bands are the campaign's
-//     steps with the earliest frame each was done at, and the template's frame limit is a line that grows with time
-//     (the block is valid where a run reaches the star before it). A new step has a new target: the chart resets;
-//  2. the time-limit chart (lib/LimitChart.jsx, as on the Mine page) with the runs the workers finished.
+// The Auto-mine sidebar's "Closing in on the star" chart: the current search step's sampled nodes, x = frames of the
+// block, y = how far the step's target still is (the search's own estimate, in frames of walking: the nearest of the step's target
+// objectives, a star or the castle's painting). One dot per sampled node (colour: worker), the white line is
+// the front (the least that was left to go by each frame, over all workers), the bands are the campaign's
+// steps with the earliest frame each was done at, and the template's frame limit is a line that grows with time
+// (the block is valid where a run reaches the star before it). A new step has a new target: the chart resets.
+// (The time-limit chart with the workers' finished runs is lib/LimitChart.jsx, drawn by VizPanel's VizSide.)
 
 const W = 640, H = 240, L = 44, R = 10, T = 10, B = 26;
 const BAND = ['#94a3b8', '#60a5fa', '#a78bfa', '#4ade80', '#fb923c', '#f472b6'];
