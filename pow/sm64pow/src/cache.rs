@@ -86,6 +86,17 @@ fn cache() -> &'static Mutex<Cache> {
 }
 
 impl Cache {
+    /// Moves `key` to the newest place of whichever pool holds it.
+    fn touch(&mut self, key: &RunKey) {
+        for order in [&mut self.order, &mut self.order_replayed] {
+            if let Some(i) = order.iter().position(|k| k == key) {
+                order.remove(i);
+                order.push_back(*key);
+                return;
+            }
+        }
+    }
+
     /// Keeps `run` under `key` in the verified pool (`verified`) or the
     /// replayed pool, evicting that pool's oldest beyond its size.
     fn keep(&mut self, key: RunKey, run: Run, verified: bool) {
@@ -205,6 +216,11 @@ pub(crate) fn run_key(parent: &Parent, start: Start, seed: &Seed, blob: &[u8]) -
 
 pub(crate) fn alias(id: [u8; 32], key: RunKey) {
     let mut c = cache().lock().unwrap();
+    // A run used again (a block of a known run: a restamped copy, a pre-passed or earlier verified
+    // run) is the newest in its pool: otherwise a state verified long ago keeps its old place and
+    // is evicted while it is the tip's (the next block's NeedParent and a rebuild; tests/signed.rs
+    // saw it when an earlier test of the process had verified the same blocks).
+    c.touch(&key);
     if c.ids.insert(id, key).is_none() {
         c.id_order.push_back(id);
     }
@@ -457,5 +473,11 @@ mod tests {
             remember([0xc0 ^ k; 32], [0xd0 ^ k; 32], end(), 100, Start::Parent, true);
         }
         assert!(cached(&tip).is_none());
+        // A known run used again (another block id for it: alias) is the newest again.
+        let old = [0xd0; 32]; // the oldest of the 16 above
+        alias([0x5a; 32], old);
+        remember([0xe0; 32], [0xe1; 32], end(), 100, Start::Parent, true);
+        assert!(cached(&[0x5a; 32]).is_some() && cached(&[0xc0; 32]).is_some(), "touched: survives one more");
+        assert!(cached(&[0xc1; 32]).is_none(), "the next oldest went instead");
     }
 }
