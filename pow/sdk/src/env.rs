@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
 use sm64pow::game::Progress;
-use sm64pow::proof::{self, Start};
+use sm64pow::proof::Start;
 use sm64pow::{SM64MiningGame, SM64MiningSave, Params, Seed, Verdict};
 use std::sync::Arc;
 
@@ -150,16 +150,11 @@ impl Task {
     /// limit, which depends on the block's timestamp): the success condition
     /// must first hold on exactly the last frame and every input be used.
     pub fn check(&self, blob: &[u8]) -> Result<Verdict> {
-        let pr = match proof::decode_proof(blob, proof::MAX_FRAMES) {
+        // Any codec, the committed (v0.4) or v0.3 layout as the active features say; state-aware
+        // codecs are decoded by replaying the run; a committed blob must decode to its input hash.
+        let pr = match sm64pow::decode_proof_any(blob, self.parent.as_deref(), &self.seed, &self.params) {
             Ok(p) => p,
-            // State-aware codecs (hard fork) are decoded by replaying the run.
-            Err(_) if proof::split_blob(blob).is_ok_and(|b| sm64pow::statecodec::state_codec(b.2).is_some()) => {
-                match sm64pow::statecodec::decode_proof_state(blob, self.parent.as_deref(), &self.seed, &self.params) {
-                    Ok(p) => p,
-                    Err(e) => return Ok(Verdict::Invalid(format!("bad proof: {e}"))),
-                }
-            }
-            Err(e) => return Ok(Verdict::Invalid(format!("bad proof: {e}"))),
+            Err(e) => return Ok(Verdict::Invalid(format!("bad proof: {e:#}"))),
         };
         if pr.start != self.start {
             return Ok(Verdict::Invalid(format!("proof starts from {:?}, the task from {:?}", pr.start, self.start)));

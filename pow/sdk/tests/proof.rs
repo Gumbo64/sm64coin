@@ -122,13 +122,13 @@ fn winning_fixture_verifies() {
     let pr = sm64pow::proof_from_played_at(proof::Start::PowerOn, None, &seed, &task.params, env.pads()).unwrap();
     assert!(pr.inputs.len() < pr.frames as usize, "pokes aren't stored");
     for c in sm64pow::proof::CODECS {
-        let blob = proof::encode_proof_with(*c, &pr);
+        let blob = sm64pow::commit::commit_with(*c, &pr);
         assert_eq!(task.check(&blob).unwrap(), Verdict::Valid { frames: wanted.len() as u32 });
     }
     // Wrong start byte, or one frame short: not a win.
     let mut wrong = pr.clone();
     wrong.start = proof::Start::Parent;
-    assert!(matches!(task.check(&proof::encode_proof(&wrong)).unwrap(), Verdict::Invalid(_)));
+    assert!(matches!(task.check(&sm64pow::commit::commit(&wrong)).unwrap(), Verdict::Invalid(_)));
     assert!(matches!(sm64pow::verify_pads(&seed, &task.params, &wanted[..wanted.len() - 1]).unwrap(), Verdict::Invalid(_)));
 
     // The next block: a task starting from this end state, one more point to make.
@@ -140,7 +140,7 @@ fn winning_fixture_verifies() {
         e2.step(GamePad::default()).unwrap();
     }
     assert!(!e2.is_success());
-    let blob = proof::encode_proof(&proof::Proof { frames: 60, start: proof::Start::Parent, inputs: vec![] });
+    let blob = sm64pow::commit::commit(&proof::Proof { frames: 60, start: proof::Start::Parent, inputs: vec![] });
     assert!(matches!(next.check(&blob).unwrap(), Verdict::Invalid(_)), "no progress in 60 idle frames");
 }
 
