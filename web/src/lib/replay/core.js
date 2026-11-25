@@ -18,12 +18,13 @@ export function hexToBytes(hex) {
   return out;
 }
 
-/** A block's proof blob: the `sm64_proof_bytes` bytes before the 64-byte `sm64_sig` that ends its
- * serialized block (get_block's `blob`; v0.3, docs/V0.3-NEW-CHAIN.md). */
+/** A block's proof blob: the `sm64_proof_bytes` bytes before the 64-byte `sm64_sig`, which the
+ * v0.4 proof-records field (`sm64_records_bytes`, at least its 1-byte empty length) follows at the end
+ * of the serialized block (get_block's `blob`; docs/V0.4-DESIGN.md section 2.2). */
 export const SIG_BYTES = 64;
 export function blockProof(blk) {
   const bytes = hexToBytes(blk.blob);
-  const end = bytes.length - SIG_BYTES;
+  const end = bytes.length - (blk.sm64_records_bytes ?? 1) - SIG_BYTES;
   return bytes.slice(end - blk.sm64_proof_bytes, end);
 }
 
