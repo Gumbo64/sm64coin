@@ -6,6 +6,8 @@ A Monero fork (v0.18.5.4, git branch `sm64coin`) whose proof of work is **playin
 
 Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is stock Monero.
 
+**Reading the code: start at [docs/CORE.md](docs/CORE.md)**: how a block is mined and verified end to end, the core files in reading order, every `SM64COIN` change in the Monero fork, and what is safe to skip.
+
 ## Theory
 
 - **The 70-star cycle.** Each block is the game's next progress point (a new star, a Bowser key, or the Grand Star once there are 70 stars), played on from the **parent block's end state**. The Grand Star ends the cycle; the next block starts from power-on. A power-on start is also allowed after the genesis block, and as a **restart**: the escape for when no miner can do the next star yet. A restart's run is judged against the limit as it stood 3600 s plus 60 s per progress point thrown away (at most 7200 s) earlier, so it is valid only that long after its parent: an upper bound on how long one star can hold the chain up, at every difficulty (`Rules::restart_delay`; set `restart_base_seconds` to `u64::MAX` to turn restarts off once bots can do every star). The chain is thus one long playthrough, one star per block. Rules: `pow/sm64pow/src/rules.rs` (`StarCycle`), chain logic `pow/sm64pow/src/chain.rs`.
