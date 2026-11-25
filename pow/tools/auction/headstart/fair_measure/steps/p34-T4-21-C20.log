@@ -1,0 +1,5 @@
+0.02	0	0	start Parent at 10 stars 0 keys, ready at frame 277 (level 6 Castle)
+0.02	0	0	step 1: castle at frame 277, 10 stars 0 keys: to WF (most stars missing); budget 60 M frames
+49.03	7617218	0	  WF at frame 804 (+527), 7.6 M frames, 1824 nodes (49 s)
+49.04	7617218	0	step 2: WF at frame 804 (act select false controllable true action 0xc400201); budget 20 M frames
+197.22	25426889	0	  progress at frame 2218 (+1414), 17.8 M frames, 6434 nodes (197 s)

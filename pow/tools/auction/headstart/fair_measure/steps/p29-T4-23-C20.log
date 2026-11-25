@@ -1,0 +1,7 @@
+0.01	0	0	start Parent at 5 stars 0 keys, ready at frame 277 (level 6 Castle)
+0.01	0	0	step 1: castle at frame 277, 5 stars 0 keys: to WF (most stars missing); budget 60 M frames
+42.23	8215394	0	  WF at frame 1081 (+804), 8.2 M frames, 2342 nodes (42 s)
+42.26	8215394	0	step 2: WF at frame 1081 (act select false controllable true action 0xc400201); budget 20 M frames
+196.85	29170378	0	  no state with the goal in 20954984 frames, 8567 nodes; checkpoint 1 at node 7893, frame 2680, WF [-2060.0, 2686.0, 441.0]: WhompKing::Pound (wip) ETA 4377 -> 1365, wip 0 -> 3
+196.85	29170378	0	step 3: WF at frame 2680 (act select false controllable true action 0xc000232), after checkpoint 1; budget 20 M frames
+276.77	37837587	0	  progress at frame 3436 (+756), 8.7 M frames, 2918 nodes (277 s)

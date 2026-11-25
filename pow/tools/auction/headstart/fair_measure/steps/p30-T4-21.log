@@ -1,0 +1,5 @@
+0.01	0	0	start Parent at 6 stars 0 keys, ready at frame 287 (level 6 Castle)
+0.01	0	0	step 1: castle at frame 287, 6 stars 0 keys: to JRB (most stars missing); budget 60 M frames
+41.92	7793503	0	  JRB at frame 1007 (+720), 7.8 M frames, 2111 nodes (42 s)
+41.93	7793503	0	step 2: JRB at frame 1007 (act select false controllable true action 0xc400201); budget 150 M frames
+172.64	19315458	0	  progress at frame 2656 (+1649), 11.5 M frames, 3204 nodes (173 s)

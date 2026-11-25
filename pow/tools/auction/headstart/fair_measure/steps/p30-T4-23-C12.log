@@ -1,0 +1,9 @@
+0.01	0	0	start Parent at 6 stars 0 keys, ready at frame 287 (level 6 Castle)
+0.01	0	0	step 1: castle at frame 287, 6 stars 0 keys: to JRB (most stars missing); budget 60 M frames
+57.48	8270409	0	  JRB at frame 1038 (+751), 8.3 M frames, 2101 nodes (57 s)
+57.50	8270409	0	step 2: JRB at frame 1038 (act select false controllable true action 0xc400201); budget 12 M frames
+217.83	20699378	0	  no state with the goal in 12428969 frames, 3726 nodes; checkpoint 1 at node 899, frame 1338, JRB [-3966.0, 1564.0, -15.0]: Object::Break (eta) ETA 1374 -> 889, wip 0 -> 0
+217.84	20699378	0	step 3: JRB at frame 1338 (act select false controllable true action 0x4000440), after checkpoint 1; budget 12 M frames
+354.00	33731923	0	  no state with the goal in 13032545 frames, 3491 nodes; checkpoint 2 at node 2669, frame 2385, JRB [121.0, 1093.0, 2779.0]: Object::Break (wip) ETA 889 -> 1685, wip 0 -> 2
+354.10	33731923	0	step 4: JRB at frame 2385 (act select false controllable true action 0x880456), after checkpoint 2; budget 12 M frames
+467.94	46496161	0	  progress at frame 4135 (+1750), 12.8 M frames, 3651 nodes (468 s)

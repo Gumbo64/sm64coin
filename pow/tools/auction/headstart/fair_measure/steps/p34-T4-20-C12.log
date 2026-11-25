@@ -1,0 +1,21 @@
+0.01	0	0	start Parent at 10 stars 0 keys, ready at frame 277 (level 6 Castle)
+0.01	0	0	step 1: castle at frame 277, 10 stars 0 keys: to WF (most stars missing); budget 60 M frames
+59.61	6775815	0	  WF at frame 819 (+542), 6.8 M frames, 1640 nodes (60 s)
+59.62	6775815	0	step 2: WF at frame 819 (act select false controllable true action 0xc400201); budget 12 M frames
+203.38	18887648	0	  no state with the goal in 12111833 frames, 4693 nodes; checkpoint 1 at node 4094, frame 2033, WF [1957.0, 2560.0, 231.0]: WhompKing::Pound (wip) ETA 3643 -> 1613, wip 0 -> 2
+203.38	18887648	0	step 3: WF at frame 2033 (act select false controllable true action 0x4000440), after checkpoint 1; budget 12 M frames
+342.96	32159233	0	  no state with the goal in 13271585 frames, 4836 nodes; checkpoint 2 at node 1227, frame 2484, WF [3634.0, 1311.0, 635.0]: WhompKing::Pound (wip) ETA 509 -> 1995, wip 2 -> 4
+342.96	32159233	0	step 4: WF at frame 2484 (act select false controllable true action 0x80023c), after checkpoint 2; budget 12 M frames
+457.02	44260193	0	  no state with the goal in 12100960 frames, 4649 nodes; checkpoint 3 at node 2797, frame 3431, WF [1286.0, 922.0, 1797.0]: WhompKing::Pound (wip) ETA 579 -> 546, wip 4 -> 5
+457.02	44260193	0	step 5: WF at frame 3431 (act select false controllable true action 0x4000440), after checkpoint 3; budget 12 M frames
+586.93	57099904	0	  no state with the goal in 12839711 frames, 4645 nodes; checkpoint 4 at node 2093, frame 4399, WF [2658.0, 2100.0, 302.0]: Star::Collect (eta) ETA 1172 -> 909, wip 5 -> 5
+586.93	57099904	0	step 6: WF at frame 4399 (act select false controllable true action 0x880456), after checkpoint 4; budget 12 M frames
+722.26	69815755	0	  no state with the goal in 12715851 frames, 4464 nodes; checkpoint 5 at node 3019, frame 5319, WF [-1089.0, 2560.0, 1907.0]: RedCoin::Next (eta) ETA 194 -> 45, wip 5 -> 5
+722.26	69815755	0	step 7: WF at frame 5319 (act select false controllable true action 0xc400201), after checkpoint 5; budget 12 M frames
+830.64	82296643	0	  no state with the goal in 12480888 frames, 4109 nodes; checkpoint 6 at node 3354, frame 6512, WF [-158.0, 2560.0, 2886.0]: WhompKing::Pound (wip) ETA 630 -> 1636, wip 5 -> 6
+830.64	82296643	0	step 8: WF at frame 6512 (act select false controllable true action 0x880456), after checkpoint 6; budget 12 M frames
+949.64	95038767	0	  no state with the goal in 12742124 frames, 4871 nodes; checkpoint 7 at node 4018, frame 7780, WF [-1162.0, 2560.0, 29.0]: Star::Collect (eta) ETA 1116 -> 660, wip 6 -> 6
+949.64	95038767	0	step 9: WF at frame 7780 (act select false controllable true action 0x800457), after checkpoint 7; budget 12 M frames
+1066.43	107201654	0	  no state with the goal in 12162887 frames, 3403 nodes; checkpoint 8 at node 2933, frame 8634, WF [1737.0, 3584.0, -3034.0]: WhompKing::Pound (wip) ETA 487 -> 559, wip 6 -> 8
+1066.43	107201654	0	step 10: WF at frame 8634 (act select false controllable true action 0x880456), after checkpoint 8; budget 12 M frames
+1110.44	112902564	0	  progress at frame 9158 (+524), 5.7 M frames, 1553 nodes (1110 s)

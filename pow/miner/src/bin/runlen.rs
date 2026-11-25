@@ -50,6 +50,10 @@ struct Args {
     tag: Option<String>,
     #[arg(long)]
     out: String,
+    /// Also write the search's step log here, each line prefixed by wall seconds and the
+    /// cumulative emulated frames (rrt::SIM_FRAMES), for per-step success-vs-budget curves.
+    #[arg(long)]
+    steplog: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -97,7 +101,13 @@ fn main() -> Result<()> {
             scratch: a.scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default()
         };
         let t1 = std::time::Instant::now();
-        let r = rrt::mine(start, parent.as_ref(), &seed, &params, &ro, &never, |_| {})?;
+        let mut slog = a.steplog.as_ref().map(|p| std::fs::OpenOptions::new().create(true).append(true).open(p)).transpose()?;
+        let r = rrt::mine(start, parent.as_ref(), &seed, &params, &ro, &never, |line| {
+            if let Some(f) = slog.as_mut() {
+                let sim = rrt::SIM_FRAMES.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = writeln!(f, "{:.2}\t{}\t{}\t{}", t1.elapsed().as_secs_f64(), sim, k, line);
+            }
+        })?;
         let secs = t1.elapsed().as_secs_f64();
         let (frames, sim, status) = match r {
             rh::Attempt::Found(m) => {
