@@ -101,7 +101,7 @@ export class VizHub {
     this.template = template;
     this.startKind = starts[0] || 'parent';
     this.parentRaw = parentRaw || null;
-    this.portable = {};
+    this.portable = new Map(); // converted start states for the game view (startState.js portableFor)
     this.t0 = Date.now() / 1000;
     this.workers = starts.map((start, i) => ({
       i, start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0,

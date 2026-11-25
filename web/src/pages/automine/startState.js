@@ -31,6 +31,23 @@ export function portableFromRaw(raw) {
   });
 }
 
+// Converted states kept per round (hub.portable): the block's start and the newest few step start states. Every
+// step the reel or a click plays converts its own, so without a bound a long round kept one per step played.
+const KEEP = 4;
+
+/** The portable state of `raw` for the visual game (a promise), converted once per `key` while it stays cached. */
+export function portableFor(hub, key, raw) {
+  if (!(hub.portable instanceof Map)) hub.portable = new Map();
+  const m = hub.portable;
+  let p = m.get(key);
+  if (p) { m.delete(key); m.set(key, p); return p; } // most recently used last
+  p = portableFromRaw(raw);
+  p.catch(() => { if (m.get(key) === p) m.delete(key); }); // a failed conversion is tried again next time, not cached
+  m.set(key, p);
+  while (m.size > KEEP) m.delete(m.keys().next().value);
+  return p;
+}
+
 export function stopStateWorker() {
   if (worker) worker.terminate();
   worker = null;
@@ -44,9 +61,7 @@ export async function loadStart(engine, hub, kind) {
     restoreState(engine, null, engine.powerOn);
     return captureState(engine, null, engine.powerOn);
   }
-  hub.portable ??= {};
-  hub.portable[hub.round] ??= portableFromRaw(hub.parentRaw);
-  const portable = await hub.portable[hub.round];
+  const portable = await portableFor(hub, `block:${hub.round}`, hub.parentRaw);
   restoreState(engine, null, engine.powerOn);
   engine.load_portable_state(portable);
   return captureState(engine, null, engine.powerOn);

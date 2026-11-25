@@ -5,7 +5,7 @@ import { captureState } from '../../lib/savestate.js';
 import { useHub, useVisible } from './useHub.js';
 import { SPEEDS } from './hub.js';
 import { Panel } from '../../components/ui.jsx';
-import { loadStart, portableFromRaw } from './startState.js';
+import { loadStart, portableFor } from './startState.js';
 import { frames as fmtFrames } from '../../lib/format.js';
 
 // The live game: a visual engine (the same Sm64VisualEngine the Mine page plays with) replaying
@@ -130,9 +130,7 @@ export default function GameView({ hub }) {
           try {
             if (p.rootRaw) {
               note('converting the step\'s start state for the game…', { prog: { frac: null } });
-              hub.portable ??= {};
-              hub.portable[sk] ??= portableFromRaw(p.rootRaw);
-              const portable = await hub.portable[sk];
+              const portable = await portableFor(hub, sk, p.rootRaw);
               if (dead) return;
               restoreState(e, null, e.powerOn);
               e.load_portable_state(portable);
