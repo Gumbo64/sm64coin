@@ -1,27 +1,27 @@
-//! State-aware proof codecs: the inputs are coded given the game state they
-//! are played in, so decoding happens frame by frame during the replay.
+//! State-aware proof codecs (layer 3): the inputs are coded given the game
+//! state they are played in, so decoding happens frame by frame during the
+//! replay.
 //!
-//! Everything on the decode path is integer arithmetic (no floats, no ML
-//! runtime), so every node decodes bit-identically:
+//! The codecs themselves are the pure `sm64coin-statecodec` crate
+//! (pow/statecodec: a binary range coder and adaptive context-mixing models,
+//! integer arithmetic only, shared with the browser); this module re-exports
+//! it and adds the replay that feeds it game states: [`encode_proof_state`]
+//! (sealing) and [`decode_proof_state`] (tools; the verifier decodes inside
+//! `replay::replay_state`). A state-coded proof has exactly one valid
+//! encoding (the verifier re-encodes and compares), and the block id commits
+//! to its bytes ([`state_proof_id`]).
 //!
-//! * [`RangeEncoder`] / [`RangeDecoder`]: a binary range coder (LZMA style,
-//!   12-bit probabilities) with a canonical minimal flush and an implicit
-//!   all-zero tail, so each bit sequence has exactly one byte string.
-//! * [`Model`]: predicts every binary decision of a pad (same as before?,
-//!   which buttons, which stick values) from several small contexts of the
-//!   game state ([`Features`]) and the previous pads; the predictions are
-//!   mixed by a logistic mixer and every counter adapts while coding
-//!   (prequential, nothing is transmitted). One code path ([`BitIo`]) both
-//!   encodes and decodes, so the two cannot disagree.
-//! * [`StateCodec`]: the codec ids built from it. A model change is a new id.
+//! On by default (cargo feature `state-codec`, the state-codec hard fork);
+//! built without it, nodes reject codecs 3-5 like any unknown id. The bottom
+//! of the file is research tooling ([`Run`], [`state_after`]), not consensus.
 //!
-//! The codecs themselves are the `sm64coin-statecodec` crate (pure, shared with the browser
-//! through `sm64coin-perturb-wasm`); this module re-exports them and adds the replay that
-//! feeds them game states.
+//! Read next: proof_id.rs.
 
+use crate::emulator::generator;
+use crate::game::mining_start;
 use crate::proof::{Proof, Start};
-use crate::game::SM64MiningGame;
-use crate::{Seed, params};
+use crate::rules::{Params, params};
+use crate::seed::Seed;
 use anyhow::Result;
 #[allow(hidden_glob_reexports)]
 use sm64_binds::{GamePad, SaveState};
@@ -29,61 +29,8 @@ use sm64_binds::{GamePad, SaveState};
 pub use sm64coin_statecodec::*;
 use crate::game::{from_pad, to_pad};
 
-/// A run with everything needed to replay it: where it starts, the parent's
-/// played pads (to rebuild the parent's end state for a parent start), the
-/// block's seed, and its proof.
-#[derive(Clone, Debug)]
-pub struct Run {
-    pub seed: Seed,
-    pub parent_played: Vec<GamePad>,
-    pub proof: Proof,
-}
-
-/// The game state after playing `played` from power-on, unperturbed.
-pub fn state_after(played: &[GamePad]) -> Result<SaveState> {
-    let mut g = crate::generator()?.create_game()?;
-    for p in played {
-        g.step_game(*p)?;
-    }
-    Ok(g.save_state())
-}
-
-impl Run {
-    pub fn parent_state(&self) -> Result<Option<SaveState>> {
-        Ok(match self.proof.start {
-            Start::PowerOn => None,
-            Start::Parent => Some(state_after(&self.parent_played)?),
-        })
-    }
-
-    /// Replays the run, listing for every frame the features before it, the
-    /// pad played and whether it was a poke.
-    pub fn dump_rows(&self) -> Result<Vec<(Features, GamePad, bool)>> {
-        let ps = self.parent_state()?;
-        let (mut g, _) = crate::chain::mining_start(self.proof.start, ps.as_ref(), &self.seed, &params(1))?;
-        let mut rows = Vec::new();
-        let mut next = 0;
-        for _ in 0..self.proof.frames {
-            let wanted = self.proof.inputs.get(next).copied().unwrap_or_default();
-            let mut feat = Features::default();
-            let (pad, poked) = g.step_with(|f| {
-                feat = *f;
-                Ok(wanted)
-            })?;
-            if !poked {
-                next += 1;
-            }
-            rows.push((feat, pad, poked));
-        }
-        let _ = SM64MiningGame::state;
-        Ok(rows)
-    }
-}
-
-// ---------------------------------------------------------------- range coder
-
-/// Whether blocks may use state codecs: the hard fork switch. Off unless
-/// built with the `state-codec` feature.
+/// Whether blocks may use state codecs: the hard fork switch. On unless
+/// built without the (default) `state-codec` feature.
 pub const fn state_codec_enabled() -> bool {
     cfg!(feature = "state-codec")
 }
@@ -91,8 +38,8 @@ pub const fn state_codec_enabled() -> bool {
 /// The proof blob (`varint(frames) || start || id || body`) of `pr` in a
 /// state codec: replays the run from `parent` (the parent's end state, for a
 /// parent start) to code each input in its state.
-pub fn encode_proof_state(c: &dyn StateCodec, parent: Option<&SaveState>, seed: &Seed, p: &crate::Params, pr: &Proof) -> Result<Vec<u8>> {
-    let (mut g, _) = crate::chain::mining_start(pr.start, parent, seed, p)?;
+pub fn encode_proof_state(c: &dyn StateCodec, parent: Option<&SaveState>, seed: &Seed, p: &Params, pr: &Proof) -> Result<Vec<u8>> {
+    let (mut g, _) = mining_start(pr.start, parent, seed, p)?;
     let mut enc = c.encoder();
     let mut next = 0;
     for f in 0..pr.frames {
@@ -123,10 +70,10 @@ pub fn encode_proof_state(c: &dyn StateCodec, parent: Option<&SaveState>, seed: 
 /// the body must be the canonical encoding. Does not check that the run
 /// succeeds. For tools (SDK, explorers); the verifier does this inside
 /// [`crate::chain`]'s replay.
-pub fn decode_proof_state(blob: &[u8], parent: Option<&SaveState>, seed: &Seed, p: &crate::Params) -> Result<Proof> {
+pub fn decode_proof_state(blob: &[u8], parent: Option<&SaveState>, seed: &Seed, p: &Params) -> Result<Proof> {
     let (frames, start, id, body) = crate::proof::split_blob(blob)?;
     let c = state_codec(id).ok_or_else(|| anyhow::anyhow!("unknown proof codec {id}"))?;
-    let (mut g, _) = crate::chain::mining_start(start, parent, seed, p)?;
+    let (mut g, _) = mining_start(start, parent, seed, p)?;
     let mut dec = c.decoder(body);
     let mut inputs = Vec::new();
     for _ in 0..frames {
@@ -151,3 +98,54 @@ pub fn state_proof_id(blob: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+// ---- Research tooling (not consensus): dump a run's states for codec work ----
+
+/// A run with everything needed to replay it: where it starts, the parent's
+/// played pads (to rebuild the parent's end state for a parent start), the
+/// block's seed, and its proof.
+#[derive(Clone, Debug)]
+pub struct Run {
+    pub seed: Seed,
+    pub parent_played: Vec<GamePad>,
+    pub proof: Proof,
+}
+
+/// The game state after playing `played` from power-on, unperturbed.
+pub fn state_after(played: &[GamePad]) -> Result<SaveState> {
+    let mut g = generator()?.create_game()?;
+    for p in played {
+        g.step_game(*p)?;
+    }
+    Ok(g.save_state())
+}
+
+impl Run {
+    pub fn parent_state(&self) -> Result<Option<SaveState>> {
+        Ok(match self.proof.start {
+            Start::PowerOn => None,
+            Start::Parent => Some(state_after(&self.parent_played)?),
+        })
+    }
+
+    /// Replays the run, listing for every frame the features before it, the
+    /// pad played and whether it was a poke.
+    pub fn dump_rows(&self) -> Result<Vec<(Features, GamePad, bool)>> {
+        let ps = self.parent_state()?;
+        let (mut g, _) = mining_start(self.proof.start, ps.as_ref(), &self.seed, &params(1))?;
+        let mut rows = Vec::new();
+        let mut next = 0;
+        for _ in 0..self.proof.frames {
+            let wanted = self.proof.inputs.get(next).copied().unwrap_or_default();
+            let mut feat = Features::default();
+            let (pad, poked) = g.step_with(|f| {
+                feat = *f;
+                Ok(wanted)
+            })?;
+            if !poked {
+                next += 1;
+            }
+            rows.push((feat, pad, poked));
+        }
+        Ok(rows)
+    }
+}

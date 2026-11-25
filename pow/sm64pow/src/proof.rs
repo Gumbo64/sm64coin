@@ -1,20 +1,30 @@
-//! The proof-of-play blob: what a block carries instead of a nonce.
+//! The proof-of-play blob (layer 1): what a block carries instead of a nonce.
 //!
-//! To the daemon it is opaque bytes (`block::sm64_proof`); only this module
-//! knows its format: `varint(frames) || start || codec id || codec body`.
-//! `start` says where the run begins ([`Start`]). The body
-//! holds only the player's inputs on frames the perturbation didn't poke, in
-//! order: poked frames get their random pad from the game itself (regenerated
-//! from the seed when verifying), so they are never recorded. One proof per
-//! run, so block ids aren't malleable.
+//! To the daemon it is opaque bytes (`block::sm64_proof`, the last field of
+//! the block blob, at most 256 KiB); only this crate knows its format:
+//! `varint(frames) || start || codec id || codec body`. `start` says where
+//! the run begins ([`Start`]). The body holds only the player's inputs on
+//! frames the perturbation didn't poke, in order: poked frames get their
+//! random pad from the perturbation (regenerated from the seed when
+//! verifying), so they are never recorded.
 //!
-//! To add compression: implement [`Codec`], give it an unused id, and add it
-//! to [`CODECS`]. Old blocks stay valid because their codec id still decodes.
-//! Miners choose with [`encode_best`] (smallest wins) or [`encode_with`].
-//! State-aware codecs (decoded during the replay, from the game state) live in
-//! [`crate::statecodec`] and are off until the `state-codec` feature.
+//! The stateless codecs live here: 0 raw (4 bytes per pad), 1 run-length,
+//! 2 xz. The block id commits to the decoded proof ([`crate::proof_id()`]), so
+//! the daemon may re-encode a stateless proof to the smallest of them. The
+//! state-aware codecs (3 statectx1, 4/5 statemix) are in
+//! [`crate::statecodec`]; they are decoded during the replay.
+//!
+//! Guarantees: every decoder is canonical (one encoding per input sequence:
+//! canonical varints, no zero or repeated runs) and refuses to expand past
+//! its frame limit (zip-bomb guard, [`MAX_FRAMES`]).
+//!
+//! To add a codec: implement [`Codec`], give it an unused id, and add it to
+//! [`CODECS`]. Old blocks stay valid because their codec id still decodes.
 //! Adding a codec is a hard fork for nodes that don't know it (they reject
 //! blocks using it); removing one breaks old blocks, so don't.
+//!
+//! Read next: pow/perturb/src/lib.rs (the pokes), pow/perturb/src/sm64.rs,
+//! then emulator.rs and game.rs.
 
 use anyhow::{Result, anyhow, bail};
 use sm64_binds::GamePad;
@@ -68,7 +78,7 @@ pub enum Start {
     #[default]
     Parent = 0,
     /// From power-on: the first block of a cycle (after the genesis block or
-    /// a cycle-ending block), or a restart (see `Rules::restart_cost`).
+    /// a cycle-ending block), or a restart (see `Rules::restart_delay`).
     PowerOn = 1,
 }
 

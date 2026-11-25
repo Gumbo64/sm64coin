@@ -1,13 +1,19 @@
-//! The consensus rules, in one place.
+//! The consensus rules, in one place (layer 1: pure functions, no state).
 //!
 //! Everything the daemon decides about proof-of-play goes through [`Rules`]:
-//! the success condition, what a difficulty asks of the player, how
-//! difficulty retargets and how it decays when the network is stuck. To change
-//! the game, write another `impl Rules` and return it from [`active`]. The
-//! daemon, the automated miner, the RPC and the explorer all pick it up; the
-//! C++ side has no rules of its own.
+//! the success condition, what a difficulty asks of the player (the time
+//! limit and the pokes), how difficulty retargets, how the limit grows with
+//! the seconds since the parent (the frame-length auction), when a power-on
+//! restart is allowed, and fork choice by block count. [`STAR_CYCLE`] holds
+//! every constant; [`active`] is the rules this build runs. The daemon, the
+//! miners, the RPC and the explorer all read them from here; the C++ side
+//! has no rules of its own.
 //!
-//! Changing the rules is a hard fork: every node must run the same ones.
+//! Guarantees: integer arithmetic only (every node computes the same limit);
+//! the limit never shrinks as time passes; the pokes are the same at every
+//! difficulty. Changing anything here is a hard fork.
+//!
+//! Read next: hold.rs (the hold policy on top of the limit).
 
 pub use sm64coin_perturb::sm64::Progress;
 
@@ -63,8 +69,9 @@ pub struct Params {
     pub max_frames: u32,
     /// Controller perturbation.
     pub rng: RngConfig,
-    /// The perturbation is reseeded from the next 32 bits of the block hash
-    /// every this many frames (0: never; see `Seed`).
+    /// Vestigial: always 0 and not read by the perturbation (which seeds
+    /// once from the whole hash). Still reported over RPC
+    /// (`sm64_reseed_frames`).
     pub reseed_frames: u32,
 }
 
@@ -136,6 +143,11 @@ pub trait Rules: Sync {
 /// The rules this build runs.
 pub fn active() -> &'static dyn Rules {
     &STAR_CYCLE
+}
+
+/// What the active rules ask at `difficulty`.
+pub fn params(difficulty: u64) -> Params {
+    active().params(difficulty)
 }
 
 /// About `8 * log2(d)` in integer arithmetic: 8 x the exponent plus the next

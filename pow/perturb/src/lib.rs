@@ -30,6 +30,14 @@
 //!   doesn't reroll the pokes either.
 //! * Within each window of `window_length` ticks, `random_amount` bursts of
 //!   `random_burst_length` poked ticks, as in the original sm64-crypto.
+//!
+//! The numbers (5 bursts of 2 per 100 ticks, A/B/Z odds, mix every frame)
+//! come from the rules: sm64pow/src/rules.rs (`StarCycle`) via
+//! `sm64pow::game::poke_config`. Consensus-critical: a change here changes
+//! every block's pokes.
+//!
+//! Read next: sm64.rs (what is read from the game), then
+//! pow/sm64pow/src/emulator.rs and game.rs.
 
 use serde::{Deserialize, Serialize};
 

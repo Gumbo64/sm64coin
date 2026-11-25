@@ -20,7 +20,6 @@ size_t sm64pow_end_state_gz(const uint8_t *id32, uint8_t *out, size_t cap);
 int32_t sm64pow_block_progress(const uint8_t *id32, uint32_t *stars, uint32_t *keys, int32_t *grand_star, int32_t *ends_cycle);
 size_t sm64pow_block_event(const uint8_t *id32, char *out, size_t cap); /* "c09s1", "key1", "grand"; 0 if unknown */
 int32_t sm64pow_proof_start(const uint8_t *proof, size_t len); /* 0 parent, 1 power-on, -1 bad */
-/* Seconds earlier a power-on restart on top of a parent with this progress takes its limit; -1: not allowed. */
 /* Whether fork choice counts blocks instead of cumulative difficulty (Rules::weigh_by_blocks). */
 bool sm64pow_weigh_by_blocks(void);
 /* The hold policy: 0 to process the block now, else the unix second until which to hold it. */
@@ -29,6 +28,7 @@ uint64_t sm64pow_hold_until(uint64_t difficulty, uint64_t parent_ts, uint64_t bl
 void sm64pow_mix(uint64_t difficulty, uint32_t *timing_mix, uint32_t *pad_mix);
 /* No block but the genesis block may be timestamped before this (unix seconds). */
 uint64_t sm64pow_launch_timestamp(void);
+/* Seconds earlier a power-on restart on top of a parent with this progress takes its limit; -1: not allowed. */
 int64_t sm64pow_restart_delay(uint32_t stars, uint32_t keys, bool grand_star);
 uint32_t sm64pow_max_frames(uint64_t difficulty, uint64_t elapsed_seconds);
 uint32_t sm64pow_reseed_frames(uint64_t difficulty);
@@ -41,15 +41,15 @@ uint64_t sm64pow_effective_difficulty(uint64_t difficulty, uint64_t elapsed_seco
 uint64_t sm64pow_target_seconds(void);
 void sm64pow_params(uint64_t difficulty, uint32_t *max_frames, uint32_t *random_amount,
                     uint32_t *window_length, uint32_t *burst_length);
-/* A proof is varint(frames) || codec || inputs of the non-poked frames (pokes
- * are regenerated from the seed, never stored).
- * decode_raw: the inputs (4 bytes each); played_raw: every frame's played pad
- * (replays the run); reencode: smallest encoding. Return the size (out NULL to
- * query), SIZE_MAX if the blob does not decode. */
+/* A proof is varint(frames) || start || codec || inputs of the non-poked frames
+ * (pokes are regenerated from the seed, never stored).
+ * decode_raw: the inputs (4 bytes each; stateless codecs only); reencode:
+ * smallest stateless encoding. Return the size (out NULL to query), SIZE_MAX if
+ * the blob does not decode. */
 size_t sm64pow_decode_raw(const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
 size_t sm64pow_reencode(const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
 uint32_t sm64pow_proof_frames(const uint8_t *proof, size_t len);
-/* SIZE_MAX error, SIZE_MAX-1 parent state not cached */
+/* every frame's played pad (4 bytes each), replaying the run; SIZE_MAX error, SIZE_MAX-1 parent state not cached */
 size_t sm64pow_played_block(const uint8_t *id32, const uint8_t *parent32, uint64_t gap_seconds, const uint8_t *hash32,
                             const uint8_t *proof, size_t len, uint8_t *out, size_t cap);
 /* the proof's inputs (non-poked frames, 4 bytes each), codec-free: replays the run */

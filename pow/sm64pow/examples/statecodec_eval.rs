@@ -1,6 +1,6 @@
 //! Measures codecs on statedump files: statecodec_eval DUMP.bin WINDOW [simulate_pokes]
 use sm64pow::game::Features;
-use sm64pow::proof::{self, Codec};
+use sm64pow::proof;
 use sm64pow::statecodec::Pad as GamePad; // the codec crate's pad (these tools only code frames)
 use sm64pow::statecodec::*;
 use std::time::Instant;

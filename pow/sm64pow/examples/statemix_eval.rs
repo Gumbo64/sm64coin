@@ -1,7 +1,7 @@
 //! statemix_eval WINDOW DUMP.bin[:sim][:maxruns] ... : bits/frame of xz, codec 3 and the statemix model
 //! (cost metered; round trip checked with SC_RT=1). Cfg overrides in SC_CFG="key=val,..".
 use sm64pow::game::Features;
-use sm64pow::proof::{self, Codec};
+use sm64pow::proof;
 use sm64pow::statecodec::Pad as GamePad; // the codec crate's pad (these tools only code frames)
 use sm64pow::statecodec::{self, CostMeter, Frame};
 use sm64pow::statemix::{Cfg, Model};

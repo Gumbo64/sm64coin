@@ -2,6 +2,12 @@
 //! clock and the state digest), per game build. Native code reads the regions
 //! from the headless build; the browser reads the same regions (at the visual
 //! build's addresses) and hands the bytes to this code compiled to WASM.
+//!
+//! Also here: [`Progress`] (what the rules count: stars, Bowser keys, the
+//! Grand Star) and [`Features`] (what the state-aware codecs condition on).
+//! The addresses are generated (sm64_addrs.rs, pow/tools/gen_sm64_addrs.py).
+//!
+//! Read next: pow/sm64pow/src/emulator.rs, then game.rs.
 
 #[allow(non_snake_case)]
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -1,15 +1,22 @@
-//! The game adapter: what the perturbation reads from Super Mario 64, and a
-//! game bundled with its perturbation ([`SM64MiningGame`]).
+//! The game adapter (layer 2): what the perturbation reads from Super Mario
+//! 64, and a game bundled with its perturbation ([`SM64MiningGame`]).
 //!
-//! The adapter names a few memory regions; native code reads them from the
-//! game, the browser copies the same bytes out of its build's memory and
-//! hands them to this code compiled to WASM. Both then compute the clock and
-//! digest with [`view`]. Another game needs another adapter (its regions,
-//! clock and digest) and nothing else.
+//! The adapter (pow/perturb/src/sm64.rs) names a few memory regions; native
+//! code reads them from the game here, the browser copies the same bytes out
+//! of its build's memory and hands them to the same code compiled to WASM.
+//! Both then compute the clock and digest with [`view`]. [`perturbed_step`]
+//! is the one way a frame is played, by miners and verifiers alike: ask the
+//! perturbation for this frame's pad (a poke, or the wanted pad), play it,
+//! then settle the perturbation with the game's clock and state digest.
+//! [`read_progress`] reads what the rules count (stars, keys, Grand Star).
+//!
+//! Read next: statecodec.rs.
 
-use crate::{Params, Seed};
+use crate::emulator::generator;
+use crate::proof::Start;
+use crate::rules::{Params, RngConfig};
+use crate::seed::Seed;
 use anyhow::Result;
-use crate::rules::RngConfig;
 use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
 pub use sm64coin_perturb::sm64::{Features, features, Addrs, Event, HEADLESS, Progress, VISUAL, event, View, progress, progress_regions, progress_regions_len, regions, regions_len, view};
 pub use sm64coin_perturb::{Pad, PokeConfig, Perturber};
@@ -111,7 +118,7 @@ pub fn perturbed_step(game: &mut SM64Game, pert: &mut Perturber, wanted: GamePad
 impl SM64MiningGame {
     /// A fresh game, powered on, with the block's perturbation armed.
     pub fn new(seed: &Seed, p: &Params) -> Result<SM64MiningGame> {
-        Ok(SM64MiningGame { game: crate::generator()?.create_game()?, pert: Perturber::new(&seed.0, &poke_config(&p.rng)) })
+        Ok(SM64MiningGame { game: generator()?.create_game()?, pert: Perturber::new(&seed.0, &poke_config(&p.rng)) })
     }
 
     /// `game` (in whatever state, e.g. the parent block's end state) with a
@@ -157,7 +164,7 @@ impl SM64MiningGame {
 
     /// A copy (a new game instance with the same memory and perturbation).
     pub fn fork(&self) -> Result<SM64MiningGame> {
-        Ok(SM64MiningGame { game: crate::generator()?.copy_from(&self.game)?, pert: self.pert.clone() })
+        Ok(SM64MiningGame { game: generator()?.copy_from(&self.game)?, pert: self.pert.clone() })
     }
 
     /// Becomes a copy of `source` (game and perturbation).
@@ -196,4 +203,18 @@ impl std::ops::DerefMut for SM64MiningGame {
     fn deref_mut(&mut self) -> &mut SM64Game {
         &mut self.game
     }
+}
+
+/// For miners: a game at the start of a new block on top of `parent` with
+/// proof start `start`, and the progress it starts with. `parent_game` is the
+/// parent's end state (e.g. rebuilt by replaying the cycle's played pads from
+/// power-on); ignored for a power-on start.
+pub fn mining_start(start: Start, parent_game: Option<&SaveState>, seed: &Seed, p: &Params) -> Result<(SM64MiningGame, Progress)> {
+    let mut g = generator()?.create_game()?;
+    if start == Start::Parent {
+        let s = parent_game.ok_or_else(|| anyhow::anyhow!("a parent start needs the parent's end state"))?;
+        g.load_state(s)?;
+    }
+    let before = read_progress(&g)?;
+    Ok((SM64MiningGame::from_game(g, seed, p), before))
 }
