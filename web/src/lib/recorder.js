@@ -3,6 +3,7 @@ import { Perturbation, readProgress } from './perturb.js';
 import { captureState, restoreState } from './savestate.js';
 import { MAX_RUN_FRAMES } from './rules.js';
 import { fastForward } from './cycle.js';
+import { applyTouch } from './touchInput.js';
 
 // Frames between periodic save states (5 s).
 const SNAP_EVERY = 150;
@@ -163,7 +164,7 @@ export class Recorder {
         if (this.paused) { requestAnimationFrame(tick); return; }
 
         if (this.mode === 'catchup') {
-          const c = this.engine.get_controller_pad();
+          const c = applyTouch(this.engine.get_controller_pad());
           const start = c.is_pressed(GamepadButtons.START_BUTTON);
           if (start && !this.lastStart) this.takeOver();
           this.lastStart = start;
@@ -188,7 +189,7 @@ export class Recorder {
         }
 
         // Live play. Hold D-pad down for 10x (the old miner's fast-forward).
-        const c0 = this.engine.get_controller_pad();
+        const c0 = applyTouch(this.engine.get_controller_pad());
         const ff = c0.is_pressed(GamepadButtons.D_JPAD);
         if (c0.is_pressed(GamepadButtons.U_JPAD)) { this.back(10); requestAnimationFrame(tick); return; }
         const speed = ff ? 10 : this.speed;
@@ -197,7 +198,7 @@ export class Recorder {
         let steps = Math.min(Math.floor(owed), 60);
         owed -= Math.floor(owed);
         while (steps-- > 0) {
-          const c = this.engine.get_controller_pad();
+          const c = applyTouch(this.engine.get_controller_pad());
           // The START that ended a catch-up must not reach the game.
           if (this.lastStart) {
             if (c.is_pressed(GamepadButtons.START_BUTTON)) c.disable_button(GamepadButtons.START_BUTTON);

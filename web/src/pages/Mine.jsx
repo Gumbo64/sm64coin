@@ -9,6 +9,7 @@ import { createEngine, prepareStart } from '../lib/cycle.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
+import TouchPad from '../components/TouchPad.jsx';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
@@ -56,6 +57,7 @@ function Miner() {
   const [pendingRun, setPending] = useState(null);
   const [tick, setTick] = useState(0);
   const rec = useRef(null);
+  useEffect(() => { window.__miner = { rec }; }, []); // test hook (read-only use: the touch-controls test)
   const ctl = useRef({ restart: false, forcePower: false, discard: false, pending: null, discardPending: false });
   // The last attempt, for debugging: its pads and the template it was played for.
   const [last, setLast] = useState(null);
@@ -238,6 +240,7 @@ function Miner() {
             {' '}<button onClick={() => { ctl.current.discardPending = true; }}>Discard</button></span>}
           {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
         </div>
+        <TouchPad />
         <Controls rec={rec} />
       </div>
 
