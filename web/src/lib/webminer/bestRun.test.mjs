@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { offerRun, holdUntilValid, SEND_AHEAD, TIP_EVERY } from './bestRun.js';
+import { offerRun, holdUntilValid, signedSeeds, runPrint, clampLead, DEFAULT_LEAD, TIP_EVERY } from './bestRun.js';
+const SEND_AHEAD = DEFAULT_LEAD;
 
 // offerRun: only a strictly shorter run replaces the best.
 assert.deepEqual(offerRun(null, { frames: 3000 }), { best: { frames: 3000 }, kind: 'first' });
@@ -12,13 +13,14 @@ assert.equal(offerRun(b, { frames: 2999 }).best.frames, 2999);
 
 // A fake clock: sleep() advances it and runs the scheduled events (a worker's run arriving, a new tip).
 function world({ limitAt, tipAt = Infinity, events = [] }) {
-  const w = { t: 1000, best: { frames: 3000, proof: 'p1' }, asks: [], held: [], tips: 0, tip: 'A', stopped: false };
+  const w = { lead: undefined, t: 1000, best: { frames: 3000, proof: 'p1' }, asks: [], held: [], tips: 0, tip: 'A', stopped: false };
   const fire = () => { for (const e of events) if (!e.done && w.t >= e.at) { e.done = true; e.run(w); } if (w.t >= tipAt) w.tip = 'B'; };
   w.d = {
     best: () => w.best,
     validAt: async (frames) => { w.asks.push(frames); return limitAt(frames); },
     tip: async () => { w.tips++; return w.tip; },
-    prevHash: 'A',
+    tipHash: 'A',
+    get lead() { return w.lead; },
     current: () => !w.stopped,
     sleep: async (ms) => { w.t += ms / 1000; fire(); },
     now: () => w.t,
@@ -96,6 +98,54 @@ function world({ limitAt, tipAt = Infinity, events = [] }) {
   const h = await holdUntilValid(w.d);
   assert.equal(h.kind, 'valid');
   assert.equal(h.validAt, 0);
+}
+
+// The lead is configurable: a 30 s lead releases 30 s before the run is valid; 0 releases at the stamp.
+{
+  const w = world({ limitAt: () => 1000 + 300 });
+  w.lead = 30;
+  const h = await holdUntilValid(w.d);
+  assert.equal(h.kind, 'valid');
+  assert.ok(w.t >= 1300 - 30 && w.t < 1300 - 30 + 6, `released at ${w.t}`);
+  const w0 = world({ limitAt: () => 1000 + 300 });
+  w0.lead = 0;
+  await holdUntilValid(w0.d);
+  assert.ok(w0.t >= 1300 && w0.t < 1306, `released at ${w0.t}`);
+  assert.equal(clampLead('x'), DEFAULT_LEAD);
+  assert.equal(clampLead(-3), 0);
+  assert.equal(clampLead(9999), 60);
+}
+
+// An equivocated tip: the node builds on an older block, so the template's tip differs from its prev_hash. Only the
+// template's tip counts: the tip staying the same is not "a new block", and moving off it is.
+{
+  const w = world({ limitAt: () => 1000 + 3600, tipAt: Infinity });
+  w.d.tipHash = 'T'; // the template's parent is not the tip
+  w.tip = 'T';
+  w.t = 1000;
+  w.d.sleep = async (ms) => { w.t += ms / 1000; if (w.t >= 1200) w.tip = 'U'; };
+  const h = await holdUntilValid(w.d);
+  assert.equal(h.kind, 'stale', 'noticed only when the tip moved off T');
+  assert.ok(w.t >= 1200, `at ${w.t}`);
+}
+
+// One run per key: a second, different run for the same seed is refused, the same run is not; a page refresh
+// (a new signedSeeds on the same storage) remembers; a throwing storage still guards in memory.
+{
+  const mem = {};
+  const st = { getItem: (k) => mem[k] ?? null, setItem: (k, v) => { mem[k] = v; } };
+  const a = signedSeeds(st);
+  assert.equal(a.signedOther('seed1', 'aabb'), null);
+  a.record('seed1', 'aabb', 3000);
+  assert.equal(a.signedOther('seed1', 'aabb'), null, 'the same run again');
+  assert.equal(a.signedOther('seed1', 'aabc'), 3000, 'a different run');
+  assert.equal(a.signedOther('seed2', 'aabc'), null);
+  assert.equal(signedSeeds(st).signedOther('seed1', 'aabc'), 3000, 'after a refresh');
+  const bad = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
+  const b = signedSeeds(bad);
+  b.record('s', 'ff', 10);
+  assert.equal(b.signedOther('s', 'fe'), 10, 'in memory');
+  assert.notEqual(runPrint('aabb'), runPrint('aabc'));
 }
 
 console.log('bestRun ok');

@@ -15,7 +15,7 @@ import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPoli
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
 import { e2eHook } from '../e2e.js';
-import { offerRun, holdUntilValid } from './bestRun.js';
+import { offerRun, holdUntilValid, signedSeeds, clampLead, DEFAULT_LEAD } from './bestRun.js';
 import { Hybrid } from './hybrid.js';
 import { getPlayFromStart, setPlayFromStart, subscribePlayFromStart } from '../hybridSetting.js';
 
@@ -77,6 +77,8 @@ class MinerController {
     this.count = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 1));
     const m = ls('sm64coin.resetMode', 'when-stuck');
     this.mode = RESET_MODES.includes(m) ? m : 'when-stuck';
+    this.lead = clampLead(ls('sm64coin.submitLead', String(DEFAULT_LEAD)));
+    this.signed = signedSeeds((() => { try { return localStorage; } catch { return null; } })());
     this.vizOn = ls('sm64coin.viz', '1') !== '0';
     this.playFromStart = getPlayFromStart();
     hybrid.onLog = (slot, text) => this.say(`worker ${slot + 1}: ${text}`);
@@ -141,6 +143,8 @@ class MinerController {
   fail(text) { this.error = { text, until: Date.now() + 20000 }; this.emit(true); setTimeout(() => this.emit(true), 20500); }
 
   // ----- settings -----
+  /** Seconds before a held run is valid at which it is submitted (default 5; remembered). */
+  setLead(n) { this.lead = clampLead(n); lsSet('sm64coin.submitLead', String(this.lead)); this.emit(true); }
   setAddress(a) { this.address = a; if (isAddress(a)) lsSet('sm64coin.address', a); this.emit(true); }
   setCount(n) { this.count = Math.max(1, Math.min(32, Number(n) || 1)); this.emit(true); }
   setMode(m) { this.mode = m; lsSet('sm64coin.resetMode', m); this.emit(true); }
@@ -236,7 +240,7 @@ class MinerController {
           return;
         }
         const i = await daemon('get_info');
-        if (c.template && i.top_block_hash !== c.template.prev_hash && c.pool.some(Boolean)) {
+        if (c.template && i.top_block_hash !== (c.template.tip || c.template.prev_hash) && c.pool.some(Boolean)) {
           this.say(`new block ${i.height - 1} on the chain: restarting on the new template`);
           this.round(c);
         }
@@ -260,7 +264,12 @@ class MinerController {
     try {
       // v0.3: a fresh key per template, chosen before the run is played (its extra nonce is in the seed).
       const key = await newMinerKey();
+      // The tip BEFORE the template: a node that builds around an equivocated tip gives a template whose prev_hash is not
+      // the tip, so "a new block landed" means the tip moved from this, not from prev_hash.
+      let tip = '';
+      try { tip = (await daemon('get_info')).top_block_hash || ''; } catch { /* the template call will say */ }
       t = await daemon('get_block_template', templateParams(address, key));
+      t.tip = tip || t.prev_hash;
       t.minerKey = key; // travels with the template, hence with every run held for it
     } catch (e) {
       say(`no template: ${e}; retrying in 10 s`);
@@ -440,7 +449,8 @@ class MinerController {
         best: () => c.best,
         validAt: async (frames) => (await daemon('get_block_template', templateParams(this.address, t.minerKey, { sm64_frames: frames }))).sm64_valid_at,
         tip: async () => (await daemon('get_info')).top_block_hash,
-        prevHash: t.prev_hash,
+        tipHash: t.tip || t.prev_hash,
+        lead: this.lead,
         current: () => !c.stopped && c.template === t,
         sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
         now,
@@ -466,7 +476,7 @@ class MinerController {
       c.status.forEach((s) => { clearTimeout(s.relaunch); s.relaunch = null; });
       this.setPhase('submitting');
       const info = await daemon('get_info');
-      if (info.top_block_hash !== t.prev_hash) {
+      if (info.top_block_hash !== (t.tip || t.prev_hash)) {
         say('a new block landed first; the run was for the old tip');
         hub.submission('stale', { height: t.height, frames: r.frames });
         return;
@@ -475,8 +485,15 @@ class MinerController {
       // A reset cycle (power-on on an "either" template) is judged against an earlier limit and is valid from sm64_power_on_at.
       if (r.start === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
       const proof = hexToBytes(r.proof);
-      // The worker signs found runs inside the WASM (r.sig); otherwise sign here with the template's key.
-      const sig = r.sig || (await signRun(t.minerKey, t.sm64_seed_hash, proof));
+      // One run per key: the key signs this run, once, here at submit (never at find, whatever the worker made: r.sig is
+      // ignored), and never another run for the same seed, even after a page refresh (localStorage, else memory).
+      const other = this.signed.signedOther(t.sm64_seed_hash, r.proof);
+      if (other !== null) {
+        say(`already signed a different run (${other} frames) for this seed: not signing a second one (equivocation)`);
+        return;
+      }
+      this.signed.record(t.sm64_seed_hash, r.proof, r.frames);
+      const sig = await signRun(t.minerKey, t.sm64_seed_hash, proof);
       if (!this.noSubmit) await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
       this.stats = { ...this.stats, accepted: this.stats.accepted + 1 };
       hub.submission('accepted', { height: t.height, frames: r.frames });
