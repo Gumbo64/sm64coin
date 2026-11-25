@@ -7,7 +7,8 @@
 //! digest with [`view`]. Another game needs another adapter (its regions,
 //! clock and digest) and nothing else.
 
-use crate::{Params, Seed};
+use crate::proof::Start;
+use crate::{Params, Seed, generator};
 use anyhow::Result;
 use crate::rules::RngConfig;
 use sm64_binds::{GamePad, GameState, SM64Game, SaveState};
@@ -196,4 +197,18 @@ impl std::ops::DerefMut for SM64MiningGame {
     fn deref_mut(&mut self) -> &mut SM64Game {
         &mut self.game
     }
+}
+
+/// For miners: a game at the start of a new block on top of `parent` with
+/// proof start `start`, and the progress it starts with. `parent_game` is the
+/// parent's end state (e.g. rebuilt by replaying the cycle's played pads from
+/// power-on); ignored for a power-on start.
+pub fn mining_start(start: Start, parent_game: Option<&SaveState>, seed: &Seed, p: &Params) -> Result<(SM64MiningGame, Progress)> {
+    let mut g = generator()?.create_game()?;
+    if start == Start::Parent {
+        let s = parent_game.ok_or_else(|| anyhow::anyhow!("a parent start needs the parent's end state"))?;
+        g.load_state(s)?;
+    }
+    let before = read_progress(&g)?;
+    Ok((SM64MiningGame::from_game(g, seed, p), before))
 }

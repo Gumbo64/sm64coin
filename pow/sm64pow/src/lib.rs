@@ -22,12 +22,16 @@
 //!   recorded (see [`proof::Proof`], [`Recorder`]).
 
 pub mod ffi;
+pub mod cache;
 pub mod chain;
 pub mod emulator;
 pub mod game;
+pub mod hold;
 pub mod mining;
+pub mod preverify;
 pub mod proof;
 pub mod proof_id;
+pub mod replay;
 pub mod rules;
 pub mod seed;
 pub mod statecodec;
