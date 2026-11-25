@@ -6,7 +6,8 @@ const HEADER = 8; // Int32 seq, Int32 length
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-// After the slots: Int32 control words shared by the page and every worker: [0] = the viz feed is on.
+// After the slots: Int32 control words shared by the page and every worker: [0] = the viz feed is on, [1] = how many
+// times the page switched it off (a worker that sees it change knows the page dropped the feed so far, see vizOn).
 const CTL = 64;
 // After the control words: the page's mailbox to the workers (requests for a search node's inputs), one JSON text
 // the page rewrites as a whole under the same seqlock: [Int32 seq, Int32 length, bytes].
@@ -15,7 +16,9 @@ export const boardSize = (slots, slotBytes = 1 << 20) => slots * slotBytes + CTL
 
 /** The page's switch for the workers' viz feed (instant: the searches read it every round). */
 export function setVizFlag(sab, slots, on, slotBytes = 1 << 20) {
-  Atomics.store(new Int32Array(sab, slots * slotBytes, 1), 0, on ? 1 : 0);
+  const ctl = new Int32Array(sab, slots * slotBytes, 2);
+  if (!on) Atomics.add(ctl, 1, 1);
+  Atomics.store(ctl, 0, on ? 1 : 0);
 }
 
 /** The page's mailbox write: `obj` as JSON for every worker's next poll; false when it doesn't fit. */
@@ -37,7 +40,8 @@ export function makeBoard(sab, slot, slots, slotBytes = 1 << 20) {
   const ints = new Int32Array(sab);
   const bytes = new Uint8Array(sab);
   const at = (i) => (i * slotBytes);
-  const ctl = new Int32Array(sab, slots * slotBytes, 1);
+  const ctl = new Int32Array(sab, slots * slotBytes, 2);
+  let offs = Atomics.load(ctl, 1);
   const read = (i) => {
     const base = at(i);
     for (let tries = 0; tries < 1000; tries++) {
@@ -68,8 +72,13 @@ export function makeBoard(sab, slot, slots, slotBytes = 1 << 20) {
       }
       return null;
     },
-    /** Whether the page wants the viz feed now. */
-    vizOn: () => Atomics.load(ctl, 0) === 1,
+    /** Whether the page wants the viz feed now. False once after the page switched it off and on again since the last
+     * call (too quickly for this worker to see), so the search's sampler re-sends what the page dropped (child.rs viz). */
+    vizOn: () => {
+      const n = Atomics.load(ctl, 1);
+      if (n !== offs) { offs = n; return false; }
+      return Atomics.load(ctl, 0) === 1;
+    },
     /** Publishes this worker's message (dropped when it doesn't fit). */
     put(text) {
       const b = enc.encode(text);

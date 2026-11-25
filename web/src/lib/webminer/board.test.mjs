@@ -22,6 +22,22 @@ assert.ok(boards[0].vizOn());
 assert.deepEqual(chans[1].peers('cp').map((m) => m.eta), [3, 1]);
 assert.deepEqual(boards[0].mail(), { reqs: [{ id: 1, slot: 1, key: 'k', nid: 7 }] });
 
+// Off and on again between two looks: a worker sees "off" once (so its sampler re-sends what the page dropped), then on.
+setVizFlag(sab, N, false, SLOT);
+setVizFlag(sab, N, true, SLOT);
+assert.equal(boards[1].vizOn(), false);
+assert.equal(boards[1].vizOn(), true);
+assert.equal(boards[2].vizOn(), false); // every worker on its own
+assert.equal(boards[2].vizOn(), true);
+setVizFlag(sab, N, false, SLOT);
+assert.equal(boards[1].vizOn(), false);
+assert.equal(boards[1].vizOn(), false);
+setVizFlag(sab, N, true, SLOT);
+assert.equal(boards[1].vizOn(), true); // already saw this off
+assert.equal(boards[0].vizOn(), false);
+assert.equal(boards[0].vizOn(), true);
+assert.deepEqual(boards[0].mail(), { reqs: [{ id: 1, slot: 1, key: 'k', nid: 7 }] }); // the counter is not the mailbox
+
 // A rewrite replaces the whole text (a shorter one too) and keeps the sequence even.
 assert.ok(postMail(sab, N, { reqs: [] }, SLOT));
 assert.deepEqual(boards[2].mail(), { reqs: [] });

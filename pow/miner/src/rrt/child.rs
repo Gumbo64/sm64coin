@@ -221,8 +221,8 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
 
     sm64pow::init(crate::sys::fs::read(&job.rom)?)?;
     let mut g = sm64pow::generator()?.create_game()?;
-    let state_bytes = crate::sys::fs::read(&job.state_file)?;
-    g.load_state(&SaveState::from_bytes(state_bytes.clone())?)?;
+    // Not kept: the viz sampler reads the file again whenever the page needs the step's start state.
+    g.load_state(&SaveState::from_bytes(crate::sys::fs::read(&job.state_file)?)?)?;
     let game = SM64MiningGame { game: g, pert: job.pert.clone() };
     check_layout(&game)?;
     let root = read_state(&game, job.frame0, true);
@@ -233,7 +233,7 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     let save = game.save_state();
     let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator.clone())?;
     if job.viz {
-        engine.on_round = Some(viz::sampler(job, &root, state_bytes, generator.clone()));
+        engine.on_round = Some(viz::sampler(job, &root, generator.clone()));
     } else {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -629,14 +629,17 @@ pub mod viz {
 
     const NODES: usize = 500;
 
-    /// `state`: the step's start state (the SaveState bytes the step loaded). It is offered to the page once per step
+    /// The step's start state (the SaveState bytes the step loaded, read again from `job.state_file`: not held while the
+    /// feed is off) is offered to the page at the first sample with the feed on, and again at the first sample after the
+    /// page switched the feed off (`sm64miner.viz_on()` false once: the page reports an off→on toggle that way), with
+    /// the edges (resent from scratch: the page's mirror was dropped) and the best node's inputs
     /// (`sm64miner.viz_state(key, bytes)`, key = the viz feed's step key) so the page can start the game at the step's
     /// root and replay only the step's own inputs. The page can also ask for the inputs of a sampled node of this tree
     /// (`sm64miner.viz_req(key)` -> JSON ids; answered with `viz_path(key, id, flat pads)`; page-side only on cross-origin isolated pages).
-    pub fn sampler(job: &Job, root: &St, state: Vec<u8>, generator: Arc<dyn obrrt_core::Generator>) -> Box<dyn FnMut(&Engine) + Send> {
+    pub fn sampler(job: &Job, root: &St, generator: Arc<dyn obrrt_core::Generator>) -> Box<dyn FnMut(&Engine) + Send> {
         let key = format!("{}:{}:{}:{}:{:?}", job.seed, job.frame0, root.level, root.area, job.goal);
         let key_str = key.clone();
-        let mut state = Some(state);
+        let mut fresh = true; // the page has none of this step's feed yet (first sample, or the feed was switched off)
         let mut head = serde_json::json!({ "frame0": job.frame0, "seed": job.seed, "goal": format!("{:?}", job.goal), "level": root.level, "area": root.area, "pos": root.pos });
         let (job2, root2) = (job.clone(), root.clone());
         // The step's targets, found at the first sample with the feed on (generating the root's objectives costs a little).
@@ -656,6 +659,7 @@ pub mod viz {
             // Feed off: only a tiny progress line (frames simulated so far in this step), about once a second,
             // for the page's frames/s readout.
             if !viz_on() {
+                fresh = true;
                 last = Instant::now();
                 emit(&format!("{{\"progress\":1,\"sim_frames\":{}}}", e.total_frames_emulated()));
                 return;
@@ -669,8 +673,12 @@ pub mod viz {
                 targets = Some(t);
             }
             let tg = targets.as_deref().unwrap_or(&[]);
-            if let Some(st) = state.take() {
-                send_state(&key, &st);
+            let refresh = std::mem::take(&mut fresh);
+            if refresh {
+                if let Ok(st) = crate::sys::fs::read(&job2.state_file) {
+                    send_state(&key, &st);
+                }
+                edges = Edges::default();
             }
             for id in requested(&key) {
                 if (id as usize) < e.tree.nodes.len() {
@@ -682,7 +690,7 @@ pub mod viz {
             let n = nodes.len();
             reel.scan(nodes, n);
             let key = |i: usize| (nodes[i].st.progress(), std::cmp::Reverse(nodes[i].st.frame));
-            let mut changed = false;
+            let mut changed = refresh;
             for i in seen..n {
                 if best.is_none_or(|b| key(i) > key(b)) {
                     best = Some(i);
