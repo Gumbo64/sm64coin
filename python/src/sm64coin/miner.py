@@ -111,6 +111,8 @@ def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_fram
     becomes valid. `signed_file` (default `$SM64COIN_SIGNED_FILE` or ./sm64coin-signed.json) remembers
     which seeds were signed, so a restart never signs a second run for a seed; pass "" for memory only."""
     load_rom(rom)
+    # Restricted (public) RPC refuses a run due more than 30 s after it arrives (rules.rs RPC_SUBMIT_AHEAD_SECONDS).
+    submit_lead = max(0, min(int(submit_lead), 25))
     if signed_file is None:
         signed_file = os.environ.get("SM64COIN_SIGNED_FILE", "sm64coin-signed.json")
     signed = SignedStore(signed_file)

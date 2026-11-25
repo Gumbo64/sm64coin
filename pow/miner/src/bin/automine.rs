@@ -589,7 +589,7 @@ fn main() -> Result<()> {
             let ahead = if a.stamp_ahead > 0 {
                 a.stamp_ahead
             } else {
-                a.submit_lead.min(sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(10))
+                a.submit_lead.min(sm64pow::rules::RPC_SUBMIT_AHEAD_SECONDS.saturating_sub(5))
             };
             while now() + ahead < ts {
                 std::thread::sleep(Duration::from_secs(1));
@@ -707,7 +707,7 @@ fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, par
     let mut best = (m, proof);
     let mut best_frames = best.0.pads.len() as u32;
     let mut k = 1u64;
-    let ahead = a.submit_lead.min(sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(10));
+    let ahead = a.submit_lead.min(sm64pow::rules::RPC_SUBMIT_AHEAD_SECONDS.saturating_sub(5));
     while valid(best_frames) > now() + ahead {
         let deadline = valid(best_frames) - ahead;
         println!("  anytime: best {best_frames} frames, valid in {} s; search {k} for a shorter run until then", valid(best_frames).saturating_sub(now()));

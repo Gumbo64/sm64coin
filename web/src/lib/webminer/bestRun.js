@@ -6,8 +6,8 @@
 
 /** Default seconds before a run is valid at which it is submitted (stamped with the second it becomes valid). */
 export const DEFAULT_LEAD = 5;
-/** The most a run may be sent ahead (the nodes' future window is 3600 s, but ahead gains nothing): the lead is clamped to this. */
-export const MAX_LEAD = 60;
+/** The most a run may be sent ahead: restricted RPC refuses a run due more than 30 s after it arrives (rules.rs RPC_SUBMIT_AHEAD_SECONDS); ahead gains nothing. */
+export const MAX_LEAD = 25;
 export const clampLead = (n) => { const x = Number(n); return Number.isFinite(x) ? Math.min(MAX_LEAD, Math.max(0, Math.floor(x))) : DEFAULT_LEAD; };
 /** How often (ms) a held run looks at the node's tip itself (the controller's watch also restarts rounds). */
 export const TIP_EVERY = 30000;

@@ -156,7 +156,7 @@ pub fn run_miner_keyed(bot: &mut dyn Bot, cfg: &MinerConfig, next_key: &mut dyn 
     let mut mined = 0u64;
     let mut round = 0u64;
     let mut signed = SignedStore::open(&cfg.signed_file);
-    let lead = cfg.submit_lead_secs.min(sm64pow::rules::MAX_HOLD_AHEAD_SECONDS.saturating_sub(10));
+    let lead = cfg.submit_lead_secs.min(sm64pow::rules::RPC_SUBMIT_AHEAD_SECONDS.saturating_sub(5));
     loop {
         let key = next_key(round)?;
         round += 1;

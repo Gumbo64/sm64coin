@@ -113,7 +113,7 @@ function world({ limitAt, tipAt = Infinity, events = [] }) {
   assert.ok(w0.t >= 1300 && w0.t < 1306, `released at ${w0.t}`);
   assert.equal(clampLead('x'), DEFAULT_LEAD);
   assert.equal(clampLead(-3), 0);
-  assert.equal(clampLead(9999), 60);
+  assert.equal(clampLead(9999), 25);
 }
 
 // An equivocated tip: the node builds on an older block, so the template's tip differs from its prev_hash. Only the
