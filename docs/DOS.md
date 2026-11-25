@@ -283,7 +283,9 @@ Measured on local nodes by the audit; each fix is in pow/sm64pow (decision) with
   either; the reserved short-claim worker bounds an honest claim's wait instead.
 - **Unknown sources share one budget.** Sources that never sent a valid claim share a replay
   budget of 8 long blocks (288,000 frames), refilled at 2 a minute, whatever their number (the
-  Pi: 100 same-length 4,000-frame claims from 40 addresses cost 211 s of CPU).
+  Pi: 100 same-length 4,000-frame claims from 40 addresses cost 211 s of CPU). Claims beyond it
+  are queued last (not refused), so they never delay a claim within it or from a known source,
+  and are skipped once a valid block exists at their height.
   x86 testnet re-run (victim CPU, no honest block): 200 x 300 frames 0.07 s (hopeless, no
   replay), 60 x 36,000 frames 0.11 s (over the limit at their stamp), 100 x 4,000 frames from 40
   IPs 2.25 s (2.94 s before the shared budget; 7.7 s at the first queue version).
