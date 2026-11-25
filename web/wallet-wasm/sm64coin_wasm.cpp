@@ -2,7 +2,7 @@
 //
 // A block id commits to the proof-of-play (cryptonote_format_utils.cpp calls
 // sm64coin::proof_id), and the wallet computes block ids for every block it scans. The full
-// implementation is the Rust crate pow/sm64pow (proof_id in lib.rs), which links the whole game
+// implementation is the Rust crate pow/sm64pow (proof_id in proof_id.rs), which links the whole game
 // engine; the browser wallet only needs this hash, which is a few lines on top of Keccak:
 //
 //   state codecs (ids 3, 4, 5):  Keccak256("sm64state" || blob)        (statecodec.rs state_proof_id)
@@ -11,7 +11,7 @@
 //   undecodable:                 Keccak256("sm64bad!" || blob)
 //
 // Blob layout (proof.rs): varint(frames) || start (0|1) || codec id || body.
-// Keep this in step with pow/sm64pow/src/{lib,proof,statecodec}.rs.
+// Keep this in step with pow/sm64pow/src/{proof_id,proof,statecodec,rules}.rs (docs/CORE.md).
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -48,7 +48,7 @@ namespace sm64coin
 
   crypto::hash proof_id(const std::string &proof)
   {
-    // Rust (lib.rs proof_id), in this order:
+    // Rust (proof_id.rs proof_id), in this order:
     // 1. proof.rs split_blob: a canonical varint(frames) <= MAX_FRAMES (1 << 20), start 0|1 and a codec id byte;
     //    if that holds and the id is a state codec (3, 4, 5): Keccak256("sm64state" || blob), whatever the body.
     // 2. otherwise decode_proof(blob, rules().max_frames_any()): frames over min(the mainnet rules' largest time
