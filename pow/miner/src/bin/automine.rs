@@ -394,7 +394,7 @@ fn main() -> Result<()> {
         let done = Arc::new(AtomicBool::new(false));
         let watcher = {
             let (stop, done) = (stop.clone(), done.clone());
-            let (url, prev) = (a.daemon.clone(), t.prev_hash.clone());
+            let (url, prev) = (a.daemon.clone(), t.tip.clone());
             // A parent-only template becomes "either" at sm64_power_on_at.
             let power_on_at = reset::restart_at_power_on_time(reset_mode, &t.sm64_start, t.sm64_power_on_at).unwrap_or(0);
             let deadline = if reset_mode == reset::ResetMode::WhenStuck && t.sm64_start == "either" && start == Start::Parent && a.reset_after > 0 { now() + a.reset_after } else { 0 };
@@ -497,7 +497,7 @@ fn main() -> Result<()> {
                 println!("  nothing to try ({why}); power-on start allowed at {} (in {} s)", t.sm64_power_on_at, wake.saturating_sub(now()));
                 while now() < wake.min(now() + 3600) {
                     std::thread::sleep(Duration::from_secs(2));
-                    if daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
+                    if daemon.top_hash().map(|h| h != t.tip).unwrap_or(false) {
                         break;
                     }
                     if now() >= wake {
@@ -599,7 +599,7 @@ fn main() -> Result<()> {
             };
             while now() + ahead < ts {
                 std::thread::sleep(Duration::from_secs(1));
-                if now() % 3 == 0 && daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
+                if now() % 3 == 0 && daemon.top_hash().map(|h| h != t.tip).unwrap_or(false) {
                     println!("  new block on the network: abandoning the waiting run");
                     abandoned = true;
                     break;
@@ -722,7 +722,7 @@ fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, par
         let new_tip = Arc::new(AtomicBool::new(false));
         let watcher = {
             let (stop, done, new_tip) = (stop.clone(), done.clone(), new_tip.clone());
-            let (url, prev) = (a.daemon.clone(), t.prev_hash.clone());
+            let (url, prev) = (a.daemon.clone(), t.tip.clone());
             std::thread::spawn(move || {
                 let d = rpc::Daemon::new(&url);
                 while !done.load(Ordering::Relaxed) {

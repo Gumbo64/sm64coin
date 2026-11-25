@@ -56,6 +56,11 @@ pub struct Template {
     /// this key, and the block is signed with it at submit ([`seal_signed`]).
     #[serde(skip)]
     pub key: Option<sm64pow::sign::Keypair>,
+    /// The chain's tip when the template was made. Usually `prev_hash`; not
+    /// when the node builds around an equivocated tip (v0.3, equivocation.rs),
+    /// so "a new block landed" means the tip moved from this, not from `prev_hash`.
+    #[serde(skip)]
+    pub tip: String,
 }
 
 /// `get_sm64_cycle`: every frame played in the current cycle.
@@ -101,9 +106,11 @@ impl Daemon {
     /// A template whose coinbase commits `key` (e.g. a key a group leader
     /// shares with its group, or the key of a saved block).
     pub fn template_for(&self, address: &str, key: sm64pow::sign::Keypair) -> Result<Template> {
+        let tip = self.top_hash().unwrap_or_default();
         let r = self.call("get_block_template", json!({"wallet_address": address, "extra_nonce": hex::encode(key.extra_nonce())}))?;
         let mut t: Template = serde_json::from_value(r)?;
         t.key = Some(key);
+        t.tip = if tip.is_empty() { t.prev_hash.clone() } else { tip };
         Ok(t)
     }
 
