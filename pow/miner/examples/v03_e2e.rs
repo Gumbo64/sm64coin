@@ -13,6 +13,11 @@ use sm64coin_miner::rpc::{Daemon, seal_with};
 use sm64pow::sign::Keypair;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+/// The reward address for template calls: $SM64_ADDR (a test network's) or a mainnet one.
+fn addr() -> String {
+    std::env::var("SM64_ADDR").unwrap_or_else(|_| "SM64RtPqsHM63LZn2u9Myx9HtC4kjhu1h98SRtJz9USB7NZAoCMdZSBD7D1L2DWu9uCYZFUSVKytreuzEMJ6VjBU2tbjKqevFH".into())
+}
+
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
@@ -36,7 +41,7 @@ fn main() -> Result<()> {
     let proof = hex::decode(s("proof"))?;
     let frames = saved["frames"].as_u64().unwrap() as u32;
     let parent_ts = saved["parent_ts"].as_u64().unwrap();
-    let info = d.call("get_block_template", json!({"wallet_address": "SM64RtPqsHM63LZn2u9Myx9HtC4kjhu1h98SRtJz9USB7NZAoCMdZSBD7D1L2DWu9uCYZFUSVKytreuzEMJ6VjBU2tbjKqevFH"}))?;
+    let info = d.call("get_block_template", json!({"wallet_address": addr()}))?;
     let retarget = info["sm64_retarget_difficulty"].as_u64().unwrap_or(1).max(1);
     while sm64pow::rules().max_frames(retarget, now().saturating_sub(parent_ts)) < frames {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -73,7 +78,7 @@ fn main() -> Result<()> {
     for (name, v) in &edits[..1] {
         submit(&d, &format!("the miner's own equal-length variant ({name}), signed"), &seal_with(&tpl, &seed, &key, v, Some(ts))?);
     }
-    let t = d.call("get_block_template", json!({"wallet_address": "SM64RtPqsHM63LZn2u9Myx9HtC4kjhu1h98SRtJz9USB7NZAoCMdZSBD7D1L2DWu9uCYZFUSVKytreuzEMJ6VjBU2tbjKqevFH"}))?;
+    let t = d.call("get_block_template", json!({"wallet_address": addr()}))?;
     let tip = d.call("get_last_block_header", json!({}))?;
     println!(
         "tip {} at height {}; next template builds on {} (height {})",

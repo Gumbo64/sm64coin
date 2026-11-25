@@ -34,11 +34,11 @@ class _T:
 
 
 def test_wait_returns_lead_seconds_before_the_stamp():
-    at = int(time.time()) + 3
     t0 = time.time()
+    at = int(t0) + 4  # (at - lead) - t0 is in (1, 2] whatever the fraction of the second t0 is at
     ts = wait_until_valid(_Daemon(at), "SM6", _T(), 99, lambda: False, log=lambda *_: None, poll=0.1, lead=2)
     assert ts == at, "stamped with the second the run becomes valid"
-    assert 0.5 <= time.time() - t0 <= 2.5, "returned about `lead` seconds early, not at `at`"
+    assert 0.8 <= time.time() - t0 <= 2.6, "returned about `lead` seconds early, not at `at`"
 
 
 def test_wait_gives_up_when_the_tip_moves():
