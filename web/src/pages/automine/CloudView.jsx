@@ -10,7 +10,7 @@ import { levelName, levelIcon, workerColor } from './levels.js';
 // start see-through; a choice is remembered per area), the cloud can be mirrored, edges (to each node's parent) toggled,
 // and the view fitted.
 // Hybrid mining adds: "Play from here" on a selected node (a person plays on from its state, see HybridPlay.jsx; the
-// played segment becomes a manual node, drawn magenta, and the view highlights where it finished), and shift + right
+// played segment becomes a manual node, drawn magenta, and the view highlights where it finished), and shift + left
 // click (without dragging) on the level geometry, which sets a position goal for the searches (Mario::PosTime to the point).
 // three.js is loaded when this view mounts, i.e. only with the visualisations on.
 
@@ -376,7 +376,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, hybridOK = 
           setSel(snapshot(slot));
           select(slot);
         };
-        // Shift + right click without dragging: a position goal at the level geometry under the pointer.
+        // Shift + left click without dragging: a position goal at the level geometry under the pointer.
         const onGoal = (ev) => {
           if (!geomMesh || !fitted) return;
           setRay(ev);
@@ -393,8 +393,8 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, hybridOK = 
         dom.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY, e.button]; });
         dom.addEventListener('pointerup', (e) => {
           if (downAt && downAt[2] === e.button && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 4) {
-            if (e.button === 0) onSelect(e);
-            else if (e.button === 2 && e.shiftKey) onGoal(e);
+            if (e.button === 0 && e.shiftKey) onGoal(e);
+            else if (e.button === 0) onSelect(e);
           }
           downAt = null;
         });
@@ -503,7 +503,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, hybridOK = 
               ? <button className="primary" onClick={() => onPlayFrom && onPlayFrom(sel)} title="Load this node's save state and play on by hand; the played segment becomes a high-weight node of the search tree">🎮 Play from here</button>
               : <span className="muted small">{playFromStart ? ' · "Play from the start" is on: hybrid mining is off' : !hybridOK ? ' · playing from a node needs the running auto-miner with worker sync' : ' · only the nodes of a worker\'s current search step can be played from'}</span>}
           </>
-        ) : <span className="muted">Click a node (left click). Left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms. Shift + right click on the level sets a position goal for the searches.</span>}
+        ) : <span className="muted">Click a node (left click). Left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms. Shift + left click on the level sets a position goal for the searches.</span>}
       </div>
       <div className="viz-node muted small">
         {goal ? <>Position goal: ({goal.pos.join(', ')}) in {levelName(goal.level)} area {goal.area}; the searches draw Mario::PosTime objectives to it. <button className="linkish" onClick={() => onGoal && onGoal(null)}>clear</button></> : 'No position goal.'}
