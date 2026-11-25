@@ -322,10 +322,18 @@ pub const POF_WINDOW_SECONDS: u64 = 60;
 /// than this before its arrival is stale: not relayed, and it loses a
 /// same-height tie to a fresh sibling while it has no child.
 pub const FRESHNESS_SECONDS: u64 = 60;
-/// Publish-on-find: how far ahead of the node's clock a found run may be
-/// stamped (its validity time) and still be held and relayed (consensus still
-/// only accepts a block once its stamp is within the 120 s future limit).
-pub const MAX_HOLD_AHEAD_SECONDS: u64 = 3600;
+/// How far ahead of the node's clock a run may be stamped (its validity
+/// time) and still be queued until it is due (consensus only accepts a block
+/// once its stamp is within the 120 s future limit). Relay policy. Miners
+/// submit a few seconds before due (default 5 s), so this only bounds how
+/// long a claim can sit in the replay queue: 300 s (it was 3600 s, which let
+/// far-future claims fill the queue for an hour).
+pub const MAX_HOLD_AHEAD_SECONDS: u64 = 300;
+/// Restricted (public) RPC: a `submit_block` whose run is due more than this
+/// many seconds after it arrives is refused with an error ("submit closer to
+/// due"), so no client of a shared gateway can park claims in the queue.
+/// Miners' submit lead must stay below it (default 5 s).
+pub const RPC_SUBMIT_AHEAD_SECONDS: u64 = 30;
 
 impl Rules for StarCycle {
     fn name(&self) -> &'static str {

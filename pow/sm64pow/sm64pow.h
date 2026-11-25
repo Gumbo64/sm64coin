@@ -32,7 +32,7 @@ int32_t sm64pow_judge_sibling(const uint8_t *hash32, const uint8_t *nonce, size_
                               const uint8_t *alt_proof, size_t alt_len, const uint8_t *alt_sig64,
                               uint8_t *out, size_t cap);
 /* Evidence from a peer: 1 new and valid (relay it), 0 not. */
-int32_t sm64pow_evidence_received(const uint8_t *bytes, size_t len);
+int32_t sm64pow_evidence_received(const uint8_t *bytes, size_t len); /* 1 new, 0 not, -1 forged or malformed (drop the peer) */
 /* SM64COIN v0.3 publish-on-find (pof.rs, relay / fork-choice policy). note_eligible:
  * block id32 became eligible now (valid, fitting by the node's clock). displaces: 1
  * when eligible sibling alt32 replaces our childless tip32 (a strictly shorter run of
@@ -41,8 +41,15 @@ int32_t sm64pow_evidence_received(const uint8_t *bytes, size_t len);
  * stamped timestamp is stale now (not relayed). */
 void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp);
 int32_t sm64pow_displaces(const uint8_t *tip32, const uint8_t *alt32);
-int32_t sm64pow_pof_candidate(const uint8_t *tip32, uint32_t frames, uint64_t timestamp);
+int32_t sm64pow_pof_candidate(const uint8_t *tip32, const uint8_t *id32, uint32_t frames, uint64_t timestamp);
 int32_t sm64pow_stale(uint64_t timestamp);
+/* The freshness bound for block id32, judged when it became eligible here (a queued claim: max(arrival, due)). */
+int32_t sm64pow_stale_block(const uint8_t *id32, uint64_t timestamp);
+/* A copy of our block tip32's run (same seed, another stamp): 1 if it is the preferred copy
+ * (earliest stamp, then lowest id; inside the displacement window). */
+int32_t sm64pow_restamp_preferred(const uint8_t *tip32, const uint8_t *hash32, uint64_t timestamp, const uint8_t *id32);
+/* Restricted RPC: the most seconds ahead of arrival a submitted run may be due. */
+uint64_t sm64pow_rpc_submit_ahead(void);
 /* One run per key (equivocation.rs): 0 bad signature, 1 the template's first run,
  * 2 the same run again, 3 a different run (equivocation; evidence queued for relay), -1 error. */
 int32_t sm64pow_note_claim(const uint8_t *hash32, const uint8_t *proof, size_t len,

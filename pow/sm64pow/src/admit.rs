@@ -318,15 +318,17 @@ impl Policy {
             }
             Source::RpcSubmit => {
                 if let Some((until, _)) = self.penalty.get(&ctx.host) {
-                    if now < *until {
+                    if now < *until && !shared_host(&ctx.host) {
                         self.refused += 1;
                         return Decision::Skip("this address submitted an invalid proof recently");
                     }
                 }
-                let b = self.sources.entry_or(format!("rpc {}", ctx.host), || Bucket::new(SOURCE_FRAMES, SOURCE_FRAMES_PER_MIN, now));
-                if !b.take(f, now) {
-                    self.refused += 1;
-                    return Decision::Skip("this address's replay budget is used up");
+                if !shared_host(&ctx.host) {
+                    let b = self.sources.entry_or(format!("rpc {}", ctx.host), || Bucket::new(SOURCE_FRAMES, SOURCE_FRAMES_PER_MIN, now));
+                    if !b.take(f, now) {
+                        self.refused += 1;
+                        return Decision::Skip("this address's replay budget is used up");
+                    }
                 }
                 if !self.rpc_global.take(f, now) {
                     self.refused += 1;
@@ -337,15 +339,73 @@ impl Policy {
         }
     }
 
+    /// The queue's admission gate for a claim that arrived unasked: like
+    /// [`Policy::admit_relay`], but it only checks that the budgets are not
+    /// used up; the claimed frames are charged when (and only if) the claim
+    /// is actually replayed ([`Policy::charge_replay`]), so a claim that is
+    /// refused, evicted or skipped when due costs its source nothing.
+    pub fn gate_relay(&mut self, ctx: Option<&Context>, now: f64) -> Decision {
+        let Some(ctx) = ctx else { return Decision::Replay };
+        match ctx.source {
+            Source::Sync { .. } => Decision::Replay,
+            Source::Relay => {
+                let b = self.sources.entry_or(format!("p2p {}", ctx.host), || Bucket::new(SOURCE_FRAMES, SOURCE_FRAMES_PER_MIN, now));
+                if b.positive(now) {
+                    Decision::Replay
+                } else {
+                    self.refused += 1;
+                    Decision::Skip("this peer's replay budget is used up")
+                }
+            }
+            Source::RpcSubmit => {
+                if !shared_host(&ctx.host) {
+                    if matches!(self.penalty.get(&ctx.host), Some((until, _)) if now < *until) {
+                        self.refused += 1;
+                        return Decision::Skip("this address submitted an invalid proof recently");
+                    }
+                    let b = self.sources.entry_or(format!("rpc {}", ctx.host), || Bucket::new(SOURCE_FRAMES, SOURCE_FRAMES_PER_MIN, now));
+                    if !b.positive(now) {
+                        self.refused += 1;
+                        return Decision::Skip("this address's replay budget is used up");
+                    }
+                }
+                if !self.rpc_global.positive(now) {
+                    self.refused += 1;
+                    return Decision::Skip("restricted RPC's replay budget is used up");
+                }
+                Decision::Replay
+            }
+        }
+    }
+
+    /// Charges a replay that is about to run for a claim admitted by [`Policy::gate_relay`].
+    pub fn charge_replay(&mut self, frames: u32, ctx: Option<&Context>, now: f64) {
+        let Some(ctx) = ctx else { return };
+        let f = frames.max(1) as f64;
+        match ctx.source {
+            Source::Sync { .. } => {}
+            Source::Relay => self.sources.entry_or(format!("p2p {}", ctx.host), || Bucket::new(SOURCE_FRAMES, SOURCE_FRAMES_PER_MIN, now)).charge(f, now),
+            Source::RpcSubmit => {
+                if !shared_host(&ctx.host) {
+                    self.sources.entry_or(format!("rpc {}", ctx.host), || Bucket::new(SOURCE_FRAMES, SOURCE_FRAMES_PER_MIN, now)).charge(f, now);
+                }
+                self.rpc_global.charge(f, now);
+            }
+        }
+    }
+
     /// Whether a restricted-RPC source may submit at all right now (before
     /// the block is even parsed further).
     pub fn rpc_submit_allowed(&mut self, host: &str, now: f64) -> bool {
-        !matches!(self.penalty.get(&host.to_string()), Some((until, _)) if now < *until)
+        shared_host(host) || !matches!(self.penalty.get(&host.to_string()), Some((until, _)) if now < *until)
     }
 
     /// A replay in context `ctx` found the run invalid.
     pub fn note_invalid(&mut self, ctx: Option<&Context>, now: f64) {
         if let Some(Context { host, source: Source::RpcSubmit }) = ctx {
+            if shared_host(host) {
+                return; // a gateway's address is everyone's: no per-address penalty (shared_host)
+            }
             let (_, times) = self.penalty.get(host).copied().unwrap_or((0.0, 0));
             let secs = (RPC_PENALTY_SECONDS * f64::powi(2.0, times.min(8) as i32)).min(86400.0);
             self.penalty.insert(host.clone(), (now + secs, times + 1));
@@ -359,6 +419,26 @@ impl Policy {
     pub fn rpc_replay_charge(&mut self, seconds: f64, now: f64) {
         self.rpc_replay.charge(seconds, now);
     }
+}
+
+/// A restricted-RPC client address that is shared by many users: loopback,
+/// which is what the node sees behind a local reverse proxy or tunnel (the
+/// public gateway eboy.au reaches restricted RPC through cloudflared on
+/// 127.0.0.1). Per-address penalties, budgets and queue shares would let one
+/// bad client lock every web miner out, so such an address gets none: it is
+/// bounded by restricted RPC's global budget and the replay queue only.
+pub fn shared_host(host: &str) -> bool {
+    host.starts_with("127.") || host == "::1" || host == "[::1]" || host.starts_with("::ffff:127.") || host == "localhost"
+}
+
+/// [`Policy::gate_relay`] on the process's policy, in this thread's context.
+pub fn gate_relay(ctx: Option<&Context>) -> Decision {
+    with(|p| p.gate_relay(ctx, now()))
+}
+
+/// [`Policy::charge_replay`] on the process's policy.
+pub fn charge_replay(frames: u32, ctx: Option<&Context>) {
+    with(|p| p.charge_replay(frames, ctx, now()))
 }
 
 pub fn policy() -> &'static Mutex<Policy> {

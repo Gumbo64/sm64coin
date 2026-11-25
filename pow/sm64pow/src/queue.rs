@@ -52,6 +52,11 @@ pub const FAIR_HALF_LIFE: f64 = 60.0;
 /// A source whose claim replayed invalid is refused this long, doubling per
 /// repeat, up to a day.
 pub const PENALTY_SECONDS: f64 = 600.0;
+/// With two or more workers, one is reserved for claims of at most this many
+/// frames (about 5 minutes of play; honest winning runs are far shorter), so
+/// an honest claim never waits behind a pool full of 36,000-frame replays
+/// for longer than one short replay.
+pub const RESERVED_FRAMES: u32 = 9000;
 const IDS: usize = 8192;
 const SOURCES: usize = 4096;
 
@@ -73,6 +78,10 @@ pub struct Job {
     pub stamp: u64,
     /// The second it is due (unix): when the run fits the limit by this node's clock.
     pub due: u64,
+    /// When it arrived (unix). It became eligible at `max(arrived, due)`, and
+    /// that, not the time a worker got to it, is what the displacement window
+    /// and the freshness bound read ([`Queue::eligible_at`]).
+    pub arrived: u64,
     /// Where it came from (None: this node's own miner or a trusted RPC).
     pub ctx: Option<Context>,
 }
@@ -110,6 +119,15 @@ pub enum Refused {
     Full,
     /// This source sent an invalid claim recently.
     Penalty,
+    /// Its source's replay budget (admit.rs) is used up.
+    Budget(&'static str),
+}
+
+impl Job {
+    /// The second this claim became eligible here: due, but not before it arrived.
+    pub fn eligible(&self) -> u64 {
+        self.due.max(self.arrived)
+    }
 }
 
 /// Whether a due claim is worth a replay, given what we have at its height.
@@ -118,9 +136,12 @@ pub fn could_matter(c: Chain, job: &Job, now: u64) -> Result<(), &'static str> {
         Chain::Tip => Ok(()),
         Chain::Unknown => Err("its parent is not in our chain"),
         Chain::Child { id, frames } => {
-            if job.frames >= frames {
+            let at = job.eligible().min(now);
+            if crate::pof::restamp_preferred(&id, &job.seed.0, job.stamp, &job.id, at) {
+                Ok(()) // the same run, stamped earlier: the deterministic choice between copies (pof.rs)
+            } else if job.frames >= frames {
                 Err("not strictly shorter than our block at that height")
-            } else if !crate::pof::policy().lock().unwrap_or_else(|e| e.into_inner()).candidate(&id, job.frames, job.stamp, now) {
+            } else if !crate::pof::policy().lock().unwrap_or_else(|e| e.into_inner()).candidate(&id, job.frames, job.stamp, at) {
                 Err("outside the displacement window of our block at that height")
             } else {
                 Ok(())
@@ -142,6 +163,8 @@ struct State {
     cleared: Option<Bounded<[u8; 32], ()>>,
     /// Ids queued or recently decided.
     known: Option<Bounded<[u8; 32], ()>>,
+    /// Ids queued or replayed: when they became eligible here.
+    eligible: Option<Bounded<[u8; 32], u64>>,
     /// Per source: frames replayed for it (decaying), and when that was.
     served: Option<Bounded<String, (f64, f64)>>,
     /// Per source: refused until, and how often it offended.
@@ -175,6 +198,17 @@ fn source_of(job: &Job) -> String {
     job.ctx.as_ref().map(|c| c.host.clone()).unwrap_or_default()
 }
 
+/// Whether the job's source gets a per-source share and penalty: not this
+/// node's own (no context), and not a shared restricted-RPC address
+/// ([`admit::shared_host`]: a gateway, where one bad client must not lock
+/// everyone out).
+fn accountable(job: &Job) -> bool {
+    match &job.ctx {
+        None => false,
+        Some(c) => !(c.source == admit::Source::RpcSubmit && admit::shared_host(&c.host)),
+    }
+}
+
 impl State {
     fn maps(&mut self) -> (&mut Bounded<[u8; 32], ()>, &mut Bounded<[u8; 32], ()>, &mut Bounded<String, (f64, f64)>, &mut Bounded<String, (f64, u32)>) {
         (
@@ -194,10 +228,10 @@ impl State {
 
     /// The index of the due job to replay next: least claimed frames plus
     /// what its source has had, the oldest first among equals.
-    fn pick(&mut self, unix: u64, t: f64) -> Option<usize> {
+    fn pick(&mut self, unix: u64, t: f64, long_ok: bool) -> Option<usize> {
         let mut best: Option<(f64, f64, usize)> = None;
         for i in 0..self.waiting.len() {
-            if self.waiting[i].job.due > unix {
+            if self.waiting[i].job.due > unix || (!long_ok && self.waiting[i].job.frames > RESERVED_FRAMES) {
                 continue;
             }
             let (frames, queued, src) = (self.waiting[i].job.frames as f64, self.waiting[i].queued, source_of(&self.waiting[i].job));
@@ -209,8 +243,21 @@ impl State {
         best.map(|b| b.2)
     }
 
-    fn next_due(&self) -> Option<u64> {
-        self.waiting.iter().map(|e| e.job.due).min()
+    fn next_due(&self, long_ok: bool) -> Option<u64> {
+        self.waiting.iter().filter(|e| long_ok || e.job.frames <= RESERVED_FRAMES).map(|e| e.job.due).min()
+    }
+
+    /// Takes waiting job `i` out without a replay, with a Skipped verdict for the daemon (which drops the block).
+    fn drop_waiting(&mut self, i: usize, why: &'static str) {
+        let e = self.waiting.swap_remove(i);
+        let src = source_of(&e.job);
+        if let Some(n) = self.per_source.get_mut(&src) {
+            *n = n.saturating_sub(1);
+        }
+        if self.per_source.get(&src) == Some(&0) {
+            self.per_source.remove(&src);
+        }
+        self.ready.push_back((e.job.id, Verdict::Skipped(why)));
     }
 }
 
@@ -238,44 +285,77 @@ impl Queue {
     }
 
     /// Queues `job` (until it is due, then it competes for a worker).
+    ///
+    /// When the queue (or the source's share of it) is full, the waiting job
+    /// due last (of that source) makes room if the new one is due sooner: a
+    /// claim stamped far ahead can't keep a claim that is due now out. The
+    /// evicted job gets a Skipped verdict. The source's replay budget is
+    /// checked here and charged only when a replay runs.
     pub fn submit(self: &Arc<Self>, job: Job) -> Result<(), Refused> {
         let t = admit::now();
         let src = source_of(&job);
+        let accountable = accountable(&job);
+        if let admit::Decision::Skip(why) = admit::gate_relay(job.ctx.as_ref()) {
+            return Err(Refused::Budget(why));
+        }
+        let mut evicted = false;
         {
             let mut st = self.st.lock().unwrap();
             let (_, known, _, bad) = st.maps();
             if known.get(&job.id).is_some() {
                 return Err(Refused::Known);
             }
-            if !src.is_empty() && matches!(bad.get(&src), Some(&(until, _)) if t < until) {
+            if accountable && matches!(bad.get(&src), Some(&(until, _)) if t < until) {
                 return Err(Refused::Penalty);
             }
             let n = st.per_source.get(&src).copied().unwrap_or(0);
-            if st.waiting.len() >= QUEUE_MAX || (!src.is_empty() && n >= PER_SOURCE_MAX) {
-                return Err(Refused::Full);
+            let source_full = accountable && n >= PER_SOURCE_MAX;
+            if source_full || st.waiting.len() >= QUEUE_MAX {
+                let last = st.waiting.iter().enumerate().filter(|(_, e)| !source_full || source_of(&e.job) == src).max_by_key(|(_, e)| e.job.due).map(|(i, e)| (i, e.job.due, e.job.id));
+                match last {
+                    Some((i, due, id)) if due > job.due => {
+                        st.drop_waiting(i, "evicted: the replay queue was full and a claim due sooner arrived");
+                        st.maps().1.remove(&id);
+                        evicted = true;
+                    }
+                    _ => return Err(Refused::Full),
+                }
             }
             st.maps().1.insert(job.id, ());
+            let el = job.eligible();
+            st.eligible.get_or_insert_with(|| Bounded::new(IDS)).insert(job.id, el);
             *st.per_source.entry(src).or_insert(0) += 1;
             st.waiting.push(Entry { job, queued: t });
         }
         self.start();
         self.work.notify_all();
+        if evicted {
+            self.done.notify_all();
+        }
         Ok(())
+    }
+
+    /// When claim `id` became eligible here (queued or replayed by this queue), if known.
+    pub fn eligible_at(&self, id: &[u8; 32]) -> Option<u64> {
+        self.st.lock().unwrap().eligible.as_ref().and_then(|m| m.get(id).copied())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn start(self: &Arc<Self>) {
         self.started.get_or_init(|| {
-            for k in 0..self.threads.load(Ordering::Relaxed) {
+            let n = self.threads.load(Ordering::Relaxed);
+            for k in 0..n {
                 let q = Arc::clone(self);
-                std::thread::Builder::new().name(format!("sm64-replay-{k}")).spawn(move || q.worker()).expect("spawn a replay worker");
+                // Worker 0 is reserved for short claims when there are two or more.
+                let long_ok = !(k == 0 && n >= 2);
+                std::thread::Builder::new().name(format!("sm64-replay-{k}")).spawn(move || q.worker(long_ok)).expect("spawn a replay worker");
             }
         });
     }
     #[cfg(target_arch = "wasm32")]
     fn start(self: &Arc<Self>) {}
 
-    fn worker(self: Arc<Self>) {
+    fn worker(self: Arc<Self>, long_ok: bool) {
         loop {
             let entry = {
                 let mut st = self.st.lock().unwrap();
@@ -284,12 +364,13 @@ impl Queue {
                         return;
                     }
                     let (unix, t) = (unix_now(), admit::now());
-                    if let Some(i) = st.pick(unix, t) {
+                    if let Some(i) = st.pick(unix, t, long_ok) {
                         st.running += 1;
                         break st.waiting.swap_remove(i);
                     }
-                    let wait = match st.next_due() {
-                        Some(d) => Duration::from_millis(((d.saturating_sub(unix)) * 1000).clamp(20, 1000)),
+                    let wait = match st.next_due(long_ok) {
+                        Some(d) if d > unix => Duration::from_millis(((d - unix) * 1000).clamp(20, 1000)),
+                        Some(_) => Duration::from_millis(50), // due, but `pick` passed it over: look again shortly (a submit also wakes us)
                         None => Duration::from_secs(1),
                     };
                     st = self.work.wait_timeout(st, wait).unwrap().0;
@@ -310,6 +391,7 @@ impl Queue {
             }
         }
         self.replayed.fetch_add(1, Ordering::Relaxed);
+        admit::charge_replay(job.frames, job.ctx.as_ref());
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.replay)(job))).unwrap_or(Verdict::Process)
     }
 
@@ -329,11 +411,22 @@ impl Queue {
             let v = st.served_now(&src, t) + job.frames as f64;
             st.maps().2.insert(src.clone(), (v, t));
         }
+        let mut purged = false;
         match &verdict {
-            Verdict::Invalid(_) if !src.is_empty() => {
+            Verdict::Invalid(_) if accountable(job) => {
                 let times = st.maps().3.get(&src).map_or(0, |b| b.1);
                 let secs = (PENALTY_SECONDS * f64::powi(2.0, times.min(8) as i32)).min(86400.0);
-                st.maps().3.insert(src, (t + secs, times + 1));
+                st.maps().3.insert(src.clone(), (t + secs, times + 1));
+                // Its other waiting claims go too, without a replay.
+                let mut i = 0;
+                while i < st.waiting.len() {
+                    if accountable(&st.waiting[i].job) && source_of(&st.waiting[i].job) == src {
+                        st.drop_waiting(i, "its source sent an invalid claim");
+                        purged = true;
+                    } else {
+                        i += 1;
+                    }
+                }
             }
             Verdict::Valid(_) => {
                 st.maps().0.insert(job.id, ());
@@ -342,7 +435,9 @@ impl Queue {
         }
         if queued {
             st.ready.push_back((job.id, verdict));
-            drop(st);
+        }
+        drop(st);
+        if queued || purged {
             self.done.notify_all();
         }
     }
@@ -357,6 +452,8 @@ impl Queue {
                 return Verdict::Process; // already queued or decided: the daemon's normal path sorts it out
             }
             st.maps().1.insert(job.id, ());
+            let el = job.eligible();
+            st.eligible.get_or_insert_with(|| Bounded::new(IDS)).insert(job.id, el);
         }
         let v = self.decide(&job);
         self.finish(&job, v.clone(), false);
@@ -417,7 +514,7 @@ mod tests {
     }
 
     fn job(n: u8, frames: u32, due: u64, host: &str) -> Job {
-        Job { id: [n; 32], parent: Parent::Genesis, parent_id: [0; 32], seed: Seed([n; 32]), difficulty: 1, blob: vec![], frames, stamp: due, due, ctx: ctx(host) }
+        Job { id: [n; 32], parent: Parent::Genesis, parent_id: [0; 32], seed: Seed([n; 32]), difficulty: 1, blob: vec![], frames, stamp: due, due, arrived: due, ctx: ctx(host) }
     }
 
     fn valid_replay() -> Box<Replay> {
@@ -446,24 +543,24 @@ mod tests {
             st.waiting.push(Entry { job: job(i as u8, f, 10, h), queued: t + i as f64 });
         }
         st.waiting.push(Entry { job: job(99, 100, 1_000_000, "z"), queued: t }); // not due
-        let first = st.pick(10, t).unwrap();
+        let first = st.pick(10, t, true).unwrap();
         assert_eq!(st.waiting[first].job.frames, 500, "the shortest claim first");
         st.waiting.swap_remove(first);
-        let first = st.pick(10, t).unwrap();
+        let first = st.pick(10, t, true).unwrap();
         assert_eq!(st.waiting[first].job.frames, 3000);
         let src = source_of(&st.waiting[first].job);
         st.waiting.swap_remove(first);
         // That source had 3000 frames replayed: its other claims now rank behind every other 3000-frame claim.
         st.maps().2.insert(src.clone(), (3000.0, t));
-        let next = st.pick(10, t).unwrap();
+        let next = st.pick(10, t, true).unwrap();
         assert_ne!(source_of(&st.waiting[next].job), src, "the fair share: another source's claim goes first");
         // The share fades with time.
         assert!(st.served_now(&src, t + 3.0 * FAIR_HALF_LIFE) < 400.0);
         // Nothing is due yet for the last one.
         let mut only = State::default();
         only.waiting.push(Entry { job: job(1, 10, 1_000_000, "x"), queued: 0.0 });
-        assert!(only.pick(10, t).is_none());
-        assert_eq!(only.next_due(), Some(1_000_000));
+        assert!(only.pick(10, t, true).is_none());
+        assert_eq!(only.next_due(true), Some(1_000_000));
     }
 
     #[test]
@@ -481,8 +578,11 @@ mod tests {
         // Strictly shorter inside the window of our block: replayed.
         crate::pof::policy().lock().unwrap().note_eligible(ours, [3; 32], [4; 32], 2500, now, now);
         assert_eq!(could_matter(Chain::Child { id: ours, frames: 2500 }, &j, now), Ok(()));
-        // The same run 10 minutes later: outside the window.
-        assert!(could_matter(Chain::Child { id: ours, frames: 2500 }, &j, now + 600).is_err());
+        // The same run arriving 10 minutes later: outside the window.
+        let late = job(1, 2000, now + 600, "a");
+        assert!(could_matter(Chain::Child { id: ours, frames: 2500 }, &late, now + 600).is_err());
+        // But a claim that arrived (and was due) inside the window still counts when a slow worker gets to it later.
+        assert_eq!(could_matter(Chain::Child { id: ours, frames: 2500 }, &j, now + 600), Ok(()));
     }
 
     #[test]
@@ -542,6 +642,68 @@ mod tests {
         drain(&q, 1);
         local.id = [63; 32];
         q.submit(local).unwrap();
+        q.stop();
+    }
+
+    #[test]
+    fn a_full_queue_makes_room_for_a_claim_due_sooner_and_a_bad_source_loses_its_waiting_claims() {
+        let q = Queue::new(1, Box::new(|_: &Job| Verdict::Invalid("bad".into())));
+        let now = unix_now();
+        // One source fills its share with claims due far ahead; a claim of its own due now evicts the latest.
+        for i in 0..PER_SOURCE_MAX {
+            q.submit(job(i as u8, 100, now + 200 + i as u64, "far")).unwrap();
+        }
+        assert_eq!(q.submit(job(100, 100, now + 10_000, "far")), Err(Refused::Full), "not sooner: refused");
+        q.submit(job(101, 100, now + 100, "far")).unwrap();
+        let (id, v) = q.wait_ready(Duration::from_secs(2)).expect("the evicted claim's verdict");
+        assert_eq!(id, [(PER_SOURCE_MAX - 1) as u8; 32], "the one due last");
+        assert!(matches!(v, Verdict::Skipped(_)));
+        // A claim of that source turns out invalid: its other waiting claims are dropped without a replay.
+        q.submit(job(102, 100, now, "far")).unwrap();
+        let got = drain(&q, PER_SOURCE_MAX + 1);
+        assert!(got.iter().any(|(id, v)| *id == [102; 32] && matches!(v, Verdict::Invalid(_))));
+        assert_eq!(got.iter().filter(|(_, v)| matches!(v, Verdict::Skipped(_))).count(), PER_SOURCE_MAX, "{got:?}");
+        assert_eq!(q.waiting(), 0);
+        q.stop();
+    }
+
+    #[test]
+    fn a_shared_gateway_address_is_never_locked_out() {
+        // Restricted RPC behind a local tunnel: every web miner is 127.0.0.1. One bad claim must not penalise it.
+        let q = Queue::new(1, Box::new(|j: &Job| if j.frames == 666 { Verdict::Invalid("bad".into()) } else { Verdict::Valid(j.frames) }));
+        let now = unix_now();
+        let gw = |n: u8, frames: u32| Job { ctx: Some(Context { host: "127.0.0.1".into(), source: admit::Source::RpcSubmit }), ..job(n, frames, now, "") };
+        q.submit(gw(1, 666)).unwrap();
+        assert!(matches!(drain(&q, 1).pop(), Some((_, Verdict::Invalid(_)))));
+        q.submit(gw(2, 3000)).unwrap();
+        assert!(matches!(drain(&q, 1).pop(), Some((_, Verdict::Valid(3000)))), "the next web miner's claim is replayed");
+        // No per-source share either: more than PER_SOURCE_MAX claims can wait.
+        for i in 0..PER_SOURCE_MAX as u8 + 4 {
+            q.submit(gw(10 + i, 100)).map(|_| ()).unwrap_or_else(|e| panic!("{e:?}"));
+        }
+        drain(&q, PER_SOURCE_MAX + 4);
+        assert!(admit::policy().lock().unwrap().rpc_submit_allowed("127.0.0.1", admit::now()));
+        q.stop();
+    }
+
+    #[test]
+    fn one_worker_is_kept_for_short_claims() {
+        let mut st = State::default();
+        st.waiting.push(Entry { job: job(1, 36000, 10, "a"), queued: 0.0 });
+        assert!(st.pick(10, 0.0, false).is_none(), "the reserved worker leaves a long claim alone");
+        assert!(st.pick(10, 0.0, true).is_some());
+        st.waiting.push(Entry { job: job(2, 4000, 10, "b"), queued: 1.0 });
+        let i = st.pick(10, 0.0, false).unwrap();
+        assert_eq!(st.waiting[i].job.frames, 4000);
+    }
+
+    #[test]
+    fn eligibility_is_arrival_or_due_not_when_a_worker_got_to_it() {
+        let q = Queue::new(1, valid_replay());
+        let mut j = job(7, 100, 1000, "a");
+        j.arrived = 1500;
+        q.submit(j.clone()).unwrap();
+        assert_eq!(q.eligible_at(&[7; 32]), Some(1500));
         q.stop();
     }
 

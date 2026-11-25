@@ -212,7 +212,7 @@ fn queue_replays_real_blocks_outside_the_lock_and_the_check_then_finds_the_resul
             Parent::Block { id, .. } => id,
         };
         let frames = sm64pow::proof::split_blob(&b.proof).unwrap().0;
-        let job = Job { id: b.id, parent: b.parent, parent_id, seed: b.seed, difficulty: b.difficulty, blob: b.proof.clone(), frames, stamp: now, due: now, ctx: None };
+        let job = Job { id: b.id, parent: b.parent, parent_id, seed: b.seed, difficulty: b.difficulty, blob: b.proof.clone(), frames, stamp: now, due: now, arrived: now, ctx: None };
         let t = Instant::now();
         global().submit(job).unwrap();
         let (id, v) = loop {

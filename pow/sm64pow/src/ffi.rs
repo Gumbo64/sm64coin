@@ -261,13 +261,18 @@ pub extern "C" fn sm64pow_judge_sibling(hash32: *const u8, nonce: *const u8, non
 }
 
 /// Evidence received from a peer (`NOTIFY_SM64_EVIDENCE`): 1 new and valid
-/// (relay it), 0 not.
+/// (relay it), 0 not (known, or its template's key not known yet), -1
+/// forged or malformed (an honest node never relays that: drop the peer).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_evidence_received(bytes: *const u8, len: usize) -> i32 {
     let b = blob_arg(bytes, len);
     std::panic::catch_unwind(|| match crate::equivocation::Evidence::decode(b) {
-        Some(e) => crate::equivocation::policy().lock().unwrap().add(e) as i32,
-        None => 0,
+        Some(e) => match crate::equivocation::policy().lock().unwrap().offer(e) {
+            crate::equivocation::Offer::New => 1,
+            crate::equivocation::Offer::Known | crate::equivocation::Offer::Pending => 0,
+            crate::equivocation::Offer::Invalid => -1,
+        },
+        None => -1,
     })
     .unwrap_or(0)
 }
@@ -293,7 +298,12 @@ fn unix_now() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_note_eligible(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, timestamp: u64) {
     let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return };
-    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible(id, parent, seed, frames, timestamp, unix_now()));
+    // A block that came in a sync span (we asked for it: it is history) counts as eligible at its own
+    // stamp: neither stale nor opening a window now. Otherwise a node that just synced (or restarted)
+    // would treat its tip as stale and let any fresh sibling a peer sends it displace the tip.
+    let synced = matches!(crate::admit::context().map(|c| c.source), Some(crate::admit::Source::Sync { .. }));
+    let at = if synced { timestamp.min(unix_now()) } else { eligible_at(&id) };
+    let _ = std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().note_eligible(id, parent, seed, frames, timestamp, at));
 }
 
 /// Whether eligible alternative block `alt32` replaces our childless block
@@ -307,9 +317,11 @@ pub extern "C" fn sm64pow_displaces(tip32: *const u8, alt32: *const u8) -> i32 {
 /// Whether a sibling of our childless tip `tip32` claiming `frames`, stamped
 /// `timestamp`, could displace it (1: worth a replay).
 #[unsafe(no_mangle)]
-pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, frames: u32, timestamp: u64) -> i32 {
-    let Some(t) = (unsafe { id_arg(tip32) }) else { return 0 };
-    std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().candidate(&t, frames, timestamp, unix_now())).unwrap_or(false) as i32
+pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, id32: *const u8, frames: u32, timestamp: u64) -> i32 {
+    let (Some(t), Some(id)) = (unsafe { id_arg(tip32) }, unsafe { id_arg(id32) }) else { return 0 };
+    // Judged at the time block `id` became eligible here (a claim the queue replayed late still counts).
+    let at = eligible_at(&id);
+    std::panic::catch_unwind(|| crate::pof::policy().lock().unwrap().candidate(&t, frames, timestamp, at)).unwrap_or(false) as i32
 }
 
 /// Whether a block stamped `timestamp` arriving now is stale (the freshness
@@ -317,6 +329,42 @@ pub extern "C" fn sm64pow_pof_candidate(tip32: *const u8, frames: u32, timestamp
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_stale(timestamp: u64) -> i32 {
     crate::pof::stale(timestamp, unix_now()) as i32
+}
+
+/// When block `id` became eligible at this node: for a claim that went
+/// through the replay queue, `max(arrival, due)` (not the later moment a
+/// worker got to it: a slow node must not judge honest blocks stale, or open
+/// the window late), else now.
+fn eligible_at(id: &[u8; 32]) -> u64 {
+    let now = unix_now();
+    crate::queue::global().eligible_at(id).map_or(now, |t| t.min(now))
+}
+
+/// Whether block `id`, a copy of our block `tip`'s run (same seed, another
+/// stamp), is the preferred copy (earliest stamp, then lowest id; inside the
+/// window: pof.rs `restamp_preferred`): worth a (cached) replay.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_restamp_preferred(tip32: *const u8, hash32: *const u8, timestamp: u64, id32: *const u8) -> i32 {
+    let (Some(t), Some(seed), Some(id)) = (unsafe { id_arg(tip32) }, unsafe { id_arg(hash32) }, unsafe { id_arg(id32) }) else { return 0 };
+    let at = eligible_at(&id);
+    std::panic::catch_unwind(|| crate::pof::restamp_preferred(&t, &seed, timestamp, &id, at)).unwrap_or(false) as i32
+}
+
+/// Restricted RPC: how many seconds ahead of its arrival a submitted run may
+/// be due (rules.rs `RPC_SUBMIT_AHEAD_SECONDS`).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_rpc_submit_ahead() -> u64 {
+    crate::rules::RPC_SUBMIT_AHEAD_SECONDS
+}
+
+/// The freshness bound for block `id` (pof.rs), judged at the time it became eligible here.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_stale_block(id32: *const u8, timestamp: u64) -> i32 {
+    let Some(id) = (unsafe { id_arg(id32) }) else { return 0 };
+    if matches!(crate::admit::context().map(|c| c.source), Some(crate::admit::Source::Sync { .. })) {
+        return 0; // history we asked for: never "stale" (and not relayed anyway: sync is not relayed)
+    }
+    std::panic::catch_unwind(|| crate::pof::stale(timestamp, eligible_at(&id))).unwrap_or(false) as i32
 }
 
 /// Where a new template should build when our tip (seed `tip_seed32`) is
@@ -503,7 +551,7 @@ pub extern "C" fn sm64pow_queue_set_threads(n: u32) {
 fn queue_job(id32: *const u8, parent32: *const u8, genesis_parent: i32, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize, frames: u32, stamp: u64, due: u64) -> Option<crate::queue::Job> {
     let (id, parent_id, seed) = unsafe { (id_arg(id32)?, id_arg(parent32)?, id_arg(hash32)?) };
     let parent = if genesis_parent != 0 { crate::chain::Parent::Genesis } else { crate::chain::Parent::Block { id: parent_id, gap_seconds } };
-    Some(crate::queue::Job { id, parent, parent_id, seed: Seed(seed), difficulty, blob: blob_arg(proof, len).to_vec(), frames, stamp, due, ctx: crate::admit::context() })
+    Some(crate::queue::Job { id, parent, parent_id, seed: Seed(seed), difficulty, blob: blob_arg(proof, len).to_vec(), frames, stamp, due, arrived: unix_now(), ctx: crate::admit::context() })
 }
 
 fn verdict_code(v: &crate::queue::Verdict) -> i32 {
@@ -544,6 +592,10 @@ pub extern "C" fn sm64pow_queue_submit(id32: *const u8, parent32: *const u8, gen
         Err(Refused::Penalty) => {
             set_error("this source sent an invalid claim recently".into());
             3
+        }
+        Err(Refused::Budget(why)) => {
+            set_error(why.into());
+            2
         }
     }
 }

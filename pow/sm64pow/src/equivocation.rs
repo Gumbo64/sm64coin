@@ -44,6 +44,21 @@ use crate::sign;
 use std::sync::{Mutex, OnceLock};
 
 const SEEDS: usize = 65536;
+const PENDING: usize = 1024;
+
+/// What [`Policy::offer`] did with a piece of evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offer {
+    /// New, about a template whose key it is: stored and queued for relay.
+    New,
+    /// We already have evidence for that template.
+    Known,
+    /// Its signatures verify, but we don't know the template's key yet: kept aside, not relayed.
+    Pending,
+    /// The signatures don't verify, or the key is not the one the template's
+    /// coinbase commits: forged (an honest node never relays such evidence).
+    Invalid,
+}
 
 /// One signed run: what a signature commits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,13 +172,17 @@ pub struct Policy {
     evidence: Bounded<[u8; 32], Evidence>,
     /// New evidence to relay to peers (the daemon drains it: [`Policy::take_outbox`]).
     outbox: Vec<Evidence>,
+    /// Evidence about a seed whose template key we don't know yet: kept (a
+    /// few), not relayed and not acted on, until [`Policy::note_key`] shows
+    /// the key is the template's.
+    pending: Bounded<[u8; 32], Evidence>,
     /// Evidence seen first (to relay once): counted for logs and tests.
     pub received: u64,
 }
 
 impl Default for Policy {
     fn default() -> Self {
-        Policy { claims: Bounded::new(SEEDS), keys: Bounded::new(SEEDS), evidence: Bounded::new(SEEDS), outbox: Vec::new(), received: 0 }
+        Policy { claims: Bounded::new(SEEDS), keys: Bounded::new(SEEDS), evidence: Bounded::new(SEEDS), outbox: Vec::new(), pending: Bounded::new(PENDING), received: 0 }
     }
 }
 
@@ -171,6 +190,11 @@ impl Policy {
     /// A signature checked: template `seed` commits miner key `key`.
     pub fn note_key(&mut self, seed: &[u8; 32], key: &[u8; 32]) {
         self.keys.insert(*seed, *key);
+        if let Some(e) = self.pending.remove(seed) {
+            if e.key == *key {
+                self.store(e);
+            }
+        }
     }
 
     /// A run whose signature checked (`key` is its coinbase's miner key):
@@ -194,16 +218,42 @@ impl Policy {
     /// Takes evidence (found here or received from a peer). True when it is
     /// new and valid: relay it.
     pub fn add(&mut self, e: Evidence) -> bool {
+        self.offer(e) == Offer::New
+    }
+
+    /// Evidence from anywhere (our own finding or a peer): stored and relayed
+    /// only if it verifies and its key is the template's, as recorded when a
+    /// block of that seed passed its signature check ([`Policy::note_key`]).
+    /// Evidence keyed by seed alone, first come, would let anyone pre-empt the
+    /// real evidence for a seed with their own key's (or spam relays).
+    pub fn offer(&mut self, e: Evidence) -> Offer {
         let e = e.canonical();
-        if self.evidence.get(&e.seed).is_some() || !e.verify() {
-            return false;
+        if !e.verify() {
+            return Offer::Invalid;
         }
+        match self.keys.get(&e.seed) {
+            Some(k) if *k != e.key => Offer::Invalid,
+            Some(_) if self.evidence.get(&e.seed).is_some() => Offer::Known,
+            Some(_) => {
+                self.store(e);
+                Offer::New
+            }
+            None => {
+                if self.pending.get(&e.seed).is_some() {
+                    return Offer::Known;
+                }
+                self.pending.insert(e.seed, e);
+                Offer::Pending
+            }
+        }
+    }
+
+    fn store(&mut self, e: Evidence) {
         self.evidence.insert(e.seed, e);
         self.received += 1;
         if self.outbox.len() < 64 {
             self.outbox.push(e);
         }
-        true
     }
 
     /// The next new evidence to relay, if any.
@@ -319,8 +369,26 @@ mod tests {
         let mut p = Policy::default();
         p.note_key(&seed, &k.public);
         let own = Evidence { seed, key: attacker.public, a: run(&attacker, &seed, 1, 5), b: run(&attacker, &seed, 2, 5) };
-        assert!(p.add(own));
-        assert!(!p.avoid(&seed), "the key isn't the template's");
+        assert_eq!(p.offer(own), Offer::Invalid, "the key isn't the template's: not stored, not relayed");
+        assert!(!p.avoid(&seed) && p.take_outbox().is_none());
+        // The real evidence still gets in afterwards (no pre-emption).
+        let real = Evidence { seed, key: k.public, a: run(&k, &seed, 1, 5), b: run(&k, &seed, 2, 5) };
+        assert_eq!(p.offer(real), Offer::New);
+        assert!(p.avoid(&seed));
+        // Evidence about a seed whose key we don't know yet waits, unrelayed, until a block shows the key.
+        let mut q = Policy::default();
+        let other = [8; 32];
+        let early = Evidence { seed: other, key: k.public, a: run(&k, &other, 1, 5), b: run(&k, &other, 2, 5) };
+        assert_eq!(q.offer(early), Offer::Pending);
+        assert!(q.take_outbox().is_none() && !q.avoid(&other));
+        q.note_key(&other, &k.public);
+        assert!(q.avoid(&other) && q.take_outbox().is_some(), "promoted once the template's key is known");
+        // Pending evidence with another key than the template's is dropped when the key shows up.
+        let mut r = Policy::default();
+        let att = Evidence { seed: other, key: attacker.public, a: run(&attacker, &other, 1, 5), b: run(&attacker, &other, 2, 5) };
+        assert_eq!(r.offer(att), Offer::Pending);
+        r.note_key(&other, &k.public);
+        assert!(!r.avoid(&other) && r.take_outbox().is_none());
         // The same run twice, or bytes that don't decode.
         assert!(!Evidence { seed, key: k.public, a, b: a }.verify());
         assert!(Evidence::decode(&[0; 10]).is_none());

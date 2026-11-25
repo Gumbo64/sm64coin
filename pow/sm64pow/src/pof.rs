@@ -55,6 +55,8 @@ pub struct Seen {
     pub at: u64,
     /// Stamped more than [`FRESHNESS_SECONDS`] before it became eligible here.
     pub stale: bool,
+    /// Its timestamp.
+    pub stamp: u64,
 }
 
 /// Whether a block stamped `stamp` and arriving (eligible) at `now` is stale.
@@ -82,7 +84,7 @@ impl Policy {
         if blocks.get(&id).is_some() {
             return;
         }
-        blocks.insert(id, Seen { parent, seed, frames, at: now, stale: stale(stamp, now) });
+        blocks.insert(id, Seen { parent, seed, frames, at: now, stale: stale(stamp, now), stamp });
         if first.get(&parent).is_none() {
             first.insert(parent, now);
         }
@@ -97,8 +99,13 @@ impl Policy {
     pub fn displaces(&mut self, tip: &[u8; 32], alt: &[u8; 32]) -> bool {
         let (blocks, first) = self.maps();
         let (Some(t), Some(a)) = (blocks.get(tip).copied(), blocks.get(alt).copied()) else { return false };
-        if t.parent != a.parent || t.seed == a.seed {
-            return false; // not siblings, or the same key (equivocation.rs)
+        if t.parent != a.parent {
+            return false; // not siblings
+        }
+        if t.seed == a.seed {
+            // The same key: the same run restamped (a second different run is equivocation.rs's).
+            let opened = first.get(&t.parent).copied().unwrap_or(t.at);
+            return !a.stale && a.at <= opened.saturating_add(POF_WINDOW_SECONDS) && copy_preferred(&a.seed, (a.stamp, alt), (t.stamp, tip));
         }
         if t.stale && !a.stale {
             return true; // the freshness bound: a stale tip loses the tie
@@ -122,6 +129,32 @@ impl Policy {
         let opened = first.get(&t.parent).copied().unwrap_or(t.at);
         !stale(stamp, now) && frames < t.frames && now <= opened.saturating_add(POF_WINDOW_SECONDS)
     }
+}
+
+/// Copies of one run (the same seed and run, another timestamp: anyone can
+/// restamp a published block, the signature doesn't cover the stamp) are one
+/// block with a deterministic choice: the earliest stamp, then the lowest
+/// block id. A node holding a later copy switches to the preferred one inside
+/// the window (like a shorter run of another key), so a third party's
+/// restamp can't split the network: every node ends on the same copy. Not
+/// when the template has equivocation evidence (two different runs: then
+/// equivocation.rs's rule applies instead).
+fn copy_preferred(seed: &[u8; 32], a: (u64, &[u8; 32]), t: (u64, &[u8; 32])) -> bool {
+    a < t && crate::equivocation::policy().lock().unwrap_or_else(|e| e.into_inner()).evidence(seed).is_none()
+}
+
+/// Whether a copy of our block `tip`'s run (same `seed`), stamped `stamp`
+/// with id `id`, eligible at `at`, is preferred to it ([`copy_preferred`],
+/// inside the window): worth a replay (a cached one: copies share the run's
+/// end state).
+pub fn restamp_preferred(tip: &[u8; 32], seed: &[u8; 32], stamp: u64, id: &[u8; 32], at: u64) -> bool {
+    let (t, opened) = {
+        let mut p = policy().lock().unwrap_or_else(|e| e.into_inner());
+        let (blocks, first) = p.maps();
+        let Some(t) = blocks.get(tip).copied() else { return false };
+        (t, first.get(&t.parent).copied().unwrap_or(t.at))
+    };
+    t.seed == *seed && !stale(stamp, at) && at <= opened.saturating_add(POF_WINDOW_SECONDS) && copy_preferred(seed, (stamp, id), (t.stamp, tip))
 }
 
 pub fn policy() -> &'static Mutex<Policy> {
@@ -169,6 +202,26 @@ mod tests {
         p.note_eligible(id(12), id(2), id(101), 2000, 55, 55);
         assert!(!p.displaces(&id(10), &id(12)));
         assert!(!p.displaces(&id(10), &id(99)), "unknown block");
+    }
+
+    #[test]
+    fn restamped_copies_converge_on_the_earliest_stamp_inside_the_window() {
+        let mut p = Policy::default();
+        let t0 = 2_000_000;
+        // B' (a third party's later restamp of B) arrived first; B (stamped earlier) displaces it, never the other way.
+        p.note_eligible(id(21), P, id(200), 3000, t0 + 20, t0 + 20);
+        p.note_eligible(id(20), P, id(200), 3000, t0, t0 + 21);
+        assert!(p.displaces(&id(21), &id(20)), "the earlier stamp wins");
+        assert!(!p.displaces(&id(20), &id(21)), "a later restamp never displaces");
+        // Equal stamps: the lower id.
+        p.note_eligible(id(23), P, id(201), 3000, t0, t0 + 5);
+        p.note_eligible(id(22), P, id(201), 3000, t0, t0 + 6);
+        assert!(p.displaces(&id(23), &id(22)) && !p.displaces(&id(22), &id(23)));
+        // Outside the window: the block we have stays.
+        let mut q = Policy::default();
+        q.note_eligible(id(31), P, id(202), 3000, t0 + 20, t0 + 20);
+        q.note_eligible(id(30), P, id(202), 3000, t0, t0 + 20 + POF_WINDOW_SECONDS + 1);
+        assert!(!q.displaces(&id(31), &id(30)));
     }
 
     #[test]
