@@ -287,6 +287,21 @@ Measured on local nodes by the audit; each fix is in pow/sm64pow (decision) with
   x86 testnet re-run (victim CPU, no honest block): 200 x 300 frames 0.07 s (hopeless, no
   replay), 60 x 36,000 frames 0.11 s (over the limit at their stamp), 100 x 4,000 frames from 40
   IPs 2.25 s (2.94 s before the shared budget; 7.7 s at the first queue version).
+- **Final x86 run (testnet, 2026-11-25 20:10, victim at height 1, the honest block 2 of 2,643
+  frames relayed by a fresh peer 3 s into the attack, 15 replay workers):**
+
+  | attack | victim CPU | honest block accepted after |
+  |---|---|---|
+  | 60 long fakes (36,000 frames), 20 IPs | 11.6 s | 0.11 s |
+  | 100 same-length fakes (4,000 frames), 40 IPs | 3.4 s | 0.12 s |
+  | 200 short fakes (300 frames), 20 IPs | 0.6 s (no replay) | 0.16 s |
+  | 100 long fakes, 100 IPs | 25.3 s | 0.18 s |
+  | 50 runs of one key's template, 4 IPs | 0.6 s | 0.11 s |
+
+  The long fakes here fit the limit at their stamp (the parent is half an hour old), so the
+  ones that arrive before the honest block are replayed; after it they are skipped. A first
+  version of the unknown-sources budget refused claims beyond it, and lost the honest block
+  (relayed by a fresh peer): over-budget claims are now queued last instead.
 - **Known sources first.** A claim from a source that never sent a valid claim counts 2,000
   frames longer when ordering, so a burst from fresh addresses queues behind a known peer's or
   miner's claim of the same length.
