@@ -5,7 +5,7 @@ Found by `sm64coin-export` on the v0.2 mainnet fixture (34 blocks, 2 cycles). Bo
 1. Stock Mupen64Plus vs the port: a **port bug** (the game build the chain runs), not a Mupen or timing
    artefact. Consensus-relevant (see "What it means for the chain").
 2. The portable save state not exact for blocks 11 and 32: a **translator bug** in sm64-binds 2.1.1,
-   already fixed in sm64-binds >= 2.3.1 (commit 5b7bfd2). The game is not involved.
+   already fixed in sm64-binds (commit e04b17f, in 2.3.1+). The game is not involved.
 
 ## 1. Cycle 0 does not replay on an N64 after frame 58,532
 
@@ -110,25 +110,37 @@ export with `--states both`; `FRESH=1` re-exports the portable state with the li
 prints differing object words, `MEMDIFF=<frame>` the differing data/bss words by symbol). Between the two
 games nothing else differs at frame 2,303: not the variables, not Mario, not the RNG.
 
-Cause: the translator (sm64-binds 2.1.1) treated every `rawData` word of an object as a possible pointer
-and relocated any value that fell in the address range, so a number that merely looks like an address was rewritten
-(the changelog of 5b7bfd2 lists signs' `oInteractType = 0x800000`, a Boo's oscillation timer, spinning yaws,
-`oBehParams`; which word of the penguin in slot 64 it is here was not pinned down, the bisect below is the
-evidence). The game later used the rewritten number. Fixed in sm64-binds commit 5b7bfd2
-("An object's rawData words are pointers only in slots its behavior uses as pointers"); bisected: with the
-translator of 23d4dfd (2.3.0) both blocks still differ, with 5b7bfd2 and every later commit (up to 2.3.2,
-branch portable-fixes) block 11 is identical for all 2,635 frames and block 32 for all 4,701 frames,
-comparing GameState, RNG, Mario and the digest of **every portable variable on every frame**.
+Cause (bisected over sm64-binds commits, by re-exporting the portable state of block 11's start with each
+translator and replaying: 23d4dfd/2.3.0 and 5b7bfd2 still differ at frame 2,304; **e04b17f** and every later
+commit, 933d023, 69e0f63, 0a7fdb7, 2.3.2, are identical for all 2,635 frames): the translator typed a
+stale pointer to an allocation pool. `sMemPoolForGoddard` keeps pointing at goddard's pool after the intro
+frees it; that memory is reused (here for the level's data), the walker laid the `AllocOnlyPool` layout over
+it and its pool fix-up rewrote a word that the game later reads (commit message of e04b17f: "a pool is now
+only typed if it is plausible"; 69e0f63 does the same for `gEffectsMemoryPool`). Which word of the penguin
+in slot 64 that is was not pinned down; the bisect is the evidence. 2.3.2 (branch portable-fixes) is identical for
+block 11 (2,635 frames) and block 32 (4,701 frames), comparing GameState, RNG, Mario and the digest of
+**every portable variable on every frame**. Earlier commits in that range (0a7fdb7 ghosts etc.) are
+independent rendering/exactness fixes.
 
 ### Fix for SM64Coin
 
-Bump the export crate's translator to sm64-binds >= 2.3.1 (the game build is the same, 897378b; it runs
+Bump the export crate's translator to sm64-binds >= 2.3.1 (2.3.2 verified) (the game build is the same, 897378b; it runs
 under the same `GAME_BUILD` check). Until the pin moves, `start_portable_exact` is false on those two blocks
 and the raw state is the fallback (as documented). `tests/export.rs::portable_states_of_all_fixture_blocks`
 (`--ignored`) accepts either result and fails on any other block.
 
-### Verification beyond the two blocks
+### Verification beyond the two blocks (headless -> headless, sm64-binds 2.3.2)
 
-See the table below (portable_fuzz, sm64-binds branch portable-chain-exact): translate-and-continue at
-every block boundary of both chain cycles.
+`portable_fuzz` (translate at a checkpoint, then random pads, GameState every frame, whole portable state every
+50 frames; "gs" and "digest" are the physics signal): chain cycle 0 at all 23 block boundaries x 2 seeds x
+300 frames, cycle 1 at all 9 block boundaries x 2 seeds x 300 frames, and cycle 1 with the chain's own pads for
+3,000 frames after each boundary, then random: **0 GameState and 0 digest differences** in 100 runs, plus
+the TAS 7310M at 5 checkpoints (3000-120000): 0 differences. The structural `exact` compare lists some
+heap-block differences (benign aliases of reused memory, as the fuzz tool documents) and does not affect play.
+Regression test: sm64-binds branch portable-chain-exact, `cargo test --release --test portable chain_blocks`
+(blocks 11 and 32, whole block each, passes on 2.3.2).
 
+Not done here: the headless <-> rendering direction (needs the browser rig; sm64-binds' own measurements in
+commit e04b17f: rendering reloading itself is pixel identical 60 frames on at all 8 chain checkpoints,
+headless -> rendering at 7 of 8, at 105000 Mario's standing body is mis-transformed, game state identical),
+a framebuffer study, and "our 120-star run" (120_2026.m64 is root-only readable here).

@@ -172,8 +172,8 @@ do not reproduce from the portable state with the pinned translator (sm64-binds 
   with the port. With a two-line fix of the game (patch in docs/divergence/), the whole cycle matches Mupen
   at every poll. The fix changes the game build (hard fork), so it is not applied in this repository.
 - Portable start states: exact for 36 of 38 blocks (34 distinct fixture blocks; 2 cycles); blocks 11 and 32
-  do not reproduce under sm64-binds 2.1.1's translator (it relocated non-pointer words of an object as
-  pointers); fixed in sm64-binds >= 2.3.1, see DIVERGENCE.md.
+  do not reproduce under sm64-binds 2.1.1's translator (it typed a stale allocation-pool pointer and rewrote
+  reused memory); fixed in sm64-binds >= 2.3.1 (commit e04b17f), see DIVERGENCE.md.
 
 ## Limits
 
