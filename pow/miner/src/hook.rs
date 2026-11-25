@@ -19,6 +19,9 @@ impl StepHook for PertHook {
     fn clone_box(&self) -> Box<dyn StepHook> {
         Box::new(self.clone())
     }
+    fn export(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.0).unwrap_or_default()
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -26,6 +29,8 @@ impl StepHook for PertHook {
 
 /// A search game: a fork of `g`, perturbation included.
 pub fn hooked(g: &SM64MiningGame) -> Result<HookedGame> {
+    // Saves that cross to another worker (obrrt_search::wire) carry the perturbation as JSON.
+    obrrt_search::game::set_pert_decoder(|b| Ok(Box::new(PertHook(serde_json::from_slice(b)?))));
     let generator = sm64pow::generator()?;
     Ok(HookedGame::new(generator.copy_from(&g.game)?, Box::new(PertHook(g.pert.clone())), generator))
 }

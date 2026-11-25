@@ -91,6 +91,10 @@ pub struct RrtOptions {
     pub sync_k: usize,
     /// Sample the trees for a viewer (see `child::viz`; the web miner's page).
     pub viz: bool,
+    /// One shared tree (the web miner): the workers of the page run this same campaign, same salt, as copies
+    /// of one search; each round's attempts are split between them through `child::PEERS` (see
+    /// obrrt_search::wire). Needs the page's channel; `exchange` stays None.
+    pub shared_tree: bool,
 }
 
 /// A channel to the other searches of the block. Kinds: `"step_get"` (payload: a step's key; reply:
@@ -132,6 +136,7 @@ fn step_key(job: &Job) -> String {
     let mut j = job.clone();
     (j.seed, j.state_file, j.out_dir, j.viz) = (0, String::new(), String::new(), false);
     (j.sync_secs, j.sync_k, j.sync_tag) = (0.0, 0, String::new());
+    j.shared = false;
     let text = serde_json::to_string(&j).unwrap_or_default();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
@@ -159,6 +164,7 @@ impl Default for RrtOptions {
             sync_secs: 0.0,
             sync_k: 0,
             viz: false,
+            shared_tree: false,
         }
     }
 }
@@ -559,6 +565,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             out_dir: String::new(),
             checkpoint: None,
             viz: o.viz,
+            shared: o.shared_tree,
             sync_secs: 0.0,
             sync_k: 0,
             sync_tag: String::new(),

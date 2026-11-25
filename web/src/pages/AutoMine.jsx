@@ -23,7 +23,7 @@ export default function AutoMine() {
 
 function AutoMiner() {
   const s = useMiner();
-  const { address, count, running, log, workers, stats, mode, vizOn, fps } = s;
+  const { address, count, running, log, workers, stats, mode, vizOn, sharedTree, fps } = s;
   // The views redraw only while this page is on screen.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
@@ -54,6 +54,7 @@ function AutoMiner() {
         </select>{' '}
         {running ? <button onClick={() => miner.stop()}>Stop</button> : <button onClick={() => miner.start()} disabled={!isAddress(address)}>Start mining</button>}{' '}
         {!running && !isolated && 'serviceWorker' in navigator && <button onClick={enableSync} title="Workers share their best checkpoints (needs a page reload)">Enable worker sync</button>}{' '}
+        {isolated && <label className="vizswitch" title="Experimental: all workers run one search and split its attempts (needs the worker sync). Measured no faster to a block than independent workers, so off by default."><input type="checkbox" checked={sharedTree} disabled={running} onChange={(e) => miner.setSharedTree(e.target.checked)} /> one shared tree</label>}{' '}
         <span className="muted">{isolated ? 'sync on · ' : ''}rounds {stats.rounds} · runs found {stats.found} · blocks submitted {stats.accepted}</span>
       </p>
       <p className="small">

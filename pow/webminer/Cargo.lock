@@ -1444,6 +1444,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rand",
+ "serde",
  "sm64-binds",
  "wasm-bindgen",
  "web-time",
@@ -1467,6 +1468,7 @@ dependencies = [
  "objective-scattershot",
  "obrrt-core",
  "obrrt-objectives",
+ "postcard",
  "rand",
  "rayon",
  "serde",
@@ -2243,6 +2245,7 @@ name = "sm64pow"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "serde",
  "sha3",
  "sm64-binds",

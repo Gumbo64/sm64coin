@@ -1535,6 +1535,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rand",
+ "serde",
  "sm64-binds",
 ]
 
@@ -1556,6 +1557,7 @@ dependencies = [
  "objective-scattershot",
  "obrrt-core",
  "obrrt-objectives",
+ "postcard",
  "rand",
  "rayon",
  "serde",

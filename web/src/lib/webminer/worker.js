@@ -8,6 +8,7 @@
 // of the running search tree, format documented at pow/miner/src/rrt/child.rs `viz`. A new tip: the page terminates the worker.
 import { makeMiner } from './runtime.js';
 import { makeBoard } from './board.js';
+import { makeAttempts } from './attempts.js';
 import { getFile } from 'sm64-binds-src/scripts/fileUpload.js';
 import wasmUrl from '../../wasm/webminer/sm64coin_webminer_bg.wasm?url';
 import glue from '../../wasm/webminer/sm64coin_webminer.js?raw';
@@ -20,6 +21,7 @@ self.onmessage = async (e) => {
       shared: e.data.shared || null,
       onViz: e.data.viz ? (line) => (line.startsWith('{"progress"') ? self.postMessage({ type: 'progress', sim: JSON.parse(line).sim_frames }) : self.postMessage({ type: 'viz', line })) : null,
       viz: !!e.data.vizOn,
+      att: e.data.att ? makeAttempts(e.data.att.sab, e.data.att.slot, e.data.att.slots) : null,
       board: e.data.board ? makeBoard(e.data.board.sab, e.data.board.slot, e.data.board.slots) : null,
       onShare: (s) => self.postMessage({ type: 'share', ...s }, s.files.map(([, b]) => b.buffer)),
     });

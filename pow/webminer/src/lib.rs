@@ -22,6 +22,37 @@ extern "C" {
     /// Sharing with the other workers (see rrt::Exchange): the reply, if any.
     #[wasm_bindgen(js_namespace = sm64miner, js_name = exchange)]
     fn js_exchange(kind: &str, payload: &str) -> Option<String>;
+
+    /// One shared tree (see rrt::child::PEERS): claim the next unclaimed attempt of the round (-1: none left),
+    /// publish an attempt's result bytes, wait for all of the round's, read one. The page's SharedArrayBuffer.
+    #[wasm_bindgen(js_namespace = sm64miner, js_name = att_claim, catch)]
+    fn js_att_claim(round: u32, n: u32) -> Result<i32, JsValue>;
+    #[wasm_bindgen(js_namespace = sm64miner, js_name = att_put, catch)]
+    fn js_att_put(round: u32, i: u32, bytes: &[u8]) -> Result<(), JsValue>;
+    #[wasm_bindgen(js_namespace = sm64miner, js_name = att_wait, catch)]
+    fn js_att_wait(round: u32, n: u32) -> Result<(), JsValue>;
+    #[wasm_bindgen(js_namespace = sm64miner, js_name = att_get)]
+    fn js_att_get(round: u32, i: u32) -> Vec<u8>;
+}
+
+/// The shared-tree copies' channel, through the page's JavaScript (see `rrt::child::PEERS`). WebAssembly here is
+/// single-threaded, so the Send + Sync bounds hold trivially.
+struct JsPeers;
+fn jserr(e: JsValue) -> anyhow::Error {
+    anyhow::anyhow!("{}", e.as_string().unwrap_or_else(|| format!("{e:?}")))
+}
+impl obrrt_search::wire::AttemptPeers for JsPeers {
+    fn claim(&self, round: u64, n: usize) -> anyhow::Result<Option<usize>> {
+        let i = js_att_claim(round as u32, n as u32).map_err(jserr)?;
+        Ok((i >= 0).then_some(i as usize))
+    }
+    fn put(&self, round: u64, i: usize, bytes: &[u8]) -> anyhow::Result<()> {
+        js_att_put(round as u32, i as u32, bytes).map_err(jserr)
+    }
+    fn collect(&self, round: u64, n: usize) -> anyhow::Result<Vec<Vec<u8>>> {
+        js_att_wait(round as u32, n as u32).map_err(jserr)?;
+        Ok((0..n).map(|i| js_att_get(round as u32, i as u32)).collect())
+    }
 }
 
 /// Panics abort in WebAssembly (`unreachable`) and their message is lost: log it first.
@@ -47,6 +78,10 @@ pub fn run_step(job: &str) -> Result<String, JsError> {
     panic_hook();
     let job: rrt::child::Job = serde_json::from_str(job).map_err(err)?;
     // The step's tree sync reaches the other workers through the page (see rrt::child::tsync).
+    if job.shared {
+        let _ = rrt::child::PEERS.set(std::sync::Arc::new(JsPeers));
+        let _ = rrt::child::LOG.set(std::sync::Arc::new(|l: String| js_log(&l)));
+    }
     let _ = rrt::child::EXCHANGE.set(std::sync::Arc::new(|kind: &str, payload: &str| js_exchange(kind, payload)));
     let out = rrt::child::run_step(&job).map_err(|e| err(format!("{e:#}")))?;
     serde_json::to_string(&out).map_err(err)
@@ -93,6 +128,11 @@ pub struct MineRequest {
     /// sync only runs between rounds, and BoB's step from power-on took 3-8 minutes instead of ~1).
     #[serde(default = "extra_env_default")]
     pub extra_env: String,
+    /// One shared tree: `threads` copies of this same request (same salt) run as one search, each round's attempts
+    /// split between them through the page's SharedArrayBuffer (sm64miner.att_*). Replaces the tree and checkpoint
+    /// sync (it is one tree).
+    #[serde(default)]
+    pub shared_tree: bool,
 }
 fn extra_env_default() -> String {
     "OBRRT_ROUND=16".into()
@@ -146,7 +186,7 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
     };
     let d = RrtOptions::default();
     let o = RrtOptions {
-        threads: r.threads.max(1),
+        threads: if r.shared_tree { 1 } else { r.threads.max(1) },
         hub_frames: r.hub_frames.unwrap_or(d.hub_frames),
         course_frames: r.course_frames.unwrap_or(d.course_frames),
         checkpoints: r.checkpoints.unwrap_or(d.checkpoints),
@@ -154,13 +194,16 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
         frame_cap: r.frame_cap,
         mem_mb: r.mem_mb,
         viz: r.viz,
-        sync_secs: r.sync_secs,
+        sync_secs: if r.shared_tree { 0.0 } else { r.sync_secs },
         sync_k: r.sync_k,
         extra_env: r.extra_env.clone(),
         scratch: "/scratch".into(),
         rom: Some("/rom.z64".into()),
         // wasm is single-threaded, so the Send + Sync bounds hold trivially.
+        // A shared tree needs no tree or checkpoint sync (it is one tree); the page may still hand it the castle step
+        // another search made earlier (step_get).
         exchange: Some(std::sync::Arc::new(|kind: &str, payload: &str| js_exchange(kind, payload))),
+        shared_tree: r.shared_tree,
         ..d
     };
     let stop = AtomicBool::new(false);

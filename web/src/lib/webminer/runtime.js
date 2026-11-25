@@ -44,7 +44,7 @@ export function makeFs(map = new Map()) {
  * compiled WebAssembly.Module, `glue` the glue's source text, `rom` the ROM bytes, `log(line)`
  * the campaign's progress.
  */
-export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false }) {
+export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), shared = null, onShare = () => {}, board = null, onViz = null, viz = false, att = null }) {
   const factory = makeFactory(glue);
   fs.write('/rom.z64', rom);
   globalThis.sm64fs = fs;
@@ -76,8 +76,14 @@ export function makeMiner({ module, glue, rom, log = () => {}, fs = makeFs(), sh
       }
       return undefined;
     },
+    // One shared tree (attempts.js): the campaign's attempts are split between the page's workers.
+    att_claim: (round, n) => att.claim(round, n),
+    att_put: (round, i, bytes) => att.put(round, i, bytes),
+    att_wait: (round, n) => att.wait(round, n),
+    att_get: (round, i) => att.get(round, i),
     run_child(job) {
       steps += 1;
+      if (att) att.newStep();
       const child = factory();
       child.initSync({ module });
       // The step's instance is dropped afterwards (its memory goes with it), like an exited process.

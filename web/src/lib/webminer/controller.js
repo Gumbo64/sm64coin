@@ -10,6 +10,7 @@ import { getCycle } from '../replay/client.js';
 import { hexToBytes, seal, withTimestamp, templateTimestamp } from '../proof.js';
 import { frames as fmtFrames } from '../format.js';
 import { boardSize, setVizFlag } from './board.js';
+import { attemptsSize } from './attempts.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
@@ -24,6 +25,8 @@ export async function enableSync() {
   await navigator.serviceWorker.ready;
   window.location.reload();
 }
+// The shared tree's rounds: many attempts per round (they are split between the workers; webminer's default is 16 for one).
+const SHARED_ENV = 'OBRRT_ROUND=48';
 const SEND_AHEAD = 100; // the nodes' future-timestamp window (120 s), with a margin
 const ls = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
@@ -71,6 +74,8 @@ class MinerController {
     const m = ls('sm64coin.resetMode', 'when-stuck');
     this.mode = RESET_MODES.includes(m) ? m : 'when-stuck';
     this.vizOn = ls('sm64coin.viz', '1') !== '0';
+    // One shared tree for all the workers (needs the isolated page; off by default: measured slower to a goal than independent workers, see the release notes), else each worker searches on its own.
+    this.sharedTree = ls('sm64coin.sharedTree', '0') === '1';
     this.running = false;
     this.log = [];
     this.workers = [];
@@ -89,7 +94,7 @@ class MinerController {
   subscribe = (fn) => { this.subs.add(fn); return () => this.subs.delete(fn); };
   getSnapshot = () => this.snap;
   makeSnap() {
-    return { address: this.address, count: this.count, mode: this.mode, vizOn: this.vizOn, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
+    return { address: this.address, count: this.count, mode: this.mode, vizOn: this.vizOn, sharedTree: this.sharedTree, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
   }
   /** Wakes the views: at most 4 times a second, at once when `now`. */
   emit(now = false) {
@@ -132,6 +137,7 @@ class MinerController {
   // ----- settings -----
   setAddress(a) { this.address = a; if (isAddress(a)) lsSet('sm64coin.address', a); this.emit(true); }
   setCount(n) { this.count = Math.max(1, Math.min(32, Number(n) || 1)); this.emit(true); }
+  setSharedTree(on) { this.sharedTree = on; lsSet('sm64coin.sharedTree', on ? '1' : '0'); this.emit(true); }
   setMode(m) { this.mode = m; lsSet('sm64coin.resetMode', m); this.emit(true); }
   setVizOn(on) {
     this.vizOn = on;
@@ -268,7 +274,9 @@ class MinerController {
     if (c.stopped || c.template !== t) return;
     this.error = null;
     say(`block ${t.height}: ${count} worker${count === 1 ? '' : 's'} searching (start ${start}, limit ${fmtFrames(t.sm64_max_frames)} now)`);
-    const status = Array.from({ length: count }, (_, i) => ({ salt: c.attempt * 1000 + i, line: 'loading the game…', runs: 0, fails: 0, start }));
+    // One shared tree: all the workers run one search (see launchGroup); the page sees it as one worker.
+    const group = isolated && this.sharedTree && count > 1;
+    const status = Array.from({ length: group ? 1 : count }, (_, i) => ({ salt: c.attempt * 1000 + i, line: 'loading the game…', runs: 0, fails: 0, start }));
     c.status = status;
     const show = () => { this.workers = status.map((s) => ({ ...s })); this.emit(); };
     show();
@@ -363,7 +371,74 @@ class MinerController {
         board: board && { sab: board, slot: i, slots: count },
       });
     };
-    for (let i = 0; i < count; i++) launch(i);
+    // One shared tree (attempts.js): `count` workers run the same search (same salt) and split each round's
+    // attempts between them; worker 0's messages stand for the group, any worker's error ends it.
+    const launchGroup = () => {
+      if (c.stopped || c.template !== t) return;
+      const att = new SharedArrayBuffer(attemptsSize());
+      hub.restartWorker(0, status[0].start);
+      this.rate.reset(0);
+      const ws = [];
+      c.pool = ws;
+      let over = false;
+      const end = () => { over = true; ws.forEach((x) => x.terminate()); };
+      const retry = (failed, why) => {
+        status[0].fails = failed ? status[0].fails + 1 : 0;
+        status[0].runs += 1;
+        if (hub.workers[0]) hub.workers[0].runs = status[0].runs;
+        status[0].line = failed ? `failed: ${why}` : `no run (${why}); starting again`;
+        if (failed) { say(`the shared search failed: ${why.slice(0, 200)}`); this.fail(`shared search: ${why.slice(0, 120)}`); }
+        status[0].salt += 1;
+        if (!failed && status[0].start === 'parent' && afterFailure(this.mode, t.sm64_start)) {
+          status[0].start = 'power-on';
+          say(`no run from the parent (${why}); reset policy ${this.mode}: next attempt from power-on (reset cycle)`);
+        }
+        show();
+        setTimeout(() => launchGroup(), Math.min(60, 2 ** status[0].fails) * 1000);
+      };
+      for (let k = 0; k < count; k++) {
+        const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+        ws[k] = w;
+        w.onmessage = (e) => {
+          const m = e.data;
+          if (over || c.stopped || c.template !== t) return;
+          if (m.type === 'error') { end(); retry(true, m.message); return; }
+          if (k !== 0) return;
+          if (this.phase === 'loading') this.setPhase('mining');
+          if (m.type === 'log') { status[0].line = m.line; hub.log(0, m.line); show(); return; }
+          if (m.type === 'progress') { this.rate.add(0, m.sim); return; }
+          if (m.type === 'viz') {
+            const f = /"sim_frames":(\d+)/.exec(m.line);
+            if (f) this.rate.add(0, +f[1]);
+            hub.ingest(0, m.line);
+            return;
+          }
+          if (m.type !== 'result') return;
+          const r = m.result;
+          end();
+          if (r.status === 'found') {
+            this.stats = { ...this.stats, found: this.stats.found + 1 };
+            hub.foundRun(0, { ...r, start: status[0].start }, t);
+            say(`run found, ${r.frames} frames (${fmtFrames(r.frames)}), ${(r.sim_frames / 1e6).toFixed(0)} M frames searched by ${count} workers`);
+            c.pool = [];
+            this.setPhase('found');
+            this.submit(c, t, { ...r, start: status[0].start });
+            return;
+          }
+          retry(false, r.why);
+        };
+        w.postMessage({
+          type: 'mine',
+          request: { start: status[0].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[0].salt, threads: count, shared_tree: true, extra_env: SHARED_ENV },
+          parentState: status[0].start === 'parent' && parentState ? parentState.slice(0) : null,
+          viz: k === 0,
+          vizOn: this.vizOn && k === 0,
+          att: { sab: att, slot: k, slots: count },
+        });
+      }
+    };
+    if (group) launchGroup();
+    else for (let i = 0; i < count; i++) launch(i);
   }
 
   async submit(c, t, r) {

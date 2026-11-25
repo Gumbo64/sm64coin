@@ -8,10 +8,10 @@ description = "The SM64Coin automated miner (the RRT campaign search) in the bro
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-obrrt-core = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a22f1ba052635126ab7457d978d6b6367c3ba0c9" }
-obrrt-search = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a22f1ba052635126ab7457d978d6b6367c3ba0c9", features = ["hooked"] }
-obrrt-spec = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a22f1ba052635126ab7457d978d6b6367c3ba0c9" }
-obrrt-objectives = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "a22f1ba052635126ab7457d978d6b6367c3ba0c9" }
+obrrt-core = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "cc26a02d41c9589b2179141e488589ab12156b9c" }
+obrrt-search = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "cc26a02d41c9589b2179141e488589ab12156b9c", features = ["hooked"] }
+obrrt-spec = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "cc26a02d41c9589b2179141e488589ab12156b9c" }
+obrrt-objectives = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "cc26a02d41c9589b2179141e488589ab12156b9c" }
 wasm-bindgen = "0.2"
 sm64pow = { path = "../sm64pow" }
 sm64coin-miner = { path = "../miner" }

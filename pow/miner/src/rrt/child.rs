@@ -100,6 +100,10 @@ pub struct Job {
     /// Tree sync with the other workers of the block (the browser build, see [`tsync`]): every this many
     /// seconds (0: off) the search offers its best `sync_k` frontier states and takes the others' that
     /// carry the same `sync_tag` (same step input and same played prefix).
+    /// One shared tree: this step is one of several copies (same job, same seed) whose attempts are split
+    /// through [`PEERS`] (see obrrt_search::wire::SharedExecutor).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
     #[serde(default)]
     pub sync_secs: f64,
     #[serde(default)]
@@ -111,6 +115,12 @@ pub struct Job {
 /// The channel the step's process reaches the other workers by (set by the browser build before
 /// `run_step`; natively there is none, the miner's threads share one tree).
 pub static EXCHANGE: std::sync::OnceLock<super::Exchange> = std::sync::OnceLock::new();
+
+/// The channel of a shared-tree step to its copies (set by the browser build before `run_step`).
+pub static PEERS: std::sync::OnceLock<Arc<dyn obrrt_search::wire::AttemptPeers>> = std::sync::OnceLock::new();
+
+/// Where a shared-tree step's timing lines go (the browser build's log).
+pub static LOG: std::sync::OnceLock<Arc<dyn Fn(String) + Send + Sync>> = std::sync::OnceLock::new();
 
 /// What a step's tree sync did (see [`tsync`]).
 #[derive(Default, Clone, Serialize, Deserialize, Debug)]
@@ -238,6 +248,14 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
         {
             engine.on_round = Some(viz::progress_file(format!("{}.progress", job.out_dir)));
         }
+    }
+    if job.shared {
+        let peers = PEERS.get().ok_or_else(|| anyhow::anyhow!("shared-tree step without a channel to its copies"))?;
+        let mut ex = obrrt_search::wire::SharedExecutor::new(peers.clone());
+        if let Some(l) = LOG.get() {
+            ex = ex.with_log(l.clone());
+        }
+        engine.executor = Some(Arc::new(ex));
     }
     let sync_stats = Arc::new(std::sync::Mutex::new(SyncStats::default()));
     if job.sync_secs > 0.0 && job.sync_k > 0 && !job.sync_tag.is_empty() {
