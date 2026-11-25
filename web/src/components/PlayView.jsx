@@ -14,14 +14,15 @@ import './touchpad.css';
 // Reusable: it needs the recorder ref (`rec`, for pause), the recorder's status (`clock`:
 // {frame, limit, paused}) and the canvas as `children` (first child), plus the normal page controls as
 // `normal` (shown when not in the play view).
-export default function PlayView({ rec, clock, limit, children, normal, actions, interactive = true, onFinish = null }) {
+export default function PlayView({ rec, clock, limit, children, normal, actions, groups = null, interactive = true, onFinish = null, onDiscard = null }) {
   const root = useRef(null);
   const [cfg, setCfg] = useTouchConfig();
   const [imm, setImm] = useState(false);
   const [hintGone, setHintGone] = useState(() => { try { return sessionStorage.getItem('sm64coin.rotatehint') === '1'; } catch { return false; } });
   const [settings, setSettings] = useState(false);
-  const autoDone = useRef(false);
+  const [more, setMore] = useState(false);
   const touch = isTouchDevice();
+  const padImm = touch || (cfg.pad != null && cfg.pad); // the touch controller in the full-screen view (a desktop gets a bar strip instead)
   const showPad = interactive && (cfg.pad == null ? touch : cfg.pad); // the in-page controller under the game
 
   const enter = (gesture) => {
@@ -42,10 +43,10 @@ export default function PlayView({ rec, clock, limit, children, normal, actions,
   };
   const pauseMenu = () => { const r = rec.current; if (r && !r.paused) r.togglePause(); leave(); };
 
-  // On a touch device open the view by itself, once, when the game starts.
-  useEffect(() => {
-    if (clock && touch && cfg.auto && !autoDone.current) { autoDone.current = true; enter(false); }
-  }, [clock]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The full-screen view opens only when the player asks (the Full screen button), never by itself: not on page load, not after
+  // a reload (worker sync), not for someone who is here to auto-mine.
+  // The game panel went back to the highlight reel / the cloud (a hybrid segment ended): nothing to play, so the full-screen view closes.
+  useEffect(() => { if (imm && !interactive) leave(); }, [interactive]); // eslint-disable-line react-hooks/exhaustive-deps
   // Leaving fullscreen by Esc / the back gesture keeps the (fixed) view; the Exit button leaves it.
   useEffect(() => {
     if (!imm) return undefined;
@@ -60,8 +61,14 @@ export default function PlayView({ rec, clock, limit, children, normal, actions,
   const hideHint = () => { setHintGone(true); try { sessionStorage.setItem('sm64coin.rotatehint', '1'); } catch { /* private mode */ } };
 
   return (
-    <div ref={root} className={`gamecol pv${imm ? ' imm' : ''}`} style={{ '--tp-s': cfg.size }}>
+    <div ref={root} className={`gamecol pv${imm ? ' imm' : ''}${imm && !padImm ? ' nopad' : ''}${imm && groups ? ' bars' : ''}${onFinish ? ' hy' : ''}`} style={{ '--tp-s': cfg.size }}>
       {children}
+      {!imm && onFinish && (
+        <div className="pv-fin" data-testid="finish-row">
+          <button type="button" className="pv-finish" onClick={onFinish} title="Finish the segment: it becomes a node of the search tree and you return to the cloud (Enter)">✓ Finish</button>
+          {onDiscard && <button type="button" className="pv-discard" onClick={onDiscard} title="Throw the segment away and go back to the cloud">✕ Discard</button>}
+        </div>
+      )}
       {!imm && showPad && <TouchOverlay cfg={cfg} />}
       {!imm && (
         <>
@@ -81,11 +88,28 @@ export default function PlayView({ rec, clock, limit, children, normal, actions,
             <button className="pv-btn" onClick={pauseMenu} aria-label="Pause and open the page controls">II</button>
             <div className={`pv-bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
             <span className="pv-text">{lim ? `${used}/${lim}` : used} · {lim ? (over ? `+${used - lim}` : `${frames(Math.max(0, lim - used))} left`) : ''}{clock && clock.paused ? ' · PAUSED' : ''}</span>
-            {onFinish && <button className="pv-btn" onClick={onFinish} aria-label="Finish the segment and return to the search" title="Finish (Enter)">✓</button>}
+            {onFinish && <button className="pv-btn pv-finish" onClick={onFinish} aria-label="Finish the segment and return to the search" title="Finish the segment (Enter)">✓ Finish</button>}
+            {onDiscard && <button className="pv-btn pv-discard" onClick={onDiscard} aria-label="Discard the segment and return to the search" title="Discard the segment">✕</button>}
             <button className="pv-btn" onClick={leave} aria-label="Exit full screen">✕</button>
           </div>
-          <TouchOverlay cfg={cfg} />
-          {!hintGone && (
+          {padImm && <TouchOverlay cfg={cfg} />}
+          {groups && (
+            <>
+              <div className="pv-bars l" data-testid="bars-l">
+                {groups.playback}
+                <button type="button" className="ui-btn pv-more-btn" aria-expanded={more} aria-label="More controls: speed, actions" title="More: speed, new template, ..." onClick={() => setMore((o) => !o)}>⋯</button>
+              </div>
+              <div className="pv-bars r" data-testid="bars-r">{groups.save}{groups.load}</div>
+              {more && (
+                <div className="pv-more" data-testid="bars-more">
+                  {groups.speed}
+                  {actions && <div className="ui-toolbar" role="toolbar" aria-label="Actions">{actions}</div>}
+                  {groups.info}
+                </div>
+              )}
+            </>
+          )}
+          {padImm && !hintGone && (
             <div className="pv-hint" role="note">
               <span>Rotate your phone for the full-screen controller</span>
               <button className="pv-x" onClick={hideHint} aria-label="Dismiss">✕</button>

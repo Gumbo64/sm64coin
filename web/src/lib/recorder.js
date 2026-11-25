@@ -4,6 +4,7 @@ import { captureState, restoreState } from './savestate.js';
 import { MAX_RUN_FRAMES } from './rules.js';
 import { fastForward } from './cycle.js';
 import { applyTouch } from './touchInput.js';
+import { SlotBank, makeSlot, slotKey } from './saveslots.js';
 
 // Frames between periodic save states (5 s).
 const SNAP_EVERY = 150;
@@ -54,6 +55,7 @@ export class Recorder {
     this.lastStart = false;
     this.snaps = [];
     this.pert = null;
+    this.slots = new SlotBank(slotKey(task, start)); // the save-state slots (lib/saveslots.js), tied to this template + start
     this.reset();
   }
 
@@ -70,6 +72,62 @@ export class Recorder {
     this.dropSnapsAfter(this.replayIdx);
     this.mode = 'play';
     this.status();
+  }
+
+  // --- save-state slots (emulator style) ---
+  // Save: the game state now plus the pads played up to here. Load: back to exactly that (the recording becomes the slot's
+  // pad prefix, shorter or longer than now), and play on. Works during a catch-up too (the state is at replayIdx).
+  saveSlot(i) {
+    const frame = this.frame();
+    const last = this.snaps[this.snaps.length - 1];
+    let info = { stars: 0, keys: 0, course: 0, area: 0 };
+    try {
+      const p = readProgress(this.engine); const g = this.engine.get_game_state();
+      info = { stars: p.stars, keys: p.keys, course: g.courseNum, area: g.areaIndex };
+    } catch { /* the label is optional */ }
+    const state = captureState(this.engine, this.pert, last.state);
+    this.slots.put(i, makeSlot({ frame, pads: this.pads, poked: this.poked, snaps: this.snaps, state, info: { ...info, at: Date.now() } }));
+    this.status();
+    return true;
+  }
+
+  loadSlot(i) {
+    const slot = this.slots.get(i);
+    if (!slot) return false;
+    restoreState(this.engine, this.pert, slot.state);
+    this.pads = slot.pads.slice();
+    this.poked = slot.poked.slice();
+    this.snaps = slot.snaps.slice();
+    if (this.snaps[this.snaps.length - 1].frame < slot.frame) this.snaps.push({ frame: slot.frame, state: slot.state });
+    this.mode = 'play';
+    this.replayIdx = slot.frame;
+    this.replayTarget = slot.frame;
+    this.lastStart = true;
+    this.status();
+    return true;
+  }
+
+  // The replay check (used by the tests): replays the whole recording from the start on a fresh perturbation, comparing
+  // every played pad like the verifier does, then puts the live game back. Returns {bad: first mismatching frame or -1,
+  // pos: where the replay ended, pertSame: the perturbation ended in the live one's state}.
+  checkReplay() {
+    const live = captureState(this.engine, this.pert, null);
+    const p2 = new Perturbation(this.task);
+    let bad = -1;
+    try {
+      restoreState(this.engine, p2, this.snaps[0].state);
+      for (let i = 0; i < this.pads.length && bad < 0; i++) {
+        const [played] = p2.step(this.engine, this.pads[i]);
+        if (!played.equals(this.pads[i])) bad = i;
+      }
+      const pos = [...this.engine.get_game_state().pos];
+      const a = p2.toBytes(), b = live.pert;
+      const pertSame = a.length === b.length && a.every((x, i) => x === b[i]);
+      return { bad, pos, pertSame, frames: this.pads.length };
+    } finally {
+      restoreState(this.engine, this.pert, live);
+      p2.free();
+    }
   }
 
   frame() { return this.mode === 'catchup' ? this.replayIdx : this.pads.length; }

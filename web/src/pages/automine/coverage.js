@@ -12,7 +12,7 @@
 import { LEVELS, levelName } from './levels.js';
 
 const BUCKET_S = 15; // the status strip's bucket
-const EXPLORING_MIN = 3; // new floors in a bucket for "exploring"
+const EXPLORING_MIN = 3; // new floors in a bucket for "new places"
 const MAX_SAMPLES = 4000;
 const MAX_STEPS = 32; // per-worker step sets kept (the current ones are never dropped)
 
@@ -32,6 +32,7 @@ export class Coverage {
     this.lead = null; // the group the chart follows
     this.series = []; // {t, key (group), union, per: [places per worker, null when not there], rec, n (workers there), of, label}
     this.markers = []; // {t, label, icon}: where the chart's place changed
+    this.runs = []; // {t}: seconds (chart time) when a worker found a run; the workers then restart to beat it
     this.lastPush = 0;
   }
 
@@ -90,6 +91,12 @@ export class Coverage {
     if (this.series.length > MAX_SAMPLES) this.series = this.series.filter((_, k) => k % 2 === 0 || k === this.series.length - 1);
   }
 
+  /** A worker found a run now: marks it on the chart (from here the workers search for a shorter one). */
+  runFound() {
+    const t = this.t0 ? (Date.now() - this.t0) / 1000 : 0;
+    this.runs.push({ t });
+  }
+
   /** The latest overlap = union / sum of the counts of the workers on the chart's place (1: each place found by one worker;
    *  low: duplicated work), or null with fewer than two workers there. */
   overlap() {
@@ -99,7 +106,8 @@ export class Coverage {
     return sum ? Math.min(1, s.union / sum) : null;
   }
 
-  /** Buckets of BUCKET_S seconds: {t0, kind: 'exploring' | 'refining' | 'stuck' | 'none', fresh, records}. */
+  /** Buckets of BUCKET_S seconds: {t0, kind: 'new' (new places) | 'faster' (faster routes to known spots) | 'noprogress' |
+   *  'none' (no data: no worker sample arrived in the slice), fresh, records, beating (after a run was found), run (a run was found in it)}. */
   buckets() {
     const out = [];
     let prev = null;
@@ -114,9 +122,15 @@ export class Coverage {
       }
       prev = s;
     }
-    return out.map((o) => ({ ...o, kind: !o.n ? 'none' : o.fresh >= EXPLORING_MIN ? 'exploring' : o.records >= 1 ? 'refining' : 'stuck' }));
+    const first = this.runs.length ? this.runs[0].t : Infinity;
+    return out.map((o) => ({
+      ...o,
+      kind: !o.n ? 'none' : o.fresh >= EXPLORING_MIN ? 'new' : o.records >= 1 ? 'faster' : 'noprogress',
+      beating: o.t0 + BUCKET_S > first,
+      run: this.runs.some((r) => Math.floor(r.t / BUCKET_S) * BUCKET_S === o.t0),
+    }));
   }
 }
 
-export const BUCKET_COLORS = { exploring: '#4ade80', refining: '#60a5fa', stuck: '#f87171', none: '#2a2f4a' };
+export const BUCKET_COLORS = { new: '#4ade80', faster: '#60a5fa', noprogress: '#f87171', none: '#2a2f4a' };
 export const BUCKET = BUCKET_S;

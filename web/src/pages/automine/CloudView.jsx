@@ -4,6 +4,7 @@ import { useHub, useVisible } from './useHub.js';
 import { e2eHook } from '../../lib/e2e.js';
 import { levelName, levelIcon, workerColor } from './levels.js';
 import { Panel, Toolbar, ToolBtn } from '../../components/ui.jsx';
+import { isTouchDevice } from '../../components/TouchPad.jsx';
 
 // The explored search nodes as a 3D point cloud, with sm64-viewer's tree view controls (frontend/src/tree/treeview.js):
 // the sampled nodes of every worker's trees in one level/area at a time, over that area's collision geometry (read from
@@ -70,7 +71,9 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
   const cfg = useRef({ mode, zone, geom, edges, mirror });
   cfg.current = { mode, zone, geom, edges, mirror };
   const cb = useRef({});
-  cb.current = { onGoal };
+  const [goalArm, setGoalArm] = useState(false);
+  const [goalNote, setGoalNote] = useState('');
+  cb.current = { onGoal, armed: goalArm, disarm: () => setGoalArm(false), note: setGoalNote };
 
   // The zones with points, newest first.
   const zones = new Map();
@@ -372,36 +375,129 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
           mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
           ray.setFromCamera(mouse, camera);
         };
+        // Picking is in SCREEN space: the shown points are projected to pixels and the one nearest to the pointer within a
+        // radius (a finger is fatter than a mouse) wins; ties (within 2 px) go to the one nearest the camera, so the node
+        // under the finger is picked, not one far behind it on another floor.
         const onSelect = (ev) => {
-          setRay(ev);
-          ray.params.Points.threshold = Math.max(ray.params.Points.threshold || 0, camera.position.distanceTo(controls.target) * 0.008);
-          const hits = ray.intersectObject(points).filter((h) => h.index < shown);
-          if (!hits.length) { hub.selected = null; setSel(null); select(null); return; }
-          // The nearest to the ray.
-          const h = hits.reduce((a, b) => (b.distanceToRay < a.distanceToRay - 1e-6 ? b : a));
-          const slot = slotOf[h.index];
+          const R = ev.pointerType === 'touch' ? 24 : 10;
+          const r = dom.getBoundingClientRect();
+          world.updateMatrixWorld(true); camera.updateMatrixWorld();
+          const M = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(world.matrixWorld).elements;
+          const px0 = ev.clientX, py0 = ev.clientY;
+          let bestK = -1, bestD = Infinity, bestW = Infinity;
+          const cand = [];
+          for (let k = 0; k < shown; k++) {
+            const x = poss[k * 3], y = poss[k * 3 + 1], z = poss[k * 3 + 2];
+            const w = M[3] * x + M[7] * y + M[11] * z + M[15];
+            if (w <= 0) continue;
+            const sx = r.left + ((M[0] * x + M[4] * y + M[8] * z + M[12]) / w + 1) / 2 * r.width;
+            const sy = r.top + (1 - (M[1] * x + M[5] * y + M[9] * z + M[13]) / w) / 2 * r.height;
+            const d = Math.hypot(sx - px0, sy - py0);
+            if (d > R) continue;
+            cand.push([k, d, w]);
+            if (d < bestD) { bestD = d; }
+          }
+          for (const [k, d, w] of cand) if (d <= bestD + 2 && w < bestW) { bestW = w; bestK = k; }
+          if (bestK < 0) { hub.selected = null; setSel(null); select(null); return; }
+          const slot = slotOf[bestK];
           hub.selected = { slot };
           setSel(snapshot(slot));
           select(slot);
         };
-        // Shift + left click without dragging: a position goal at the level geometry under the pointer.
+        // The position goal: the level geometry under the pointer. A ray crosses several upward-facing surfaces (a roof's top,
+        // the floors below it); the floor where the search has been (nearest to a shown node, within 300 units) wins, else
+        // the first one. The same spot again within 3 s (shift + click again, or another long press) takes the next floor down.
+        let lastGoal = null; // {x, y, t, layers: [{p, d}], i}
         const onGoal = (ev) => {
           if (!geomMesh || !fitted) return;
           setRay(ev);
           world.updateMatrixWorld(true);
-          // The first floor under the pointer (a see-through roof or wall in front is not where Mario can stand).
           const hits = ray.intersectObject(geomMesh, true);
-          const hit = hits.find((h) => h.face && h.face.normal.y > 0.5) || hits[0];
-          if (!hit) return;
-          const p = world.worldToLocal(hit.point.clone());
+          const now = performance.now();
+          const again = lastGoal && now - lastGoal.t < 3000 && Math.hypot(ev.clientX - lastGoal.x, ev.clientY - lastGoal.y) < 14;
+          let layers, i;
+          if (again) {
+            layers = lastGoal.layers; i = (lastGoal.i + 1) % layers.length;
+          } else {
+            const floors = [];
+            for (const h of hits) {
+              if (!h.face || h.face.normal.y <= 0.5) continue;
+              const p = world.worldToLocal(h.point.clone());
+              if (floors.some((f) => Math.abs(f.p.y - p.y) < 40)) continue; // one per layer
+              let dmin = Infinity;
+              for (let k = 0; k < shown; k++) { const d = Math.hypot(poss[k * 3] - p.x, poss[k * 3 + 1] - p.y, poss[k * 3 + 2] - p.z); if (d < dmin) dmin = d; }
+              floors.push({ p, d: dmin });
+            }
+            if (!floors.length && hits[0]) floors.push({ p: world.worldToLocal(hits[0].point.clone()), d: Infinity });
+            if (!floors.length) return;
+            layers = floors.sort((a, b) => b.p.y - a.p.y); // top to bottom
+            let near = -1;
+            layers.forEach((f, k) => { if (f.d <= 300 && (near < 0 || f.d < layers[near].d)) near = k; });
+            i = near >= 0 ? near : 0;
+          }
+          lastGoal = { x: ev.clientX, y: ev.clientY, t: now, layers, i };
+          const p = layers[i].p;
           const [level, area] = fitted.split(':').map(Number);
           cb.current.onGoal?.({ level, area, pos: [Math.round(p.x), Math.round(p.y), Math.round(p.z)] });
+          cb.current.note?.(layers.length > 1 ? `floor ${i + 1} of ${layers.length} here (the same spot again picks the next floor down)` : '');
         };
         let downAt = null;
-        dom.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY, e.button]; });
+        // Touch: no shift key, so a long press (~500 ms, one finger, moved < 8 px) on the level sets the goal, and the
+        // "Goal" toggle makes the next tap do it. A ring over the press fills while it counts; moving or a second finger
+        // cancels it; when it fires the little pan the finger made is undone and the controls stay off until it lifts.
+        const LONG_MS = 500, SLOP = 8;
+        const ring = document.createElement('div');
+        ring.className = 'viz-ring';
+        ring.style.cssText = 'position:absolute;display:none;width:56px;height:56px;margin:-28px 0 0 -28px;border-radius:50%;pointer-events:none;z-index:3;-webkit-mask:radial-gradient(circle,transparent 19px,#000 20px);mask:radial-gradient(circle,transparent 19px,#000 20px)';
+        if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+        el.appendChild(ring);
+        const touches = new Set();
+        let lp = null; // {id, x, y, t0, cam, tgt, fired}
+        let lpRaf = 0;
+        let suppress = false;
+        const lpEnd = () => { if (lpRaf) cancelAnimationFrame(lpRaf); lpRaf = 0; ring.style.display = 'none'; lp = null; };
+        const lpTick = () => {
+          if (!lp) return;
+          const f = Math.min(1, (performance.now() - lp.t0) / LONG_MS);
+          ring.style.background = `conic-gradient(#ff8a00 ${f * 360}deg, rgba(255,138,0,.25) 0)`;
+          if (f >= 1) {
+            const l = lp;
+            camera.position.copy(l.cam); controls.target.copy(l.tgt); controls.update();
+            controls.enabled = false;
+            l.fired = true;
+            try { navigator.vibrate?.(40); } catch { /* not supported */ }
+            onGoal({ clientX: l.x, clientY: l.y });
+            ring.style.display = 'none'; lpRaf = 0;
+            return;
+          }
+          lpRaf = requestAnimationFrame(lpTick);
+        };
+        dom.addEventListener('pointerdown', (e) => {
+          downAt = [e.clientX, e.clientY, e.button];
+          if (e.pointerType !== 'touch') return;
+          touches.add(e.pointerId);
+          if (touches.size > 1) { lpEnd(); return; }
+          const r = el.getBoundingClientRect();
+          lp = { id: e.pointerId, x: e.clientX, y: e.clientY, t0: performance.now(), cam: camera.position.clone(), tgt: controls.target.clone(), fired: false };
+          ring.style.left = `${e.clientX - r.left}px`; ring.style.top = `${e.clientY - r.top}px`;
+          ring.style.display = 'block';
+          lpRaf = requestAnimationFrame(lpTick);
+        });
+        dom.addEventListener('pointermove', (e) => {
+          if (lp && !lp.fired && e.pointerId === lp.id && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > SLOP) lpEnd();
+        });
+        const lpUp = (e) => {
+          if (e.pointerType !== 'touch') return;
+          touches.delete(e.pointerId);
+          if (!touches.size) controls.enabled = true;
+          if (lp && e.pointerId === lp.id) { const fired = lp.fired; lpEnd(); if (fired) { downAt = null; suppress = true; } }
+        };
+        dom.addEventListener('pointercancel', lpUp);
+        dom.addEventListener('pointerup', lpUp);
         dom.addEventListener('pointerup', (e) => {
+          if (suppress) { suppress = false; downAt = null; return; }
           if (downAt && downAt[2] === e.button && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 4) {
-            if (e.button === 0 && e.shiftKey) onGoal(e);
+            if (e.button === 0 && (e.shiftKey || cb.current.armed)) { onGoal(e); if (cb.current.armed) cb.current.disarm?.(); }
             else if (e.button === 0) onSelect(e);
           }
           downAt = null;
@@ -510,7 +606,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
             <button type="button" onClick={() => gl.current?.fit()}>Fit</button>
           </div>
           <span className="lab">Controls</span>
-          <span className="muted">left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms; left click selects a node; <b>shift + left click</b> on the level sets a position goal for the searches (a Mario::PosTime objective at that point)</span>
+          <span className="muted">left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms; left click selects a node; <b>shift + left click</b> on the level sets a position goal for the searches (a Mario::PosTime objective at that point). On a touch screen: <b>long-press the level</b> (or use the 🎯 Goal button, then tap it); drag pans, pinch zooms, tap selects.</span>
         </form>
       )}>
       <div ref={mount} className="viz-gl" />
@@ -518,14 +614,15 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
       <div className="viz-status">
         {sel ? (
           <span><b>{sel.manual ? 'Manual node' : 'Node'} {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame.toLocaleString()} ({clock(sel.frame)}){sel.progress ? ' · made progress' : ''}</span>
-        ) : <span className="muted">Click a node to select it; shift + click on the level sets a position goal.</span>}
-        {goal && <span className="muted small">Position goal ({goal.pos.join(', ')}) in {levelName(goal.level)}, area {goal.area}: the searches draw Mario::PosTime objectives to it.</span>}
+        ) : <span className="muted">{goalArm ? 'Tap the level where the goal should be.' : isTouchDevice() ? 'Tap a node to select it; long-press the level to set a goal.' : 'Click a node to select it; shift + click on the level sets a position goal.'}</span>}
+        {goal && <span className="muted small">Position goal ({goal.pos.join(', ')}) in {levelName(goal.level)}, area {goal.area}: the searches draw Mario::PosTime objectives to it.{goalNote ? ` ${goalNote}` : ''}</span>}
         {hub.manual && <span className="muted small">Last played segment: {hub.manual.nid != null ? `node ${hub.manual.nid} of worker ${hub.manual.w + 1}` : 'not in the tree'}, {hub.manual.frames} frames, finished at ({hub.manual.pos.map((x) => Math.round(x)).join(', ')}){hub.manual.note ? ` · ${hub.manual.note}` : ''}</span>}
       </div>
       <Toolbar label="Node actions">
         <ToolBtn on={!!playHere} disabled={!playHere} onClick={() => onPlayFrom && onPlayFrom(sel)} title={playHere ? 'Load this node\'s save state and play on by hand; the played segment becomes a high-weight node of the search tree' : (sel ? why || 'Only a node of a worker\'s current search step can be played from' : 'Select a node first')}>🎮 Play from here</ToolBtn>
         <ToolBtn disabled={!sel} onClick={() => onPlay && onPlay(sel.w, { step: sel.step, id: sel.id })} title="Replay the path to this node in the game panel">▶ {isBest ? 'This path' : 'This node'}</ToolBtn>
         <ToolBtn disabled={bestW < 0} onClick={() => bestW >= 0 && onPlay && onPlay(bestW)} title="Replay the best route so far in the game panel">▶ Best path</ToolBtn>
+        <ToolBtn on={goalArm} onClick={() => setGoalArm(!goalArm)} title="Then tap the level to set the position goal there (long-press does it too; shift + click on a computer)">🎯 Goal</ToolBtn>
         {goal && <ToolBtn onClick={() => onGoal && onGoal(null)} title="Clear the position goal">✕ Goal</ToolBtn>}
       </Toolbar>
       {sel && !playHere && why && <p className="muted small" style={{ margin: '6px 0 0' }}>{why}</p>}

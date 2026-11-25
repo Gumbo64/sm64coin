@@ -363,6 +363,7 @@ export class VizHub {
     let inputs = null, power = false;
     try { ({ pads: inputs, power } = proofInputs(r.proof)); } catch { /* unreadable: no replay */ }
     this.runs.push({ t: Date.now() / 1000 - (template.sm64_parent_timestamp || 0), frames: r.frames, w: i });
+    this.cover.runFound();
     this.found = { w: i, frames: r.frames, inputs, power, template, start: r.start, status: 'found', height: template.height, id: ++this.game.id };
     this.game = { id: this.game.id, kind: 'run', w: i };
     this.toast(`worker ${i + 1} found a run: ${r.frames} frames`, 'found');

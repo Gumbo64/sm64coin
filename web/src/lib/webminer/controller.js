@@ -26,11 +26,7 @@ const now = () => Date.now() / 1000;
 // Workers can sync their searches (SharedArrayBuffer) only in a cross-origin-isolated page: the
 // service worker coi-sw.js sets the headers GitHub Pages can't (one reload after enabling it).
 export const isolated = typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
-export async function enableSync() {
-  await navigator.serviceWorker.register(`${import.meta.env.BASE_URL}coi-sw.js`);
-  await navigator.serviceWorker.ready;
-  window.location.reload();
-}
+export { enableSync } from './sync.js';
 const ls = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
 
