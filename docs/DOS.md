@@ -273,6 +273,17 @@ Measured on local nodes by the audit; each fix is in pow/sm64pow (decision) with
   first, then claimed frames plus what its source was served) makes room for a better one, never
   a claim several sources sent; a claim relayed first by a source that is then penalised stays,
   attributed to another source that sent it.
+- **Hopeless claims** (fewer than 600 frames, the limit's floor, or more frames than the limit
+  at the claim's own stamp) are refused before queueing: no replay (the Pi measurement: 200 junk
+  300-frame claims cost 42.7 s of CPU, about 0.2 s of fixed cost per replay). On x86 the fixed
+  cost of a replay is about 5 ms (`examples/replay_overhead.rs`: a 300-frame junk claim from a
+  parent state 7.6 ms, `create_game` 1.5 ms, `load_state` 0.4 ms; from power-on 12 ms). Reusing
+  emulators across replays would cut part of it but touches the replay path, so it is not done
+  for the launch. Time-slicing replays (round-robin chunks across the queue head) is not done
+  either; the reserved short-claim worker bounds an honest claim's wait instead.
+- **Known sources first.** A claim from a source that never sent a valid claim counts 2,000
+  frames longer when ordering, so a burst from fresh addresses queues behind a known peer's or
+  miner's claim of the same length.
 - **Unrestricted RPC** refuses requests with a foreign `Origin` (not in
   `--rpc-access-control-origins`) or a `Host` that is a name other than `localhost` (DNS
   rebinding: a web page must not reach `stop_daemon` or `submit_block`).
