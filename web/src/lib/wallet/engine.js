@@ -18,7 +18,7 @@ export function chainId() {
 
 const BASE = import.meta.env.BASE_URL;
 export const UNLOCK_WINDOW = 72; // SM64COIN: CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW (Monero 60; v0.2: 4; v0.3: 72 = 24 h of 20-minute blocks)
-export const SPENDABLE_AGE = 10; // CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE: wallet2 also waits this long for any output
+export const SPENDABLE_AGE = 3; // CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE (v0.3: 3 = 1 h; Monero 10): wallet2 also waits this long for any output
 export const ATOMIC = 1000000000000n; // 12 decimals, like Monero
 
 let lib;
