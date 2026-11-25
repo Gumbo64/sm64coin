@@ -29,7 +29,6 @@ mod trig;
 pub use codec::*;
 pub use range::*;
 pub use statectx::*;
-pub(crate) use logistic::{squash, stretch_table};
 
 pub use sm64coin_perturb::sm64::Features;
 /// A controller pad (buttons and stick).

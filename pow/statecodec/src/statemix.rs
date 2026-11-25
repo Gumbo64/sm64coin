@@ -14,10 +14,12 @@
 //! Integer arithmetic only. [`Cfg`] holds every tunable; the shipped variants
 //! are frozen presets ([`Cfg::variant`]), the codec id says which one.
 
-use crate::Features;
-use crate::{BitIo, squash, stretch_table};
+use crate::codec::{StateCodec, StateDecoder, StateEncoder};
+use crate::logistic::{squash, stretch_table};
+use crate::range::{BitIo, RangeDecoder, RangeEncoder};
 use crate::trig::SIN;
-use crate::GamePad;
+use sm64coin_perturb::Pad as GamePad;
+use sm64coin_perturb::sm64::Features;
 
 const NCTX: usize = 14;
 const NODES: usize = 384;
@@ -640,8 +642,6 @@ impl Model {
 }
 
 // ---------------------------------------------------------------- the codecs
-
-use crate::{RangeDecoder, RangeEncoder, StateCodec, StateDecoder, StateEncoder};
 
 /// Codecs 4..: the model above, cold or with a frozen prior, a variant = one
 /// frozen [`Cfg`]. The encoder tries all and keeps the smallest (the id is

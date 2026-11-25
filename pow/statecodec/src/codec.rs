@@ -1,6 +1,7 @@
 //! The state codec interface.
 
-use crate::{Features, GamePad};
+use sm64coin_perturb::Pad as GamePad;
+use sm64coin_perturb::sm64::Features;
 
 /// Streaming encoder: the replay hands it every frame in order.
 pub trait StateEncoder {

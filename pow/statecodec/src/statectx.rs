@@ -3,7 +3,8 @@
 use crate::codec::{StateCodec, StateDecoder, StateEncoder};
 use crate::logistic::{squash, stretch_table};
 use crate::range::{BitIo, CostMeter, RangeDecoder, RangeEncoder};
-use crate::{Features, GamePad};
+use sm64coin_perturb::Pad as GamePad;
+use sm64coin_perturb::sm64::Features;
 
 const INPUTS: usize = 8;
 const NODES: usize = 256;
