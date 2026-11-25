@@ -72,6 +72,11 @@ pub struct MineRequest {
     pub checkpoints: Option<usize>,
     #[serde(default)]
     pub salt: u64,
+    /// Run the input normaliser before sealing (sm64pow::normalise, ~12-21 % smaller proofs; every
+    /// candidate replay-checked, the run as played is the fallback). Seconds of single-threaded
+    /// work per block, so the page can skip it (the default).
+    #[serde(default)]
+    pub normalise: bool,
     #[serde(default)]
     pub frame_cap: usize,
     /// The search's memory budget per step (MB; native default 1500, too much for several
@@ -257,7 +262,11 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
     let attempt = rrt::mine(start, parent.as_ref(), &seed, &params, &o, &stop, |m| js_log(&m)).map_err(|e| err(format!("{e:#}")))?;
     let out = match attempt {
         Attempt::Found(m) => {
-            let proof = sm64pow::seal_proof_at(start, parent.as_ref(), &seed, &params, &m.pads).map_err(err)?;
+            let proof = if r.normalise {
+                sm64pow::normalise::seal_proof_normalised_at(start, parent.as_ref(), &seed, &params, &m.pads).map_err(err)?
+            } else {
+                sm64pow::seal_proof_at(start, parent.as_ref(), &seed, &params, &m.pads).map_err(err)?
+            };
             let sig = if r.miner_secret.is_empty() {
                 String::new()
             } else {

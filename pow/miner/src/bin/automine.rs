@@ -146,6 +146,11 @@ struct Args {
     /// becomes valid; nodes hold it until then). A run that is valid now is sent at once.
     #[arg(long, default_value_t = 5)]
     submit_lead: u64,
+    /// Seal the run as played, without the input normaliser (sm64pow::normalise: pads that don't
+    /// change the game are replaced by cheaper ones, replay-checked; seconds per block, ~12-21 %
+    /// smaller proofs, which win equal-frame ties).
+    #[arg(long)]
+    no_normalise: bool,
     /// Search on for a shorter run while a found run waits for the limit (rrt only).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     anytime: bool,
@@ -561,6 +566,7 @@ fn main() -> Result<()> {
             std::fs::write(format!("{dir}/{}.m64", t.height), m64)?;
         }
 
+        let proof = if a.save_block.is_some() { normalised(&a, start, parent_state.as_ref(), &seed, &params, &m.pads, proof) } else { proof };
         if let Some(f) = &a.save_block {
             let b = SavedBlock { template_blob: t.blocktemplate_blob.clone(), seed_hash: t.sm64_seed_hash.clone(), key_secret: t.key.as_ref().map(|k| hex::encode(k.secret)).unwrap_or_default(), sig: match &t.key { Some(k) => hex::encode(sm64pow::mining::sign_proof(k, &seed.0, &proof)?), None => String::new() }, proof: hex::encode(&proof), frames, parent_ts: t.sm64_parent_timestamp, prev_hash: t.prev_hash.clone(), height: t.height };
             std::fs::write(f, serde_json::to_string(&b)?)?;
@@ -577,6 +583,7 @@ fn main() -> Result<()> {
         } else {
             (m, proof, frames)
         };
+        let proof = if a.save_block.is_some() { proof } else { normalised(&a, start, parent_state.as_ref(), &seed, &params, &m.pads, proof) };
         // Within the time limit now? Otherwise wait until it has grown to
         // this run's length (the tip changing abandons it).
         let retarget = t.sm64_retarget_difficulty.max(1);
@@ -767,6 +774,29 @@ fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, par
         k += 1;
     }
     Ok(Some((best.0, best.1, best_frames)))
+}
+
+/// The sealed `proof` of the run `pads`, or a smaller one of the same run after the input normaliser
+/// (sm64pow::normalise: every candidate replay-checked; the original on any doubt). Off with --no-normalise.
+fn normalised(a: &Args, start: Start, parent: Option<&SaveState>, seed: &sm64pow::Seed, params: &sm64pow::Params, pads: &[sm64pow::sm64_binds::GamePad], proof: Vec<u8>) -> Vec<u8> {
+    if a.no_normalise {
+        return proof;
+    }
+    let t0 = std::time::Instant::now();
+    match sm64pow::normalise::seal_proof_normalised_report(start, parent, seed, params, pads) {
+        Ok((better, rep)) if better.len() < proof.len() => {
+            println!("  normalised: {} -> {} bytes ({:.1} %; conservative {:?}, aggressive {:?}) in {:.1} s", proof.len(), better.len(), 100.0 * better.len() as f64 / proof.len() as f64, rep.tried[0], rep.tried[1], t0.elapsed().as_secs_f64());
+            better
+        }
+        Ok(_) => {
+            println!("  normalised: no smaller proof ({} bytes) in {:.1} s", proof.len(), t0.elapsed().as_secs_f64());
+            proof
+        }
+        Err(e) => {
+            println!("  normaliser failed ({e:#}); sealing the run as played");
+            proof
+        }
+    }
 }
 
 /// --anytime-bench: N searches on this template, nothing submitted.

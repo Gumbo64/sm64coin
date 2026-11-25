@@ -13,6 +13,9 @@ crate-type = ["staticlib", "rlib"]
 # pick them. Built without it, nodes reject them like any unknown id.
 default = ["state-codec"]
 state-codec = []
+# The miner-side input normaliser (normalise.rs: encoder only, no consensus change). Miners, the SDKs and the
+# web miner enable it; the node library does not need it.
+normalise = ["sm64coin-statecodec/normalise"]
 
 [dependencies]
 sm64coin-statecodec = { path = "../statecodec" }

@@ -347,9 +347,17 @@ impl MiningEnv {
         Ok(())
     }
 
-    /// The proof blob in the smallest codec. Meaningful once
+    /// The proof blob in the smallest codec, after the input normaliser (sm64pow::normalise: pads
+    /// that don't change what the game does are replaced by cheaper ones, ~12-21 % smaller proofs;
+    /// every candidate is replay-checked, the original run is the fallback). It costs seconds on a
+    /// long run: [`MiningEnv::proof_unnormalised`] skips it. Meaningful once
     /// [`MiningEnv::is_success`].
     pub fn proof(&self) -> Vec<u8> {
+        sm64pow::normalise::seal_proof_normalised_at(self.task.start, self.task.parent.as_deref(), &self.task.seed, &self.task.params, &self.pads).expect("replaying own run")
+    }
+
+    /// [`MiningEnv::proof`] without the normaliser: the run exactly as played.
+    pub fn proof_unnormalised(&self) -> Vec<u8> {
         // Only the non-poked frames' inputs are stored; replays to find them.
         sm64pow::seal_proof_at(self.task.start, self.task.parent.as_deref(), &self.task.seed, &self.task.params, &self.pads).expect("replaying own run")
     }
