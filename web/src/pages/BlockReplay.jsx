@@ -9,6 +9,7 @@ import { rawToPads } from '../lib/proof.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { frames } from '../lib/format.js';
+import { e2eHook } from '../lib/e2e.js';
 
 const COLORS = ['#f7c948', '#60a5fa', '#4ade80', '#f472b6', '#fb923c', '#a78bfa', '#2dd4bf', '#f87171'];
 
@@ -76,8 +77,8 @@ export default function BlockReplay({ block, cycle, panel }) {
         onClose={() => nav('/')}
         backLabel="← Explorer"
         milestones={run.milestones}
-        /* window.__player: for the e2e scripts */
-        makePlayer={(r, onChange) => (window.__player = player.current = new CyclePlayer(r.pads, onChange, { start: run.start, task, won }))}
+        /* window.__player: for the e2e scripts (?e2e only) */
+        makePlayer={(r, onChange) => e2eHook('__player', (player.current = new CyclePlayer(r.pads, onChange, { start: run.start, task, won })))}
         topbarExtra={() => (
           <span className="row tight small">
             <Link to={`/block/${h.height - 1}`} title="Previous block">‹ block {h.height - 1}</Link>

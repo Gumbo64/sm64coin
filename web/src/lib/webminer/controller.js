@@ -13,6 +13,7 @@ import { boardSize, setVizFlag, postMail } from './board.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
+import { e2eHook } from '../e2e.js';
 
 export const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
 const now = () => Date.now() / 1000;
@@ -443,5 +444,5 @@ class MinerController {
 }
 
 export const miner = new MinerController();
-window.__sm64miner = miner; // for the e2e scripts
+e2eHook('__sm64miner', miner); // for the e2e scripts (?e2e only)
 if (import.meta.hot) import.meta.hot.dispose(() => miner.stop());

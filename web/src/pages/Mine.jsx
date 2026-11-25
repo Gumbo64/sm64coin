@@ -14,6 +14,7 @@ import { Toolbar, ToolBtn, Cols, Row, SideCard } from '../components/ui.jsx';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
+import { e2eHook } from '../lib/e2e.js';
 
 // The manual miner: play Super Mario 64 yourself. A block is the game's next
 // progress point (a star, a Bowser key, the Grand Star after 70 stars), played
@@ -58,7 +59,7 @@ function Miner() {
   const [pendingRun, setPending] = useState(null);
   const [tick, setTick] = useState(0);
   const rec = useRef(null);
-  useEffect(() => { window.__miner = { rec }; }, []); // test hook (read-only use: the touch-controls test)
+  useEffect(() => { e2eHook('__miner', { rec }); }, []); // test hook, ?e2e only (read-only use: the touch-controls test)
   const ctl = useRef({ restart: false, forcePower: false, discard: false, pending: null, discardPending: false });
   // The last attempt, for debugging: its pads and the template it was played for.
   const [last, setLast] = useState(null);
