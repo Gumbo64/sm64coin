@@ -30,6 +30,7 @@ sm64-binds = { workspace = true, features = ["default"] }
 ureq = { version = "2", features = ["json"] }
 clap = { version = "4", features = ["derive"] }
 flate2 = "1"
+sm64coin-group = { path = "../group" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 sm64-binds = { workspace = true, features = ["wasm_js"] }

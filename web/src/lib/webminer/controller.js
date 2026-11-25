@@ -13,6 +13,7 @@ import { boardSize, setVizFlag, postMail } from './board.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
+import { groupLink } from './group.js';
 
 export const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
 const now = () => Date.now() / 1000;
@@ -84,6 +85,8 @@ class MinerController {
     this.hub.setEnabled(this.vizOn);
     this.hub.requester = (w, key, nid) => this.askNode(w, key, nid);
     window.addEventListener('beforeunload', () => this.stop());
+    // Group mining (group.js): what arrives from the other members.
+    groupLink.handlers = { step: (k, j) => this.groupStep(j), run: () => this.groupRun(), template: () => this.groupTemplate() };
   }
 
   // ----- subscription -----
@@ -195,7 +198,7 @@ class MinerController {
   }
 
   start() {
-    if (!isAddress(this.address)) { this.say('enter your SM64… address first'); return; }
+    if (!isAddress(this.address) && !groupLink.member) { this.say('enter your SM64… address first'); return; }
     this.stop();
     const c = { stopped: false, pool: [], attempt: 0, template: null, status: [], count: this.count };
     this.c = c;
@@ -204,6 +207,8 @@ class MinerController {
     this.error = null;
     // A new tip: the template is stale, start over on the new one.
     c.watch = setInterval(async () => {
+      // A group member follows the leader's announcements (groupTemplate), not its own node.
+      if (groupLink.member) return;
       try {
         // A parent-only template turns "either" at sm64_power_on_at: refresh it to learn that.
         if (c.template && c.restartAt && now() >= c.restartAt && c.pool.some(Boolean)) {
@@ -219,9 +224,57 @@ class MinerController {
         }
       } catch { /* node hiccup */ }
     }, 5000);
-    c.tick = setInterval(() => this.emit(), 1000); // the light's frames/s
+    c.tick = setInterval(() => { this.emit(); groupLink.setFps(this.fps()); }, 1000); // the light's frames/s
     this.emit(true);
     this.round(c);
+  }
+
+  /** The block template: the node's, or (a group member) the leader's; a group leader announces its own. */
+  async fetchTemplate(c, address) {
+    while (groupLink.member) {
+      if (c.stopped) return null;
+      const g = groupLink.template();
+      if (g && g.tgen > (c.tgen || 0)) { c.tgen = g.tgen; return g.t; }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const t = await daemon('get_block_template', { wallet_address: address, reserve_size: 0 });
+    if (groupLink.active && groupLink.leader) {
+      groupLink.publish(t, address);
+      const g = groupLink.template();
+      if (g) c.tgen = g.tgen;
+    }
+    return t;
+  }
+
+  /** The leader announced another template: restart on it. */
+  groupTemplate() {
+    const c = this.c;
+    if (!c || !groupLink.member || !c.pool.some(Boolean)) return;
+    const g = groupLink.template();
+    if (g && g.tgen > (c.tgen || 0)) { this.say('the group leader announced a new template: restarting on it'); this.round(c); }
+  }
+
+  /** A castle step another member finished (same platform): the workers without one take it, as for a local worker's. */
+  groupStep(stepJson) {
+    const c = this.c;
+    if (c && c.onGroupStep) c.onGroupStep(stepJson);
+  }
+
+  /** A member shared a run: stop searching and submit it (the node replays it; a wrong one is rejected). */
+  groupRun() {
+    const c = this.c;
+    if (!c || !c.template || !groupLink.active || ['found', 'held', 'submitting'].includes(this.phase)) return;
+    const me = groupLink.snap.id;
+    for (const st of new Set((c.status || []).map((s) => s.start))) {
+      const r = groupLink.bestRun(st);
+      if (!r || r.from === me) continue;
+      this.say(`group: ${r.from} found a run of ${r.frames} frames: taking it`);
+      this.setPhase('found');
+      c.pool.forEach((x) => x && x.terminate());
+      c.pool = [];
+      this.submit(c, c.template, { proof: r.proof, frames: r.frames, start: r.start, sim_frames: 0 });
+      return;
+    }
   }
 
   async round(c) {
@@ -235,7 +288,8 @@ class MinerController {
     this.setPhase('loading');
     let t;
     try {
-      t = await daemon('get_block_template', { wallet_address: address, reserve_size: 0 });
+      t = await this.fetchTemplate(c, address);
+      if (!t) return;
     } catch (e) {
       say(`no template: ${e}; retrying in 10 s`);
       this.fail(`no template: ${e}`);
@@ -289,19 +343,28 @@ class MinerController {
     // needs a SharedArrayBuffer, i.e. a cross-origin-isolated page.
     const board = isolated ? new SharedArrayBuffer(boardSize(count)) : null;
     if (board) { c.board = board; c.count = count; setVizFlag(board, count, this.vizOn); } else c.board = null;
-    const share = (i, m) => {
-      const st = status[i].start;
-      if (shared[st]) return;
-      shared[st] = { step: m.step, files: m.files };
-      say(`worker ${i + 1} finished the castle step: shared with the other workers`);
+    const take = (st, step, files, who) => {
+      shared[st] = { step, files };
+      say(`${who} finished the castle step: shared with the other workers`);
       for (let j = 0; j < count; j++) {
-        if (j !== i && status[j].start === st && !status[j].gotShared && c.pool[j]) {
+        if (status[j].start === st && !status[j].gotShared && c.pool[j] && who !== `worker ${j + 1}`) {
           c.pool[j].terminate();
           status[j].gotShared = true;
           launch(j);
         }
       }
     };
+    const share = (i, m) => {
+      const st = status[i].start;
+      if (shared[st]) return;
+      take(st, m.step, m.files, `worker ${i + 1}`);
+      groupLink.putStep(m.step);
+    };
+    // A step another group member finished (the workers check its key: a step of another job is not used).
+    c.onGroupStep = (step) => {
+      for (const st of new Set(status.map((x) => x.start))) if (!shared[st]) take(st, step, [], 'a group member');
+    };
+    for (const x of groupLink.allSteps()) c.onGroupStep(x.json); // late joiners: the steps already shared
     // Each worker searches on its own: one that ends without a run (or fails) starts again with
     // a new salt, after a pause that grows if it keeps failing; the first run found wins.
     const launch = (i) => {
@@ -341,6 +404,7 @@ class MinerController {
         if (m.type === 'result' && r.status === 'found') {
           this.stats = { ...this.stats, found: this.stats.found + 1 };
           hub.foundRun(i, { ...r, start: status[i].start }, t);
+          groupLink.putRun(status[i].start, r.frames, r.proof);
           say(`worker ${i + 1}: run found, ${r.frames} frames (${fmtFrames(r.frames)}), ${(r.sim_frames / 1e6).toFixed(0)} M frames searched`);
           c.pool.forEach((x) => x && x.terminate());
           c.pool = [];
@@ -383,7 +447,7 @@ class MinerController {
     try {
       let validAt = 0;
       try {
-        validAt = (await daemon('get_block_template', { wallet_address: this.address, reserve_size: 0, sm64_frames: r.frames })).sm64_valid_at || 0;
+        validAt = (await daemon('get_block_template', { wallet_address: t.group_address || this.address, reserve_size: 0, sm64_frames: r.frames })).sm64_valid_at || 0;
       } catch { /* the node decides */ }
       while (validAt - now() > SEND_AHEAD) {
         if (c.stopped || c.template !== t) return;

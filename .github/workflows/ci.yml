@@ -75,6 +75,7 @@ jobs:
           workspaces: |
             pow/perturb-wasm
             pow/webminer
+            pow/groupweb
           key: wasm
       # The web miner (pow/webminer) needs clang for wasm32 (zstd-sys) and the obrrt crates from
       # Gumbo64/sm64-AI-binds. If that repo is private, add the repo secret SM64_AI_BINDS_TOKEN

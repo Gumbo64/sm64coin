@@ -353,6 +353,47 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, _st
 /// progress): the miner's speed is its rate (automine's `progress` line).
 pub static SIM_FRAMES: AtomicU64 = AtomicU64::new(0);
 
+/// `run_child`, but a step whose outcome another search of the block may share (`key`, see [`Exchange`]) is
+/// dropped as soon as that outcome arrives: (outcome, true) then. Natively the other search is another miner of the
+/// group; in the browser the page's controller restarts the workers itself.
+#[cfg(target_arch = "wasm32")]
+fn run_child_shared(o: &RrtOptions, game: &SM64MiningGame, job: Job, tag: &str, stop: &AtomicBool, _key: Option<&String>) -> Result<(StepOut, bool)> {
+    run_child(o, game, job, tag, stop).map(|x| (x, false))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_child_shared(o: &RrtOptions, game: &SM64MiningGame, job: Job, tag: &str, stop: &AtomicBool, key: Option<&String>) -> Result<(StepOut, bool)> {
+    let (Some(k), Some(ex)) = (key, o.exchange.as_ref()) else {
+        return run_child(o, game, job, tag, stop).map(|x| (x, false));
+    };
+    let local = AtomicBool::new(false);
+    let done = AtomicBool::new(false);
+    let taken: std::sync::Mutex<Option<StepOut>> = std::sync::Mutex::new(None);
+    let r = std::thread::scope(|sc| {
+        sc.spawn(|| {
+            while !done.load(Ordering::Relaxed) {
+                if stop.load(Ordering::Relaxed) {
+                    local.store(true, Ordering::Relaxed);
+                    break;
+                }
+                if let Some(r) = ex("step_get", k).and_then(|j| serde_json::from_str::<SharedStep>(&j).ok()).filter(|r| r.key == *k) {
+                    *taken.lock().unwrap() = Some(r.out);
+                    local.store(true, Ordering::Relaxed);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        let r = run_child(o, game, job, tag, &local);
+        done.store(true, Ordering::Relaxed);
+        r
+    });
+    if let Some(x) = taken.lock().unwrap().take() {
+        return Ok((x, true));
+    }
+    r.map(|x| (x, false))
+}
+
 /// Runs the tree step `job` from `game` in a child process.
 #[cfg(not(target_arch = "wasm32"))]
 fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
@@ -612,7 +653,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                     x
                 }
                 None => {
-                    let x = match run_child(o, &game, job.clone(), &format!("s{step}"), stop) {
+                    let (x, from_peer) = match run_child_shared(o, &game, job.clone(), &format!("s{step}"), stop, key.as_ref()) {
                         Ok(x) => x,
                         Err(e) if stop.load(Ordering::Relaxed) => {
                             *RESUME.lock().unwrap() = Some(Resume { seed: seed.0, start, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
@@ -620,7 +661,9 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                         }
                         Err(e) => return Err(e),
                     };
-                    if let (Some(k), Some(ex)) = (&key, &o.exchange) {
+                    if from_peer {
+                        log("  the castle step arrived from another search while this one ran: taking it (shared)".into());
+                    } else if let (Some(k), Some(ex)) = (&key, &o.exchange) {
                         if let Ok(t) = serde_json::to_string(&SharedStep { key: k.clone(), out: x.clone() }) {
                             ex("step_put", &t);
                         }

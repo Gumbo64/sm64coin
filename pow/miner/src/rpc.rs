@@ -50,6 +50,10 @@ pub struct Template {
     /// Only with a `sm64_frames` request: when a run of that many frames becomes valid.
     #[serde(default)]
     pub sm64_valid_at: u64,
+    /// Group mining: the address the template was made for (the group leader adds it to the announced template, so
+    /// members can ask the node when their run is valid).
+    #[serde(default)]
+    pub group_address: String,
 }
 
 /// `get_sm64_cycle`: every frame played in the current cycle.
@@ -85,6 +89,14 @@ impl Daemon {
             bail!("{method}: {}", e.get("message").and_then(|m| m.as_str()).unwrap_or("error"));
         }
         resp.get("result").cloned().ok_or_else(|| anyhow!("{method}: no result"))
+    }
+
+    /// The template and its raw JSON (what a group leader announces).
+    pub fn template_json(&self, address: &str) -> Result<(Template, String)> {
+        let r = self.call("get_block_template", json!({"wallet_address": address, "reserve_size": 0}))?;
+        let mut r = r;
+        r["group_address"] = json!(address);
+        Ok((serde_json::from_value(r.clone())?, serde_json::to_string(&r)?))
     }
 
     pub fn template(&self, address: &str) -> Result<Template> {

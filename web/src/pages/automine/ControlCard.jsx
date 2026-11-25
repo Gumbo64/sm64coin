@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useSyncExternalStore } from 'react';
 import { miner, isAddress, isolated, enableSync, fmtRate } from '../../lib/webminer/controller.js';
 import { SideCard, GearBtn, useStored } from '../../components/ui.jsx';
+import GroupPanel from './GroupPanel.jsx';
+import { groupLink } from '../../lib/webminer/group.js';
 
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
@@ -12,6 +14,8 @@ export default function ControlCard({ s }) {
   const [open, setOpen] = useStored('sm64coin.autoCardOpen', false);
   const [editing, setEditing] = useState(false);
   const n = workers.length || count;
+  const gs = useSyncExternalStore(groupLink.subscribe, groupLink.getSnapshot);
+  const member = gs.status === 'on' && !gs.leader;
   return (
     <SideCard className="first" title="Auto-mine" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
       {open && (
@@ -39,20 +43,21 @@ export default function ControlCard({ s }) {
           {vizOn && running && !isolated && <p className="muted small" style={{ gridColumn: '1 / -1', margin: 0 }}>Workers started before it was switched on keep sampling off until their next search (enable worker sync for an instant switch).</p>}
         </form>
       )}
+      {open && <GroupPanel running={running} />}
       {!open && !isolated && !running && 'serviceWorker' in navigator && (
         <button type="button" style={{ width: '100%', marginBottom: 8 }} onClick={enableSync} title="Workers share their work, and clicking a node plays it instantly (reloads the page once)">Enable worker sync (faster; reloads once)</button>
       )}
       {running ? <button className="ui-big" onClick={() => miner.stop()}>Stop</button>
-        : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start mining</button>}
+        : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address) && !member}>Start mining</button>}
       <div className="ui-stat">
         <span><b>{running && fps > 0 ? `${fmtRate(fps)} frames/s` : '—'}</b></span>
         <span>{n} worker{n === 1 ? '' : 's'} · {stats.found} run{stats.found === 1 ? '' : 's'} found · {stats.accepted} block{stats.accepted === 1 ? '' : 's'}</span>
       </div>
-      <div className="ui-addr">
+      {member ? <div className="ui-addr">Mining for the group leader’s address (their template)</div> : <div className="ui-addr">
         Mining for {isAddress(address) ? <span className="mono paysto" title={address}>{short(address)}</span> : <em>no address</em>}{' '}
         <button className="linkish" title="Change the reward address" disabled={running} onClick={() => setEditing((e) => !e)}>✎ change</button>
-      </div>
-      {(editing || !isAddress(address)) && !running && (
+      </div>}
+      {(editing || !isAddress(address)) && !running && !member && (
         <div className="addrpop">
           <input className="mono wide" style={{ width: '100%' }} value={address} onChange={(e) => miner.setAddress(e.target.value.trim())} placeholder="SM64… (paste your address)" />
           {!isAddress(address) && <p className="muted small">Paste your address (in the SM64Coin wallet: Receive).</p>}

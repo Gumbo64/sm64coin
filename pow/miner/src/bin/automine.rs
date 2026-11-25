@@ -12,6 +12,8 @@
 use anyhow::{Result, bail};
 use clap::Parser;
 use sm64coin_miner::{beam, reset, rh, routes::Library, rpc, rrt};
+#[path = "automine/groupmine.rs"]
+mod groupmine;
 use sm64pow::proof::Start;
 use sm64pow::sm64_binds::SaveState;
 use std::sync::Arc;
@@ -21,9 +23,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[derive(Parser)]
 #[command(about = "Mine SM64Coin by playing Super Mario 64 automatically")]
 struct Args {
-    /// Address the block reward is paid to (starts with SM64).
-    #[arg(long)]
+    /// Address the block reward is paid to (starts with SM64). Not needed to join a group (the leader's address is used).
+    #[arg(long, default_value = "")]
     address: String,
+    /// Group mining: join the group a team code names (a trusted group mines ONE template together: the leader's address
+    /// gets the reward; the members share the first castle step and the runs they find, over iroh).
+    #[arg(long)]
+    group: Option<String>,
+    /// Group mining: start a group as its leader (this miner fetches the templates from --daemon with --address and
+    /// announces them); prints the team code for the others.
+    #[arg(long, default_value_t = false)]
+    group_new: bool,
+    /// Group mining: the name the other members see (default: the host name).
+    #[arg(long, default_value = "")]
+    group_name: String,
+    /// Group mining: a relay server URL instead of n0's public relays, or `none` (direct connections only).
+    #[arg(long)]
+    group_relay: Option<String>,
+    /// Do everything but submit: a found run is shared and held, and the miner waits for the next block (testing).
+    #[arg(long, default_value_t = false)]
+    no_submit: bool,
     #[arg(long, default_value = "http://127.0.0.1:16481")]
     daemon: String,
     /// US Super Mario 64 ROM.
@@ -209,13 +228,23 @@ fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
 }
 
 fn main() -> Result<()> {
-    let a = Args::parse();
+    let mut a = Args::parse();
     sm64coin_miner::update::spawn_check();
-    if !a.address.starts_with("SM6") {
-        bail!("{} does not look like an SM64Coin address", a.address);
+    if (a.group.is_none() || a.group_new) && !a.address.starts_with("SM6") {
+        bail!("{:?} does not look like an SM64Coin address (--address; only a group member may leave it out)", a.address);
+    }
+    if a.group.is_some() && a.group_new {
+        bail!("--group joins a group, --group-new starts one: not both");
     }
     sm64pow::init(std::fs::read(&a.rom)?)?;
     let daemon = rpc::Daemon::new(&a.daemon);
+    let gctx: groupmine::Ctx = Default::default();
+    let group = groupmine::setup(&a, &gctx)?;
+    if let Some(g) = &group {
+        // Members' searches must differ (the same seed would repeat the leader's search).
+        a.salt = a.salt.wrapping_add(groupmine::member_salt(g));
+    }
+    let a = a;
     if let Some(f) = &a.pick_difficulty {
         let b: SavedBlock = serde_json::from_str(&std::fs::read_to_string(f)?)?;
         let r = sm64pow::rules();
@@ -284,12 +313,16 @@ fn main() -> Result<()> {
     }
     // The miner's speed (its "hashrate"): a machine-readable line every ~2 s, `progress frames=<simulated frames so far>
     // fps=<frames/s over the last interval>`, for the wallet GUI (the rrt controller's search steps; 0 otherwise).
-    std::thread::spawn(|| {
+    let gfps = group.clone();
+    std::thread::spawn(move || {
         let (mut last, mut at) = (0u64, std::time::Instant::now());
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
             let n = sm64coin_miner::rrt::SIM_FRAMES.load(std::sync::atomic::Ordering::Relaxed);
             let dt = at.elapsed().as_secs_f64();
+            if let Some(g) = &gfps {
+                g.set_fps(((n - last) as f64 / dt.max(1e-3)) as f32);
+            }
             println!("progress frames={n} fps={:.0}", (n - last) as f64 / dt.max(1e-3));
             (last, at) = (n, std::time::Instant::now());
         }
@@ -299,15 +332,48 @@ fn main() -> Result<()> {
     println!("reset cycle policy: {:?} (--reset), parent-search time limit {} s", reset_mode, a.reset_after);
     let mut attempt = 0u64;
     let mut parent_cache: Option<ParentCache> = None;
+    let mut group_gen = 0u64;
+    // The group's run (template id, frames) already submitted (or dry-run) by us: not taken again.
+    let mut last_try = (0u64, 0u32);
     loop {
         attempt += 1;
-        let t = match daemon.template(&a.address) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("daemon: {e}; retrying in 5 s");
-                std::thread::sleep(Duration::from_secs(5));
-                continue;
+        let (t, t_json) = match &group {
+            Some(g) if !g.is_leader() => {
+                // A member mines the leader's template (same coinbase: the same game for everyone).
+                let mut said = false;
+                let (json, tgen) = loop {
+                    if let Some((_, json, tgen)) = g.wait_template(group_gen, Duration::from_secs(5)) {
+                        break (json, tgen);
+                    }
+                    if !said {
+                        println!("group: waiting for the leader's template ({} neighbour(s))", g.neighbors());
+                        said = true;
+                    }
+                };
+                group_gen = tgen;
+                match serde_json::from_str::<rpc::Template>(&json) {
+                    Ok(t) => (t, json),
+                    Err(e) => {
+                        println!("group: the leader's template does not parse: {e}");
+                        std::thread::sleep(Duration::from_secs(5));
+                        continue;
+                    }
+                }
             }
+            _ => match daemon.template_json(&a.address) {
+                Ok((t, json)) => {
+                    if let Some(g) = &group {
+                        let _ = g.publish_template(&json);
+                        group_gen = g.template_gen();
+                    }
+                    (t, json)
+                }
+                Err(e) => {
+                    println!("daemon: {e}; retrying in 5 s");
+                    std::thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            },
         };
         let params = sm64pow::params(t.sm64_retarget_difficulty.max(1));
         let seed = sm64pow::Seed::from_hex(&t.sm64_seed_hash)?;
@@ -371,6 +437,8 @@ fn main() -> Result<()> {
             }
             parent_state = parent_cache.as_ref().map(|c| c.state.clone());
         }
+        // The group's received runs are replayed against this template before they are held.
+        groupmine::set_ctx(&gctx, &t_json, parent_cache.as_ref().filter(|c| c.tip == t.prev_hash).map(|c| c.state.clone()), seed, params);
 
         if a.anytime_bench > 0 {
             return anytime_bench(&a, start, parent_state.as_ref(), &seed, &params, attempt);
@@ -387,10 +455,26 @@ fn main() -> Result<()> {
             let power_on_at = reset::restart_at_power_on_time(reset_mode, &t.sm64_start, t.sm64_power_on_at).unwrap_or(0);
             let deadline = if reset_mode == reset::ResetMode::WhenStuck && t.sm64_start == "either" && start == Start::Parent && a.reset_after > 0 { now() + a.reset_after } else { 0 };
             let pstop = pstop.clone();
+            let skip = (last_try.0 == sm64coin_group::template_id(&t_json)).then_some(last_try.1);
+            let grp = group.clone().map(|g| (g, group_gen, if start == Start::Parent { "parent" } else { "power-on" }));
             std::thread::spawn(move || {
                 let d = rpc::Daemon::new(&url);
                 while !done.load(Ordering::Relaxed) {
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(Duration::from_secs(if grp.is_some() { 1 } else { 2 }));
+                    if let Some((g, tgen, kind)) = &grp {
+                        if g.template_gen() != *tgen {
+                            println!("  group: the leader announced a new template: restarting");
+                            stop.store(true, Ordering::Relaxed);
+                            pstop.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                        if g.best_run(kind).is_some_and(|r| Some(r.frames) != skip) {
+                            println!("  group: a member found a run: taking it");
+                            stop.store(true, Ordering::Relaxed);
+                            pstop.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                    }
                     if power_on_at != 0 && now() >= power_on_at {
                         println!("  the stall time has passed: restarting to allow the power-on start");
                         stop.store(true, Ordering::Relaxed);
@@ -414,9 +498,10 @@ fn main() -> Result<()> {
 
         let mut result = None;
         let mut no_route = None;
+        let mut adopted = false;
         if a.controller == "rrt" || a.controller == "rh" {
             let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt + a.salt, frame_cap: a.rh_frames, max_retries: if t.sm64_start == "either" { 3 } else { 40 }, ..Default::default() };
-            let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
+            let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), exchange: group.as_ref().map(groupmine::exchange), ..Default::default() };
             let use_rrt = a.controller == "rrt";
             let first_stop = if start == Start::Parent { pstop.clone() } else { stop.clone() };
             let mut r = if use_rrt { rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &first_stop, |m| println!("  {m}"))? } else { rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &first_stop, |m| println!("  {m}"))? };
@@ -440,6 +525,13 @@ fn main() -> Result<()> {
                 rh::Attempt::Found(m) => result = Some(m),
                 rh::Attempt::Gave(why) => println!("  no progress: {why}"),
                 rh::Attempt::NoRoute(why) => no_route = Some(why),
+            }
+            if result.is_none() && no_route.is_none() {
+                if let Some(m) = group.as_ref().and_then(|g| groupmine::adopt(g, start, parent_state.as_ref(), &seed, &params)).filter(|m| (sm64coin_group::template_id(&t_json), m.pads.len() as u32) != last_try) {
+                    println!("  group: continuing with the run a member found ({} frames)", m.pads.len());
+                    result = Some(m);
+                    adopted = true;
+                }
             }
         } else if start == Start::PowerOn || t.sm64_parent_stars + t.sm64_parent_keys == 0 || reset::after_failure(reset_mode, &t.sm64_start) {
             if start == Start::Parent && t.sm64_parent_stars + t.sm64_parent_keys > 0 {
@@ -514,6 +606,9 @@ fn main() -> Result<()> {
                 continue;
             }
         }
+        if let (Some(g), false) = (&group, adopted) {
+            groupmine::share(g, start, &m, &proof);
+        }
         if let Some(dir) = &a.save_dir {
             std::fs::create_dir_all(dir)?;
             let mut m64 = vec![0u8; 0x400];
@@ -535,7 +630,7 @@ fn main() -> Result<()> {
         // Anytime mining: over the limit now, so search again (fresh trees, the guide from the
         // best run) until shortly before the best run is valid; keep the shortest.
         let (m, proof, frames) = if a.controller == "rrt" && a.anytime_ahead > 0 && a.stamp_ahead == 0 {
-            match improve(&a, &daemon, &t, start, parent_state.as_ref(), &seed, &params, attempt, m, proof)? {
+            match improve(&a, &daemon, &t, start, parent_state.as_ref(), &seed, &params, attempt, m, proof, group.as_ref())? {
                 Some(x) => x,
                 None => continue, // a new block landed: the run is void
             }
@@ -551,7 +646,7 @@ fn main() -> Result<()> {
         let delay = if restart { t.sm64_restart_delay } else { 0 };
         let mut ts = valid_from(retarget, t.sm64_parent_timestamp + delay, frames, now());
         if ts > now() {
-            let asked = daemon.template_valid_at(&a.address, frames).map(|x| x.sm64_valid_at).unwrap_or(0);
+            let asked = daemon.template_valid_at(if a.address.is_empty() { &t.group_address } else { &a.address }, frames).map(|x| x.sm64_valid_at).unwrap_or(0);
             let asked = if asked == 0 { 0 } else { asked + delay };
             ts = ts.max(asked);
             println!("  {frames} frames is over the current limit ({}); valid at {ts} (in {} s, daemon says {asked})", sm64pow::rules().max_frames(retarget, now().saturating_sub(t.sm64_parent_timestamp)), ts.saturating_sub(now()));
@@ -576,6 +671,24 @@ fn main() -> Result<()> {
             }
         } else {
             ts = now();
+        }
+        last_try = (sm64coin_group::template_id(&t_json), frames);
+        if a.no_submit {
+            println!("  dry run (--no-submit): {frames} frames, valid at {ts}; not submitted; waiting for the next block");
+            let gen0 = group.as_ref().map(|g| g.template_gen());
+            while daemon.top_hash().map(|h| h == t.prev_hash).unwrap_or(true) && group.as_ref().map(|g| g.template_gen()) == gen0 {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            continue;
+        }
+        if let Some(g) = &group {
+            // Everyone holds the same best run: the others give the first a head start (the node ignores a repeat).
+            let rank = g.members().iter().position(|x| x.me).unwrap_or(0) as u64;
+            std::thread::sleep(Duration::from_secs(rank.min(5)));
+            if daemon.top_hash().map(|h| h != t.prev_hash).unwrap_or(false) {
+                println!("  group: the block was found meanwhile");
+                continue;
+            }
         }
         match daemon.submit(&rpc::seal(&t.blocktemplate_blob, &proof, Some(ts))?) {
             Ok(()) => {
@@ -660,7 +773,7 @@ fn guide_from(a: &Args, start: Start, parent: Option<&SaveState>, seed: &sm64pow
 /// run replaces the best (it is valid sooner); one valid now ends the search. Returns the best
 /// (run, proof, frames), or None if a new block landed (the run is void).
 #[allow(clippy::too_many_arguments)]
-fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, parent: Option<&SaveState>, seed: &sm64pow::Seed, params: &sm64pow::Params, attempt: u64, m: rh::Mined, proof: Vec<u8>) -> Result<Option<(rh::Mined, Vec<u8>, u32)>> {
+fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, parent: Option<&SaveState>, seed: &sm64pow::Seed, params: &sm64pow::Params, attempt: u64, m: rh::Mined, proof: Vec<u8>, group: Option<&sm64coin_group::Group>) -> Result<Option<(rh::Mined, Vec<u8>, u32)>> {
     let retarget = t.sm64_retarget_difficulty.max(1);
     let restart = start == Start::PowerOn && t.sm64_start == "either";
     let delay = if restart { t.sm64_restart_delay } else { 0 };
@@ -669,7 +782,16 @@ fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, par
     let mut best_frames = best.0.pads.len() as u32;
     let mut k = 1u64;
     let ahead = a.anytime_ahead.min(110);
+    let kind = if start == Start::Parent { "parent" } else { "power-on" };
     while valid(best_frames) > now() + ahead {
+        // A member's shorter run replaces ours (it was replayed before it was held).
+        if let Some(m2) = group.and_then(|g| groupmine::adopt(g, start, parent, seed, params)).filter(|m2| (m2.pads.len() as u32) < best_frames) {
+            let p2 = sm64pow::seal_proof_at(start, parent, seed, params, &m2.pads)?;
+            println!("  anytime: a member's run of {} frames replaces ours ({best_frames})", m2.pads.len());
+            best_frames = m2.pads.len() as u32;
+            best = (m2, p2);
+            continue;
+        }
         let deadline = valid(best_frames) - ahead;
         println!("  anytime: best {best_frames} frames, valid in {} s; search {k} for a shorter run until then", valid(best_frames).saturating_sub(now()));
         let guide = guide_from(a, start, parent, seed, params, &best.0);
@@ -680,10 +802,22 @@ fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, par
         let watcher = {
             let (stop, done, new_tip) = (stop.clone(), done.clone(), new_tip.clone());
             let (url, prev) = (a.daemon.clone(), t.prev_hash.clone());
+            let grp = group.cloned().map(|g| { let tg = g.template_gen(); (g, best_frames, tg) });
             std::thread::spawn(move || {
                 let d = rpc::Daemon::new(&url);
                 while !done.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_secs(1));
+                    if let Some((g, frames, tgen)) = &grp {
+                        if g.best_run(kind).is_some_and(|r| r.frames < *frames) {
+                            stop.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                        if g.template_gen() != *tgen {
+                            new_tip.store(true, Ordering::Relaxed);
+                            stop.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                    }
                     if now() >= deadline {
                         stop.store(true, Ordering::Relaxed);
                         return;
@@ -708,13 +842,16 @@ fn improve(a: &Args, _daemon: &rpc::Daemon, t: &rpc::Template, start: Start, par
                 let f2 = m2.pads.len() as u32;
                 let p2 = sm64pow::seal_proof_at(start, parent, seed, params, &m2.pads)?;
                 println!("  anytime: search {k} found {f2} frames (was {best_frames}): valid {} s sooner", valid(best_frames).saturating_sub(valid(f2)));
+                if let Some(g) = group {
+                    groupmine::share(g, start, &m2, &p2);
+                }
                 best = (m2, p2);
                 best_frames = f2;
             }
             rh::Attempt::Found(m2) => println!("  anytime: search {k} found {} frames, not shorter", m2.pads.len()),
             _ => {}
         }
-        if stop.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) && !group.is_some_and(|g| g.best_run(kind).is_some_and(|r| r.frames < best_frames)) {
             break; // the deadline
         }
         k += 1;

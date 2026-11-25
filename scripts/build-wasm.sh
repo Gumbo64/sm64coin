@@ -20,4 +20,11 @@ if [ -z "${NO_WEBMINER:-}" ]; then
     build webminer webminer sm64coin_webminer || echo "build-wasm.sh: web miner not built (the site works without it)" >&2
   fi
 fi
+# Group mining in the browser (pow/groupweb: iroh-gossip over n0's public relays; the site works without it).
+# It needs clang for wasm32 too (ring); NO_GROUPWEB=1 skips it.
+if [ -z "${NO_GROUPWEB:-}" ]; then
+  export CC_wasm32_unknown_unknown="${CC_wasm32_unknown_unknown:-$(command -v clang || echo /usr/lib/llvm-18/bin/clang)}"
+  export AR_wasm32_unknown_unknown="${AR_wasm32_unknown_unknown:-$(command -v llvm-ar || echo /usr/lib/llvm-18/bin/llvm-ar)}"
+  build groupweb groupweb sm64coin_groupweb || echo "build-wasm.sh: group mining module not built (the site works without it)" >&2
+fi
 exit 0

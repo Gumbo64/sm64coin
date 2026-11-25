@@ -1,0 +1,26 @@
+[package]
+name = "sm64coin-groupweb"
+version = "0.1.0"
+edition = "2024"
+description = "SM64Coin group mining (iroh-gossip) in the browser: the wasm-bindgen face of sm64coin-group"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sm64coin-group = { path = "../group" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+iroh = { version = "1.5.0", default-features = false, features = ["tls-ring"] }
+
+# Its own workspace (a browser-only build, like pow/webminer).
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
