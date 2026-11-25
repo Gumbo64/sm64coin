@@ -30,10 +30,10 @@ the Monero fork beyond `SM64COIN`-marked one-line hooks, and the wallet's key de
 2. **Per-IP budget refinements.** Peers behind one NAT share a budget, IPv6 addresses are cheap, and
    RPC behind a proxy sees one address. Group IPv6 by /64, trust a configured proxy's
    `X-Forwarded-For`, and test with the attack tool (`pow/tools/dos/attack.py`).
-3. **Leaderboard scaling.** The leaderboard rescans the whole chain per entry; fine now, slow at
-   ~10^5 blocks. Make it incremental (index by height), with a test that a rescan and the incremental
-   result agree.
-4. **`submit_block` honesty.** When the node's budget refuses a submission it can still answer OK.
+3. **Leaderboard tests.** v0.3 replaced chain scans with claimed heights and live updates. Port the
+   functional checks and benches (scratch scripts `func.py`, `bench.py`) into the repo, add a real P2P
+   flood test (a Levin client), and per-peer limits that survive reconnects.
+4. **`submit_block` honesty** (done in v0.3: refusals are errors). Check every miner shows them.
    Return a distinct status the miners understand (and update the miners to show it).
 5. **Pi performance.** Replays on a Raspberry Pi–class aarch64 board are ~15× slower than x86.
    Profile the emulator on aarch64 (perf), and try build flags / LTO / PGO. *Done when:* measured
