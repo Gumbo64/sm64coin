@@ -181,6 +181,44 @@ int32_t sm64pow_codecs_need(const uint8_t *proof, size_t len, const uint8_t *mas
 size_t sm64pow_transcode(const uint8_t *proof, size_t len, const uint8_t *inputs, size_t inputs_len, const uint8_t *mask32, uint8_t *out, size_t cap);
 int32_t sm64pow_proof_codec(const uint8_t *proof, size_t len);
 
+/* v0.4 stage B, included proofs (included.rs, pool.rs; docs/V0.4-DESIGN.md sections 2 and 6).
+ * Verify a block's sm64_proofs field (varint(n) || records; len 0 = none) against the including block's
+ * extra nonce (root TLV 0x02) and its parent block h (height, its parent B_{h-1}, its key nonce and
+ * committed proof, its retarget difficulty). 1 valid, 0 invalid, -3 bad witness (never invalid: drop the
+ * sender), -2 B_{h-1}'s end state isn't cached (rebuild, retry), -1 internal error. *counted: records
+ * counted for weight (0 while proof_weight is off). normalized (may be NULL): the field with each
+ * stateless proof in its smallest encoding (state-coded ones kept); *normalized_len always set. Empty
+ * field with no root: 1 at once, no state needed. With included_proofs off any record or root is invalid. */
+int32_t sm64pow_verify_records(const uint8_t *field, size_t field_len, const uint8_t *nonce, size_t nonce_len,
+                               uint64_t h_height, const uint8_t *h_prev32, int32_t h_prev_is_genesis,
+                               const uint8_t *h_nonce, size_t h_nonce_len, const uint8_t *h_proof, size_t h_proof_len,
+                               uint64_t h_difficulty, uint32_t threads, uint32_t *counted,
+                               uint8_t *normalized, size_t cap, size_t *normalized_len);
+/* The proof pool (node policy). Our new tip is block h: the pool collects proofs for height h. */
+void sm64pow_pool_tip(const uint8_t *h_id32, uint64_t h_height, const uint8_t *h_prev32, int32_t h_prev_is_genesis,
+                      const uint8_t *h_nonce, size_t h_nonce_len, const uint8_t *h_proof, size_t h_proof_len, uint64_t h_difficulty);
+/* One record (wire format, no count prefix) for our current tip: 1 new and valid (queued for relay), 0 known /
+ * not for our tip / outside the window / over budget / included_proofs off (ignore), -1 invalid and -3 bad
+ * witness (drop the sender), -2 the parent's state isn't cached. Replays on this thread. */
+int32_t sm64pow_pool_offer(const uint8_t *record, size_t len);
+/* The next new record to gossip (NOTIFY_SM64_PROOF), smallest stateless encoding. Size-then-fill: consumed only
+ * when cap was enough (out NULL: size only); 0: none. */
+size_t sm64pow_pool_take_relay(uint8_t *out, size_t cap);
+/* The sm64_proofs field for a template on top of tip: best 64 records by (frames, seed hash), canonical order,
+ * proofs stateless; its root into root_out32 (zero when none); returns the length (0: none or switch off).
+ * Remembered by root (the last 32). */
+size_t sm64pow_pool_select(const uint8_t *tip_id32, uint8_t *out, size_t cap, uint8_t *root_out32);
+/* The field a selection with this root had (reattach at submit_block); 0: unknown. */
+size_t sm64pow_pool_field_for_root(const uint8_t *root32, uint8_t *out, size_t cap);
+/* A sealed block blob (an optional trailing sm64_proofs string after the signature is read) as a proof record;
+ * SIZE_MAX if it doesn't parse. */
+size_t sm64pow_record_from_block(const uint8_t *block_blob, size_t len, uint8_t *out, size_t cap);
+/* The v0.4 extra nonce: the miner's 0x64||key nonce (the rest replaced) + payout TLV (spend/view NULL: none) +
+ * root TLV (root32 NULL or zero: none). Size-then-fill; SIZE_MAX if invalid. */
+size_t sm64pow_template_nonce(const uint8_t *miner_nonce, size_t miner_nonce_len, int32_t subaddress,
+                              const uint8_t *spend32, const uint8_t *view32, const uint8_t *root32,
+                              uint8_t *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

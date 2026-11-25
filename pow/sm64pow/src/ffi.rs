@@ -1240,3 +1240,196 @@ pub extern "C" fn sm64pow_rules_info(name: *mut c_char, name_cap: usize, goal: *
     put(rules().name(), name, name_cap);
     put(rules().goal(), goal, goal_cap);
 }
+
+// ---- Included proofs (v0.4 stage B: included.rs, pool.rs) ----
+
+/// Judges a block's `sm64_proofs` field against its parent block h (docs/V0.4-DESIGN.md section
+/// 2.4). 1 valid, 0 invalid (reason in sm64pow_last_error), -3 bad witness (never an invalid
+/// block), -2 B_{h-1}'s end state isn't cached, -1 internal error. `counted`: records that count
+/// for weight (0 while proof_weight is off). `normalized` (may be NULL): the field with every
+/// stateless proof in its smallest encoding (the length is always written; the bytes only when
+/// `cap` is enough).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_verify_records(
+    field: *const u8, field_len: usize, nonce: *const u8, nonce_len: usize, h_height: u64, h_prev32: *const u8, h_prev_is_genesis: i32, h_nonce: *const u8, h_nonce_len: usize,
+    h_proof: *const u8, h_proof_len: usize, h_difficulty: u64, threads: u32, counted: *mut u32, normalized: *mut u8, cap: usize, normalized_len: *mut usize,
+) -> i32 {
+    use crate::included::{BlockRecords, Parent1, Real, verify_block_records};
+    let Some(prev_id) = (unsafe { id_arg(h_prev32) }) else {
+        set_error("null parent id".into());
+        return -1;
+    };
+    let h = Parent1 { height: h_height, prev_id, prev_is_genesis: h_prev_is_genesis != 0, nonce: blob_arg(h_nonce, h_nonce_len), proof: blob_arg(h_proof, h_proof_len), difficulty: h_difficulty };
+    let (field, nonce) = (blob_arg(field, field_len), blob_arg(nonce, nonce_len));
+    match std::panic::catch_unwind(|| verify_block_records(field, nonce, &h, threads as usize, &Real)) {
+        Ok(Ok(BlockRecords::Valid { counted: c, normalized: n })) => {
+            if !counted.is_null() {
+                unsafe { *counted = c };
+            }
+            if !normalized_len.is_null() {
+                unsafe { *normalized_len = n.len() };
+            }
+            if !normalized.is_null() {
+                copy_out(&n, normalized, cap);
+            }
+            1
+        }
+        Ok(Ok(BlockRecords::Invalid(why))) => {
+            set_error(why);
+            0
+        }
+        Ok(Ok(BlockRecords::BadWitness(why))) => {
+            set_error(format!("bad witness: {why}"));
+            -3
+        }
+        Ok(Ok(BlockRecords::NeedParent)) => {
+            set_error("the parent's end state isn't cached".into());
+            -2
+        }
+        Ok(Err(e)) => {
+            set_error(format!("{e:#}"));
+            -1
+        }
+        Err(_) => {
+            set_error("panic while verifying proof records".into());
+            -1
+        }
+    }
+}
+
+/// Our new tip is block h (id, height, its parent B_{h-1}, its key nonce and committed proof, its
+/// retarget difficulty): the pool collects proofs for height h. The last few tips' pools are kept.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_pool_tip(h_id32: *const u8, h_height: u64, h_prev32: *const u8, h_prev_is_genesis: i32, h_nonce: *const u8, h_nonce_len: usize, h_proof: *const u8, h_proof_len: usize, h_difficulty: u64) {
+    let (Some(id), Some(prev_id)) = (unsafe { id_arg(h_id32) }, unsafe { id_arg(h_prev32) }) else {
+        set_error("null block id".into());
+        return;
+    };
+    let h = crate::included::Parent1 { height: h_height, prev_id, prev_is_genesis: h_prev_is_genesis != 0, nonce: blob_arg(h_nonce, h_nonce_len), proof: blob_arg(h_proof, h_proof_len), difficulty: h_difficulty };
+    match std::panic::catch_unwind(|| crate::pool::global().lock().unwrap_or_else(|e| e.into_inner()).tip(id, &h)) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => set_error(e),
+        Err(_) => set_error("panic in sm64pow_pool_tip".into()),
+    }
+}
+
+/// Offers one record (records.rs wire format, no count prefix) for our current tip: 1 new and valid
+/// (queued for relay), 0 known / not for our tip / outside the window / over budget (ignore), -1
+/// invalid (drop the sender), -3 bad witness (drop the sender), -2 the parent's state isn't cached.
+/// Replays on this thread. Always 0 with included_proofs off.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_pool_offer(record: *const u8, len: usize) -> i32 {
+    use crate::pool::Offer;
+    let b = blob_arg(record, len);
+    match std::panic::catch_unwind(|| crate::pool::offer(b)) {
+        Ok(Ok(Offer::New)) => 1,
+        Ok(Ok(Offer::Ignored)) => 0,
+        Ok(Ok(Offer::Invalid(why))) => {
+            set_error(why);
+            -1
+        }
+        Ok(Ok(Offer::BadWitness(why))) => {
+            set_error(format!("bad witness: {why}"));
+            -3
+        }
+        Ok(Ok(Offer::NeedParent)) => {
+            set_error("the parent's end state isn't cached".into());
+            -2
+        }
+        Ok(Err(e)) => {
+            set_error(format!("{e:#}"));
+            -1
+        }
+        Err(_) => {
+            set_error("panic in sm64pow_pool_offer".into());
+            -1
+        }
+    }
+}
+
+/// The next new record to gossip (NOTIFY_SM64_PROOF), its proof in the smallest stateless encoding.
+/// Size-then-fill: returns its length and consumes it only when `cap` was enough (call with
+/// `out` NULL to size); 0: none.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_pool_take_relay(out: *mut u8, cap: usize) -> usize {
+    std::panic::catch_unwind(|| {
+        let mut p = crate::pool::global().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(b) = p.peek_relay() else { return 0 };
+        let n = b.len();
+        if !out.is_null() && cap >= n {
+            unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), out, n) };
+            p.pop_relay();
+        }
+        n
+    })
+    .unwrap_or(0)
+}
+
+/// The `sm64_proofs` field for a template on top of `tip_id32`: the best records for the tip's
+/// height in canonical order, proofs stateless. Its root goes to `root_out32` (zero when none).
+/// Returns the field's length (size-then-fill; 0: no records, or included_proofs off). The selection
+/// is remembered by root.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_pool_select(tip_id32: *const u8, out: *mut u8, cap: usize, root_out32: *mut u8) -> usize {
+    let Some(id) = (unsafe { id_arg(tip_id32) }) else { return 0 };
+    let sel = std::panic::catch_unwind(|| crate::pool::global().lock().unwrap_or_else(|e| e.into_inner()).select(&id)).unwrap_or(None);
+    let (field, root) = sel.unwrap_or((vec![], [0; 32]));
+    if !root_out32.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), root_out32, 32) };
+    }
+    copy_out(&field, out, cap)
+}
+
+/// The field a selection with this root had (the daemon reattaches it at submit_block); 0: unknown.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_pool_field_for_root(root32: *const u8, out: *mut u8, cap: usize) -> usize {
+    let Some(root) = (unsafe { id_arg(root32) }) else { return 0 };
+    let f = std::panic::catch_unwind(|| crate::pool::global().lock().unwrap_or_else(|e| e.into_inner()).field_for_root(&root).map(|f| f.to_vec())).unwrap_or(None);
+    copy_out(&f.unwrap_or_default(), out, cap)
+}
+
+/// A sealed block (template, committed proof, signature, and an optional trailing `sm64_proofs`
+/// string) as a proof record (records.rs wire format, no count prefix). SIZE_MAX if it doesn't parse.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_record_from_block(block_blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
+    match std::panic::catch_unwind(|| crate::pool::record_from_block(blob_arg(block_blob, len))) {
+        Ok(Ok(r)) => {
+            let mut b = Vec::new();
+            r.encode_into(&mut b);
+            copy_out(&b, out, cap)
+        }
+        Ok(Err(e)) => {
+            set_error(e.to_string());
+            usize::MAX
+        }
+        Err(_) => {
+            set_error("panic in sm64pow_record_from_block".into());
+            usize::MAX
+        }
+    }
+}
+
+/// The v0.4 extra nonce: the miner's `0x64 || key` nonce (anything after the key is replaced), the
+/// payout TLV (`spend32`/`view32` NULL: none; `subaddress` 0/1) and the root TLV (`root32` NULL or
+/// all zero: none). Size-then-fill; SIZE_MAX if the miner's nonce has no key, a payout key is not a
+/// valid point, or the result is over Monero's 255 bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_template_nonce(miner_nonce: *const u8, miner_nonce_len: usize, subaddress: i32, spend32: *const u8, view32: *const u8, root32: *const u8, out: *mut u8, cap: usize) -> usize {
+    let n = blob_arg(miner_nonce, miner_nonce_len);
+    if n.len() < crate::sign::KEY_NONCE_LEN || n[0] != crate::sign::KEY_TAG {
+        set_error("the miner's nonce has no key".into());
+        return usize::MAX;
+    }
+    let key: [u8; 32] = n[1..crate::sign::KEY_NONCE_LEN].try_into().unwrap();
+    let payout = match (unsafe { id_arg(spend32) }, unsafe { id_arg(view32) }) {
+        (Some(spend), Some(view)) => Some(crate::records::Payout { subaddress: subaddress != 0, spend, view }),
+        _ => None,
+    };
+    let root = unsafe { id_arg(root32) }.filter(|r| *r != [0; 32]);
+    let nonce = crate::records::template_nonce(&key, payout.as_ref(), root.as_ref());
+    if nonce.len() > 255 || crate::records::nonce_fields(&nonce).is_none() {
+        set_error("the v0.4 extra nonce is invalid (a payout key that is not a point, or over 255 bytes)".into());
+        return usize::MAX;
+    }
+    copy_out(&nonce, out, cap)
+}

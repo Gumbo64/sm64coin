@@ -62,6 +62,8 @@ pub mod admit;
 pub mod cache;
 pub mod chain;
 pub mod equivocation;
+pub mod included;
+pub mod pool;
 pub mod pof;
 pub mod preverify;
 pub mod queue;

@@ -126,8 +126,25 @@ fn parse_miner_tx(t: &[u8]) -> Result<(usize, usize, u64, &[u8]), &'static str> 
     Ok((r.p, prefix, height, extra))
 }
 
-/// Splits a full SM64Coin block blob into its parts (and ignores the trailing sm64 proof and signature).
+/// A sealed block blob taken apart (template, committed proof, signature, and v0.4's optional
+/// trailing `sm64_proofs` field).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealedParts {
+    pub parts: TemplateParts,
+    pub proof: Vec<u8>,
+    pub sig: [u8; 64],
+    /// The bytes of the optional trailing `sm64_proofs` string (empty: absent or empty).
+    pub field: Vec<u8>,
+}
+
+/// Splits a full SM64Coin block blob into its parts (and ignores the trailing sm64 proof, signature and proofs field).
 pub fn split_block(blob: &[u8]) -> Result<TemplateParts, &'static str> {
+    split_sealed(blob).map(|s| s.parts)
+}
+
+/// [`split_block`] keeping the proof, the signature and the optional `sm64_proofs` string
+/// (`varint(len) || bytes` after the 64-byte signature, v0.4 stage B).
+pub fn split_sealed(blob: &[u8]) -> Result<SealedParts, &'static str> {
     let mut r = Rd { b: blob, p: 0 };
     r.varint()?;
     r.varint()?;
@@ -144,12 +161,18 @@ pub fn split_block(blob: &[u8]) -> Result<TemplateParts, &'static str> {
     }
     let tx_hashes = (0..n).map(|_| r.h32()).collect::<Result<Vec<_>, _>>()?;
     let plen = r.varint()? as usize;
-    r.take(plen)?;
-    r.take(64)?;
+    let proof = r.take(plen)?.to_vec();
+    let sig: [u8; 64] = r.take(64)?.try_into().unwrap();
+    let field = if r.eof() {
+        vec![]
+    } else {
+        let n = r.varint()? as usize;
+        r.take(n)?.to_vec()
+    };
     if !r.eof() || header.len() > MAX_HEADER || miner_tx.len() > MAX_MINER_TX {
         return Err(E);
     }
-    Ok(TemplateParts { header, miner_tx, tx_hashes })
+    Ok(SealedParts { parts: TemplateParts { header, miner_tx, tx_hashes }, proof, sig, field })
 }
 
 /// Monero's `tree_hash` (src/crypto/tree-hash.c).

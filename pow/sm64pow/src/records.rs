@@ -414,6 +414,19 @@ impl Record {
     }
 }
 
+/// One record alone (no count prefix: `Record::encode_into`'s bytes), the whole slice.
+pub fn decode_one(b: &[u8]) -> Result<Record, &'static str> {
+    if b.len() > MAX_FIELD {
+        return Err(E);
+    }
+    let mut r = Rd { b, p: 0 };
+    let rec = Record::decode_from(&mut r)?;
+    if r.p != b.len() {
+        return Err(E);
+    }
+    Ok(rec)
+}
+
 /// `varint(n) || records`.
 pub fn encode(records: &[Record]) -> Vec<u8> {
     let mut o = Vec::new();
@@ -564,21 +577,21 @@ pub fn prefer_alt(main: Side, alt: Side, heal_depth: Option<u64>) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::proof::{Proof, RunLength};
     use crate::sign::Keypair;
     use sm64_binds::GamePad;
 
-    const PREV: [u8; 32] = [0xab; 32];
-    const D: u64 = 1 << 16; // about where the 20-minute retarget settles
+    pub(crate) const PREV: [u8; 32] = [0xab; 32];
+    pub(crate) const D: u64 = 1 << 16; // about where the 20-minute retarget settles
 
-    fn varint(o: &mut Vec<u8>, v: u64) {
+    pub(crate) fn varint(o: &mut Vec<u8>, v: u64) {
         put_varint(o, v)
     }
 
     /// A v2 coinbase (one tagged-key output) whose extra carries a tx pubkey and `nonce`.
-    fn coinbase(height: u64, nonce: &[u8]) -> Vec<u8> {
+    pub(crate) fn coinbase(height: u64, nonce: &[u8]) -> Vec<u8> {
         let mut t = vec![2];
         varint(&mut t, height + 72);
         t.extend_from_slice(&[1, 0xff]);
@@ -598,7 +611,7 @@ mod tests {
         t
     }
 
-    fn header(prev: &[u8; 32], ts: u64, nonce: u32) -> Vec<u8> {
+    pub(crate) fn header(prev: &[u8; 32], ts: u64, nonce: u32) -> Vec<u8> {
         let mut h = vec![16, 16];
         varint(&mut h, ts);
         h.extend_from_slice(prev);
@@ -606,7 +619,7 @@ mod tests {
         h
     }
 
-    fn payout(b: u8) -> Payout {
+    pub(crate) fn payout(b: u8) -> Payout {
         let k = |x: u8| {
             let mut e = [7u8; 32];
             e[0] = x;
@@ -615,12 +628,12 @@ mod tests {
         Payout { subaddress: b % 2 == 1, spend: k(b), view: k(b.wrapping_add(100)) }
     }
 
-    fn run(frames: u32, tag: u16) -> Proof {
+    pub(crate) fn run(frames: u32, tag: u16) -> Proof {
         Proof { frames, start: Start::Parent, inputs: vec![GamePad::new(tag, 0, 0); frames as usize - 10] }
     }
 
     /// A record for height `h` on `prev` by key `k`, with `others` extra transactions.
-    fn record(k: &Keypair, h: u64, prev: &[u8; 32], pr: &Proof, others: usize) -> (Record, Facts) {
+    pub(crate) fn record(k: &Keypair, h: u64, prev: &[u8; 32], pr: &Proof, others: usize) -> (Record, Facts) {
         let mtx = coinbase(h, &template_nonce(&k.public, Some(&payout(k.public[0])), None));
         let parts = template::TemplateParts { header: header(prev, 1_800_000_000, 7), miner_tx: mtx, tx_hashes: (0..others).map(|i| [i as u8 + 1; 32]).collect() };
         let seed = template::facts(&parts).unwrap().seed;
@@ -632,12 +645,12 @@ mod tests {
         (r, f)
     }
 
-    fn winner() -> (Keypair, Winner) {
+    pub(crate) fn winner() -> (Keypair, Winner) {
         let k = Keypair::from_entropy(&[200; 32]).unwrap();
         (k.clone(), Winner { height: 5, prev_id: PREV, key: k.public, frames: 2000, difficulty: D, input_hash: [0xcc; 32] })
     }
 
-    fn set(n: usize) -> (Vec<Record>, [u8; 32]) {
+    pub(crate) fn set(n: usize) -> (Vec<Record>, [u8; 32]) {
         let mut v: Vec<(Record, Facts)> = (0..n).map(|i| record(&Keypair::from_entropy(&[i as u8 + 1; 32]).unwrap(), 5, &PREV, &run(2000 + 37 * i as u32, i as u16), i % 4)).collect();
         v.sort_by_key(|(_, f)| (f.run.frames, cn_fast_hash(&f.seed)));
         let leaves: Vec<[u8; 32]> = v.iter().map(|(r, f)| f.leaf(&r.sig)).collect();
