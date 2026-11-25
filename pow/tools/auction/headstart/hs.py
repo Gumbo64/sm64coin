@@ -148,6 +148,17 @@ class Model:
     sigma: float = 0.8
     kappa: float = 0.0
     tau0: float = 300.0
+    emp: object = None  # array of measured single-search run lengths: bootstrap them instead of the lognormal
+
+    def draw(self, rng, n, u):
+        """n run lengths (frames) of searches finishing u seconds (array) into a miner's work on this tip."""
+        if self.emp is not None:
+            ex = rng.choice(self.emp, n) - self.fmin
+        else:
+            ex = np.exp(math.log(self.med) + self.sigma * rng.standard_normal(n))
+        if self.kappa:
+            ex = ex * (1.0 + u / self.tau0) ** (-self.kappa)
+        return self.fmin + ex
 
 
 def level_of_frames(F):
@@ -249,10 +260,7 @@ class Sim:
         chunk = 16
         while True:
             f = t + np.cumsum(rng.exponential(1.0 / lam, chunk))
-            ex = np.exp(math.log(md.med) + md.sigma * rng.standard_normal(chunk))
-            if md.kappa:
-                ex = ex * (1.0 + (f - st) / md.tau0) ** (-md.kappa)
-            F = md.fmin + ex
+            F = md.draw(rng, chunk, f - st)
             lev = level_of_frames(np.minimum(F, BASE_FRAMES))
             if self.valid == "flat":  # valid on find iff under the flat cap of the difficulty
                 tv = np.where(lev >= l8, 0.0, math.inf)
