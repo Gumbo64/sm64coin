@@ -18,6 +18,7 @@ import RomGate from '../lib/RomGate.jsx';
 import { miner, hybrid, isAddress } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
 import { encPads } from '../lib/webminer/hybrid.js';
+import { DEFAULT_LEAD } from '../lib/webminer/bestRun.js';
 import { setPlayFromStart } from '../lib/hybridSetting.js';
 import { useVisible } from './automine/useHub.js';
 import ControlCard from './automine/ControlCard.jsx';
@@ -147,10 +148,10 @@ function Miner() {
         say(`block rejected: ${e} (download the attempt below to debug)`);
       }
     };
-    // The pending run (over the limit when finished): sent once its valid time is within the
-    // nodes' future-timestamp window (CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT, 120 s); dropped if a
-    // new block lands first.
-    const SEND_AHEAD = 100;
+    // The pending run (over the limit when finished): sent DEFAULT_LEAD (5 s) before it is valid,
+    // like the auto-miner (v0.3 nodes refuse an RPC submission due more than 30 s ahead:
+    // rules.rs RPC_SUBMIT_AHEAD_SECONDS); dropped if a new block lands first.
+    const SEND_AHEAD = DEFAULT_LEAD;
     const pendingTimer = setInterval(async () => {
       const p = c.pending;
       if (!p) return;
