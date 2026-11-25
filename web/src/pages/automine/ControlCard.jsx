@@ -39,6 +39,9 @@ export default function ControlCard({ s }) {
           {vizOn && running && !isolated && <p className="muted small" style={{ gridColumn: '1 / -1', margin: 0 }}>Workers started before it was switched on keep sampling off until their next search (enable worker sync for an instant switch).</p>}
         </form>
       )}
+      {!open && !isolated && !running && 'serviceWorker' in navigator && (
+        <button type="button" style={{ width: '100%', marginBottom: 8 }} onClick={enableSync} title="Workers share their work, and clicking a node plays it instantly (reloads the page once)">Enable worker sync (faster; reloads once)</button>
+      )}
       {running ? <button className="ui-big" onClick={() => miner.stop()}>Stop</button>
         : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start mining</button>}
       <div className="ui-stat">
