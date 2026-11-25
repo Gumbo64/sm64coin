@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router';
 import { daemon } from '../lib/rpc.js';
 
 // The board every node keeps and shares with its peers over p2p (the node's
@@ -50,12 +51,12 @@ export default function Leaderboard() {
       <div className="card">
         <h2>Join the leaderboard</h2>
         <p>
-          Joining is opt-in and done from the <b>SM64Coin wallet</b> app, once your address has mined a block. The wallet
-          signs your name with its spend key and sends it, with the address and private view key, to your node, which
-          shares it with the network. Everyone can then see all of your incoming payments (a view key can't spend), so use
-          a dedicated mining address. An entry can be renamed but not removed.
+          Joining is opt-in, once your address has mined a block: open your wallet (the <Link to="/wallet">Wallet</Link> page
+          here, or the SM64Coin wallet app) and use its Leaderboard card. The wallet signs your name with its spend key and
+          sends it, with the address and private view key, to the node, which shares it with the network. Everyone can then
+          see all of your incoming payments (a view key can't spend), so use a dedicated mining address. An entry can be
+          renamed but not removed.
         </p>
-        <p className="muted">This website never asks for your keys.</p>
       </div>
     </div>
   );
