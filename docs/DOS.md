@@ -241,6 +241,42 @@ Reproduce: `net/scen.sh`-style: start the victim, `dos_claims RPC fake N FRAMES 
 `dos_claims RPC honest SAVED.json > honest.jsonl`, `attack.py fluffy P2P claims.jsonl --ips N --rpc
 URL --pid PID --honest honest.jsonl`.
 
+## The DoS audit of v0.3 (2026-11-25), fixed
+
+Measured on local nodes by the audit; each fix is in pow/sm64pow (decision) with a thin hook.
+
+- **N1** An unasked block on a parent deeper than the tip's parent made the daemon rebuild that
+  parent's state (a replay of its cycle, 24 blocks: 2.5 s CPU, `get_info` blocked 2.8 s; a Pi
+  about 40 s) under the blockchain lock, for one `submit_block`. Now such a block (relayed or
+  restricted RPC) is not replayed at all (`admit_alt`: a longer fork comes as a sync span), and
+  `chain::check` rejects a run over the limit or a known-invalid run *before* it needs the
+  parent's state. Not done: a rebuild triggered by a sync span still runs under the lock (a
+  sync span is asked for, and the peer is dropped on the first invalid block).
+- **N2** `get_sm64_state` (6.7 MB per request) and `get_sm64_cycle` on restricted RPC share
+  one byte budget (128 MB burst, 64 MB a minute: `admit::RPC_BULK_BYTES`); over it, "Busy".
+- **N4** Restricted `submit_block` no longer re-encodes the proof (xz -9e before any check
+  was 0.12 s of free CPU per 36,000-frame proof).
+- **N5** `get_sm64_cycle` with an unknown hash no longer logs a stack trace; the equivocated-tip
+  warning is logged at most once a minute.
+- **N6** The xz decoder has a 128 MiB memory limit (a crafted header asked for 4 GiB; honest
+  preset-9 streams need about 65 MiB).
+- **N7** `--sm64-replay-threads` defaults to every core but one (P2P and RPC keep a core).
+- **N9** The evidence file is written at most every 10 s.
+- **C4/C6** Miners cap the inflated parent state at 32 MiB; automine no longer panics on short
+  strings from the daemon.
+- **The shared gateway.** Every web miner reaches the public node through cloudflared on
+  127.0.0.1: a loopback restricted-RPC address gets no per-address penalty, budget or queue
+  share beyond half the queue; restricted RPC's global budgets bound it.
+- **Queue reservations.** A claim's frames are reserved from its source's budget on arrival and
+  refunded if it is never replayed (refused, evicted, purged, skipped), so a burst can't queue
+  more than the budget. When the queue is full, the worst-ranked claim (not due within 2 minutes
+  first, then claimed frames plus what its source was served) makes room for a better one, never
+  a claim several sources sent; a claim relayed first by a source that is then penalised stays,
+  attributed to another source that sent it.
+- **Unrestricted RPC** refuses requests with a foreign `Origin` (not in
+  `--rpc-access-control-origins`) or a `Host` that is a name other than `localhost` (DNS
+  rebinding: a web page must not reach `stop_daemon` or `submit_block`).
+
 ## What is left (not fixed here)
 
 1. **(Mostly done: see "The replay queue".) Invalid claims from many addresses (b).** Each IP gets one or two replays per day (Monero's ban: score 10 per `bad_pow`, ban above 10). Each costs up to the current limit. Replays run on the P2P threads under `m_blockchain_lock`, so they serialize: 20 IPs delayed the honest block 7 s here, which is about 100 s on a Pi. Nothing short of consensus makes an invalid claim cost the sender something. A non-consensus improvement, not done because it is a real change to Monero's block path:
