@@ -163,7 +163,7 @@ class MinerController {
   }
   /** "Play from the start": hybrid mining off, classic manual mining from the block's beginning (remembered). */
   setPlayFromStart(on) { setPlayFromStart(on); }
-  /** A position goal for the searches ({level, area, pos} from the visualiser's shift + right click) or null. */
+  /** A position goal for the searches ({level, area, pos} from the visualiser's shift + left click) or null. */
   setGoal(goal) {
     hybrid.setGoal(goal);
     this.hub.setGoal(goal);

@@ -21,15 +21,12 @@ The `sm64coin` launcher is no longer shipped.
 
 ### Changes
 
-- **Mine in your browser:** new Auto-mine page runs the miner in WebAssembly, one worker per thread; workers share the castle step and sync their search trees. It keeps mining across pages (status corner, top right).
-- **Auto-mine visualisations:** live game view, search point cloud, envelope graph and popups; switch them off for full speed. Frames/s shown on the site and in the wallet app.
-- **Lite web wallet:** create, restore (seed or keys), receive and send in the browser; keys never leave it. Backups, desktop `.keys` import, optional passkey wallet.
-- **Update notices** in the wallet app, website and `sm64coin-node`.
-- **Cycle reset:** all miners restart from power-on when the chain allows it and the parent is stuck.
-- **Faster mining starts:** miners load the tip's state from the node (`get_sm64_state`, nodes need 0.2.8).
-- **Wallet app serves the website and leaderboard locally**; GitHub Pages only as a fallback.
-- **Servers:** `sm64coin-node` (+ systemd unit) replaces the `sm64coin` launcher.
-- `sm64coin-automine` and `sm64coin-leaderboard` are in the bundles.
+- **One Mine page:** play, auto-mine, or both at once (hybrid mining): play from any node of the search, shift + left click sets a position goal for the workers, your played paths join the search. `/automine` opens it.
+- **Run sharing:** once a worker finds a run, every worker searches the same block for a shorter one; the shortest replaces the held run and the block is submitted once.
+- **Highlight reel:** new places and records play as they happen; any node of the cloud plays instantly.
+- **Places reached chart:** how many floors the workers have reached on their course, and whether they are exploring, refining or stuck.
+- **Phones:** touch controls, full-screen play and a layout that fits.
+- **Fixes** from a review of 0.2.8: one worker per slot, a held run gives up when a new block lands, the reel and game view on reloads, the wallet proof-id checks in CI, and more.
 
 Consensus is unchanged.
 
