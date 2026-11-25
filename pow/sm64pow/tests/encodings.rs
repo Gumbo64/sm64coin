@@ -38,8 +38,8 @@ fn a_bad_encoding_first_never_blocks_the_good_one() {
     let run = decode_proof(&xz, 36000).unwrap();
     let raw = encode_proof_with(&Raw, &run);
     let rle = encode_proof_with(&RunLength, &run);
-    let id = sm64pow::proof_id(&xz);
-    assert!(sm64pow::proof_id(&raw) == id && sm64pow::proof_id(&rle) == id, "one block id for every encoding of the run");
+    let id = sm64pow::proof_id::proof_id(&xz);
+    assert!(sm64pow::proof_id::proof_id(&raw) == id && sm64pow::proof_id::proof_id(&rle) == id, "one block id for every encoding of the run");
     // The largest valid run's raw encoding fits the daemon's blob cap (SM64COIN_MAX_PROOF_BYTES,
     // 256 KiB, checked when the block is parsed, before any id exists): an over-size blob is a
     // bloated encoding that is refused as unparseable, never recorded as an invalid block id.
@@ -66,7 +66,7 @@ fn a_bad_encoding_first_never_blocks_the_good_one() {
         }
     }
     for (what, bad) in [("corrupt xz", &corrupt), ("garbage body", &garbage), ("huge dictionary", &bigdict)] {
-        assert_ne!(sm64pow::proof_id(bad), id, "{what}: must not share the run's id");
+        assert_ne!(sm64pow::proof_id::proof_id(bad), id, "{what}: must not share the run's id");
     }
     // Even under the run's id (as if a peer lied about it), a bad encoding judged first doesn't
     // make the good encodings fail: the invalid-run cache is keyed by the blob, not the block id.
@@ -91,7 +91,7 @@ fn the_committed_proof_id_vectors_still_match() {
         let j: serde_json::Value = serde_json::from_str(l).unwrap();
         let unhex = |s: &str| -> Vec<u8> { (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect() };
         let blob = unhex(j["blob"].as_str().unwrap());
-        let id: String = sm64pow::proof_id(&blob).iter().map(|b| format!("{b:02x}")).collect();
+        let id: String = sm64pow::proof_id::proof_id(&blob).iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(id, j["id"].as_str().unwrap(), "{}", j["name"]);
         n += 1;
     }

@@ -120,6 +120,9 @@ pub enum Verdict {
     /// Not decided here (the parent's state is not cached, or an error): the
     /// daemon verifies it the old way, under its lock.
     Process,
+    /// The blob doesn't decode to its committed inputs (v0.4): drop it and refuse its source
+    /// like an invalid claim, but never record the block id as invalid.
+    BadEncoding(String),
 }
 
 /// Why [`submit`] did not queue a job.
@@ -514,8 +517,11 @@ impl Queue {
             st.maps().2.insert(src.clone(), (v, t));
         }
         let mut purged = false;
+        if matches!(verdict, Verdict::BadEncoding(_)) {
+            st.maps().1.remove(&job.id); // a bad encoding says nothing about the block: another peer may send a good one
+        }
         match &verdict {
-            Verdict::Invalid(_) if accountable(job) => {
+            Verdict::Invalid(_) | Verdict::BadEncoding(_) if accountable(job) => {
                 let times = st.maps().3.get(&src).map_or(0, |b| b.1);
                 let secs = (PENALTY_SECONDS * f64::powi(2.0, times.min(8) as i32)).min(86400.0);
                 st.maps().3.insert(src.clone(), (t + secs, times + 1));
@@ -611,7 +617,7 @@ impl Queue {
     }
 }
 
-/// The process's queue: replays with [`chain::verify_block`].
+/// The process's queue: replays with [`chain::verify_committed_block`].
 pub fn global() -> &'static Arc<Queue> {
     static Q: OnceLock<Arc<Queue>> = OnceLock::new();
     Q.get_or_init(|| {
@@ -625,10 +631,11 @@ pub fn global() -> &'static Arc<Queue> {
 fn replay_job(job: &Job) -> Verdict {
     // Replays inside the job's context: invalid verdicts are counted for its source (admit.rs).
     let _g = admit::enter(job.ctx.clone());
-    match chain::verify_block(&job.id, job.parent, &job.seed, job.difficulty, &job.blob) {
-        Ok(BlockVerdict::Valid { frames, .. }) => Verdict::Valid(frames),
-        Ok(BlockVerdict::Invalid(why)) => Verdict::Invalid(why),
-        Ok(BlockVerdict::NeedParent) | Err(_) => Verdict::Process,
+    match chain::verify_committed_block(&job.id, job.parent, &job.seed, job.difficulty, &job.blob) {
+        Ok(chain::CommittedVerdict::Run(BlockVerdict::Valid { frames, .. })) => Verdict::Valid(frames),
+        Ok(chain::CommittedVerdict::Run(BlockVerdict::Invalid(why))) => Verdict::Invalid(why),
+        Ok(chain::CommittedVerdict::BadEncoding(why)) => Verdict::BadEncoding(why),
+        Ok(chain::CommittedVerdict::Run(BlockVerdict::NeedParent)) | Err(_) => Verdict::Process,
     }
 }
 

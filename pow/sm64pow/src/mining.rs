@@ -96,38 +96,42 @@ pub fn played_from_proof(seed: &Seed, p: &Params, pr: &proof::Proof) -> Result<V
     played_from_proof_at(None, seed, p, pr)
 }
 
-/// The proof blob for a run given as the pads played on every frame.
+/// The proof blob for a run given as the pads played on every frame: committed (v0.4,
+/// commit.rs: the header commits the input hash) in the smallest encoding found.
 pub fn seal_proof_at(start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Vec<u8>> {
     let pr = proof_from_played_at(start, parent, seed, p, played)?;
-    let best = proof::encode_proof(&pr);
+    let mut best = proof::encode_proof(&pr);
     if statecodec::state_codec_enabled() {
-        // Hard fork switch: a state codec may win.
-        let mut best = best;
         for c in statecodec::SEAL_CODECS {
             let b = statecodec::encode_proof_state(*c, parent, seed, p, &pr)?;
             if b.len() < best.len() {
                 best = b;
             }
         }
-        return Ok(best);
     }
-    Ok(best)
+    crate::commit::commit_layout(&best, &crate::commit::proof_hash(&pr))
 }
 
-/// A proof blob in any codec to its codec-free [`proof::Proof`]; state-aware
+/// A committed proof blob in any codec to its codec-free [`proof::Proof`]; state-aware
 /// codecs are decoded by replaying the run from `parent` (see
-/// [`statecodec::decode_proof_state`]).
+/// [`statecodec::decode_proof_state`]). Checked against the committed input hash.
 pub fn decode_proof_any(blob: &[u8], parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params) -> Result<proof::Proof> {
-    if statecodec::state_codec_enabled() && proof::split_blob(blob).is_ok_and(|b| statecodec::state_codec(b.2).is_some()) {
-        return statecodec::decode_proof_state(blob, parent, seed, p);
-    }
-    proof::decode_proof(blob, proof::MAX_FRAMES)
+    let layout = crate::commit::layout(blob)?;
+    let hdr = crate::commit::header(blob)?;
+    let pr = if statecodec::state_codec_enabled() && proof::split_blob(&layout).is_ok_and(|b| statecodec::state_codec(b.2).is_some()) {
+        statecodec::decode_proof_state(&layout, parent, seed, p)?
+    } else {
+        proof::decode_proof(&layout, proof::MAX_FRAMES)?
+    };
+    anyhow::ensure!(crate::commit::proof_hash(&pr) == hdr.input_hash, "the encoding does not decode to the committed inputs");
+    Ok(pr)
 }
 
-/// The proof blob in a state-aware codec (see [`statecodec`]): the same run,
-/// coded given the game states it passes through.
+/// The committed proof blob in a state-aware codec (see [`statecodec`]): the same run, coded
+/// given the game states it passes through.
 pub fn seal_proof_state_at(c: &dyn statecodec::StateCodec, start: proof::Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Vec<u8>> {
-    statecodec::encode_proof_state(c, parent, seed, p, &proof_from_played_at(start, parent, seed, p, played)?)
+    let pr = proof_from_played_at(start, parent, seed, p, played)?;
+    crate::commit::commit_layout(&statecodec::encode_proof_state(c, parent, seed, p, &pr)?, &crate::commit::proof_hash(&pr))
 }
 
 /// [`seal_proof_at`] for a run from power-on.
@@ -158,7 +162,10 @@ impl From<chain::BlockVerdict> for Verdict {
 /// blocks in a chain (which start from their parent's end state) see
 /// [`chain::verify_block`].
 pub fn verify(seed: &Seed, difficulty: u64, blob: &[u8]) -> Result<Verdict> {
-    Ok(chain::verify_block(&[0xff; 32], chain::Parent::Genesis, seed, difficulty, blob)?.into())
+    Ok(match chain::verify_committed_block(&[0xff; 32], chain::Parent::Genesis, seed, difficulty, blob)? {
+        chain::CommittedVerdict::Run(v) => v.into(),
+        chain::CommittedVerdict::BadEncoding(w) => Verdict::Invalid(format!("bad encoding: {w}")),
+    })
 }
 
 /// [`verify`] for a decoded proof.
@@ -182,8 +189,8 @@ pub fn verify_pads(seed: &Seed, p: &Params, played: &[GamePad]) -> Result<Verdic
 /// template's `sm64_seed_hash`, whose coinbase extra nonce committed
 /// `key.extra_nonce()`): the block's `sm64_sig` (sign.rs; v0.3).
 pub fn sign_proof(key: &crate::sign::Keypair, seed: &[u8; 32], blob: &[u8]) -> Result<[u8; 64]> {
-    let frames = proof::split_blob(blob)?.0;
-    Ok(key.sign_run(seed, &crate::proof_id::proof_id(blob), frames))
+    let frames = crate::commit::header(blob)?.frames;
+    Ok(key.sign_run(seed, &crate::commit::proof_id(blob), frames))
 }
 
 /// The submit-ready block: the template blob (ending with the empty proof,

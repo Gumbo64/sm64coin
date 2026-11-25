@@ -2,7 +2,7 @@
 //! verify_block without another replay, with the same verdicts.
 
 use sm64pow::Seed;
-use sm64pow::chain::{BatchBlock, BlockVerdict, Parent, preverify, replays, verify_block};
+use sm64pow::chain::{BatchBlock, BlockVerdict, CommittedVerdict, Parent, preverify, replays, verify_committed_block as verify_block};
 
 fn init() -> bool {
     let rom = std::env::var("SM64COIN_ROM").unwrap_or_else(|_| "../../baserom.us.z64".into());
@@ -32,6 +32,8 @@ fn preverified_runs_are_not_replayed_again() {
         return;
     }
     let (seed, blob, frames) = fixture();
+    // (v0.4: committed blobs, commit.rs)
+    let blob = sm64pow::commit::commit_layout(&blob, &sm64pow::commit::proof_hash(&sm64pow::proof::decode_proof(&blob, 36_000).unwrap())).unwrap();
     // Two independent power-on runs (two "cycles"): both are chains of their own.
     let batch = vec![
         BatchBlock { id: [41; 32], parent: Parent::Genesis, seed, blob: blob.clone() },
@@ -42,10 +44,10 @@ fn preverified_runs_are_not_replayed_again() {
     assert!(n >= 1 && n <= 2, "{n}");
     let before = replays();
     let v = verify_block(&[41; 32], Parent::Genesis, &seed, 1, &blob).unwrap();
-    assert!(matches!(v, BlockVerdict::Valid { frames: f, .. } if f == frames), "{v:?}");
+    assert!(matches!(v, CommittedVerdict::Run(BlockVerdict::Valid { frames: f, .. }) if f == frames), "{v:?}");
     assert_eq!(replays(), before, "verify_block replayed a run the pre-pass had replayed");
     // The other copy is found too, without a replay.
-    assert!(matches!(verify_block(&[42; 32], Parent::Genesis, &seed, 1 << 20, &blob).unwrap(), BlockVerdict::Valid { .. }));
+    assert!(matches!(verify_block(&[42; 32], Parent::Genesis, &seed, 1 << 20, &blob).unwrap(), CommittedVerdict::Run(BlockVerdict::Valid { .. })));
     assert_eq!(replays(), before);
     // A block the pre-pass never saw (another seed) is replayed as before.
     let mut other = seed;

@@ -51,11 +51,11 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
 /// discards).
 #[allow(clippy::too_many_arguments)]
 fn check_with(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Played>, state_ok: bool, committed: Option<&crate::commit::Header>, bad: &mut Option<String>) -> Result<BlockVerdict> {
+    // A stateless layout here is the canonical run-length one (hash-checked by commit::open), so
+    // the key is the run's. A state-coded body is only checked by its replay: keyed by its bytes
+    // too, so a known run's hit never vouches for an encoding nobody has decoded (a node must
+    // store and relay only encodings it verified). Same key as `prepare`.
     let key_src: Vec<u8> = match committed {
-        // A stateless layout here is the canonical run-length one (hash-checked by commit::open), so
-        // the key is the run's. A state-coded body is only checked by its replay: keyed by its bytes
-        // too, so a known run's hit never vouches for an encoding nobody has decoded (a node must
-        // store and relay only encodings it verified).
         Some(h) => [b"sm64cmt1".as_slice(), &h.input_hash, blob].concat(),
         None => blob.to_vec(),
     };
@@ -296,20 +296,39 @@ pub fn played_committed_block(id: &[u8; 32], parent: Parent, seed: &Seed, blob: 
     }
 }
 
+/// A committed blob made ready for the v0.3-layout machinery: its header, the layout the replay
+/// reads (stateless: the canonical run-length layout of the hash-checked run; state codec: the
+/// blob without the hash) and the cache key source ([`check_with`]).
+pub(crate) struct Prepared {
+    pub hdr: crate::commit::Header,
+    pub layout: Vec<u8>,
+    pub key_src: Vec<u8>,
+}
+
+pub(crate) fn prepare(blob: &[u8], ceiling: u32, state_ok: bool) -> std::result::Result<Prepared, crate::commit::Fault> {
+    let (hdr, layout) = match crate::commit::open(blob, ceiling, state_ok)? {
+        crate::commit::Opened::Run(h, pr) => (h, proof::encode_proof_with(&proof::RunLength, &pr)),
+        crate::commit::Opened::State(h, ..) => (h, crate::commit::layout(blob).map_err(|e| crate::commit::Fault::BadEncoding(format!("{e:#}")))?),
+    };
+    let key_src = [b"sm64cmt1".as_slice(), &hdr.input_hash, &layout].concat();
+    Ok(Prepared { hdr, layout, key_src })
+}
+
 fn committed(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, blob: &[u8], played: Option<&mut Played>, state_ok: bool) -> Result<CommittedVerdict> {
     let ceiling = match difficulty {
         Some(_) => rules().max_frames_any(),
         None => proof::MAX_FRAMES as u32,
     };
-    let (hdr, layout) = match crate::commit::open(blob, ceiling, state_ok) {
+    let p = match prepare(blob, ceiling, state_ok) {
         Err(crate::commit::Fault::Invalid(why)) => return Ok(CommittedVerdict::Run(BlockVerdict::Invalid(why))),
         Err(crate::commit::Fault::BadEncoding(why)) => return Ok(CommittedVerdict::BadEncoding(why)),
-        // Stateless: hash-checked; replay a canonical run-length layout (one cache key per run).
-        Ok(crate::commit::Opened::Run(h, pr)) => (h, proof::encode_proof_with(&proof::RunLength, &pr)),
-        Ok(crate::commit::Opened::State(h, ..)) => (h, crate::commit::layout(blob).map_err(|e| anyhow::anyhow!(e))?),
+        Ok(p) => p,
     };
     let mut bad = None;
-    let v = check_with(id, parent, seed, difficulty, &layout, played, state_ok, Some(&hdr), &mut bad)?;
+    let v = check_with(id, parent, seed, difficulty, &p.layout, played, state_ok, Some(&p.hdr), &mut bad)?;
+    if let BlockVerdict::Valid { .. } = v {
+        crate::pof::note_size(&p.hdr, &p.layout);
+    }
     Ok(match bad {
         Some(why) => CommittedVerdict::BadEncoding(why),
         None => CommittedVerdict::Run(v),
@@ -377,8 +396,9 @@ pub fn verify_records(parent: Parent, facts: &[crate::records::Facts], proofs: &
 /// commits and what its signature signs. Err: the block is invalid (no key,
 /// a bad signature, a proof whose header doesn't parse). No replay.
 pub fn signed_run(seed: &Seed, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> std::result::Result<([u8; 32], crate::equivocation::SignedRun), String> {
-    let frames = proof::split_blob(blob).map_err(|e| format!("bad proof: {e}"))?.0;
-    let proof_id = crate::proof_id::proof_id(blob);
+    // v0.4: the signature signs the committed header (commit.rs): no decoding.
+    let frames = crate::commit::header(blob).map_err(|e| format!("bad proof: {e}"))?.frames;
+    let proof_id = crate::commit::proof_id(blob);
     let key = crate::sign::check(&seed.0, extra_nonce, &proof_id, frames, sig)?;
     crate::equivocation::policy().lock().unwrap().note_key(&seed.0, &key);
     Ok((key, crate::equivocation::SignedRun { proof_id, frames, sig: *sig }))
@@ -394,15 +414,15 @@ pub fn claim_signed_run(seed: &Seed, blob: &[u8], extra_nonce: &[u8], sig: &[u8;
     Ok(crate::equivocation::policy().lock().unwrap_or_else(|e| e.into_inner()).claim(&seed.0, &key, &run))
 }
 
-/// [`verify_block`] for a signed block (every block but the genesis block
-/// from v0.3): the signature is checked first (about 0.1 ms), so a block
-/// without a valid signature by its coinbase's miner key, a third party's
-/// variant of someone else's run included, never costs a replay. A block that
-/// passes also counts as its template's run for the one-run-per-key rule.
-pub fn verify_signed_block(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> Result<BlockVerdict> {
+/// [`verify_committed_block`] for a signed block (every block but the genesis block): the
+/// signature over the committed header is checked first (about 0.1 ms, no decoding), so a block
+/// without a valid signature by its coinbase's miner key never costs a replay (a third party
+/// can't change the committed inputs without a new signature; it can only re-encode, which is
+/// transport). A block that passes also counts as its template's run for the one-run-per-key rule.
+pub fn verify_signed_block(id: &[u8; 32], parent: Parent, seed: &Seed, difficulty: u64, blob: &[u8], extra_nonce: &[u8], sig: &[u8; 64]) -> Result<CommittedVerdict> {
     if let Err(why) = claim_signed_run(seed, blob, extra_nonce, sig) {
         crate::admit::note_invalid();
-        return Ok(BlockVerdict::Invalid(why));
+        return Ok(CommittedVerdict::Run(BlockVerdict::Invalid(why)));
     }
-    verify_block(id, parent, seed, difficulty, blob)
+    verify_committed_block(id, parent, seed, difficulty, blob)
 }

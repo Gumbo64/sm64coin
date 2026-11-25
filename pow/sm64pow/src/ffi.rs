@@ -6,7 +6,7 @@
 //! changing the header and the wrapper too.
 
 use crate::proof::Codec;
-use crate::proof_id::proof_id;
+use crate::commit::proof_id; // v0.4: the committed input hash (commit.rs)
 use crate::rules::{active as rules, params};
 use crate::seed::{Seed, seed_from_hash};
 use std::ffi::{CStr, c_char};
@@ -102,9 +102,10 @@ fn copy_out(bytes: &[u8], out: *mut u8, cap: usize) -> usize {
 /// `difficulty`; 0 difficulty replays an already-accepted block without the
 /// time limit (rebuilding its end state). `difficulty` is the retarget
 /// difficulty: the time limit grows with `gap_seconds`. Caches the end state when valid.
-/// Returns frames (>0) if valid, 0 invalid, -2 when the parent's end state
-/// isn't cached (replay the parent first), -1 internal error; reason in
-/// sm64pow_last_error.
+/// The proof is a committed blob (v0.4, commit.rs). Returns frames (>0) if valid, 0 invalid,
+/// -2 when the parent's end state isn't cached (replay the parent first), -3 a bad encoding (the
+/// blob doesn't decode to its committed inputs: drop the blob and its sender, never mark the
+/// block id invalid), -1 internal error; reason in sm64pow_last_error.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap_seconds: u64, hash32: *const u8, difficulty: u64, proof: *const u8, len: usize) -> i64 {
     let (Some(id), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(hash32) }) else {
@@ -116,19 +117,23 @@ pub extern "C" fn sm64pow_verify_block(id32: *const u8, parent32: *const u8, gap
     let seed = Seed(seed);
     let res = std::panic::catch_unwind(|| {
         if difficulty == 0 {
-            crate::chain::rebuild_block(&id, parent, &seed, bytes)
+            crate::chain::rebuild_committed_block(&id, parent, &seed, bytes)
         } else {
-            crate::chain::verify_block(&id, parent, &seed, difficulty, bytes)
+            crate::chain::verify_committed_block(&id, parent, &seed, difficulty, bytes)
         }
     });
-    use crate::chain::BlockVerdict;
+    use crate::chain::{BlockVerdict, CommittedVerdict};
     match res {
-        Ok(Ok(BlockVerdict::Valid { frames, .. })) => frames as i64,
-        Ok(Ok(BlockVerdict::Invalid(why))) => {
+        Ok(Ok(CommittedVerdict::Run(BlockVerdict::Valid { frames, .. }))) => frames as i64,
+        Ok(Ok(CommittedVerdict::Run(BlockVerdict::Invalid(why)))) => {
             set_error(why);
             0
         }
-        Ok(Ok(BlockVerdict::NeedParent)) => {
+        Ok(Ok(CommittedVerdict::BadEncoding(why))) => {
+            set_error(format!("bad encoding: {why}"));
+            -3
+        }
+        Ok(Ok(CommittedVerdict::Run(BlockVerdict::NeedParent))) => {
             set_error("the parent's end state isn't cached".into());
             -2
         }
@@ -238,7 +243,7 @@ pub extern "C" fn sm64pow_judge_sibling(hash32: *const u8, nonce: *const u8, non
         use crate::equivocation::{Sibling, judge_sibling};
         let seed = Seed(seed);
         let Ok((key, main)) = crate::chain::signed_run(&seed, mp, n, &ms) else { return (-1, None) };
-        let Ok(frames) = crate::proof::split_blob(ap).map(|x| x.0) else { return (3, None) };
+        let Ok(frames) = crate::commit::header(ap).map(|h| h.frames) else { return (3, None) };
         let alt = crate::equivocation::SignedRun { proof_id: proof_id(ap), frames, sig: asig };
         match judge_sibling(&seed.0, &key, &main, &alt) {
             Sibling::SameRun => (0, None),
@@ -660,6 +665,10 @@ fn verdict_code(v: &crate::queue::Verdict) -> i32 {
             2
         }
         Process => 3,
+        BadEncoding(why) => {
+            set_error(why.clone());
+            4
+        }
     }
 }
 
@@ -850,10 +859,10 @@ pub extern "C" fn sm64pow_played_block(id32: *const u8, parent32: *const u8, gap
     };
     let parent = unsafe { parent_arg(parent32, gap_seconds) };
     let bytes = blob_arg(proof, len);
-    let res = std::panic::catch_unwind(|| crate::chain::played_block(&id, parent, &Seed(seed), bytes));
+    let res = std::panic::catch_unwind(|| crate::chain::played_committed_block(&id, parent, &Seed(seed), bytes));
     match res {
-        Ok(Ok(Ok(pads))) => copy_out(&crate::proof::Raw.encode(&pads), out, cap),
-        Ok(Ok(Err(crate::chain::BlockVerdict::NeedParent))) => {
+        Ok(Ok(Ok(pl))) => copy_out(&crate::proof::Raw.encode(&pl.pads), out, cap),
+        Ok(Ok(Err(crate::chain::CommittedVerdict::Run(crate::chain::BlockVerdict::NeedParent)))) => {
             set_error("the parent's end state isn't cached".into());
             usize::MAX - 1
         }
@@ -884,10 +893,10 @@ pub extern "C" fn sm64pow_wanted_block(id32: *const u8, parent32: *const u8, gap
     };
     let parent = unsafe { parent_arg(parent32, gap_seconds) };
     let bytes = blob_arg(proof, len);
-    let res = std::panic::catch_unwind(|| crate::chain::played_wanted_block(&id, parent, &Seed(seed), bytes));
+    let res = std::panic::catch_unwind(|| crate::chain::played_committed_block(&id, parent, &Seed(seed), bytes));
     match res {
         Ok(Ok(Ok(pl))) => copy_out(&crate::proof::Raw.encode(&pl.wanted()), out, cap),
-        Ok(Ok(Err(crate::chain::BlockVerdict::NeedParent))) => {
+        Ok(Ok(Err(crate::chain::CommittedVerdict::Run(crate::chain::BlockVerdict::NeedParent)))) => {
             set_error("the parent's end state isn't cached".into());
             usize::MAX - 1
         }
@@ -916,43 +925,50 @@ pub extern "C" fn sm64pow_proof_id(blob: *const u8, len: usize, out32: *mut u8) 
     unsafe { std::ptr::copy_nonoverlapping(id.as_ptr(), out32, 32) };
 }
 
-/// A proof's start: 0 from the parent's end state, 1 from power-on, -1 if it
-/// doesn't decode.
+/// A proof's start (its committed header): 0 from the parent's end state, 1 from power-on, -1 if
+/// the header doesn't parse.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_proof_start(proof: *const u8, len: usize) -> i32 {
-    crate::proof::proof_start(blob_arg(proof, len)).map_or(-1, |s| s as i32)
+    crate::commit::header(blob_arg(proof, len)).map_or(-1, |h| h.start as i32)
 }
 
-/// How many frames a proof's run lasted (0 if it doesn't decode).
+/// How many frames a proof's run lasted: its committed header (0 if it doesn't parse).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_proof_frames(blob: *const u8, len: usize) -> u32 {
-    let b = blob_arg(blob, len);
-    crate::proof::decode_proof(b, rules().max_frames_any() as usize).map_or_else(|_| crate::proof::split_blob(b).map_or(0, |x| if crate::statecodec::state_codec(x.2).is_some() { x.0 } else { 0 }), |pr| pr.frames)
+    crate::commit::header(blob_arg(blob, len)).map_or(0, |h| h.frames)
 }
 
-/// Decodes a proof blob to its inputs (the non-poked frames' pads, 4 bytes
-/// each, codec-free). Returns the byte length (call with `out` NULL to size
-/// the buffer; nothing is written unless `cap` is big enough), or
-/// `usize::MAX` if the blob does not decode.
+fn stateless_run(blob: &[u8]) -> Result<crate::proof::Proof, String> {
+    match crate::commit::open(blob, rules().max_frames_any(), false) {
+        Ok(crate::commit::Opened::Run(_, pr)) => Ok(pr),
+        Ok(crate::commit::Opened::State(..)) => Err("state-coded".into()),
+        Err(crate::commit::Fault::Invalid(e) | crate::commit::Fault::BadEncoding(e)) => Err(e),
+    }
+}
+
+/// Decodes a committed proof blob in a stateless codec to its inputs (the non-poked frames'
+/// pads, 4 bytes each), checked against the committed hash. Returns the byte length (call with
+/// `out` NULL to size the buffer; nothing is written unless `cap` is big enough), or `usize::MAX`
+/// if the blob does not decode (or is state-coded: that needs the replay, sm64pow_wanted_block).
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_decode_raw(blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
-    match crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize) {
+    match stateless_run(blob_arg(blob, len)) {
         Ok(pr) => copy_out(&crate::proof::Raw.encode(&pr.inputs), out, cap),
         Err(e) => {
-            set_error(e.to_string());
+            set_error(e);
             usize::MAX
         }
     }
 }
 
-/// Re-encodes a proof blob with the smallest codec (the block id does not
-/// change). Same return convention as `sm64pow_decode_raw`.
+/// Re-encodes a committed proof blob in a stateless codec with the smallest stateless codec (the
+/// header, hence the block id, does not change). Same return convention as `sm64pow_decode_raw`.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_reencode(blob: *const u8, len: usize, out: *mut u8, cap: usize) -> usize {
-    match crate::proof::decode_proof(blob_arg(blob, len), rules().max_frames_any() as usize) {
-        Ok(pr) => copy_out(&crate::proof::encode_proof(&pr), out, cap),
+    match stateless_run(blob_arg(blob, len)) {
+        Ok(pr) => copy_out(&crate::commit::commit(&pr), out, cap),
         Err(e) => {
-            set_error(e.to_string());
+            set_error(e);
             usize::MAX
         }
     }

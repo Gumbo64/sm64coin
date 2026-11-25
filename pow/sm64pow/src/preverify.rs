@@ -20,7 +20,7 @@ use crate::cache::{REPLAYS, Summary, alias, cached, known_invalid, known_summary
 use crate::emulator::generator;
 use crate::game::{Progress, read_progress};
 use crate::proof::{self, Start};
-use crate::replay::{EndState, Parent, replay_blob, start_game};
+use crate::replay::{EndState, Parent, replay_blob_committed, start_game};
 use crate::rules::active as rules;
 use crate::seed::Seed;
 use anyhow::Result;
@@ -46,6 +46,21 @@ pub struct BatchBlock {
 /// replays and rejects it as before. Returns how many runs it replayed.
 pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     let state_ok = crate::statecodec::state_codec_enabled();
+    // v0.4: the batch carries committed blobs (commit.rs). Each is made ready for the layout
+    // machinery the way the sequential check does it (chain::prepare: same layout, same cache
+    // key), so the check finds the pre-pass's runs. A blob that is invalid by its header or a bad
+    // encoding ends the pre-pass there (the sequential check decides).
+    let ceiling0 = rules().max_frames_any();
+    let mut prepared = Vec::with_capacity(batch.len());
+    for b in batch {
+        match crate::chain::prepare(&b.blob, ceiling0, state_ok) {
+            Ok(p) => prepared.push(p),
+            Err(_) => break,
+        }
+    }
+    let converted: Vec<BatchBlock> = batch.iter().zip(&prepared).map(|(b, p)| BatchBlock { id: b.id, parent: b.parent, seed: b.seed, blob: p.layout.clone() }).collect();
+    let batch = &converted[..];
+    let prepared = &prepared[..];
     // Chains: each block continues the previous one when it starts from its end state.
     // Blocks carry their index in the batch.
     let mut chains: Vec<Vec<(usize, &BatchBlock)>> = Vec::new();
@@ -88,7 +103,7 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     {
         let _ = threads;
         while let Some(chain) = chains.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-            let _ = replay_chain(chain, state_ok, &replayed, &first_bad);
+            let _ = replay_chain(chain, prepared, state_ok, &replayed, &first_bad);
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -97,14 +112,14 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
             sc.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(chain) = chains.get(i) else { break };
-                let _ = replay_chain(chain, state_ok, &replayed, &first_bad);
+                let _ = replay_chain(chain, prepared, state_ok, &replayed, &first_bad);
             });
         }
     });
     replayed.into_inner()
 }
 
-fn replay_chain(chain: &[(usize, &BatchBlock)], state_ok: bool, replayed: &std::sync::atomic::AtomicUsize, first_bad: &std::sync::atomic::AtomicUsize) -> Result<()> {
+fn replay_chain(chain: &[(usize, &BatchBlock)], prepared: &[crate::chain::Prepared], state_ok: bool, replayed: &std::sync::atomic::AtomicUsize, first_bad: &std::sync::atomic::AtomicUsize) -> Result<()> {
     use std::sync::atomic::Ordering::Relaxed;
     let mut prev: Option<(SaveState, Progress, bool)> = None;
     for (k, (i, b)) in chain.iter().enumerate() {
@@ -112,7 +127,7 @@ fn replay_chain(chain: &[(usize, &BatchBlock)], state_ok: bool, replayed: &std::
             return Ok(()); // an earlier block of the batch is invalid
         }
         let start = proof::proof_start(&b.blob)?;
-        let key = run_key(&b.parent, start, &b.seed, &b.blob);
+        let key = run_key(&b.parent, start, &b.seed, &prepared[*i].key_src);
         let last = k + 1 == chain.len();
         if known_invalid(&key).is_some() {
             first_bad.fetch_min(*i, Relaxed);
@@ -154,9 +169,14 @@ fn replay_chain(chain: &[(usize, &BatchBlock)], state_ok: bool, replayed: &std::
         };
         replayed.fetch_add(1, Relaxed);
         REPLAYS.fetch_add(1, Relaxed);
-        let (g, now, frames) = match replay_blob(game, before, &b.seed, &b.blob, state_ok)? {
+        let (g, now, frames) = match replay_blob_committed(game, before, &b.seed, &b.blob, &prepared[*i].hdr, state_ok)? {
             Ok(x) => x,
-            Err(why) => {
+            Err(None) => {
+                // A bad encoding: not this block's verdict, and not worth remembering; stop here.
+                first_bad.fetch_min(*i, Relaxed);
+                return Ok(());
+            }
+            Err(Some(why)) => {
                 // The sequential check rejects it (and the rest of the batch).
                 remember_invalid(key, &why);
                 first_bad.fetch_min(*i, Relaxed);

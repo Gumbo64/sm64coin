@@ -1,12 +1,13 @@
-//! Signed proofs (v0.3, sign.rs) on real chain blocks: the v0.2 mainnet's
-//! blocks 1-34 (fixtures/mainnet_v02.jsonl), each treated as if its template
-//! had committed a miner key and its miner had signed the run. Every known
-//! cheap variant of every block (the last byte flipped or dropped: valid
-//! runs on v0.2, docs/DOS.md) must be rejected by the signature check alone,
-//! with no replay. Its own process: it counts replays.
+//! Signed proofs (sign.rs) on real chain blocks: the v0.2 mainnet's blocks 1-34
+//! (fixtures/mainnet_v02.jsonl), re-committed as v0.4 blobs (commit.rs) and each treated as if
+//! its template had committed a miner key and its miner had signed the run. A variant of the run
+//! (another committed input hash or length: on v0.2 the last byte flipped or dropped gave valid
+//! runs, docs/DOS.md) is rejected by the signature check alone, with no replay; a variant of the
+//! encoding only (same header) is transport: a bad encoding, never an invalid block. Its own
+//! process: it counts replays.
 
 use sm64pow::Seed;
-use sm64pow::chain::{BlockVerdict, Parent, replays, verify_block, verify_signed_block};
+use sm64pow::chain::{BlockVerdict, CommittedVerdict, Parent, played_wanted_block, replays, verify_block, verify_signed_block};
 use sm64pow::sign::Keypair;
 use std::time::Instant;
 
@@ -37,10 +38,50 @@ struct B {
     parent: Parent,
     seed: Seed,
     difficulty: u64,
+    /// The committed (v0.4) blob.
     proof: Vec<u8>,
+    /// The v0.2 blob (v0.3 layout).
+    v02: Vec<u8>,
 }
 
+fn valid(v: &CommittedVerdict) -> bool {
+    matches!(v, CommittedVerdict::Run(BlockVerdict::Valid { .. }))
+}
+
+/// The fixture's blocks, committed: the input hash read by replaying each v0.2 blob once.
 fn chain() -> Vec<B> {
+    static C: std::sync::OnceLock<Vec<(Vec<u8>, Vec<u8>)>> = std::sync::OnceLock::new();
+    let raw = chain_v02();
+    let blobs = C.get_or_init(|| {
+        raw.iter()
+            .map(|b| {
+                let pl = played_wanted_block(&b.id, b.parent, &b.seed, &b.v02).unwrap().unwrap();
+                let (frames, start, _, _) = sm64pow::proof::split_blob(&b.v02).unwrap();
+                (b.v02.clone(), sm64pow::commit::commit_layout(&b.v02, &sm64pow::commit::input_hash(frames, start, &pl.wanted())).unwrap())
+            })
+            .collect()
+    });
+    raw.into_iter().zip(blobs).map(|(b, (_, c))| B { proof: c.clone(), ..b }).collect()
+}
+
+/// Header variants: another committed run (the input hash's first and last byte flipped, one
+/// frame more or less). Each needs a new signature.
+fn header_variants(p: &[u8]) -> Vec<Vec<u8>> {
+    let h = sm64pow::commit::header(p).unwrap();
+    let (_, enc) = sm64pow::commit::split(p).unwrap();
+    let mut out = Vec::new();
+    for (i, x) in [(0usize, 1u8), (31, 0x80)] {
+        let mut v = h;
+        v.input_hash[i] ^= x;
+        out.push(sm64pow::commit::join(&v, enc));
+    }
+    for f in [h.frames - 1, h.frames + 1] {
+        out.push(sm64pow::commit::join(&sm64pow::commit::Header { frames: f, ..h }, enc));
+    }
+    out
+}
+
+fn chain_v02() -> Vec<B> {
     let mut ts = std::collections::HashMap::new();
     let mut out = Vec::new();
     for l in include_str!("fixtures/mainnet_v02.jsonl").lines() {
@@ -60,6 +101,7 @@ fn chain() -> Vec<B> {
             seed: Seed::from_hex(j["seed"].as_str().unwrap()).unwrap(),
             difficulty: j["difficulty"].as_u64().unwrap(),
             proof: hex(j["proof"].as_str().unwrap()),
+            v02: hex(j["proof"].as_str().unwrap()),
         });
     }
     out
@@ -90,46 +132,56 @@ fn every_mainnet_variant_is_rejected_by_the_signature_without_a_replay() {
     let mut sig_checks = std::time::Duration::ZERO;
     let attacker = Keypair::from_entropy(&[0xa7; 32]).unwrap();
     for b in &c {
-        // The block's miner: a key per template, committed in the coinbase.
         let miner = Keypair::from_entropy(&[b.height as u8; 32]).unwrap();
         let nonce = miner.extra_nonce();
         let sig = sm64pow::mining::sign_proof(&miner, &b.seed.0, &b.proof).unwrap();
-        let mut had_one = false;
-        for (k, v) in variants(&b.proof).iter().enumerate() {
+        // Another committed run: the miner's signature copied, or the attacker's own: both fail
+        // before any replay.
+        for (k, v) in header_variants(&b.proof).iter().enumerate() {
             variants_tried += 1;
             let mut vid = b.id;
             vid[0] ^= 0x40 + k as u8;
-            // Under v0.3 the variant carries the miner's signature (copied), or
-            // the attacker's own: both fail before any replay.
             let before = replays();
             let t = Instant::now();
-            for s in [sig, sm64pow::mining::sign_proof(&attacker, &b.seed.0, v).unwrap_or(sig)] {
+            for s in [sig, sm64pow::mining::sign_proof(&attacker, &b.seed.0, v).unwrap()] {
                 let r = verify_signed_block(&vid, b.parent, &b.seed, b.difficulty, v, &nonce, &s).unwrap();
-                assert!(matches!(r, BlockVerdict::Invalid(ref why) if why.contains("signature") || why.contains("bad proof")), "block {} variant {k}: {r:?}", b.height);
+                assert!(matches!(r, CommittedVerdict::Run(BlockVerdict::Invalid(ref why)) if why.contains("signature")), "block {} variant {k}: {r:?}", b.height);
             }
             sig_checks += t.elapsed();
             assert_eq!(replays(), before, "block {} variant {k}: the signature check replayed", b.height);
-            // Under v0.2 rules (no signature) it is often a valid block.
-            vid[1] ^= 1;
+        }
+        // The v0.2 malleability itself (the last byte of the old blob flipped or dropped: often a
+        // valid run, unsigned): still there in the runs, but each is another committed run.
+        let mut had_one = false;
+        for (k, v) in variants(&b.v02).iter().enumerate() {
+            let mut vid = b.id;
+            vid[1] ^= 0x40 + k as u8;
             if matches!(verify_block(&vid, b.parent, &b.seed, b.difficulty, v).unwrap(), BlockVerdict::Valid { .. }) {
                 variants_valid_unsigned += 1;
                 had_one = true;
             }
         }
         blocks_with_a_variant += had_one as u32;
+        // The same run in a corrupted encoding (same header, same id, the signature still
+        // verifies): a bad encoding, never an invalid block.
+        let mut bad = b.proof.clone();
+        let n = bad.len();
+        bad[n - 1] ^= 0x80;
+        let r = verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &bad, &nonce, &sig).unwrap();
+        assert!(matches!(r, CommittedVerdict::BadEncoding(_)) || valid(&r), "block {}: {r:?}", b.height);
         // The real block, signed by its miner: valid, and verdicts as on v0.2.
-        let unsigned = verify_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof).unwrap();
+        let unsigned = verify_block(&b.id, b.parent, &b.seed, b.difficulty, &b.v02).unwrap();
         let signed = verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, &nonce, &sig).unwrap();
-        assert!(matches!(signed, BlockVerdict::Valid { .. }), "block {}: {signed:?}", b.height);
-        assert_eq!(signed, unsigned);
+        assert!(valid(&signed), "block {}: {signed:?}", b.height);
+        assert_eq!(signed, CommittedVerdict::Run(unsigned));
         // Without the key in the coinbase, or with another key's signature: invalid.
         let other = Keypair::from_entropy(&[0xee; 32]).unwrap();
-        for (n, s) in [(&[][..], sig), (&other.extra_nonce()[..], sig), (&nonce[..], other.sign_run(&b.seed.0, &sm64pow::proof_id(&b.proof), 1))] {
-            assert!(matches!(verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, n, &s).unwrap(), BlockVerdict::Invalid(_)));
+        for (n, s) in [(&[][..], sig), (&other.extra_nonce()[..], sig), (&nonce[..], other.sign_run(&b.seed.0, &sm64pow::commit::proof_id(&b.proof), 1))] {
+            assert!(matches!(verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, n, &s).unwrap(), CommittedVerdict::Run(BlockVerdict::Invalid(_))));
         }
     }
     eprintln!(
-        "{variants_tried} variants of 34 blocks: {variants_valid_unsigned} valid without signatures ({blocks_with_a_variant} blocks have one), all rejected signed; {:.1} us per signature check",
+        "{variants_tried} header variants of 34 blocks rejected signed without a replay ({:.1} us per signature check); {variants_valid_unsigned} v0.2 byte variants are valid runs ({blocks_with_a_variant} blocks have one)",
         sig_checks.as_secs_f64() * 1e6 / (2 * variants_tried) as f64
     );
     assert!(blocks_with_a_variant >= 30, "the fixture still shows the malleability");
@@ -149,7 +201,7 @@ fn a_signature_over_another_proof_or_template_fails() {
     // a's signature on b's proof (same key), and on a's proof under b's seed.
     let r1 = verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, &k.extra_nonce(), &sig_a).unwrap();
     let r2 = verify_signed_block(&a.id, a.parent, &b.seed, a.difficulty, &a.proof, &k.extra_nonce(), &sig_a).unwrap();
-    assert!(matches!(r1, BlockVerdict::Invalid(_)) && matches!(r2, BlockVerdict::Invalid(_)));
+    assert!(matches!(r1, CommittedVerdict::Run(BlockVerdict::Invalid(_))) && matches!(r2, CommittedVerdict::Run(BlockVerdict::Invalid(_))));
     assert_eq!(replays(), before);
 }
 
@@ -174,7 +226,12 @@ fn one_run_per_key_on_real_blocks_whatever_the_length() {
         assert_eq!(sm64pow::chain::claim_signed_run(&s, &b.proof, &nonce, &sign(&b.proof)), Ok(Claim::Same));
         // Any other run the miner signs for the template is equivocation: a valid variant of the same
         // length, and a truncated (shorter) proof, which needn't even be a valid run.
-        for v in variants(&b.proof) {
+        // (v0.4: a re-encoding of the same committed run is the same run, a duplicate)
+        let mut reenc = b.proof.clone();
+        let n = reenc.len();
+        reenc[n - 1] ^= 1;
+        assert_eq!(sm64pow::chain::claim_signed_run(&s, &reenc, &nonce, &sign(&reenc)), Ok(Claim::Same));
+        for v in header_variants(&b.proof) {
             let r = sm64pow::chain::claim_signed_run(&s, &v, &nonce, &sign(&v));
             assert!(matches!(r, Ok(Claim::Equivocation(e)) if e.verify()), "block {}: {r:?}", b.height);
             evidence += 1;
@@ -185,7 +242,7 @@ fn one_run_per_key_on_real_blocks_whatever_the_length() {
         drop(p);
         let real = sm64pow::mining::sign_proof(&miner, &b.seed.0, &b.proof).unwrap();
         let r = verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, &nonce, &real).unwrap();
-        assert!(matches!(r, BlockVerdict::Valid { .. }), "block {}: {r:?}", b.height);
+        assert!(valid(&r), "block {}: {r:?}", b.height);
     }
     eprintln!("{evidence} second runs of 12 templates: all evidence, the blocks still valid");
 }
@@ -211,7 +268,7 @@ fn queue_replays_real_blocks_outside_the_lock_and_the_check_then_finds_the_resul
             Parent::Genesis => [0; 32],
             Parent::Block { id, .. } => id,
         };
-        let frames = sm64pow::proof::split_blob(&b.proof).unwrap().0;
+        let frames = sm64pow::commit::header(&b.proof).unwrap().frames;
         let job = Job { id: b.id, parent: b.parent, parent_id, seed: b.seed, difficulty: b.difficulty, blob: b.proof.clone(), frames, tie: sm64pow::pof::NO_TIE, stamp: now, due: now, arrived: now, ctx: None };
         let t = Instant::now();
         global().submit(job).unwrap();
@@ -228,7 +285,7 @@ fn queue_replays_real_blocks_outside_the_lock_and_the_check_then_finds_the_resul
         let before = replays();
         let t = Instant::now();
         let r = verify_signed_block(&b.id, b.parent, &b.seed, b.difficulty, &b.proof, &miner.extra_nonce(), &sig).unwrap();
-        assert!(matches!(r, BlockVerdict::Valid { frames: f, .. } if f == frames), "block {}: {r:?}", b.height);
+        assert!(matches!(r, CommittedVerdict::Run(BlockVerdict::Valid { frames: f, .. }) if f == frames), "block {}: {r:?}", b.height);
         lock_replays += replays() - before;
         eprintln!("block {}: {frames} frames, queue {:.0} ms, the check under the lock {:.1} ms", b.height, replay_time.as_secs_f64() * 1e3, t.elapsed().as_secs_f64() * 1e3);
     }

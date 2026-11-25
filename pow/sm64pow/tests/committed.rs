@@ -80,7 +80,7 @@ fn real_state_coded_blocks_verify_committed_in_a_chain() {
         let (c, pr) = recommit(&b.id, parent, b);
         assert!(sm64pow::statecodec::state_codec(proof::split_blob(&b.proof).unwrap().2).is_some(), "block {} is state-coded", i + 1);
         // The committed id is the v0.3 stateless proof_id of the same run.
-        assert_eq!(commit::proof_id(&c), sm64pow::proof_id(&proof::encode_proof_with(&RunLength, &pr)));
+        assert_eq!(commit::proof_id(&c), sm64pow::proof_id::proof_id(&proof::encode_proof_with(&RunLength, &pr)));
         let v = verify_committed_block(&b.id, parent, &b.seed, b.difficulty, &c).unwrap();
         assert!(valid(&v), "block {}: {v:?}", i + 1);
         // The same run in a stateless encoding: same id, same verdict.
@@ -157,7 +157,7 @@ fn the_xz_block_recommitted() {
     let xz = unhex(j["proof_hex"].as_str().unwrap());
     let pr = proof::decode_proof(&xz, 36_000).unwrap();
     let c = commit::commit_layout(&xz, &commit::proof_hash(&pr)).unwrap();
-    assert_eq!(commit::proof_id(&c), sm64pow::proof_id(&xz), "v0.3 stateless ids carry over");
+    assert_eq!(commit::proof_id(&c), sm64pow::proof_id::proof_id(&xz), "v0.3 stateless ids carry over");
     assert!(valid(&verify_committed_block(&[0x31; 32], Parent::Genesis, &seed, 1, &c).unwrap()));
     let mut corrupt = c.clone();
     let n = corrupt.len();

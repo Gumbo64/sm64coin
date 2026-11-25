@@ -179,7 +179,7 @@ fn chain_of_state_coded_blocks_and_canonical_encoding() {
 
     // The proof id commits to the bytes: differently encoded = different block.
     assert_ne!(state_proof_id(&b1), state_proof_id(&longer));
-    assert_ne!(state_proof_id(&b1), sm64pow::proof_id(&proof::encode_proof(&pr)));
+    assert_ne!(state_proof_id(&b1), sm64pow::proof_id::proof_id(&proof::encode_proof(&pr)));
     // Rebuilding (no time limit) accepts the canonical blob.
     assert!(valid(&rebuild_block_opts(&id(27), Parent::Genesis, &seed, &b1, true).unwrap()));
 }
@@ -258,8 +258,10 @@ fn variant_5_and_decode_proof_state() {
     // Sealing picks the smallest of the old codecs and the state variants.
     let best = sm64pow::seal_proof_at(Start::PowerOn, None, &seed, &params(1), &sm64pow::played_from_proof(&seed, &params(1), &pr).unwrap()).unwrap();
     let b4 = encode_proof_state(&VARIANTS[0], None, &seed, &params(1), &pr).unwrap();
-    assert!(best.len() <= b4.len().min(b5.len()));
-    for b in [&b4, &b5, &best] {
+    // (v0.4: sealing commits the input hash, 32 bytes more, commit.rs)
+    assert!(best.len() <= b4.len().min(b5.len()) + 32);
+    let h = sm64pow::commit::proof_hash(&pr);
+    for b in [&sm64pow::commit::commit_layout(&b4, &h).unwrap(), &sm64pow::commit::commit_layout(&b5, &h).unwrap(), &best] {
         assert_eq!(sm64pow::decode_proof_any(b, None, &seed, &params(1)).unwrap(), pr);
     }
     let digest: String = Keccak256::digest(&b5).iter().map(|b| format!("{b:02x}")).collect();

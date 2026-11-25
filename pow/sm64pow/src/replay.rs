@@ -218,6 +218,7 @@ pub(crate) fn replay_committed(game: sm64_binds::SM64Game, before: Progress, see
     let mut g = SM64MiningGame::from_game(game, seed, p);
     let mut dec = codec.decoder(body);
     let mut hash = crate::commit::InputHasher::new(frames, hdr.start);
+    let mut size = crate::pof::SizeCounter::new(frames);
     let mut out = played;
     let mut success: Option<(usize, Progress)> = None;
     for f in 0..frames as usize {
@@ -226,6 +227,7 @@ pub(crate) fn replay_committed(game: sm64_binds::SM64Game, before: Progress, see
             dec.poked();
         } else {
             hash.pad(&pad);
+            size.pad(&pad);
         }
         if let Some(o) = out.as_deref_mut() {
             o.pads.push(pad);
@@ -241,6 +243,7 @@ pub(crate) fn replay_committed(game: sm64_binds::SM64Game, before: Progress, see
     if hash.finish() != hdr.input_hash {
         return Ok(Committed::BadEncoding("the encoding does not decode to the committed inputs".into()));
     }
+    crate::pof::note_size_of(&hdr.input_hash, size.finish()); // the run is known: its tie-break size
     Ok(match success {
         None => Committed::Invalid("no progress was made (no new star, key or Grand Star)".into()),
         Some((f, _)) if f + 1 != frames as usize => Committed::Invalid(format!("success at frame {} but the proof runs to {frames}", f + 1)),
@@ -270,4 +273,24 @@ pub(crate) fn replay_blob(game: sm64_binds::SM64Game, before: Progress, seed: &S
     };
     let frames = pr.frames;
     Ok(replay(game, before, seed, &p, &pr, Some(ceiling), None)?.map(|(g, now)| (g, now, frames)))
+}
+
+/// [`replay_blob`] for a prepared committed blob (`layout`: chain::prepare's; a stateless layout
+/// is already hash-checked): state codecs go through [`replay_committed`]. Err(None): a bad
+/// encoding (says nothing about the run); Err(Some(why)): the committed run is invalid.
+pub(crate) fn replay_blob_committed(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, layout: &[u8], hdr: &crate::commit::Header, state_ok: bool) -> Result<std::result::Result<(SM64MiningGame, Progress, u32), Option<String>>> {
+    let p = params(1);
+    let ceiling = rules().max_frames_any();
+    if state_ok {
+        if let Ok((frames, _, cid, body)) = proof::split_blob(layout) {
+            if let Some(c) = crate::statecodec::state_codec(cid) {
+                return Ok(match replay_committed(game, before, seed, &p, hdr, c, body, Some(ceiling), None)? {
+                    Committed::Ok(g, now) => Ok((g, now, frames)),
+                    Committed::Invalid(why) => Err(Some(why)),
+                    Committed::BadEncoding(_) => Err(None),
+                });
+            }
+        }
+    }
+    Ok(replay_blob(game, before, seed, layout, false)?.map_err(Some))
 }

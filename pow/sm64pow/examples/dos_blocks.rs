@@ -121,7 +121,7 @@ impl Blk {
     fn block_id(&self) -> [u8; 32] {
         // get_object_hash of a blob: cn_fast_hash(varint(size) || blob).
         let mut b = self.hashing_blob(self.ts);
-        b.extend_from_slice(&sm64pow::proof_id(&self.proof));
+        b.extend_from_slice(&sm64pow::proof_id::proof_id(&self.proof));
         let mut len = Vec::new();
         varint(b.len() as u64, &mut len);
         keccak(&[&len, &b])

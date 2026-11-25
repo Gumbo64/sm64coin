@@ -98,7 +98,9 @@ fn a_chain_of_blocks() {
     // Rebuilding (no time limit) works even at a difficulty that would reject it.
     assert!(matches!(rebuild_block(&id(4), Parent::Genesis, &seed, &blob).unwrap(), BlockVerdict::Valid { .. }));
     // The standalone verifier treats a run as a power-on block.
-    assert_eq!(sm64pow::verify(&seed, 1, &blob).unwrap(), sm64pow::Verdict::Valid { frames });
+    // (v0.4: it takes committed blobs, commit.rs)
+    let committed = sm64pow::commit::commit_layout(&blob, &sm64pow::commit::proof_hash(&pr)).unwrap();
+    assert_eq!(sm64pow::verify(&seed, 1, &committed).unwrap(), sm64pow::Verdict::Valid { frames });
 }
 
 #[test]

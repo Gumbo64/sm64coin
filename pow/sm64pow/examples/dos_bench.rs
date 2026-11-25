@@ -146,7 +146,7 @@ fn main() -> anyhow::Result<()> {
                         }
                         _ => "?".into(),
                     };
-                    ok.push(format!("{what} ({frames} frames, {secs:.2} s, proof_id differs: {}, {diff})", sm64pow::proof_id(p) != sm64pow::proof_id(&b.proof)));
+                    ok.push(format!("{what} ({frames} frames, {secs:.2} s, proof_id differs: {}, {diff})", sm64pow::proof_id::proof_id(p) != sm64pow::proof_id::proof_id(&b.proof)));
                 }
             }
             if !ok.is_empty() {

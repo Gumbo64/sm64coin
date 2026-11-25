@@ -167,25 +167,73 @@ pub fn tie_of(proof: &[u8], sig: &[u8; 64]) -> Tie {
     Tie { size: canonical_size(proof), hash: crate::sign::cn_fast_hash(sig) }
 }
 
-/// The size of a proof that every node sees the same for the same block id. The block id commits
-/// to `proof_id`: for the stateless codecs (0 raw, 1 run-length, 2 xz) that is the decoded run, so
-/// the same block can travel in different encodings (submit_block re-encodes on unrestricted RPC,
-/// and anyone may relay another encoding) and the blob's length is NOT canonical; their size here
-/// is the length of the run-length encoding of the decoded run (our own deterministic codec; xz's
-/// output could differ between library versions). For the state codecs (3-5) the id commits to the
-/// exact bytes, so the blob's length is canonical. u32::MAX if the proof doesn't decode.
+/// The size of a proof that every node sees the same for the same block id (v0.4: the id is the
+/// committed input hash, so every encoding of the run must get one size): the length of the
+/// run-length layout of the committed run (`varint(frames) || start || 1 || runs`, our own
+/// deterministic codec). Known before the replay for a stateless encoding (decoded and
+/// hash-checked here, cheap); for a state-coded blob only once some replay has decoded the run
+/// ([`note_size`], kept by input hash), else u32::MAX (never wins a tie). docs/V0.4-DESIGN.md
+/// section 1.6 (the reference encoder; statemix codec 5 is the owner's choice, run-length is
+/// what the replay can measure today: a follow-up encodes codec 5 alongside the replay).
 pub fn canonical_size(blob: &[u8]) -> u32 {
-    use crate::proof;
-    if crate::statecodec::state_codec_enabled() {
-        if let Ok((_, _, cid, _)) = proof::split_blob(blob) {
-            if crate::statecodec::state_codec(cid).is_some() {
-                return blob.len().min(u32::MAX as usize - 1) as u32;
-            }
+    let Ok(hdr) = crate::commit::header(blob) else { return u32::MAX };
+    if let Ok(crate::commit::Opened::Run(_, pr)) = crate::commit::open(blob, crate::rules::active().max_frames_any(), false) {
+        return crate::proof::encode_proof_with(&crate::proof::RunLength, &pr).len().min(u32::MAX as usize - 1) as u32;
+    }
+    sizes().lock().unwrap_or_else(|e| e.into_inner()).get(&hdr.input_hash).copied().unwrap_or(u32::MAX)
+}
+
+fn sizes() -> &'static Mutex<Bounded<[u8; 32], u32>> {
+    static S: OnceLock<Mutex<Bounded<[u8; 32], u32>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(Bounded::new(BLOCKS)))
+}
+
+/// A replay decoded the committed run of `hdr`: its canonical size is `size`.
+pub fn note_size_of(input_hash: &[u8; 32], size: u32) {
+    sizes().lock().unwrap_or_else(|e| e.into_inner()).insert(*input_hash, size);
+}
+
+/// [`note_size_of`] from a verified committed blob's layout (chain.rs): a stateless layout is
+/// already the run-length one; a state-coded layout's size was noted by its replay.
+pub(crate) fn note_size(hdr: &crate::commit::Header, layout: &[u8]) {
+    if matches!(crate::proof::split_blob(layout), Ok((_, _, 1, _))) {
+        note_size_of(&hdr.input_hash, layout.len().min(u32::MAX as usize - 1) as u32);
+    }
+}
+
+/// Counts the run-length layout's size of a run as its inputs are decoded (replay.rs).
+pub(crate) struct SizeCounter {
+    size: usize,
+    last: Option<[u8; 4]>,
+    run: u64,
+}
+
+impl SizeCounter {
+    pub(crate) fn new(frames: u32) -> Self {
+        let mut v = Vec::new();
+        crate::proof::put_varint(&mut v, frames as u64);
+        SizeCounter { size: v.len() + 2, last: None, run: 0 }
+    }
+    fn flush(&mut self) {
+        if self.run > 0 {
+            let mut v = Vec::new();
+            crate::proof::put_varint(&mut v, self.run);
+            self.size += v.len() + 4;
         }
     }
-    match proof::decode_proof(blob, crate::rules::active().max_frames_any() as usize) {
-        Ok(p) => proof::encode_proof_with(&proof::RunLength, &p).len().min(u32::MAX as usize - 1) as u32,
-        Err(_) => u32::MAX,
+    pub(crate) fn pad(&mut self, p: &sm64_binds::GamePad) {
+        let b = crate::proof::pad_bytes(p);
+        if self.last == Some(b) {
+            self.run += 1;
+        } else {
+            self.flush();
+            self.last = Some(b);
+            self.run = 1;
+        }
+    }
+    pub(crate) fn finish(mut self) -> u32 {
+        self.flush();
+        self.size.min(u32::MAX as usize - 1) as u32
     }
 }
 
@@ -320,6 +368,7 @@ mod tests {
 
     #[test]
     fn the_canonical_size_does_not_depend_on_the_encoding() {
+        use crate::commit;
         use crate::proof::{Proof, RunLength, Raw, Start, encode_proof_with};
         use crate::sm64_binds::GamePad;
         let mut inputs = vec![GamePad::default(); 900];
@@ -327,19 +376,23 @@ mod tests {
             x.button = (i / 50) as u16;
         }
         let pr = Proof { frames: 900, start: Start::Parent, inputs };
-        let raw = encode_proof_with(&Raw, &pr);
-        let rle = encode_proof_with(&RunLength, &pr);
+        let raw = commit::commit_with(&Raw, &pr);
+        let rle = commit::commit_with(&RunLength, &pr);
         assert_ne!(raw.len(), rle.len());
-        assert_eq!(crate::proof_id::proof_id(&raw), crate::proof_id::proof_id(&rle), "one block id for both encodings");
+        assert_eq!(commit::proof_id(&raw), commit::proof_id(&rle), "one block id for both encodings");
         assert_eq!(canonical_size(&raw), canonical_size(&rle), "and one size");
-        assert_eq!(canonical_size(&raw), rle.len() as u32);
-        assert_eq!(canonical_size(&[0xff, 0xff]), u32::MAX, "doesn't decode");
-        assert_eq!(canonical_size(&raw), 94, "pinned: the run-length encoding of this run is 94 bytes");
-        // A real block (state codec 4): its id commits to the bytes, so the size is the blob's.
-        let l = include_str!("../tests/fixtures/mainnet_v02.jsonl").lines().next().unwrap();
-        let hexs = l.split("\"proof\": \"").nth(1).unwrap().split('"').next().unwrap();
-        let blob: Vec<u8> = (0..hexs.len() / 2).map(|i| u8::from_str_radix(&hexs[2 * i..2 * i + 2], 16).unwrap()).collect();
-        assert_eq!((canonical_size(&blob), blob.len()), (1855, 1855), "pinned: v0.2 mainnet block 1 (codec 4)");
+        assert_eq!(canonical_size(&raw), encode_proof_with(&RunLength, &pr).len() as u32);
+        assert_eq!(canonical_size(&raw), 94, "pinned: the run-length layout of this run is 94 bytes");
+        assert_eq!(canonical_size(&[0xff, 0xff]), u32::MAX, "doesn't parse");
+        // The incremental counter (what a state-coded replay measures) agrees.
+        let mut c = SizeCounter::new(pr.frames);
+        pr.inputs.iter().for_each(|p| c.pad(p));
+        assert_eq!(c.finish(), 94);
+        // A state-coded blob: unknown until a replay noted its run.
+        let st = commit::join(&commit::header_of(&Proof { frames: 901, ..pr.clone() }), &[4, 1, 2, 3]);
+        assert_eq!(canonical_size(&st), u32::MAX);
+        note_size_of(&commit::header(&st).unwrap().input_hash, 77);
+        assert_eq!(canonical_size(&st), 77);
     }
 
     #[test]

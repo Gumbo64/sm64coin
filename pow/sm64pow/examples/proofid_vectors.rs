@@ -134,6 +134,6 @@ fn main() {
     out.push(("bound/unknown-codec-6-36001".into(), [header(36001, 0, 6), pads.clone()].concat()));
     for (name, blob) in out {
         let ok = sm64pow::proof::decode_proof(&blob, 36000).is_ok();
-        println!("{{\"name\":\"{}\",\"blob\":\"{}\",\"id\":\"{}\",\"decodes\":{}}}", name, hex(&blob), hex(&sm64pow::proof_id(&blob)), ok);
+        println!("{{\"name\":\"{}\",\"blob\":\"{}\",\"id\":\"{}\",\"decodes\":{}}}", name, hex(&blob), hex(&sm64pow::proof_id::proof_id(&blob)), ok);
     }
 }

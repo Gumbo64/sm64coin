@@ -179,7 +179,7 @@ fn chain_of_state_coded_blocks_and_canonical_encoding() {
 
     // The proof id commits to the bytes: differently encoded = different block.
     assert_ne!(state_proof_id(&b1), state_proof_id(&longer));
-    assert_ne!(state_proof_id(&b1), sm64pow::proof_id(&proof::encode_proof(&pr)));
+    assert_ne!(state_proof_id(&b1), sm64pow::proof_id::proof_id(&proof::encode_proof(&pr)));
     // Rebuilding (no time limit) accepts the canonical blob.
     assert!(valid(&rebuild_block_opts(&id(27), Parent::Genesis, &seed, &b1, true).unwrap()));
 }

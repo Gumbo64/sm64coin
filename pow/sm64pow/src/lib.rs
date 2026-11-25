@@ -75,7 +75,9 @@ pub use mining::{
     Recorder, Verdict, decode_proof_any, mine_step, new_mining_game, play_frame, played_from_proof, played_from_proof_at, proof_from_played,
     proof_from_played_at, seal_proof, seal_proof_at, seal_proof_state_at, verify, verify_pads, verify_proof,
 };
-pub use proof_id::proof_id;
+/// v0.4: what a block id commits to is the committed input hash (commit.rs); `proof_id::proof_id`
+/// is the v0.3-layout id (the input hash of a stateless run), used by the codec layer and tools.
+pub use commit::proof_id;
 pub use seed::{Seed, seed_from_hash};
 
 pub use rules::{Params, Rules, active as rules, level8, params};

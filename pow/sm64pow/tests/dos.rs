@@ -92,7 +92,7 @@ fn malleated_variants_are_valid_and_the_policy_skips_them() {
     let mut vid = b.id;
     vid[0] ^= 1;
     assert!(matches!(verify_block(&vid, b.parent, &b.seed, 1, &v).unwrap(), BlockVerdict::Valid { .. }), "a third party's variant is a valid block");
-    assert_ne!(sm64pow::proof_id(&v), sm64pow::proof_id(&b.proof), "with its own block id");
+    assert_ne!(sm64pow::proof_id::proof_id(&v), sm64pow::proof_id::proof_id(&b.proof), "with its own block id");
     // As an alternative block at our tip's height (we have block 2 already): not replayed.
     let Parent::Block { id: parent, .. } = b.parent else { panic!() };
     let alt = AltBlock { id: vid, parent, seed: b.seed, frames: sm64pow::proof::split_blob(&v).unwrap().0, height: 2, top: 4, main_seed: None };
