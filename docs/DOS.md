@@ -148,8 +148,19 @@ queue has a verdict), and one worker-side callback, `Blockchain::sm64_chain_fact
    is evidence, not replayed, not relayed); the per-source frame budget
    (`admit_relay`, unchanged).
 2. **Queue by due time** (`hold_until`: the run must fit the limit by this
-   node's clock). The queue holds at most 256 claims, 16 per source; a source
-   whose claim replayed invalid is refused for 10 minutes, doubling.
+   node's clock; stamps more than 300 s ahead are rejected, and restricted RPC
+   refuses a run due more than 30 s after it arrives). The queue holds at most
+   256 claims, 16 per source; when it (or the source's share) is full, the
+   claim due last makes room for one due sooner, so far-future claims can't
+   keep a due claim out. A source whose claim replayed invalid is refused for
+   10 minutes, doubling, and its other waiting claims are dropped. The
+   source's replay budget (admit.rs) is checked on arrival and **charged only
+   when a replay runs**. A loopback restricted-RPC address (the public
+   gateway reaches the node through cloudflared on 127.0.0.1, so every web
+   miner has that address) gets no per-address penalty, budget or queue
+   share: one bad client can't lock the others out; it is bounded by
+   restricted RPC's global budget. A refused claim is a `submit_block`
+   error, not OK.
 3. **Due: skip unless it could matter.** The worker asks the daemon what is at
    that height. A claim extending the tip is replayed. A sibling of our block
    there is replayed only if it has strictly fewer frames (the signed claimed
@@ -159,8 +170,10 @@ queue has a verdict), and one worker-side callback, `Blockchain::sm64_chain_fact
 4. **Replay on a worker pool** (`--sm64-replay-threads`, default every core),
    outside every lock, shortest claim first with a per-source fair share: a
    claim's priority is its frames plus the frames already replayed for its
-   source (half-life 60 s). Candidates for one height share the parent's end
-   state and are independent.
+   source (half-life 60 s). With two or more workers, **one is reserved for
+   claims of at most 9,000 frames**, so an honest claim waits at most one
+   short replay, never a pool full of 36,000-frame ones. Candidates for one
+   height share the parent's end state and are independent.
 5. **Release.** A releaser thread takes the verdict: invalid or skipped
    claims are dropped; a valid one is added (the check under the lock finds
    the cached run, 0.1-0.2 ms, no replay) and **relayed only then**.
@@ -172,7 +185,13 @@ queue has a verdict), and one worker-side callback, `Blockchain::sm64_chain_fact
    old path under the lock (`sm64_bypass_scope`).
 
 The local miner's `submit_block` (unrestricted RPC) replays on the RPC thread
-before taking the lock (`sm64_prereplay`), so it stays synchronous.
+before taking the lock (`sm64_prereplay`) when it is already due, so it stays
+synchronous; one submitted before it is due is queued like any claim (it used
+to be added up to the submit lead early). Unasked siblings of the tip that
+can't displace it are dropped on arrival (they used to get admit.rs's
+per-parent quota of replays under the lock). The parallel pre-pass runs only
+for sync spans, and skips a run longer than difficulty 1 allows at its gap to
+the parent.
 
 ### Measured: before and after the queue (x86, v0.3 test chain)
 
