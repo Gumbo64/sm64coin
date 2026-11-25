@@ -36,6 +36,7 @@
 //! [`statecodec`].
 
 // 1: pure
+pub mod commit;
 pub mod hold;
 pub mod proof;
 pub mod template;
