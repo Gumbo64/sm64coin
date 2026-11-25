@@ -38,6 +38,7 @@
 // 1: pure
 pub mod hold;
 pub mod proof;
+pub mod template;
 pub mod rules;
 pub mod seed;
 pub mod sign;
