@@ -26,6 +26,7 @@ The `sm64coin` launcher is no longer shipped.
 - **Highlight reel:** new places and records play as they happen; any node of the cloud plays instantly.
 - **Places reached chart:** how many floors the workers have reached on their course, and whether they are exploring, refining or stuck.
 - **Phones:** touch controls, full-screen play and a layout that fits.
+- **Nodes:** hardened against block-replay spam (relay policy; consensus unchanged). Update your node.
 - **Fixes** from a review of 0.2.8: one worker per slot, a held run gives up when a new block lands, the reel and game view on reloads, the wallet proof-id checks in CI, and more.
 
 Consensus is unchanged.
