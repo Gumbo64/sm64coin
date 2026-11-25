@@ -34,7 +34,6 @@ the Monero fork beyond `SM64COIN`-marked one-line hooks, and the wallet's key de
    functional checks and benches (scratch scripts `func.py`, `bench.py`) into the repo, add a real P2P
    flood test (a Levin client), and per-peer limits that survive reconnects.
 4. **`submit_block` honesty** (done in v0.3: refusals are errors). Check every miner shows them.
-   Return a distinct status the miners understand (and update the miners to show it).
 5. **Pi performance.** Replays on a Raspberry Pi–class aarch64 board are ~15× slower than x86.
    Profile the emulator on aarch64 (perf), and try build flags / LTO / PGO. *Done when:* measured
    frames/s on aarch64 improves with byte-identical verdicts.
