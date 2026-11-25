@@ -1,0 +1,62 @@
+diff --git a/src/cryptonote_core/blockchain.cpp b/src/cryptonote_core/blockchain.cpp
+index d70b20da8..c4ba33a58 100644
+--- a/src/cryptonote_core/blockchain.cpp
++++ b/src/cryptonote_core/blockchain.cpp
+@@ -3985,7 +3985,7 @@ bool Blockchain::check_block_timestamp(std::vector<uint64_t>& timestamps, const
+ 
+   LOG_PRINT_L3("Blockchain::" << __func__);
+ 
+-  if(b.timestamp > (uint64_t)time(NULL) + CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT)
++  if(b.timestamp > (uint64_t)time(NULL) + CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT && !getenv("SM64_TESTONLY_TS")) // TESTONLY
+   {
+     MERROR_VER("Timestamp of block with id: " << get_block_hash(b) << ", "
+       << b.timestamp << ", bigger than local time + 2 hours");
+@@ -4002,7 +4002,7 @@ bool Blockchain::check_block_timestamp(std::vector<uint64_t>& timestamps, const
+   if (median_ts_out)
+     *median_ts_out = median_ts;
+ 
+-  if(b.timestamp < median_ts)
++  if(b.timestamp < median_ts && !getenv("SM64_TESTONLY_TS")) // TESTONLY
+   {
+     MERROR_VER("Timestamp of block with id: " << get_block_hash(b) << ", " << b.timestamp << ", less than median of last " << BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW << " blocks, " << median_ts);
+     return false;
+@@ -5886,6 +5886,7 @@ bool Blockchain::sm64_parent_timestamp(const block& b, uint64_t& ts) const
+ // hand its child a decay).
+ bool Blockchain::sm64_check_timestamp(const block& b) const
+ {
++  if (m_nettype == FAKECHAIN) return true; // TESTONLY
+   // The genesis block (built from config, no parent) has nothing to be after.
+   if (b.prev_id == crypto::null_hash)
+     return true;
+@@ -5953,6 +5954,7 @@ bool Blockchain::sm64_parent_ref(const block& b, bool& genesis_parent, uint64_t&
+ //------------------------------------------------------------------
+ bool Blockchain::sm64_rebuild(const crypto::hash& h) const
+ {
++  if (m_nettype == FAKECHAIN) return true; // TESTONLY
+   // Walk back to a block we can replay from: one whose parent's state is
+   // cached, whose parent is the genesis block, or that started from power-on
+   // after a stall (which needs no parent state).
+@@ -5994,6 +5996,7 @@ bool Blockchain::sm64_rebuild(const crypto::hash& h) const
+ //------------------------------------------------------------------
+ bool Blockchain::sm64_check_proof(const block& b, const difficulty_type& difficulty, bool eligible) const
+ {
++  if (m_nettype == FAKECHAIN) return true; // TESTONLY
+   // `difficulty` is the retarget difficulty: the time limit also grows with the gap to the parent.
+   std::string why;
+   const crypto::hash id = get_block_hash(b);
+@@ -6024,6 +6027,7 @@ bool Blockchain::sm64_check_proof(const block& b, const difficulty_type& difficu
+ //------------------------------------------------------------------
+ bool Blockchain::sm64_played(const block& b, std::string& pads, bool wanted) const
+ {
++  if (m_nettype == FAKECHAIN) return true; // TESTONLY
+   bool genesis_parent;
+   uint64_t gap;
+   if (!sm64_parent_ref(b, genesis_parent, gap))
+@@ -6062,6 +6066,7 @@ bool Blockchain::sm64_cycle(const crypto::hash& tip, std::vector<block>& blocks)
+ bool Blockchain::sm64_progress(const crypto::hash& tip, sm64coin::progress& p) const
+ {
+   p = sm64coin::progress();
++  if (m_nettype == FAKECHAIN) return true; // TESTONLY
+   block blk;
+   if (!get_block_by_hash(tip, blk))
+     return false;
