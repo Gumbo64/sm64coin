@@ -127,7 +127,7 @@ class MinerController {
     if (!this.running) return { kind: 'idle', label: 'off', title: 'Auto-miner off (click to open the Auto-mine page)' };
     if (this.error && this.error.until > t) return { kind: 'error', label: 'error', title: `Auto-miner error: ${this.error.text}` };
     if (this.phase === 'found') return { kind: 'found', label: 'run found', title: 'A run was found: sealing it' };
-    if (this.phase === 'held') return { kind: 'found', label: 'waiting', title: 'Run found: waiting until the time limit has grown to it' };
+    if (this.phase === 'held') return { kind: 'found', label: 'waiting', title: 'Run found: held until the time limit has grown to it (the workers look for a shorter one meanwhile)' };
     if (this.phase === 'submitting') return { kind: 'found', label: 'submitting', title: 'Submitting the block' };
     if (this.phase === 'loading') return { kind: 'loading', label: 'loading', title: 'Auto-miner preparing (game, state, template)' };
     const reset = this.c && this.c.status && this.c.status.some((s) => s.start === 'power-on');
@@ -227,7 +227,8 @@ class MinerController {
     c.watch = setInterval(async () => {
       try {
         // A parent-only template turns "either" at sm64_power_on_at: refresh it to learn that.
-        if (c.template && c.restartAt && now() >= c.restartAt && c.pool.some(Boolean)) {
+        // Not while a run is held: the refresh would drop it (and it is valid soon anyway).
+        if (c.template && c.restartAt && now() >= c.restartAt && c.pool.some(Boolean) && !c.best) {
           c.restartAt = 0;
           this.say('the stall time passed: refreshing the template (power-on start now allowed)');
           this.round(c);
@@ -265,6 +266,7 @@ class MinerController {
     }
     if (c.stopped) return;
     c.template = t;
+    c.best = null; // the run every worker works to beat: per template (a held run of the last one must not carry over)
     c.attempt += 1;
     this.stats = { ...this.stats, rounds: this.stats.rounds + 1 };
     const first = initialStart(this.mode, t.sm64_start, t.sm64_parent_stars);
@@ -369,27 +371,37 @@ class MinerController {
         const r = m.result;
         if (m.type === 'result' && r.status === 'found') {
           this.stats = { ...this.stats, found: this.stats.found + 1 };
-          hub.foundRun(i, { ...r, start: status[i].start }, t);
-          say(`worker ${i + 1}: run found, ${r.frames} frames (${fmtFrames(r.frames)}), ${(r.sim_frames / 1e6).toFixed(0)} M frames searched`);
-          c.pool.forEach((x) => x && x.terminate());
-          c.pool = [];
-          // No relaunch while this run is submitted: the other slots' pending relaunch timers would start workers
-          // on this template again (and a run they found would be submitted a second time). submit() ends with round().
-          c.submitting = t;
-          status.forEach((s) => { clearTimeout(s.relaunch); s.relaunch = null; });
-          this.setPhase('found');
-          this.submit(c, t, { ...r, start: status[i].start });
+          const run = { ...r, start: status[i].start };
+          const prev = c.best;
+          status[i].salt += count;
+          if (prev && !(r.frames < prev.frames)) {
+            // Not shorter than the run all the workers are working to beat: the next search.
+            say(`worker ${i + 1}: a run of ${r.frames} frames, not shorter than ${prev.frames}`);
+            launch(i);
+            return;
+          }
+          c.best = run;
+          hub.foundRun(i, run, t);
+          say(`worker ${i + 1}: ${prev ? `a shorter run, ${r.frames} frames (was ${prev.frames})` : `run found, ${r.frames} frames`} (${fmtFrames(r.frames)}), ${(r.sim_frames / 1e6).toFixed(0)} M frames searched`);
+          if (!prev) { this.setPhase('found'); this.submit(c, t); } // the one submit of this template: it holds the best run
+          // Every worker goes on from the best run so far: a fresh search of the same block with a goal bias from the
+          // run's objectives (rrt::guide) that only counts a run shorter than it (see the request below).
+          for (let j = 0; j < count; j++) {
+            if (j !== i) status[j].salt += count;
+            launch(j);
+          }
           return;
         }
         const failed = m.type === 'error';
         status[i].fails = failed ? status[i].fails + 1 : 0;
+        const bestRun = c.best;
         status[i].runs += 1;
         if (hub.workers[i]) hub.workers[i].runs = status[i].runs;
         status[i].line = failed ? `failed: ${m.message}` : `no run (${r.why}); starting again`;
         if (failed) { say(`worker ${i + 1} failed: ${m.message.slice(0, 200)}`); this.fail(`worker ${i + 1}: ${m.message.slice(0, 120)}`); }
         status[i].salt += count;
         // A parent-start search that ends without a run on an "either" template: reset cycle.
-        if (!failed && status[i].start === 'parent' && afterFailure(this.mode, t.sm64_start)) {
+        if (!failed && !bestRun && status[i].start === 'parent' && afterFailure(this.mode, t.sm64_start)) {
           status[i].start = 'power-on';
           status[i].gotShared = false;
           say(`worker ${i + 1}: no run from the parent (${r.why}); reset policy ${this.mode}: next attempt from power-on (reset cycle)`);
@@ -401,7 +413,9 @@ class MinerController {
       w.onerror = (ev) => { ev.preventDefault(); w.onmessage({ data: { type: 'error', message: ev.message || 'the worker failed to start' } }); };
       w.postMessage({
         type: 'mine',
-        request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1 },
+        request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1,
+          // The best run so far (same start): only a shorter one counts, biased by its objectives.
+          ...(c.best && c.best.start === status[i].start ? { beat: c.best.frames, guide_keys: [...new Set(c.best.keys || [])] } : {}) },
         parentState: status[i].start === 'parent' && parentState ? parentState.slice(0) : null,
         viz: true, // the sampler is always on: with the feed off it only reports a frame count
         vizOn: this.vizOn,
@@ -412,30 +426,50 @@ class MinerController {
     for (let i = 0; i < count; i++) launch(i);
   }
 
-  async submit(c, t, r) {
+  /** The one submit of a template: holds the best run (c.best; a shorter one replaces it while the workers search on) until it is valid, then submits it. */
+  async submit(c, t) {
     const say = (m) => this.say(m);
     const { hub } = this;
+    let r = c.best;
     try {
-      let validAt = 0;
-      try {
-        validAt = (await daemon('get_block_template', { wallet_address: this.address, reserve_size: 0, sm64_frames: r.frames })).sm64_valid_at || 0;
-      } catch { /* the node decides */ }
-      for (let held = false; validAt - now() > SEND_AHEAD; held = true) {
+      let validAt = 0, asked = -1, said = -1, lastTip = Date.now();
+      for (;;) {
         if (c.stopped || c.template !== t) return;
+        r = c.best;
+        if (asked !== r.frames) {
+          try {
+            validAt = (await daemon('get_block_template', { wallet_address: this.address, reserve_size: 0, sm64_frames: r.frames })).sm64_valid_at || 0;
+          } catch { validAt = 0; /* the node decides */ }
+          asked = r.frames;
+          continue; // (c.best may have changed meanwhile)
+        }
+        if (validAt - now() <= SEND_AHEAD) break;
         this.setPhase('held');
-        if (!held) say(`the run is over the time limit: valid at ${new Date(validAt * 1000).toLocaleTimeString()}, held until then (a new block first makes it worthless)`);
-        await new Promise((res) => setTimeout(res, Math.min(30, validAt - now() - SEND_AHEAD) * 1000));
-        // The watch only restarts rounds that have workers (none while holding): look for a new tip here, or the
-        // miner would sit idle on a worthless run until its valid time.
-        let tip = null;
-        try { tip = (await daemon('get_info')).top_block_hash; } catch { /* node hiccup: look again next time */ }
+        if (said !== r.frames) {
+          said = r.frames;
+          say(`the run (${r.frames} frames) is over the time limit: valid at ${new Date(validAt * 1000).toLocaleTimeString()}, held until then while the workers look for a shorter one (a new block first makes it worthless)`);
+        }
+        await new Promise((res) => setTimeout(res, Math.min(5, Math.max(1, validAt - now() - SEND_AHEAD)) * 1000));
         if (c.stopped || c.template !== t) return;
-        if (tip && tip !== t.prev_hash) {
-          say('a new block landed while the run was held; the run was for the old tip');
-          hub.submission('stale', { height: t.height, frames: r.frames });
-          return;
+        // The tip is looked at every 30 s (the watch also restarts rounds, but the held run must not wait on that).
+        if (Date.now() - lastTip >= 30000) {
+          lastTip = Date.now();
+          let tip = null;
+          try { tip = (await daemon('get_info')).top_block_hash; } catch { /* node hiccup: look again next time */ }
+          if (c.stopped || c.template !== t) return;
+          if (tip && tip !== t.prev_hash) {
+            say('a new block landed while the run was held; the run was for the old tip');
+            hub.submission('stale', { height: t.height, frames: r.frames });
+            return;
+          }
         }
       }
+      // Valid (nearly) now: no more searching, and no relaunch while this run is submitted (a run another worker found would be
+      // submitted a second time). submit() ends with round().
+      c.submitting = t;
+      c.pool.forEach((x) => x && x.terminate());
+      c.pool = [];
+      c.status.forEach((s) => { clearTimeout(s.relaunch); s.relaunch = null; });
       this.setPhase('submitting');
       const info = await daemon('get_info');
       if (info.top_block_hash !== t.prev_hash) {
@@ -459,7 +493,7 @@ class MinerController {
       this.flash = { kind: 'rejected', until: Date.now() + 10000 };
       setTimeout(() => this.emit(true), 10100);
     } finally {
-      if (!c.stopped) this.round(c);
+      if (!c.stopped && c.template === t) this.round(c);
     }
   }
 }

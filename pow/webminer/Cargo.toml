@@ -8,10 +8,10 @@ description = "The SM64Coin automated miner (the RRT campaign search) in the bro
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-obrrt-core = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "d98126193f411c3e0135ab1eca98fda5fbbc4024" }
-obrrt-search = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "d98126193f411c3e0135ab1eca98fda5fbbc4024", features = ["hooked"] }
-obrrt-spec = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "d98126193f411c3e0135ab1eca98fda5fbbc4024" }
-obrrt-objectives = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "d98126193f411c3e0135ab1eca98fda5fbbc4024" }
+obrrt-core = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "49187107ac6a1c4e6a0a71dafdb712dea0742a7e" }
+obrrt-search = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "49187107ac6a1c4e6a0a71dafdb712dea0742a7e", features = ["hooked"] }
+obrrt-spec = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "49187107ac6a1c4e6a0a71dafdb712dea0742a7e" }
+obrrt-objectives = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "49187107ac6a1c4e6a0a71dafdb712dea0742a7e" }
 wasm-bindgen = "0.2"
 sm64pow = { path = "../sm64pow" }
 sm64coin-miner = { path = "../miner" }
@@ -27,7 +27,7 @@ hex = "0.4"
 # be pushed). For local development .cargo/config.toml (uncommitted, absolute paths to the
 # worktrees) overrides the sm64-binds patch and the obrrt crates; config [patch] takes
 # precedence over the manifest's.
-# obrrt-*: Gumbo64/sm64-AI-binds branch `web-miner` (pinned above by rev).
+# obrrt-*: Gumbo64/sm64-AI-binds branch `v029` (pinned above by rev).
 [patch.crates-io]
 rayon = { path = "rayon-seq" }
 # sm64-binds 2.1.1 with the JS-backend memory fix: Gumbo64/sm64-binds branch `wasm-js-memory-2.1.1`.
