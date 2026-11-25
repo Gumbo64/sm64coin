@@ -21,7 +21,7 @@
 //! Read next: commit.rs.
 
 use crate::commit;
-use crate::proof::{self, Codec, Proof};
+use crate::proof::{self, Proof};
 use anyhow::{Result, bail};
 use std::sync::RwLock;
 

@@ -199,6 +199,14 @@ impl Daemon {
         self.call("submit_block", json!([block_hex]))?;
         Ok(())
     }
+
+    /// v0.4 stage B: offer a sealed block that can't win to the node's proof pool
+    /// (`submit_sm64_proof`): the node includes it as a proof record in a later block.
+    /// Returns the pool's verdict (1 new, 0 ignored, negative refused) and its reason.
+    pub fn submit_proof(&self, block_hex: &str) -> Result<(i64, String)> {
+        let r = self.call("submit_sm64_proof", json!({"blob": block_hex}))?;
+        Ok((r["result"].as_i64().unwrap_or(-1), r["reason"].as_str().unwrap_or_default().to_string()))
+    }
 }
 
 /// The template with `proof` in place of its empty proof (the blob's last

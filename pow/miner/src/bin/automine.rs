@@ -608,6 +608,8 @@ fn main() -> Result<()> {
                 }
             }
             if abandoned {
+                // v0.4 stage B: a run that lost its height is still a proof for it.
+                publish_proof(&daemon, &mut signed, &t, &proof, frames, now());
                 continue;
             }
             ts = ts.max(now());
@@ -642,8 +644,37 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
             }
-            Err(e) => println!("  block rejected: {e}"),
+            Err(e) => {
+                println!("  block rejected: {e}");
+                // v0.4 stage B: the same signed run (no second signature), offered as a proof.
+                match daemon.submit_proof(&rpc::seal_signed(&t, &proof, Some(ts))?) {
+                    Ok((v, why)) => println!("  offered as a proof for height {}: {}{}", t.height, proof_verdict(v), if why.is_empty() { String::new() } else { format!(" ({why})") }),
+                    Err(e) => println!("  offering it as a proof failed: {e}"),
+                }
+            }
         }
+    }
+}
+
+fn proof_verdict(v: i64) -> &'static str {
+    match v {
+        1 => "in the pool",
+        0 => "ignored (known, not for the node's tip height, outside the window, or pool full)",
+        -2 => "the node lacks the parent state",
+        -3 => "bad encoding",
+        _ => "refused",
+    }
+}
+
+/// v0.4 stage B: signs (once per seed: one run per key) and offers a run that can't win as a
+/// proof record for its height.
+fn publish_proof(daemon: &rpc::Daemon, signed: &mut sm64coin_miner::signed::SignedStore, t: &rpc::Template, proof: &[u8], frames: u32, ts: u64) {
+    if signed.may_sign(&t.sm64_seed_hash, proof).is_err() || signed.record(&t.sm64_seed_hash, proof, frames).is_err() {
+        return;
+    }
+    match rpc::seal_signed(t, proof, Some(ts)).and_then(|b| daemon.submit_proof(&b)) {
+        Ok((v, why)) => println!("  published as a proof for height {}: {}{}", t.height, proof_verdict(v), if why.is_empty() { String::new() } else { format!(" ({why})") }),
+        Err(e) => println!("  publishing the run as a proof failed: {e}"),
     }
 }
 
