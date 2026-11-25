@@ -281,9 +281,17 @@ pub fn seal_proof_normalised_at(start: Start, parent: Option<&sm64_binds::SaveSt
 
 /// [`seal_proof_normalised_at`] and what it measured.
 pub fn seal_proof_normalised_report(start: Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad]) -> Result<(Vec<u8>, Report)> {
+    let as_played = played;
     let stripped = without_reserved_bits(start, parent, seed, p, played);
     let played = &stripped[..];
     let mut best = seal_proof_at(start, parent, seed, p, played)?;
+    // The run with the reserved bits cleared is sealed only if it, too, decodes to itself and replays
+    // valid (success first on its last frame), like every normalised candidate below.
+    if played != as_played && !check_sealed(start, parent, seed, p, played, played, &best).unwrap_or(false) {
+        let blob = seal_proof_at(start, parent, seed, p, as_played)?;
+        let n = blob.len();
+        return Ok((blob, Report { original: n, tried: [None, None], sealed: n }));
+    }
     let mut rep = Report { original: best.len(), ..Default::default() };
     for (k, s) in [CONSERVATIVE, AGGRESSIVE].iter().enumerate() {
         let Ok(pads) = normalise_played(start, parent, seed, p, played, s) else { continue };
