@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { acquireEngine } from '../../components/EngineSlot.jsx';
 import { e2eHook } from '../../lib/e2e.js';
+import { checkPos } from './replayCheck.js';
 
 // Hybrid mining: play by hand from a node of the search tree. The node's save state (the headless game's memory and the
 // block's perturbation as the search had them there, from the worker's search: rrt::child::hybrid) is loaded into the shared
@@ -42,6 +43,7 @@ export default function HybridDriver({ hub, engine, req, rec, stop, setClock, se
           if (dead) return;
           restoreState(engine, null, engine.powerOn);
           engine.load_portable_state(portable);
+          { const at = checkPos(engine.get_game_state().pos, req.sel && req.sel.pos); if (!at.ok) throw new Error(`the search's node state is ${at.dist.toFixed(1)} units from where the cloud has the node: not playing from a wrong state`); }
           start = { kind: 'node', state: captureState(engine, null, engine.powerOn), progress: readProgress(engine), pertBytes: new TextEncoder().encode(msg.pert) };
           task = withConfig(hub.template);
           e2eHook('__lastNodeStart', { mode: 'mailbox', pert: msg.pert, pos: [...engine.get_game_state().pos] });
