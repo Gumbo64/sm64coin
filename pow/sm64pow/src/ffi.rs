@@ -945,12 +945,13 @@ pub extern "C" fn sm64pow_set_features(bits: u32) -> i32 {
 }
 
 /// The final key of the equal-length tie-break (pof::TieKey, node policy): 0 the signature's
-/// hash (v0.3, the default), 1 the seed's hash, 2 none (first seen). Unknown values: the default.
+/// hash (v0.3, the default), 1 the seed's hash, 2 none (first seen), 3 the VRF ticket (vrf.rs). Unknown values: the default.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_set_tie_key(k: u32) {
     crate::pof::set_tie_key(match k {
         1 => crate::pof::TieKey::SeedHash,
         2 => crate::pof::TieKey::FirstSeen,
+        3 => crate::pof::TieKey::Vrf,
         _ => crate::pof::TieKey::SigHash,
     });
 }

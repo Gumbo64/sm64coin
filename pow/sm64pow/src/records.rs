@@ -19,7 +19,9 @@
 //!
 //! The coinbase extra nonce (v0.4): `0x64 || miner key || TLV*` with tag 0x01 (65 bytes: the
 //! template's payout address, `flag || spend key || view key`, flag 1 = subaddress) and tag 0x02
-//! (32 bytes: the included-proofs root). Unknown tags are ignored (pools may add their own).
+//! (32 bytes: the included-proofs root), 0x04 (80 bytes: the VRF proof of the parent id, `vrf.rs`, only
+//! for the optional `TieKey::Vrf`; 0x03 is reserved for the evidence burn). Unknown tags are ignored
+//! (pools may add their own).
 //!
 //! Read next: payout.rs, then chain.rs (`verify_records`).
 
@@ -33,6 +35,9 @@ pub const LEAF_TAG: &[u8; 8] = b"sm64prf1";
 /// Extra-nonce TLV tags after the miner key.
 pub const TLV_PAYOUT: u8 = 0x01;
 pub const TLV_ROOT: u8 = 0x02;
+/// 0x03 is reserved for the evidence burn (docs/V0.4-DESIGN.md section 5).
+/// The VRF ticket of the optional `TieKey::Vrf` (vrf.rs): `gamma 32 || c 16 || s 32`, 80 bytes.
+pub const TLV_VRF: u8 = 0x04;
 /// Wire caps (docs/V0.4-DESIGN.md section 6): the whole field, one proof blob (the daemon's
 /// sm64_proof cap), the branch depth.
 pub const MAX_FIELD: usize = 2 << 20;
@@ -141,6 +146,9 @@ impl Payout {
 pub struct NonceFields {
     pub payout: Option<Payout>,
     pub root: Option<[u8; 32]>,
+    /// The VRF proof of the parent block id under the miner key (tag 0x04; structurally checked
+    /// here, verified against the parent by `vrf::verify`).
+    pub vrf: Option<crate::vrf::Proof>,
 }
 
 fn valid_point(k: &[u8; 32]) -> bool {
@@ -176,6 +184,16 @@ pub fn nonce_fields(nonce: &[u8]) -> Option<NonceFields> {
                 }
                 f.root = Some(v.try_into().unwrap());
             }
+            TLV_VRF => {
+                if len as usize != crate::vrf::PROOF_LEN || f.vrf.is_some() {
+                    return None;
+                }
+                let pi: crate::vrf::Proof = v.try_into().unwrap();
+                if !crate::vrf::well_formed(&pi) {
+                    return None;
+                }
+                f.vrf = Some(pi);
+            }
             _ => {}
         }
         i += 2 + len as usize;
@@ -185,6 +203,11 @@ pub fn nonce_fields(nonce: &[u8]) -> Option<NonceFields> {
 
 /// The extra nonce of a v0.4 template: key, payout, and the root when it includes proofs.
 pub fn template_nonce(key: &[u8; 32], payout: Option<&Payout>, root: Option<&[u8; 32]>) -> Vec<u8> {
+    template_nonce_vrf(key, payout, root, None)
+}
+
+/// [`template_nonce`] with the VRF proof of the parent id (tag 0x04, after the root).
+pub fn template_nonce_vrf(key: &[u8; 32], payout: Option<&Payout>, root: Option<&[u8; 32]>, vrf: Option<&crate::vrf::Proof>) -> Vec<u8> {
     let mut n = sign::key_nonce(key).to_vec();
     if let Some(p) = payout {
         n.extend(p.tlv());
@@ -192,6 +215,10 @@ pub fn template_nonce(key: &[u8; 32], payout: Option<&Payout>, root: Option<&[u8
     if let Some(r) = root {
         n.extend_from_slice(&[TLV_ROOT, 32]);
         n.extend_from_slice(r);
+    }
+    if let Some(pi) = vrf {
+        n.extend_from_slice(&[TLV_VRF, crate::vrf::PROOF_LEN as u8]);
+        n.extend_from_slice(pi);
     }
     n
 }
@@ -668,12 +695,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_vrf_tlv_parses_strictly() {
+        let k = Keypair::from_entropy(&[3; 32]).unwrap();
+        let p = payout(4);
+        let pi = crate::vrf::prove(&k, &[7; 32]);
+        let n = template_nonce_vrf(&k.public, Some(&p), Some(&[9; 32]), Some(&pi));
+        assert!(n.len() <= 255, "fits the extra nonce: {}", n.len());
+        let f = nonce_fields(&n).unwrap();
+        assert_eq!((f.vrf, f.payout, f.root), (Some(pi), Some(p), Some([9; 32])));
+        assert_eq!(template_nonce(&k.public, Some(&p), None), template_nonce_vrf(&k.public, Some(&p), None, None));
+        let mut twice = n.clone();
+        twice.extend_from_slice(&[TLV_VRF, 80]);
+        twice.extend_from_slice(&pi);
+        assert_eq!(nonce_fields(&twice), None, "repeated");
+        let mut short = template_nonce(&k.public, None, None);
+        short.extend_from_slice(&[TLV_VRF, 79]);
+        short.extend_from_slice(&pi[..79]);
+        assert_eq!(nonce_fields(&short), None, "wrong length");
+        let mut bad_s = template_nonce_vrf(&k.public, None, None, Some(&pi));
+        let l = bad_s.len();
+        bad_s[l - 32..].fill(0xff);
+        assert_eq!(nonce_fields(&bad_s), None, "s not canonical");
+        let mut reserved = template_nonce(&k.public, None, None);
+        reserved.extend_from_slice(&[0x03, 1, 0]);
+        assert_eq!(nonce_fields(&reserved).unwrap().vrf, None, "0x03 stays unknown (evidence burn)");
+    }
+
+    #[test]
     fn nonce_tlvs() {
         let k = Keypair::from_entropy(&[3; 32]).unwrap();
         let p = payout(4);
         let n = template_nonce(&k.public, Some(&p), Some(&[9; 32]));
         assert!(n.len() <= 255);
-        assert_eq!(nonce_fields(&n), Some(NonceFields { payout: Some(p), root: Some([9; 32]) }));
+        assert_eq!(nonce_fields(&n), Some(NonceFields { payout: Some(p), root: Some([9; 32]), vrf: None }));
         assert_eq!(sign::miner_key(&n), Some(k.public), "v0.3's key parsing still reads the key");
         let mut pool = n.clone();
         pool.extend_from_slice(&[0xf0, 3, 1, 2, 3]);

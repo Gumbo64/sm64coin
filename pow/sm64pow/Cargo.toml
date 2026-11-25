@@ -25,6 +25,8 @@ serde = { version = "1", features = ["derive"] }
 sm64coin-perturb = { path = "../perturb" }
 # Signed proofs (sign.rs): Monero's Schnorr signatures, pure Rust so the browser miner signs too.
 curve25519-dalek = "4"
+# The VRF ticket (vrf.rs, RFC 9381): SHA-512.
+sha2 = "0.10"
 
 # Native: sm64-binds' default backend (wasmer sys); the browser (wasm32, the web miner): wasmer's JS backend.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

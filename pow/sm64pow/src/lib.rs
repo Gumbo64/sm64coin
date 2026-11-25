@@ -50,6 +50,7 @@ pub mod reorg;
 pub mod rules;
 pub mod seed;
 pub mod sign;
+pub mod vrf;
 // 2: the game
 pub mod emulator;
 pub mod game;

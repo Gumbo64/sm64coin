@@ -176,6 +176,10 @@ pub enum TieKey {
     SeedHash = 1,
     /// No final key: an exact tie (equal frames and size) keeps the block this node saw first.
     FirstSeen = 2,
+    /// Designed, NOT the default (docs/V0.4-DESIGN.md section 1.6): the VRF ticket of a
+    /// registered key (`vrf.rs`): registered-with-valid-VRF beats everyone else, lower output
+    /// wins, everyone else falls back to the signature hash. Ungrindable, proportional.
+    Vrf = 3,
 }
 
 static TIE_KEY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(TieKey::SigHash as u8);
@@ -190,6 +194,7 @@ pub fn tie_key() -> TieKey {
     match TIE_KEY.load(std::sync::atomic::Ordering::Relaxed) {
         1 => TieKey::SeedHash,
         2 => TieKey::FirstSeen,
+        3 => TieKey::Vrf,
         _ => TieKey::SigHash,
     }
 }
@@ -197,7 +202,16 @@ pub fn tie_key() -> TieKey {
 /// A block's tie-break: its proof's [`canonical_size`], then the [`tie_key`] of its seed or
 /// signature.
 pub fn tie_of(proof: &[u8], seed: &[u8; 32], sig: &[u8; 64]) -> Tie {
+    tie_of_ticket(proof, seed, sig, None)
+}
+
+/// [`tie_of`] for [`TieKey::Vrf`] with the block's ticket: `vrf` is the output of a VRF proof that
+/// verified for the block's key and parent AND whose key is registered for the block's height
+/// (`vrf::ticket_of_nonce`); None if it has none or any of that failed (the fallback, the
+/// signature hash). Other tie keys ignore it.
+pub fn tie_of_ticket(proof: &[u8], seed: &[u8; 32], sig: &[u8; 64], vrf: Option<&crate::vrf::Output>) -> Tie {
     let hash = match tie_key() {
+        TieKey::Vrf => crate::vrf::ticket_key(vrf, vrf.is_some(), &crate::sign::cn_fast_hash(sig)),
         TieKey::SigHash => crate::sign::cn_fast_hash(sig),
         TieKey::SeedHash => crate::sign::cn_fast_hash(seed),
         TieKey::FirstSeen => [0xfe; 32], // equal for every block: the size decides, then first seen
@@ -424,8 +438,12 @@ mod tests {
         assert!(p.displaces(&id(61), &id(62)));
     }
 
+    /// Tests that switch the global tie key take turns.
+    static TIE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn the_final_tie_key_is_pluggable() {
+        let _g = TIE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let blob = crate::commit::commit_with(&crate::proof::RunLength, &crate::proof::Proof { frames: 20, start: crate::proof::Start::Parent, inputs: vec![Default::default(); 15] });
         let (s1, s2, g1, g2) = ([1u8; 32], [2u8; 32], [3u8; 64], [4u8; 64]);
         assert_eq!(tie_key(), TieKey::SigHash, "v0.3's default");
@@ -437,6 +455,36 @@ mod tests {
         let (a, b) = (tie_of(&blob, &s1, &g1), tie_of(&blob, &s2, &g2));
         assert!(a == b && !beats(20, &a, 20, &b) && !beats(20, &b, 20, &a), "first seen: an exact tie never displaces");
         set_tie_key(TieKey::SigHash);
+    }
+
+    #[test]
+    fn the_vrf_tie_key() {
+        let _g = TIE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let blob = crate::commit::commit_with(&crate::proof::RunLength, &crate::proof::Proof { frames: 20, start: crate::proof::Start::Parent, inputs: vec![Default::default(); 15] });
+        let (seed, g_low, g_high) = ([1u8; 32], [3u8; 64], [4u8; 64]);
+        let (h_low, h_high) = (crate::sign::cn_fast_hash(&g_low), crate::sign::cn_fast_hash(&g_high));
+        let (low, high) = if h_low < h_high { (g_low, g_high) } else { (g_high, g_low) };
+        let (t_lo, t_hi) = ([1u8; 64], [2u8; 64]);
+        set_tie_key(TieKey::Vrf);
+        assert_eq!(tie_key(), TieKey::Vrf);
+        // No ticket: the fallback is the signature hash order.
+        let (a, b) = (tie_of(&blob, &seed, &low), tie_of(&blob, &seed, &high));
+        assert!(beats(20, &a, 20, &b) && !beats(20, &b, 20, &a));
+        // A ticket beats any fallback, even with the worse signature hash.
+        let ticketed = tie_of_ticket(&blob, &seed, &high, Some(&t_hi));
+        assert!(beats(20, &ticketed, 20, &a), "registered ticket beats the fallback");
+        assert!(!beats(20, &a, 20, &ticketed));
+        // Between tickets the lower output wins, whatever the signatures.
+        let (x, y) = (tie_of_ticket(&blob, &seed, &high, Some(&t_lo)), tie_of_ticket(&blob, &seed, &low, Some(&t_hi)));
+        assert!(beats(20, &x, 20, &y) && !beats(20, &y, 20, &x));
+        // The signature of a ticketed block does not matter (no grinding by re-signing).
+        assert_eq!(x, tie_of_ticket(&blob, &seed, &low, Some(&t_lo)));
+        // The canonical size still comes first.
+        assert_eq!(x.size, canonical_size(&blob));
+        // Other keys ignore the ticket.
+        set_tie_key(TieKey::SigHash);
+        assert_eq!(tie_of_ticket(&blob, &seed, &low, Some(&t_lo)), tie_of(&blob, &seed, &low));
+        assert_eq!(tie_key(), TieKey::SigHash);
     }
 
     #[test]
