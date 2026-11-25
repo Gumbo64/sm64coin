@@ -162,7 +162,11 @@ impl Daemon {
         let r = self.call("get_sm64_state", json!({"hash": hash}))?;
         let gz = hex::decode(r["state_gz"].as_str().ok_or_else(|| anyhow!("get_sm64_state: no state_gz"))?)?;
         let mut bytes = Vec::new();
-        flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut bytes)?;
+        // A save state is ~8 MiB; never inflate more than the cap (a gzip bomb from a hostile daemon).
+        flate2::read::GzDecoder::new(&gz[..]).take(MAX_STATE_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_STATE_BYTES {
+            bail!("get_sm64_state: state larger than {MAX_STATE_BYTES} bytes");
+        }
         sm64_binds::SaveState::from_bytes(bytes)
     }
 
@@ -202,6 +206,9 @@ impl Daemon {
 /// The submit-ready v0.3 block for template `t`: its blob with `proof` and
 /// the proof's signature by the template's key in place of the empty proof
 /// and signature (the blob's last 65 bytes), stamped `timestamp`.
+/// Upper bound for a decompressed save state (real ones are ~8.2 MiB).
+const MAX_STATE_BYTES: usize = 32 << 20;
+
 pub fn seal_signed(t: &Template, proof: &[u8], timestamp: Option<u64>) -> Result<String> {
     let key = t.key.as_ref().ok_or_else(|| anyhow!("the template has no miner key (use Daemon::template)"))?;
     seal_with(&t.blocktemplate_blob, &t.sm64_seed_hash, key, proof, timestamp)

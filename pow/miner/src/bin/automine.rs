@@ -338,7 +338,14 @@ fn main() -> Result<()> {
             }
         };
         let params = sm64pow::params(t.sm64_retarget_difficulty.max(1));
-        let seed = sm64pow::Seed::from_hex(&t.sm64_seed_hash)?;
+        let seed = match sm64pow::Seed::from_hex(&t.sm64_seed_hash) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("daemon: bad seed in the template ({e}); retrying in 5 s");
+                std::thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+        };
         let elapsed = t.sm64_timestamp.saturating_sub(t.sm64_parent_timestamp);
         let limit_now = sm64pow::rules().max_frames(t.sm64_retarget_difficulty.max(1), elapsed);
         if limit_now != t.sm64_max_frames || params.rng.random_amount != t.sm64_random_amount || params.rng.window_length != t.sm64_window_length {
@@ -353,13 +360,13 @@ fn main() -> Result<()> {
         println!(
             "\nblock {} on {}..  retarget {}  limit {} frames now  start {}  parent {} stars {} keys  seed {}",
             t.height,
-            &t.prev_hash[..12],
+            t.prev_hash.get(..12).unwrap_or(&t.prev_hash),
             t.sm64_retarget_difficulty,
             t.sm64_max_frames,
             t.sm64_start,
             t.sm64_parent_stars,
             t.sm64_parent_keys,
-            &t.sm64_seed_hash[..8]
+            t.sm64_seed_hash.get(..8).unwrap_or(&t.sm64_seed_hash)
         );
 
         // Where the run starts: the parent's end state, or power-on.
@@ -609,7 +616,7 @@ fn main() -> Result<()> {
         }
         // One run per key: never sign a second, different run for this seed.
         if let Err(prev) = signed.may_sign(&t.sm64_seed_hash, &proof) {
-            println!("  already signed a different run ({} frames) for seed {}..: not signing a second one (equivocation); waiting for a new block", prev.frames, &t.sm64_seed_hash[..8]);
+            println!("  already signed a different run ({} frames) for seed {}..: not signing a second one (equivocation); waiting for a new block", prev.frames, t.sm64_seed_hash.get(..8).unwrap_or(&t.sm64_seed_hash));
             while daemon.top_hash().map(|h| h == t.tip).unwrap_or(true) {
                 std::thread::sleep(Duration::from_secs(2));
             }

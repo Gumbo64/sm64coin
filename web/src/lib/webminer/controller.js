@@ -24,6 +24,26 @@ export const hybrid = new Hybrid();
 
 export const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
 const now = () => Date.now() / 1000;
+
+// A save state is ~8 MiB; never inflate more than this (a gzip bomb from a hostile node).
+const MAX_STATE_BYTES = 32 << 20;
+// Reads a stream to an ArrayBuffer, failing as soon as it passes `max` bytes.
+async function readCapped(stream, max) {
+  const parts = [];
+  const r = stream.getReader();
+  let n = 0;
+  for (;;) {
+    const { done, value } = await r.read();
+    if (done) break;
+    if (n + value.length > max) { r.cancel().catch(() => {}); throw new Error(`state larger than ${max} bytes`); }
+    parts.push(value);
+    n += value.length;
+  }
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out.buffer;
+}
 // Workers can sync their searches (SharedArrayBuffer) only in a cross-origin-isolated page: the
 // service worker coi-sw.js sets the headers GitHub Pages can't (one reload after enabling it).
 export const isolated = typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
@@ -290,7 +310,7 @@ class MinerController {
       try {
         const s = await daemon('get_sm64_state', { hash: t.prev_hash });
         const gz = new Blob([hexToBytes(s.state_gz)]).stream().pipeThrough(new DecompressionStream('gzip'));
-        parentState = await new Response(gz).arrayBuffer();
+        parentState = await readCapped(gz, MAX_STATE_BYTES);
         say(`block ${t.height}: the parent's end state from the node (${t.sm64_parent_stars} stars, ${t.sm64_parent_keys} keys)`);
       } catch (e) {
         // An older node, or the state isn't cached: rebuild it from the cycle.
