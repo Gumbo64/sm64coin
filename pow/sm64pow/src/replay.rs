@@ -188,21 +188,26 @@ pub(crate) fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &
     Ok(Err("no progress was made (no new star, key or Grand Star)".into()))
 }
 
-/// Replays a proof blob from `game` with no time limit (the rules that depend
-/// on the timestamp are checked later, by [`verify_block`]).
+/// Replays a proof blob from `game` without its block's time limit (the rules
+/// that depend on the timestamp are checked later, by [`verify_block`]), but
+/// never past the longest limit any block can have
+/// ([`crate::rules::Rules::max_frames_any`]): the parallel pre-pass replays
+/// blocks before any rule has looked at them, and a claim of a million frames
+/// (the codecs' cap) once cost it ~30 s of CPU per block (docs/DOS.md).
 pub(crate) fn replay_blob(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, blob: &[u8], state_ok: bool) -> Result<std::result::Result<(SM64MiningGame, Progress, u32), String>> {
     let p = params(1);
+    let ceiling = rules().max_frames_any();
     if state_ok {
         if let Ok((frames, _, cid, body)) = proof::split_blob(blob) {
             if let Some(c) = crate::statecodec::state_codec(cid) {
-                return Ok(replay_state(game, before, seed, &p, frames, c, body, None, None)?.map(|(g, now)| (g, now, frames)));
+                return Ok(replay_state(game, before, seed, &p, frames, c, body, Some(ceiling), None)?.map(|(g, now)| (g, now, frames)));
             }
         }
     }
-    let pr = match proof::decode_proof(blob, proof::MAX_FRAMES) {
+    let pr = match proof::decode_proof(blob, ceiling as usize) {
         Ok(x) => x,
         Err(e) => return Ok(Err(format!("bad proof: {e}"))),
     };
     let frames = pr.frames;
-    Ok(replay(game, before, seed, &p, &pr, None, None)?.map(|(g, now)| (g, now, frames)))
+    Ok(replay(game, before, seed, &p, &pr, Some(ceiling), None)?.map(|(g, now)| (g, now, frames)))
 }

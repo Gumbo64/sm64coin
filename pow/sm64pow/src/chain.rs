@@ -17,7 +17,7 @@
 //!
 //! Read next: ffi.rs (how the daemon calls this).
 
-use crate::cache::{REPLAYS, alias, known_summary, parent_state, played_cached, remember, remember_played, run_key};
+use crate::cache::{REPLAYS, alias, known_invalid, known_summary, parent_state, played_cached, remember, remember_invalid, remember_played, run_key};
 use crate::game::Progress;
 use crate::proof::{self, Start};
 use crate::replay::{replay, replay_state, start_game};
@@ -105,6 +105,7 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
                     return Ok(BlockVerdict::Invalid(format!("{} frames exceeds the limit of {limit}", sum.frames)));
                 }
                 alias(*id, key);
+                crate::admit::note_valid(seed, sum.frames);
                 return Ok(BlockVerdict::Valid { frames: sum.frames, progress: sum.progress, ends_cycle: sum.ends_cycle });
             }
         }
@@ -128,18 +129,41 @@ fn check(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u64>, b
         }
     };
     let key = run_key(parent, start, seed, blob);
-    REPLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let (frames, result) = match (&state, &pr) {
-        (Some((frames, _, c, body)), _) => (*frames, replay_state(game, before, seed, &p, *frames, *c, body, difficulty.map(|_| limit), played)?),
-        (None, Some(pr)) => (pr.frames, replay(game, before, seed, &p, pr, difficulty.map(|_| limit), played)?),
+    // The time limit before the replay (so a replay's verdict never depends on
+    // the timestamp, and can be remembered by run).
+    let claimed = match (&state, &pr) {
+        (Some((frames, ..)), _) => *frames,
+        (None, Some(pr)) => pr.frames,
         _ => unreachable!(),
     };
-    match result {
-        Err(why) => Ok(BlockVerdict::Invalid(why)),
+    if difficulty.is_some() && claimed > limit {
+        return Ok(BlockVerdict::Invalid(format!("{claimed} frames exceeds the limit of {limit}")));
+    }
+    // The same run already failed a replay (the same block sent again, or a re-stamped copy).
+    if let Some(why) = known_invalid(&key) {
+        crate::admit::note_invalid();
+        return Ok(BlockVerdict::Invalid(why));
+    }
+    // RPC calls that replay draw on a budget (crate::admit::RpcScope).
+    let timer = crate::admit::rpc_replay_gate().map_err(|e| anyhow::anyhow!(e))?;
+    REPLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (frames, result) = match (&state, &pr) {
+        (Some((frames, _, c, body)), _) => (*frames, replay_state(game, before, seed, &p, *frames, *c, body, difficulty.map(|_| limit), played)),
+        (None, Some(pr)) => (pr.frames, replay(game, before, seed, &p, pr, difficulty.map(|_| limit), played)),
+        _ => unreachable!(),
+    };
+    crate::admit::rpc_replay_done(timer);
+    match result? {
+        Err(why) => {
+            remember_invalid(key, &why);
+            crate::admit::note_invalid();
+            Ok(BlockVerdict::Invalid(why))
+        }
         Ok((g, now)) => {
             let ends_cycle = rules().ends_cycle(&now);
             let event = crate::game::event(&before, &now);
             remember(*id, key, EndState { game: g.game.save_state(), progress: now, ends_cycle, event }, frames, start, difficulty.is_some());
+            crate::admit::note_valid(seed, frames);
             Ok(BlockVerdict::Valid { frames, progress: now, ends_cycle })
         }
     }

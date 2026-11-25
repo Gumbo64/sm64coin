@@ -8,9 +8,15 @@
 //! timestamp and the parent. Nothing here decides validity: an invalid run is
 //! just not summarized, and the sequential check replays and rejects it.
 //!
+//! It runs before any rule has looked at the batch, so it bounds its own
+//! work (docs/DOS.md): no run is replayed past the longest limit any block
+//! can have, and once a block is found invalid no block after it in the batch
+//! is replayed (the sequential check rejects that block and drops the rest of
+//! the batch). A batch of fake blocks costs about one replay per thread.
+//!
 //! Read next: chain.rs.
 
-use crate::cache::{REPLAYS, Summary, alias, cached, known_summary, parent_state, remember, remember_summary, run_key};
+use crate::cache::{REPLAYS, Summary, alias, cached, known_invalid, known_summary, parent_state, remember, remember_invalid, remember_summary, run_key};
 use crate::emulator::generator;
 use crate::game::{Progress, read_progress};
 use crate::proof::{self, Start};
@@ -41,21 +47,28 @@ pub struct BatchBlock {
 pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     let state_ok = crate::statecodec::state_codec_enabled();
     // Chains: each block continues the previous one when it starts from its end state.
-    let mut chains: Vec<Vec<&BatchBlock>> = Vec::new();
-    for b in batch {
-        let start = match proof::proof_start(&b.blob) {
-            Ok(s) => s,
-            Err(_) => continue,
+    // Blocks carry their index in the batch.
+    let mut chains: Vec<Vec<(usize, &BatchBlock)>> = Vec::new();
+    // The first block known to be invalid: nothing after it is worth replaying.
+    let first_bad = std::sync::atomic::AtomicUsize::new(usize::MAX);
+    let ceiling = rules().max_frames_any();
+    for (i, b) in batch.iter().enumerate() {
+        let start = match proof::split_blob(&b.blob) {
+            Ok((frames, start, ..)) if frames <= ceiling && frames > 0 => start,
+            _ => {
+                first_bad.fetch_min(i, std::sync::atomic::Ordering::Relaxed);
+                break;
+            }
         };
         let parent_id = match b.parent {
             Parent::Block { id, .. } => Some(id),
             Parent::Genesis => None,
         };
-        let continues = start == Start::Parent && chains.last().and_then(|c| c.last()).is_some_and(|l| Some(l.id) == parent_id);
+        let continues = start == Start::Parent && chains.last().and_then(|c| c.last()).is_some_and(|(_, l)| Some(l.id) == parent_id);
         if continues {
-            chains.last_mut().unwrap().push(b);
+            chains.last_mut().unwrap().push((i, b));
         } else if start == Start::PowerOn || parent_id.is_none() || parent_id.is_some_and(|p| cached(&p).is_some()) {
-            chains.push(vec![b]);
+            chains.push(vec![(i, b)]);
         } else if start == Start::Parent {
             // Not startable here (no cached parent): the sequential check rebuilds it.
             chains.push(Vec::new());
@@ -69,7 +82,7 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
     {
         let _ = threads;
         while let Some(chain) = chains.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-            let _ = replay_chain(chain, state_ok, &replayed);
+            let _ = replay_chain(chain, state_ok, &replayed, &first_bad);
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -78,19 +91,27 @@ pub fn preverify(batch: &[BatchBlock], threads: usize) -> usize {
             sc.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(chain) = chains.get(i) else { break };
-                let _ = replay_chain(chain, state_ok, &replayed);
+                let _ = replay_chain(chain, state_ok, &replayed, &first_bad);
             });
         }
     });
     replayed.into_inner()
 }
 
-fn replay_chain(chain: &[&BatchBlock], state_ok: bool, replayed: &std::sync::atomic::AtomicUsize) -> Result<()> {
+fn replay_chain(chain: &[(usize, &BatchBlock)], state_ok: bool, replayed: &std::sync::atomic::AtomicUsize, first_bad: &std::sync::atomic::AtomicUsize) -> Result<()> {
+    use std::sync::atomic::Ordering::Relaxed;
     let mut prev: Option<(SaveState, Progress, bool)> = None;
-    for (k, b) in chain.iter().enumerate() {
+    for (k, (i, b)) in chain.iter().enumerate() {
+        if *i > first_bad.load(Relaxed) {
+            return Ok(()); // an earlier block of the batch is invalid
+        }
         let start = proof::proof_start(&b.blob)?;
         let key = run_key(&b.parent, start, &b.seed, &b.blob);
         let last = k + 1 == chain.len();
+        if known_invalid(&key).is_some() {
+            first_bad.fetch_min(*i, Relaxed);
+            return Ok(());
+        }
         if known_summary(&key).is_some() {
             // Already known: continue from its state if this chain needs it.
             if last {
@@ -125,11 +146,16 @@ fn replay_chain(chain: &[&BatchBlock], state_ok: bool, replayed: &std::sync::ato
                 _ => return Ok(()),
             },
         };
-        replayed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        REPLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        replayed.fetch_add(1, Relaxed);
+        REPLAYS.fetch_add(1, Relaxed);
         let (g, now, frames) = match replay_blob(game, before, &b.seed, &b.blob, state_ok)? {
             Ok(x) => x,
-            Err(_) => return Ok(()), // the sequential check rejects it
+            Err(why) => {
+                // The sequential check rejects it (and the rest of the batch).
+                remember_invalid(key, &why);
+                first_bad.fetch_min(*i, Relaxed);
+                return Ok(());
+            }
         };
         let ends_cycle = rules().ends_cycle(&now);
         let event = crate::game::event(&before, &now);

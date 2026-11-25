@@ -105,6 +105,7 @@ file to read.
 | 12 | `sm64pow/src/replay.rs` | 210 | **verifying one run** | `start_game` (genesis child and post-Grand-Star blocks start at power-on; a restart pays a delay), `replay`, and `replay_state` (the canonical-encoding check) |
 | 13 | `sm64pow/src/cache.rs` | 370 | end states between blocks (memory and disk) | `run_key`: restamped copies of a block share one entry (red team finding F1). The disk format is at the bottom |
 | 14 | `sm64pow/src/preverify.rs` | 145 | the parallel sync pre-pass | it never decides validity |
+| 14b | `sm64pow/src/admit.rs` | 590 | which blocks earn a replay at all (relay policy, not consensus; [DOS.md](DOS.md)) | `admit_alt`, `admit_relay`, `RpcScope` |
 | 15 | `sm64pow/src/chain.rs` | 200 | **the verdict per block** | `check`: the known-run fast path (re-checks only the timestamp rules), the limit, the restart delay, `NeedParent` |
 | 16 | `sm64pow/src/ffi.rs`, `sm64pow/sm64pow.h` | 525 + 70 | the C ABI | sections: setup, verifying blocks, proof blobs, rules. Every function catches panics |
 | 17 | `monero/src/sm64coin/sm64coin.{h,cpp}` | 105 + 225 | the daemon's whole interface to proof-of-play | type adaptation only |
@@ -148,6 +149,7 @@ markers. Here they are grouped by what they do.
 - `blockchain.cpp:1931, 1949, 1976` (`handle_alternative_block`): the same three for alternative chains.
 - `blockchain.cpp:2110`: fork choice by block count (`weigh_by_blocks`) instead of cumulative difficulty.
 - `blockchain.cpp:4715` (`add_new_block`): `sm64_hold`, so a block is held until its run fits by this node's clock.
+- Denial of service ([DOS.md](DOS.md)): `sm64_skip_alt` in `handle_alternative_block`, the admission checks in `sm64_hold`, `sm64coin::source_scope` in `cryptonote_protocol_handler.inl` (relayed blocks, sync spans) and `on_submitblock`, `sm64coin::rpc_scope` in the RPC calls that replay.
 - `blockchain.cpp:5199` (`prepare_handle_incoming_blocks`): the parallel pre-pass of a sync batch.
 - `blockchain.cpp:1625` (`create_block_template`): a template is stamped after its parent.
 - `blockchain.cpp:954` (`recalculate_difficulties`): disabled with `if (true || ...)`.

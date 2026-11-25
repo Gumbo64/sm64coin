@@ -177,6 +177,91 @@ pub extern "C" fn sm64pow_preverify(n: usize, ids: *const u8, parents: *const u8
     std::panic::catch_unwind(|| crate::chain::preverify(&batch, threads as usize)).unwrap_or(0) as u64
 }
 
+// ---- Admission policy: which blocks earn a replay (admit.rs, docs/DOS.md) ----
+
+fn str_arg(p: *const c_char) -> String {
+    if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
+}
+
+/// Sets this thread's source of blocks until [`sm64pow_source_leave`] with the
+/// returned handle: `host` (the peer's or RPC client's address), `source` 1 a
+/// block relayed unasked, 2 a sync span whose last block is at height `top`,
+/// 3 a block submitted over restricted RPC. Blocks handled without a source
+/// are never refused.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_source_enter(host: *const c_char, source: i32, top: u64) -> *mut std::ffi::c_void {
+    use crate::admit::{Context, Source};
+    let src = match source {
+        1 => Some(Source::Relay),
+        2 => Some(Source::Sync { top }),
+        3 => Some(Source::RpcSubmit),
+        _ => None,
+    };
+    let ctx = src.map(|source| Context { host: str_arg(host), source });
+    Box::into_raw(Box::new(crate::admit::enter(ctx))) as *mut std::ffi::c_void
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_source_leave(handle: *mut std::ffi::c_void) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle as *mut crate::admit::ContextGuard) });
+    }
+}
+
+/// Whether to replay an alternative block (`id32`, `parent32`, seed `hash32`,
+/// claiming `frames`) at `height` when our tip is at `top`; `main_seed32` (or
+/// null) is the seed of our main-chain block at that height. 1 replay it, 0
+/// skip it (not stored, not relayed, its sender not punished; the reason in
+/// sm64pow_last_error).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_admit_alt(id32: *const u8, parent32: *const u8, hash32: *const u8, frames: u32, height: u64, top: u64, main_seed32: *const u8) -> i32 {
+    let (Some(id), Some(parent), Some(seed)) = (unsafe { id_arg(id32) }, unsafe { id_arg(parent32) }, unsafe { id_arg(hash32) }) else { return 1 };
+    let main_seed = unsafe { id_arg(main_seed32) }.map(Seed);
+    let b = crate::admit::AltBlock { id, parent, seed: Seed(seed), frames, height, top, main_seed };
+    match std::panic::catch_unwind(|| crate::admit::admit_alt(&b)) {
+        Ok(crate::admit::Decision::Skip(why)) => {
+            set_error(why.into());
+            0
+        }
+        _ => 1,
+    }
+}
+
+/// Whether to replay a block extending the tip that claims `frames`, in this
+/// thread's source (see sm64pow_source_enter): 1 yes, 0 skip it.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_admit_relay(frames: u32) -> i32 {
+    match std::panic::catch_unwind(|| crate::admit::admit_relay(frames)) {
+        Ok(crate::admit::Decision::Skip(why)) => {
+            set_error(why.into());
+            0
+        }
+        _ => 1,
+    }
+}
+
+/// Whether restricted-RPC client `host` may submit a block now (0: it sent an
+/// invalid proof recently).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_rpc_submit_allowed(host: *const c_char) -> i32 {
+    let h = str_arg(host);
+    std::panic::catch_unwind(|| crate::admit::rpc_submit_allowed(&h)).unwrap_or(true) as i32
+}
+
+/// Marks this thread as serving an RPC call until [`sm64pow_rpc_leave`]:
+/// replays it causes draw on the RPC replay budget (and fail when it is used up).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_rpc_enter() -> *mut std::ffi::c_void {
+    Box::into_raw(Box::new(crate::admit::RpcScope::enter())) as *mut std::ffi::c_void
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_rpc_leave(handle: *mut std::ffi::c_void) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle as *mut crate::admit::RpcScope) });
+    }
+}
+
 /// Keeps the last few blocks' end states in directory `path` (NUL-terminated)
 /// and loads those already there. Returns how many were loaded, -1 on error.
 #[unsafe(no_mangle)]

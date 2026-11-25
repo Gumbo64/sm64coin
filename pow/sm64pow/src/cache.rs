@@ -28,8 +28,14 @@ use sm64_binds::SaveState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// How many end states to keep (about 8 MB each).
-const CACHE: usize = 24;
+/// How many end states to keep (about 8 MB each), in two pools: the states the
+/// chain itself needed (blocks verified against the limit, the pre-pass,
+/// rebuilding a parent to verify its child), and the states of replays an RPC
+/// call caused (played pads, cycles, templates on old blocks). A flood of the second kind (a website walking
+/// an old cycle, docs/DOS.md) can no longer evict the tip's end state and make
+/// the next block wait for a replay of the whole cycle.
+const CACHE_VERIFIED: usize = 16;
+const CACHE_REPLAYED: usize = 8;
 /// How many block ids may point at cached runs. Blocks that differ only in
 /// their timestamp (the seed excludes it, so anyone can re-stamp a published
 /// block) are the same run: they share one end state and one cache slot, so a
@@ -65,7 +71,9 @@ const SUMS: usize = 16384;
 
 struct Cache {
     runs: HashMap<RunKey, Run>,
+    /// The verified pool's keys, then the replayed pool's, oldest first.
     order: VecDeque<RunKey>,
+    order_replayed: VecDeque<RunKey>,
     ids: HashMap<[u8; 32], RunKey>,
     id_order: VecDeque<[u8; 32]>,
     sums: HashMap<RunKey, Summary>,
@@ -74,12 +82,49 @@ struct Cache {
 
 fn cache() -> &'static Mutex<Cache> {
     static C: OnceLock<Mutex<Cache>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(Cache { runs: HashMap::new(), order: VecDeque::new(), ids: HashMap::new(), id_order: VecDeque::new(), sums: HashMap::new(), sum_order: VecDeque::new() }))
+    C.get_or_init(|| Mutex::new(Cache { runs: HashMap::new(), order: VecDeque::new(), order_replayed: VecDeque::new(), ids: HashMap::new(), id_order: VecDeque::new(), sums: HashMap::new(), sum_order: VecDeque::new() }))
+}
+
+impl Cache {
+    /// Keeps `run` under `key` in the verified pool (`verified`) or the
+    /// replayed pool, evicting that pool's oldest beyond its size.
+    fn keep(&mut self, key: RunKey, run: Run, verified: bool) {
+        self.order.retain(|k| *k != key);
+        self.order_replayed.retain(|k| *k != key);
+        self.runs.insert(key, run);
+        let (order, cap) = if verified { (&mut self.order, CACHE_VERIFIED) } else { (&mut self.order_replayed, CACHE_REPLAYED) };
+        order.push_back(key);
+        let mut gone = Vec::new();
+        while order.len() > cap {
+            if let Some(old) = order.pop_front() {
+                gone.push(old);
+            }
+        }
+        for k in gone {
+            self.runs.remove(&k);
+        }
+    }
 }
 
 pub fn cached(id: &[u8; 32]) -> Option<Arc<EndState>> {
-    let c = cache().lock().unwrap();
-    c.ids.get(id).and_then(|k| c.runs.get(k)).map(|r| r.state.clone())
+    {
+        let c = cache().lock().unwrap();
+        if let Some(s) = c.ids.get(id).and_then(|k| c.runs.get(k)).map(|r| r.state.clone()) {
+            return Some(s);
+        }
+    }
+    // Evicted from memory but still on disk (one of the newest verified blocks): load it
+    // instead of making the daemon replay the cycle.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(dir) = STATE_DIR.get() {
+        let hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
+        let f = dir.join(format!("{hex}.state"));
+        if f.is_file() && load_state_file(&f).is_ok() {
+            let c = cache().lock().unwrap();
+            return c.ids.get(id).and_then(|k| c.runs.get(k)).map(|r| r.state.clone());
+        }
+    }
+    None
 }
 
 /// The cached end state of `parent` (None for the genesis block, or when not cached).
@@ -180,18 +225,31 @@ pub(crate) fn remember(id: [u8; 32], key: RunKey, s: EndState, frames: u32, star
         let copy = EndState { game: s.game.clone(), progress: s.progress, ends_cycle: s.ends_cycle, event: s.event };
         let _ = std::thread::Builder::new().name("sm64-persist".into()).spawn(move || persist(&id, &key, &copy, frames, start));
     }
-    {
-        let mut c = cache().lock().unwrap();
-        if c.runs.insert(key, Run { state: Arc::new(s), frames, start }).is_none() {
-            c.order.push_back(key);
-        }
-        while c.order.len() > CACHE {
-            if let Some(old) = c.order.pop_front() {
-                c.runs.remove(&old);
-            }
-        }
-    }
+    // Replays an RPC call caused go to the replayed pool; everything the chain itself needed
+    // (verifying, rebuilding a parent, the pre-pass) to the verified pool.
+    let verified = durable || !crate::admit::in_rpc();
+    cache().lock().unwrap().keep(key, Run { state: Arc::new(s), frames, start }, verified);
     alias(id, key);
+}
+
+/// Runs found invalid by a replay (not by a rule that depends on the
+/// timestamp: those are checked before replaying), so sending the same block
+/// again, or a re-stamped copy of it, costs no second replay. Like the end
+/// states, keyed by run: the verdict is a function of the parent's end state,
+/// the start, the seed and the proof bytes.
+const INVALID_RUNS: usize = 4096;
+
+fn invalid_runs() -> &'static Mutex<crate::admit::Bounded<RunKey, String>> {
+    static I: OnceLock<Mutex<crate::admit::Bounded<RunKey, String>>> = OnceLock::new();
+    I.get_or_init(|| Mutex::new(crate::admit::Bounded::new(INVALID_RUNS)))
+}
+
+pub(crate) fn known_invalid(key: &RunKey) -> Option<String> {
+    invalid_runs().lock().unwrap().get(key).cloned()
+}
+
+pub(crate) fn remember_invalid(key: RunKey, why: &str) {
+    invalid_runs().lock().unwrap().insert(key, why.to_string());
 }
 
 /// How many runs this process has replayed (tests: a re-stamped variant is
@@ -359,17 +417,45 @@ fn load_state_file(path: &std::path::Path) -> Result<()> {
     let mut g = generator()?.create_game()?;
     g.load_state(&game)?;
     let progress = read_progress(&g)?;
-    {
-        let mut c = cache().lock().unwrap();
-        if c.runs.insert(key, Run { state: Arc::new(EndState { game, progress, ends_cycle, event }), frames, start }).is_none() {
-            c.order.push_back(key);
-        }
-        while c.order.len() > CACHE {
-            if let Some(old) = c.order.pop_front() {
-                c.runs.remove(&old);
-            }
-        }
-    }
+    cache().lock().unwrap().keep(key, Run { state: Arc::new(EndState { game, progress, ends_cycle, event }), frames, start }, true);
     alias(id, key);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// docs/DOS.md: replays of old blocks (an RPC client walking old cycles)
+    /// must not evict the end states of the newest verified blocks, or the
+    /// next block would wait for a replay of the whole cycle.
+    #[test]
+    fn replays_of_old_blocks_do_not_evict_the_tip() {
+        let rom = std::env::var("SM64COIN_ROM").unwrap_or_else(|_| "../../baserom.us.z64".into());
+        let Ok(b) = std::fs::read(&rom) else {
+            eprintln!("skipping: no ROM at {rom}");
+            return;
+        };
+        let _ = crate::init(b);
+        let g = generator().unwrap().create_game().unwrap();
+        let st = g.save_state();
+        let end = || EndState { game: st.clone(), progress: Progress::default(), ends_cycle: false, event: None };
+        let tip = [0x7e; 32];
+        // A verified block's state (durable; without a state dir: memory only).
+        remember(tip, [0x7f; 32], end(), 100, Start::Parent, true);
+        {
+            // Replays an RPC call caused (a website walking an old cycle).
+            let _rpc = crate::admit::RpcScope::enter();
+            for k in 0..100u8 {
+                remember([k; 32], [k ^ 0x80; 32], end(), 100, Start::Parent, false);
+            }
+        }
+        assert!(cached(&tip).is_some(), "the tip's end state survives 100 replays of old blocks");
+        assert!(cached(&[99; 32]).is_some() && cached(&[0; 32]).is_none(), "the replayed pool keeps its newest");
+        // Verified blocks still push each other out, oldest first.
+        for k in 0..CACHE_VERIFIED as u8 {
+            remember([0xc0 ^ k; 32], [0xd0 ^ k; 32], end(), 100, Start::Parent, true);
+        }
+        assert!(cached(&tip).is_none());
+    }
 }
