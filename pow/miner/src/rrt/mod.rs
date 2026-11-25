@@ -161,6 +161,7 @@ fn step_key(job: &Job) -> String {
     // The anytime miner's settings change what a search looks for, not which step it is: a shared first castle step stays shared.
     j.env.retain(|(k, _)| !matches!(k.as_str(), "OBRRT_GOOD_MAX_FRAME" | "OBRRT_GUIDE_KEYS" | "OBRRT_GUIDE_WEIGHT"));
     (j.manual, j.manual_weight) = (Vec::new(), 0.0);
+    j.max_path = 0;
     let text = serde_json::to_string(&j).unwrap_or_default();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
