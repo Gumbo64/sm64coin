@@ -332,7 +332,7 @@ mod tests {
         tpl.extend_from_slice(&[0u8; 65]);
         let key = sm64pow::sign::Keypair::from_entropy(&[9; 32]).unwrap();
         let seed = [3u8; 32];
-        let proof = sm64pow::proof::encode_proof(&sm64pow::proof::Proof { frames: 5, start: sm64pow::proof::Start::Parent, inputs: vec![sm64_binds::GamePad::new(0, 0, 0); 4] });
+        let proof = sm64pow::commit::commit(&sm64pow::proof::Proof { frames: 5, start: sm64pow::proof::Start::Parent, inputs: vec![sm64_binds::GamePad::new(0, 0, 0); 4] }); // v0.4: committed
         let sealed = hex::decode(seal_with(&hex::encode(&tpl), &hex::encode(seed), &key, &proof, Some(1_800_000_000)).unwrap()).unwrap();
         assert_eq!(get_timestamp(&sealed).unwrap(), 1_800_000_000);
         let sig: [u8; 64] = sealed[sealed.len() - 64..].try_into().unwrap();
