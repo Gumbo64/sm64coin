@@ -47,16 +47,16 @@ void sm64pow_block_scope_leave(void *handle);
 /* Fork choice with the equivocation penalty: 1 switch to the alternative chain. Seeds: 32 bytes each. */
 int32_t sm64pow_fork_choice(uint64_t main_len, const uint8_t *main_seeds, size_t n_main, uint64_t alt_len, const uint8_t *alt_seeds, size_t n_alt);
 /* A block of our chain at startup: eligible at its own stamp (the displacement window after a restart). */
-void sm64pow_note_history(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64);
+void sm64pow_note_history(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64, const uint8_t *proof, size_t len);
 /* SM64COIN v0.3 publish-on-find (pof.rs, relay / fork-choice policy). note_eligible:
  * block id32 became eligible now (valid, fitting by the node's clock). displaces: 1
  * when eligible sibling alt32 replaces our childless tip32 (a strictly shorter run of
  * another key inside the 60 s window, or a fresh block against a stale tip).
  * pof_candidate: 1 when such a sibling is worth a replay. stale: 1 when a block
  * stamped timestamp is stale now (not relayed). */
-void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64); /* sig64: the block's sm64_sig (the equal-length tie-break) */
+void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64, const uint8_t *proof, size_t len); /* sig64, proof: the block's sm64_sig and sm64_proof (the equal-length tie-break: canonical proof size, then the signature's hash) */
 int32_t sm64pow_displaces(const uint8_t *tip32, const uint8_t *alt32);
-int32_t sm64pow_pof_candidate(const uint8_t *tip32, const uint8_t *id32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64);
+int32_t sm64pow_pof_candidate(const uint8_t *tip32, const uint8_t *id32, const uint8_t *hash32, uint32_t frames, uint64_t timestamp, const uint8_t *sig64, const uint8_t *proof, size_t len);
 int32_t sm64pow_stale(uint64_t timestamp);
 /* The freshness bound for block id32, judged when it became eligible here (a queued claim: max(arrival, due)). */
 int32_t sm64pow_stale_block(const uint8_t *id32, uint64_t timestamp);

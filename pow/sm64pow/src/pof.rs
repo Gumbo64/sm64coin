@@ -58,8 +58,9 @@ pub struct Seen {
     pub stale: bool,
     /// Its timestamp.
     pub stamp: u64,
-    /// The equal-length tie-break: cn_fast_hash(sm64_sig) (lower wins; [`NO_TIE`] when unknown).
-    pub tie: [u8; 32],
+    /// The equal-length tie-break ([`Tie`]: the canonical proof size, then cn_fast_hash(sm64_sig);
+    /// lower wins; [`NO_TIE`] when unknown).
+    pub tie: Tie,
 }
 
 /// Whether a block stamped `stamp` and arriving (eligible) at `now` is stale.
@@ -88,7 +89,7 @@ impl Policy {
 
     /// [`Policy::note_eligible`] with the block's tie-break hash, `cn_fast_hash(sm64_sig)` ([`tie_of`]).
     #[allow(clippy::too_many_arguments)]
-    pub fn note_eligible_tie(&mut self, id: [u8; 32], parent: [u8; 32], seed: [u8; 32], frames: u32, stamp: u64, now: u64, tie: [u8; 32]) {
+    pub fn note_eligible_tie(&mut self, id: [u8; 32], parent: [u8; 32], seed: [u8; 32], frames: u32, stamp: u64, now: u64, tie: Tie) {
         let (blocks, first) = self.maps();
         if blocks.get(&id).is_some() {
             return;
@@ -138,7 +139,7 @@ impl Policy {
 
     /// [`Policy::candidate`] for a block whose tie-break hash is `tie` (an equal-length sibling
     /// with a lower hash also displaces, inside the window).
-    pub fn candidate_tie(&mut self, tip: &[u8; 32], frames: u32, tie: &[u8; 32], stamp: u64, now: u64) -> bool {
+    pub fn candidate_tie(&mut self, tip: &[u8; 32], frames: u32, tie: &Tie, stamp: u64, now: u64) -> bool {
         let (blocks, first) = self.maps();
         let Some(t) = blocks.get(tip).copied() else { return false };
         if t.stale && !stale(stamp, now) {
@@ -149,19 +150,51 @@ impl Policy {
     }
 }
 
-/// "Unknown": never wins a tie.
-pub const NO_TIE: [u8; 32] = [0xff; 32];
+/// The equal-length tie-break between siblings of different keys: the smaller canonical proof
+/// size wins ([`canonical_size`]: simpler, more compressible inputs, smaller blocks), then the
+/// lower `cn_fast_hash(sm64_sig)`. Ordered by (size, hash).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Tie {
+    pub size: u32,
+    pub hash: [u8; 32],
+}
 
-/// A block's tie-break hash: `cn_fast_hash(sm64_sig)`.
-pub fn tie_of(sig: &[u8; 64]) -> [u8; 32] {
-    crate::sign::cn_fast_hash(sig)
+/// "Unknown": never wins a tie.
+pub const NO_TIE: Tie = Tie { size: u32::MAX, hash: [0xff; 32] };
+
+/// A block's tie-break: its proof's [`canonical_size`] and `cn_fast_hash(sm64_sig)`.
+pub fn tie_of(proof: &[u8], sig: &[u8; 64]) -> Tie {
+    Tie { size: canonical_size(proof), hash: crate::sign::cn_fast_hash(sig) }
+}
+
+/// The size of a proof that every node sees the same for the same block id. The block id commits
+/// to `proof_id`: for the stateless codecs (0 raw, 1 run-length, 2 xz) that is the decoded run, so
+/// the same block can travel in different encodings (submit_block re-encodes on unrestricted RPC,
+/// and anyone may relay another encoding) and the blob's length is NOT canonical; their size here
+/// is the length of the run-length encoding of the decoded run (our own deterministic codec; xz's
+/// output could differ between library versions). For the state codecs (3-5) the id commits to the
+/// exact bytes, so the blob's length is canonical. u32::MAX if the proof doesn't decode.
+pub fn canonical_size(blob: &[u8]) -> u32 {
+    use crate::proof;
+    if crate::statecodec::state_codec_enabled() {
+        if let Ok((_, _, cid, _)) = proof::split_blob(blob) {
+            if crate::statecodec::state_codec(cid).is_some() {
+                return blob.len().min(u32::MAX as usize - 1) as u32;
+            }
+        }
+    }
+    match proof::decode_proof(blob, crate::rules::active().max_frames_any() as usize) {
+        Ok(p) => proof::encode_proof_with(&proof::RunLength, &p).len().min(u32::MAX as usize - 1) as u32,
+        Err(_) => u32::MAX,
+    }
 }
 
 /// Inside the window, between siblings of different keys: strictly fewer frames wins; at equal
-/// frames, the lower signature hash, at every node whatever the arrival order (the auction-
-/// smoothness simulation: window-edge splits 0.8 % -> 0). Only the run's owner can change its
-/// signature, and grinding it only matters for exact ties.
-fn beats(frames: u32, tie: &[u8; 32], their_frames: u32, their_tie: &[u8; 32]) -> bool {
+/// frames, the smaller canonical proof size, then the lower signature hash, at every node whatever
+/// the arrival order (the auction-smoothness simulation: window-edge splits 0.8 % -> 0). Only the
+/// run's owner can change its inputs or signature; grinding them is real optimisation (simpler
+/// inputs) or only matters for exact ties.
+fn beats(frames: u32, tie: &Tie, their_frames: u32, their_tie: &Tie) -> bool {
     frames < their_frames || (frames == their_frames && *tie != NO_TIE && tie < their_tie)
 }
 
@@ -196,7 +229,7 @@ pub fn restamp_preferred(tip: &[u8; 32], seed: &[u8; 32], stamp: u64, id: &[u8; 
 /// fresh against a stale tip), or a clean sibling of a tip whose template has equivocation
 /// evidence (equivocation.rs: miners build such siblings, and the fork-choice penalty prefers
 /// them, so they must be replayed and stored, not dropped).
-pub fn sibling_could_matter(tip: &[u8; 32], seed: &[u8; 32], frames: u32, tie: &[u8; 32], stamp: u64, at: u64) -> bool {
+pub fn sibling_could_matter(tip: &[u8; 32], seed: &[u8; 32], frames: u32, tie: &Tie, stamp: u64, at: u64) -> bool {
     let (cand, tip_seed) = {
         let mut p = policy().lock().unwrap_or_else(|e| e.into_inner());
         let c = p.candidate_tie(tip, frames, tie, stamp, at);
@@ -250,7 +283,7 @@ mod tests {
     #[test]
     fn equal_lengths_of_different_keys_go_to_the_lower_signature_hash_whatever_the_order() {
         let t0 = 3_000_000;
-        let (lo, hi) = ([1u8; 32], [2u8; 32]);
+        let (lo, hi) = (Tie { size: 100, hash: [1u8; 32] }, Tie { size: 100, hash: [2u8; 32] });
         for first_low in [true, false] {
             let mut p = Policy::default();
             let (a, b) = if first_low { ((id(40), lo), (id(41), hi)) } else { ((id(41), hi), (id(40), lo)) };
@@ -267,6 +300,46 @@ mod tests {
         q.note_eligible_tie(id(51), P, id(151), 3000, t0 + POF_WINDOW_SECONDS + 1, t0 + POF_WINDOW_SECONDS + 1, lo);
         assert!(!q.displaces(&id(50), &id(51)));
         assert!(!q.candidate(&id(50), 3000, t0 + 1, t0 + 1), "no tie-break hash: never wins a tie");
+    }
+
+    #[test]
+    fn at_equal_frames_the_smaller_proof_wins_before_the_hash() {
+        let t0 = 4_000_000;
+        let mut p = Policy::default();
+        let big_low_hash = Tie { size: 900, hash: [0; 32] };
+        let small_high_hash = Tie { size: 800, hash: [0xee; 32] };
+        p.note_eligible_tie(id(60), P, id(160), 3000, t0, t0, big_low_hash);
+        p.note_eligible_tie(id(61), P, id(161), 3000, t0 + 3, t0 + 3, small_high_hash);
+        assert!(p.displaces(&id(60), &id(61)), "smaller proof first, whatever the hash");
+        assert!(!p.displaces(&id(61), &id(60)));
+        assert!(p.candidate_tie(&id(60), 3000, &small_high_hash, t0 + 3, t0 + 3));
+        // Fewer frames still beats any size.
+        p.note_eligible_tie(id(62), P, id(162), 2999, t0 + 4, t0 + 4, Tie { size: 5000, hash: [0xff; 32] });
+        assert!(p.displaces(&id(61), &id(62)));
+    }
+
+    #[test]
+    fn the_canonical_size_does_not_depend_on_the_encoding() {
+        use crate::proof::{Proof, RunLength, Raw, Start, encode_proof_with};
+        use crate::sm64_binds::GamePad;
+        let mut inputs = vec![GamePad::default(); 900];
+        for (i, x) in inputs.iter_mut().enumerate() {
+            x.button = (i / 50) as u16;
+        }
+        let pr = Proof { frames: 900, start: Start::Parent, inputs };
+        let raw = encode_proof_with(&Raw, &pr);
+        let rle = encode_proof_with(&RunLength, &pr);
+        assert_ne!(raw.len(), rle.len());
+        assert_eq!(crate::proof_id::proof_id(&raw), crate::proof_id::proof_id(&rle), "one block id for both encodings");
+        assert_eq!(canonical_size(&raw), canonical_size(&rle), "and one size");
+        assert_eq!(canonical_size(&raw), rle.len() as u32);
+        assert_eq!(canonical_size(&[0xff, 0xff]), u32::MAX, "doesn't decode");
+        assert_eq!(canonical_size(&raw), 94, "pinned: the run-length encoding of this run is 94 bytes");
+        // A real block (state codec 4): its id commits to the bytes, so the size is the blob's.
+        let l = include_str!("../tests/fixtures/mainnet_v02.jsonl").lines().next().unwrap();
+        let hexs = l.split("\"proof\": \"").nth(1).unwrap().split('"').next().unwrap();
+        let blob: Vec<u8> = (0..hexs.len() / 2).map(|i| u8::from_str_radix(&hexs[2 * i..2 * i + 2], 16).unwrap()).collect();
+        assert_eq!((canonical_size(&blob), blob.len()), (1855, 1855), "pinned: v0.2 mainnet block 1 (codec 4)");
     }
 
     #[test]
