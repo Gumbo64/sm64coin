@@ -24,7 +24,11 @@ Prints one JSON line of results.
 import argparse, json, os, socket, struct, sys, threading, time, urllib.request
 
 LEVIN_SIGNATURE = 0x0101010101012101
-NETWORK_ID = bytes.fromhex('54d342183f9654efbf1fdd186fec2444')  # sm64coin mainnet v0.3: uuid5(dns, 'sm64coin-mainnet-v0.3')
+# sm64coin mainnet v0.3: uuid5(dns, 'sm64coin-mainnet-v0.3'); SM64_NET=testnet / stagenet for test networks
+NETWORK_ID = {'testnet': bytes.fromhex('0df000f89bb35a56bcf348183ce65fee')}.get(os.environ.get('SM64_NET', ''), bytes.fromhex('54d342183f9654efbf1fdd186fec2444'))
+if os.environ.get('SM64_NET') == 'stagenet':
+    import uuid
+    NETWORK_ID = uuid.uuid5(uuid.NAMESPACE_DNS, 'sm64coin-stagenet-v0.3').bytes
 HANDSHAKE, TIMED_SYNC, PING, SUPPORT_FLAGS = 1001, 1002, 1003, 1007
 GET_OBJECTS, RESPONSE_GET_OBJECTS, REQUEST_CHAIN, RESPONSE_CHAIN_ENTRY, NEW_FLUFFY_BLOCK = 2003, 2004, 2006, 2007, 2008
 
