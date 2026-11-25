@@ -84,7 +84,7 @@ pub struct Job {
     pub blob: Vec<u8>,
     /// Frames the proof claims.
     pub frames: u32,
-    /// The equal-length tie-break (pof.rs: canonical proof size, then cn_fast_hash(sm64_sig)).
+    /// The equal-length tie-break (pof.rs: canonical proof size, then cn_fast_hash(seed)).
     pub tie: crate::pof::Tie,
     /// The block's timestamp.
     pub stamp: u64,
