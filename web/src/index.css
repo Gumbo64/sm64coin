@@ -18,6 +18,8 @@ main { max-width:1200px; margin:0 auto; padding:20px 24px; }
 .muted { color: var(--mut); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .break { word-break: break-all; }
+/* The ROM upload prompt (sm64-binds-frontend's FileUpload): its 40-digit SHA-1 overflowed phone screens. */
+.romgate p { overflow-wrap: anywhere; }
 table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); }
 th { color:var(--mut); font-weight:500; font-size:13px; }
