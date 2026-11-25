@@ -9,7 +9,7 @@ import { createEngine, prepareStart } from '../lib/cycle.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
-import TouchPad from '../components/TouchPad.jsx';
+import PlayView from '../components/PlayView.jsx';
 import RomGate from '../lib/RomGate.jsx';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
@@ -222,8 +222,7 @@ function Miner() {
     <>
     <CycleTimeline attempt={clock ? clock.frame : 0} limit={lim || 0} />
     <div className="mine2">
-      <div className="gamecol">
-        <canvas ref={canvas} className="sm64canvas" />
+      <PlayView rec={rec} clock={clock} limit={lim} normal={<>
         <div className="budget" title="Frames you have used of the current time limit. The limit grows from the last block's timestamp up to 20 minutes; you can play past it and wait for it to catch up.">
           <div className={`bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
           <span className="stat">{lim ? `${used} / ${lim} frames (${frames(used)} / ${frames(lim)})` : '—'}{over ? ` — ${used - lim} over: it becomes valid when the limit has grown to your run` : ''}</span>
@@ -240,9 +239,10 @@ function Miner() {
             {' '}<button onClick={() => { ctl.current.discardPending = true; }}>Discard</button></span>}
           {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
         </div>
-        <TouchPad />
         <Controls rec={rec} />
-      </div>
+      </>}>
+        <canvas ref={canvas} className="sm64canvas" />
+      </PlayView>
 
       <aside className="card side">
         {task && <LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={used} runs={runs} />}

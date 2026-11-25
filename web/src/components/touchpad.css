@@ -1,29 +1,44 @@
-/* On-screen controller. Portrait / desktop: a block under the game. Landscape touch: fixed
-   translucent overlay at the screen's bottom corners (the page stays scrollable in between). */
-.tp-wrap { margin-top: 8px; }
-.tp-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* Play view (components/PlayView.jsx). Normal page: a small bar under the game. */
+.tp-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
 .tp-bar button { padding: 6px 10px; font-size: 13px; background: #2a2f4a; color: var(--fg); }
 .tp-bar button.on { background: var(--acc); color: #1a1a1a; }
-.tp-settings { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0; font-size: 13px; }
+.tp-settings { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; font-size: 13px; }
 .tp-settings label { display: flex; align-items: center; gap: 6px; }
 .tp-settings input { margin: 0; padding: 0; }
 
-.tp { --u: calc(var(--tp-s, 1) * 1px); display: flex; height: calc(250 * var(--u)); margin-top: 8px; opacity: var(--tp-op, .55);
-  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; touch-action: none; }
+/* The immersive view: fixed over everything, black, the page's own UI hidden. */
+.pv.imm { position: fixed; inset: 0; z-index: 2000; background: #000; margin: 0; padding: 0; overflow: hidden;
+  --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px); --sal: env(safe-area-inset-left, 0px); --sar: env(safe-area-inset-right, 0px);
+  --H: 100dvh; --W: 100dvw; --strip: 36px;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+@supports not (height: 100dvh) { .pv.imm { --H: 100vh; --W: 100vw; } }
+.mine2 .pv.imm .sm64canvas, .pv.imm .sm64canvas { position: absolute; margin: 0; border-radius: 0; aspect-ratio: 4 / 3; background: #000; }
+
+.pv-strip { position: absolute; z-index: 3; display: flex; align-items: center; gap: 6px; height: var(--strip); padding: 0 4px; background: rgba(0,0,0,.55); color: #fff; font: 12px ui-monospace, monospace; box-sizing: border-box; }
+.pv-btn { flex: 0 0 auto; width: 34px; height: 30px; min-height: 0; min-width: 0; padding: 0; background: rgba(255,255,255,.18); color: #fff; font-size: 13px; border-radius: 6px; line-height: 1; }
+.pv-bar { flex: 1 1 40px; min-width: 40px; height: 6px; background: rgba(255,255,255,.2); border-radius: 3px; overflow: hidden; }
+.pv-bar .fill { height: 100%; background: var(--acc); }
+.pv-bar.over .fill { background: #e55; }
+.pv-text { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pv-hint { position: absolute; z-index: 3; left: 50%; transform: translateX(-50%); display: none; align-items: center; gap: 8px; background: #2b2410; border: 1px solid var(--acc); color: var(--fg); border-radius: 10px; padding: 6px 8px 6px 12px; font-size: 13px; max-width: calc(100% - 24px); }
+.pv-x { flex: 0 0 auto; background: transparent; color: var(--fg); padding: 0 6px; font-size: 14px; }
+
+.tp { position: absolute; inset: 0; pointer-events: none; z-index: 2; opacity: var(--tp-op, .6); }
 .tp * { touch-action: none; user-select: none; -webkit-user-select: none; }
-.tp-left { position: relative; flex: 1 1 50%; min-width: 0; border-radius: 12px; background: rgba(255,255,255,.04); border: 1px dashed rgba(255,255,255,.18); touch-action: none; }
-.tp-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); color: rgba(255,255,255,.35); font-size: 13px; pointer-events: none; }
+.tp-left { position: absolute; pointer-events: auto; touch-action: none; }
+.tp-ghost { position: absolute; left: 50%; top: 55%; width: calc(110 * var(--u)); height: calc(110 * var(--u)); margin: calc(-55 * var(--u)) 0 0 calc(-55 * var(--u)); border-radius: 50%; border: 2px dashed rgba(255,255,255,.3); pointer-events: none; }
 .tp-stick { position: absolute; width: calc(128 * var(--u)); height: calc(128 * var(--u)); margin: calc(-64 * var(--u)) 0 0 calc(-64 * var(--u));
   border-radius: 50%; background: rgba(255,255,255,.12); border: 2px solid rgba(255,255,255,.5); pointer-events: none; }
 .tp-knob { position: absolute; left: 50%; top: 50%; width: calc(56 * var(--u)); height: calc(56 * var(--u)); margin: calc(-28 * var(--u)); border-radius: 50%; background: rgba(255,255,255,.55); }
 
-.tp-right { position: relative; flex: 1 1 50%; min-width: 0; display: flex; justify-content: center; }
-.tp-buttons { position: relative; width: calc(324 * var(--u)); height: 100%; }
-.tp-btn { position: absolute; display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #fff; font-weight: 800;
-  background: rgba(30,34,60,.85); border: 2px solid rgba(255,255,255,.55); cursor: pointer; }
+/* The button cluster: a 324 x 250 box (in units of --u px). */
+.tp-right { position: absolute; width: calc(324 * var(--u)); height: calc(250 * var(--u)); pointer-events: none; }
+.tp-buttons { position: absolute; inset: 0; }
+.tp-btn { position: absolute; display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #fff; font-weight: 800; pointer-events: auto;
+  background: rgba(20,24,48,.7); border: 2px solid rgba(255,255,255,.55); cursor: pointer; box-sizing: border-box; }
 .tp-btn.down { background: var(--acc); color: #1a1a1a; }
-.tp-btn.a { width: calc(92 * var(--u)); height: calc(92 * var(--u)); left: calc(196 * var(--u)); top: calc(140 * var(--u)); font-size: calc(34 * var(--u)); background: rgba(40,160,80,.85); }
-.tp-btn.b { width: calc(66 * var(--u)); height: calc(66 * var(--u)); left: calc(122 * var(--u)); top: calc(176 * var(--u)); font-size: calc(24 * var(--u)); background: rgba(190,60,50,.85); }
+.tp-btn.a { width: calc(92 * var(--u)); height: calc(92 * var(--u)); left: calc(196 * var(--u)); top: calc(140 * var(--u)); font-size: calc(34 * var(--u)); background: rgba(40,160,80,.75); }
+.tp-btn.b { width: calc(66 * var(--u)); height: calc(66 * var(--u)); left: calc(122 * var(--u)); top: calc(176 * var(--u)); font-size: calc(24 * var(--u)); background: rgba(190,60,50,.75); }
 .tp-btn.a.down, .tp-btn.b.down { background: var(--acc); }
 .tp-btn.z { width: calc(66 * var(--u)); height: calc(66 * var(--u)); left: calc(112 * var(--u)); top: calc(100 * var(--u)); font-size: calc(22 * var(--u)); border-radius: 14px; }
 .tp-btn.r, .tp-btn.l { width: calc(62 * var(--u)); height: calc(38 * var(--u)); top: calc(42 * var(--u)); font-size: calc(18 * var(--u)); border-radius: 10px; }
@@ -33,21 +48,33 @@
 .tp-btn.cd { left: calc(228 * var(--u)); top: calc(92 * var(--u)); }
 .tp-btn.cl { left: calc(184 * var(--u)); top: calc(48 * var(--u)); }
 .tp-btn.cr { left: calc(272 * var(--u)); top: calc(48 * var(--u)); }
-.tp-btn.start { position: absolute; left: 0; top: calc(4 * var(--u)); width: calc(70 * var(--u)); height: calc(30 * var(--u)); font-size: calc(12 * var(--u)); border-radius: 8px; }
-.tp-right > .tp-btn.start { left: calc(50% - 35 * var(--u)); }
+.tp-btn.start { left: calc(127 * var(--u)); top: calc(4 * var(--u)); width: calc(70 * var(--u)); height: calc(30 * var(--u)); font-size: calc(12 * var(--u)); border-radius: 8px; }
 
-/* Touch devices: the pad is fixed at the bottom of the screen (over the game in landscape, under it in
-   portrait: the wrapper reserves the room so the page can still scroll above it). It shrinks to fit
-   the width and, in landscape, the height. */
-@media (pointer: coarse) {
-  .tp-wrap.on { padding-bottom: calc(262 * var(--tp-s, 1) * min(1px, 100vw / 480, .24vh)); }
-  .tp-wrap .tp { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; margin: 0; pointer-events: none; padding: 0 8px 8px;
-    --u: calc(var(--tp-s, 1) * min(1px, 100vw / 480, .24vh)); }
-  .tp-left, .tp-right { pointer-events: none; }
-  .tp-left { flex: 1 1 auto; pointer-events: auto; background: transparent; border: 0; }
-  .tp-right { flex: 0 0 auto; }
-  .tp-btn, .tp-btn.start { pointer-events: auto; }
-  .tp-hint { display: none; }
-  .tp-btn { background: rgba(20,24,48,.6); }
-  .tp-btn.a { background: rgba(40,160,80,.7); } .tp-btn.b { background: rgba(190,60,50,.7); } .tp-btn.down { background: var(--acc); }
+/* Landscape: the game fills the height, centred; the controls sit in the side bars (the cluster may
+   reach a little over the picture on small phones). The slim strip overlays the picture's top edge. */
+@media (orientation: landscape) {
+  .pv.imm { --ch: calc(var(--H) - var(--sat) - var(--sab)); --cw: calc(var(--ch) * 4 / 3); --side: calc((var(--W) - var(--cw)) / 2);
+    --u: min(calc(var(--tp-s, 1) * 1px), max(.6px, calc((var(--side) + 90px) / 324)), calc((var(--ch) - 16px) / 250)); }
+  .gamecol.pv.imm .sm64canvas { top: var(--sat); height: var(--ch); width: var(--cw); left: calc((var(--W) - var(--cw)) / 2); }
+  .pv-strip { top: var(--sat); left: calc((var(--W) - var(--cw)) / 2); width: var(--cw); }
+  .pv.imm .tp-left { left: var(--sal); top: calc(var(--sat) + var(--strip)); bottom: var(--sab); right: calc(324 * var(--u) + 16px + var(--sar)); }
+  .pv.imm .tp-right { right: calc(8px + var(--sar)); bottom: calc(8px + var(--sab)); }
+  .pv-hint { display: none !important; }
 }
+/* Portrait: the game on top, the controller below it (never over the picture). */
+@media (orientation: portrait) {
+  .pv.imm { --cw: calc(var(--W) - var(--sal) - var(--sar)); --gh: calc(var(--cw) * 3 / 4); --pad-top: calc(var(--sat) + var(--strip) + var(--gh));
+    --u: min(calc(var(--tp-s, 1) * 1px), calc((var(--W) - 24px - 100px) / 324), calc((var(--H) - var(--pad-top) - var(--sab) - 16px) / 250)); }
+  .gamecol.pv.imm .sm64canvas { top: calc(var(--sat) + var(--strip)); left: var(--sal); width: var(--cw); height: var(--gh); }
+  .pv-strip { top: var(--sat); left: var(--sal); right: var(--sar); }
+  .pv.imm .tp-left { left: var(--sal); top: var(--pad-top); bottom: var(--sab); right: calc(324 * var(--u) + 16px + var(--sar)); }
+  .pv.imm .tp-right { right: calc(8px + var(--sar)); bottom: calc(8px + var(--sab)); }
+  .pv-hint { display: flex; top: calc(var(--pad-top) + 6px); }
+}
+
+/* Not full screen: the controller is a block directly under the game (part of the game column,
+   scrolls with it, covers nothing). */
+.pv:not(.imm) .tp { position: relative; inset: auto; height: calc(250 * var(--u)); margin-top: 8px; z-index: 0;
+  --u: min(calc(var(--tp-s, 1) * 1px), calc((100vw - 32px - 110px) / 324), 1.1px); }
+.pv:not(.imm) .tp-left { left: 0; top: 0; bottom: 0; right: calc(324 * var(--u) + 8px); border-radius: 12px; background: rgba(255,255,255,.05); border: 1px dashed rgba(255,255,255,.2); }
+.pv:not(.imm) .tp-right { right: 0; bottom: 0; }

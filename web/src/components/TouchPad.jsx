@@ -10,51 +10,50 @@ import './touchpad.css';
 
 const KEY = 'sm64coin.touch';
 const load = () => {
-  const d = { mode: 'auto', opacity: 0.55, size: 1, haptics: true };
+  const d = { pad: null, auto: true, opacity: 0.6, size: 1, haptics: true };
   try { return { ...d, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch { return d; }
 };
-const isTouchDevice = () => {
+export const isTouchDevice = () => {
   try { return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0; } catch { return false; }
 };
 
 const STICK_R = 64; // px of thumb travel for full deflection (at size 1)
 
-export default function TouchPad() {
+/** The saved touch settings: {auto (open the play view by itself on touch devices), opacity, size, haptics}. */
+export function useTouchConfig() {
   const [cfg, setCfg] = useState(load);
-  const [open, setOpen] = useState(false);
   const set = (p) => setCfg((c) => { const n = { ...c, ...p }; try { localStorage.setItem(KEY, JSON.stringify(n)); } catch { /* private mode */ } return n; });
-  const on = cfg.mode === 'on' || (cfg.mode === 'auto' && isTouchDevice());
-  useEffect(() => { if (!on) resetTouch(); return resetTouch; }, [on]);
-  useEffect(() => {
-    // Touches that vanish with the page (app switch, rotation) must not leave buttons held.
-    const rel = () => resetTouch();
-    window.addEventListener('blur', rel);
-    document.addEventListener('visibilitychange', rel);
-    return () => { window.removeEventListener('blur', rel); document.removeEventListener('visibilitychange', rel); };
-  }, []);
+  return [cfg, set];
+}
 
+export function TouchSettings({ cfg, set }) {
   return (
-    <div className={`tp-wrap${on ? ' on' : ''}`} style={{ '--tp-s': cfg.size }}>
-      <div className="tp-bar">
-        <button className={on ? 'on' : ''} onClick={() => set({ mode: on ? 'off' : 'on' })} title="Show or hide the on-screen controller">
-          🎮 Touch controls: {on ? 'on' : 'off'}
-        </button>
-        {on && <button onClick={() => setOpen((o) => !o)} aria-expanded={open}>⚙ Settings</button>}
-        {cfg.mode !== 'auto' && <button className="linkish" onClick={() => set({ mode: 'auto' })} title="Show on touch devices only">auto</button>}
-      </div>
-      {on && open && (
-        <div className="tp-settings">
-          <label>Opacity <input type="range" min="0.2" max="1" step="0.05" value={cfg.opacity} onChange={(e) => set({ opacity: Number(e.target.value) })} /></label>
-          <label>Size <input type="range" min="0.7" max="1.6" step="0.05" value={cfg.size} onChange={(e) => set({ size: Number(e.target.value) })} /></label>
-          <label><input type="checkbox" checked={cfg.haptics} onChange={(e) => set({ haptics: e.target.checked })} /> Vibrate on press</label>
-        </div>
-      )}
-      {on && <Overlay cfg={cfg} />}
+    <div className="tp-settings">
+      <label>Opacity <input type="range" min="0.2" max="1" step="0.05" value={cfg.opacity} onChange={(e) => set({ opacity: Number(e.target.value) })} /></label>
+      <label>Size <input type="range" min="0.7" max="1.4" step="0.05" value={cfg.size} onChange={(e) => set({ size: Number(e.target.value) })} /></label>
+      <label><input type="checkbox" checked={cfg.haptics} onChange={(e) => set({ haptics: e.target.checked })} /> Vibrate on press</label>
+      <label><input type="checkbox" checked={cfg.auto} onChange={(e) => set({ auto: e.target.checked })} /> Open the full-screen controller automatically on touch devices</label>
     </div>
   );
 }
 
-function Overlay({ cfg }) {
+/** Releases every touch (buttons and stick): the controls call this whenever their touches may have vanished. */
+export function useReleaseOnLayoutChange() {
+  useEffect(() => {
+    const rel = () => { resetTouch(); window.dispatchEvent(new Event('sm64touch-release')); };
+    window.addEventListener('blur', rel);
+    window.addEventListener('resize', rel);
+    window.addEventListener('orientationchange', rel);
+    document.addEventListener('visibilitychange', rel);
+    return () => {
+      window.removeEventListener('blur', rel); window.removeEventListener('resize', rel);
+      window.removeEventListener('orientationchange', rel); document.removeEventListener('visibilitychange', rel);
+    };
+  }, []);
+}
+
+export function TouchOverlay({ cfg }) {
+  useReleaseOnLayoutChange();
   const s = cfg.size;
   const buzz = () => { if (cfg.haptics && navigator.vibrate) { try { navigator.vibrate(8); } catch { /* unsupported */ } } };
   return (
@@ -83,6 +82,11 @@ function Btn({ id, cls, buzz, children }) {
   const held = useRef(new Set());
   const [down, setDown] = useState(false);
   const mask = BUTTONS[id];
+  useEffect(() => {
+    const f = () => { held.current.clear(); setDown(false); };
+    window.addEventListener('sm64touch-release', f);
+    return () => window.removeEventListener('sm64touch-release', f);
+  }, []);
   const sync = () => {
     const d = held.current.size > 0;
     if (d) touchState.buttons |= mask; else touchState.buttons &= ~mask;
@@ -142,13 +146,17 @@ function StickZone({ radius, buzz }) {
     if (!st.current || st.current.id !== e.pointerId) return;
     st.current = null; touchState.x = 0; touchState.y = 0; setVis(null);
   };
-  useEffect(() => () => { touchState.x = 0; touchState.y = 0; }, []);
+  useEffect(() => {
+    const f = () => { st.current = null; setVis(null); };
+    window.addEventListener('sm64touch-release', f);
+    return () => { window.removeEventListener('sm64touch-release', f); touchState.x = 0; touchState.y = 0; };
+  }, []);
   return (
     <div className="tp-left" ref={zone} data-testid="stickzone" data-max={STICK_MAX}
       onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onLostPointerCapture={up}>
       {vis
         ? <div className="tp-stick" style={{ left: vis.ox, top: vis.oy }}><div className="tp-knob" style={{ transform: `translate(${vis.kx}px, ${vis.ky}px)` }} /></div>
-        : <div className="tp-hint">move</div>}
+        : <div className="tp-ghost" />}
     </div>
   );
 }
