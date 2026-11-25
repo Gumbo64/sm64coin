@@ -397,6 +397,18 @@ pub extern "C" fn sm64pow_source_enter(host: *const c_char, source: i32, top: u6
     Box::into_raw(Box::new(crate::admit::enter(ctx))) as *mut std::ffi::c_void
 }
 
+/// The kind of source this thread is in (1 relay, 2 sync, 3 restricted RPC), 0 none.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_source_kind() -> i32 {
+    use crate::admit::Source;
+    match crate::admit::context().map(|c| c.source) {
+        Some(Source::Relay) => 1,
+        Some(Source::Sync { .. }) => 2,
+        Some(Source::RpcSubmit) => 3,
+        None => 0,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_source_leave(handle: *mut std::ffi::c_void) {
     if !handle.is_null() {

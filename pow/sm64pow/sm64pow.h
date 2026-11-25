@@ -26,8 +26,7 @@ int64_t sm64pow_verify_signed_block(const uint8_t *id32, const uint8_t *parent32
 int32_t sm64pow_check_signature(const uint8_t *hash32, const uint8_t *proof, size_t len,
                                 const uint8_t *nonce, size_t nonce_len, const uint8_t *sig64);
 /* Equivocation (equivocation.rs, relay policy): a second run for the template of
- * our accepted block. 0 same run, 1 shorter (ignored), 2 longer (ignored), 3 bad
- * signature, 4 equivocation (272 bytes of evidence to out; relay), 5 known evidence, -1 error. */
+ * a block in our chain. 0 same run, 3 bad signature, 4 equivocation (any other signed run) (272 bytes of evidence to out; relay), 5 known evidence, -1 error. */
 int32_t sm64pow_judge_sibling(const uint8_t *hash32, const uint8_t *nonce, size_t nonce_len,
                               const uint8_t *main_proof, size_t main_len, const uint8_t *main_sig64,
                               const uint8_t *alt_proof, size_t alt_len, const uint8_t *alt_sig64,
@@ -44,6 +43,25 @@ void sm64pow_note_eligible(const uint8_t *id32, const uint8_t *parent32, const u
 int32_t sm64pow_displaces(const uint8_t *tip32, const uint8_t *alt32);
 int32_t sm64pow_pof_candidate(const uint8_t *tip32, uint32_t frames, uint64_t timestamp);
 int32_t sm64pow_stale(uint64_t timestamp);
+/* One run per key (equivocation.rs): 0 bad signature, 1 the template's first run,
+ * 2 the same run again, 3 a different run (equivocation; evidence queued for relay), -1 error. */
+int32_t sm64pow_note_claim(const uint8_t *hash32, const uint8_t *proof, size_t len,
+                           const uint8_t *nonce, size_t nonce_len, const uint8_t *sig64);
+/* The replay queue (queue.rs). facts: 0 parent not in our chain, 1 it is the tip,
+ * 2 it has a main-chain child (id, frames out). Called from worker threads. */
+typedef int32_t (*sm64pow_facts_cb)(const uint8_t *parent32, uint8_t *child_id32, uint32_t *child_frames);
+void sm64pow_queue_set_facts(sm64pow_facts_cb cb);
+void sm64pow_queue_set_threads(uint32_t n);
+/* 0 queued, 1 known, 2 full, 3 source penalised. */
+int32_t sm64pow_queue_submit(const uint8_t *id32, const uint8_t *parent32, int32_t genesis_parent, uint64_t gap_seconds,
+                             const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len,
+                             uint32_t frames, uint64_t stamp, uint64_t due);
+/* 1 valid, 0 invalid, 2 skipped, 3 not decided here. */
+int32_t sm64pow_queue_replay_now(const uint8_t *id32, const uint8_t *parent32, int32_t genesis_parent, uint64_t gap_seconds,
+                                 const uint8_t *hash32, uint64_t difficulty, const uint8_t *proof, size_t len,
+                                 uint32_t frames, uint64_t stamp);
+int32_t sm64pow_queue_wait(uint32_t timeout_ms, uint8_t *out_id32);
+int32_t sm64pow_queue_take_cleared(const uint8_t *id32);
 /* The next new evidence to relay to peers (272 bytes to out); 0: none. */
 size_t sm64pow_take_evidence(uint8_t *out, size_t cap);
 /* Where to build when the tip (tip_seed32) is childless: -1 the tip, i the i-th of
@@ -106,6 +124,7 @@ void sm64pow_source_leave(void *handle);
 int32_t sm64pow_admit_alt(const uint8_t *id32, const uint8_t *parent32, const uint8_t *hash32, uint32_t frames,
                           uint64_t height, uint64_t top, const uint8_t *main_seed32);
 int32_t sm64pow_admit_relay(uint32_t frames);
+int32_t sm64pow_source_kind(void);
 int32_t sm64pow_rpc_submit_allowed(const char *host);
 /* An RPC call that may replay (played pads, cycles, templates): draws on the RPC replay budget. */
 void *sm64pow_rpc_enter(void);

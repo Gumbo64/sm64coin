@@ -11,6 +11,12 @@ how long the victim takes to accept it. Only for nodes you run yourself.
   attack.py honest  VICTIM_P2P HONEST.jsonl            relay one block, wait until the victim's height passes it
   attack.py rpcread VICTIM_RPC HEIGHTS                 ask (restricted) RPC for the played pads of old blocks (HEIGHTS: "1-33")
 
+v0.3 (signed blocks): the claims come from `pow/miner/examples/dos_claims.rs` (cargo run --release
+-p sm64coin-miner --example dos_claims -- RPC fake|samekey|honest ...), signed with throwaway keys
+against the victim's own templates; sync mode needs block ids and is not used for them. Scenarios
+(docs/DOS.md, "The replay queue"): long fakes (36,000 frames, many keys), short fakes, same-length
+bursts, many source IPs (--ips), one key's many runs (samekey), each with --honest HONEST.jsonl.
+
 Each attacker connection binds its own loopback source address (127.0.0.N),
 so the victim sees N peers (Monero allows one connection per IP and bans by IP).
 Prints one JSON line of results.
@@ -18,7 +24,7 @@ Prints one JSON line of results.
 import argparse, json, os, socket, struct, sys, threading, time, urllib.request
 
 LEVIN_SIGNATURE = 0x0101010101012101
-NETWORK_ID = bytes([0xB8, 0x82, 0xEC, 0xCA, 0x48, 0x41, 0x57, 0x0F, 0x80, 0xE3, 0x21, 0x6B, 0x8C, 0x43, 0xC3, 0xE8])  # sm64coin mainnet
+NETWORK_ID = bytes.fromhex('54d342183f9654efbf1fdd186fec2444')  # sm64coin mainnet v0.3: uuid5(dns, 'sm64coin-mainnet-v0.3')
 HANDSHAKE, TIMED_SYNC, PING, SUPPORT_FLAGS = 1001, 1002, 1003, 1007
 GET_OBJECTS, RESPONSE_GET_OBJECTS, REQUEST_CHAIN, RESPONSE_CHAIN_ENTRY, NEW_FLUFFY_BLOCK = 2003, 2004, 2006, 2007, 2008
 
