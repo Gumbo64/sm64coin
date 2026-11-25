@@ -281,6 +281,12 @@ Measured on local nodes by the audit; each fix is in pow/sm64pow (decision) with
   emulators across replays would cut part of it but touches the replay path, so it is not done
   for the launch. Time-slicing replays (round-robin chunks across the queue head) is not done
   either; the reserved short-claim worker bounds an honest claim's wait instead.
+- **Unknown sources share one budget.** Sources that never sent a valid claim share a replay
+  budget of 8 long blocks (288,000 frames), refilled at 2 a minute, whatever their number (the
+  Pi: 100 same-length 4,000-frame claims from 40 addresses cost 211 s of CPU).
+  x86 testnet re-run (victim CPU, no honest block): 200 x 300 frames 0.07 s (hopeless, no
+  replay), 60 x 36,000 frames 0.11 s (over the limit at their stamp), 100 x 4,000 frames from 40
+  IPs 2.25 s (2.94 s before the shared budget; 7.7 s at the first queue version).
 - **Known sources first.** A claim from a source that never sent a valid claim counts 2,000
   frames longer when ordering, so a burst from fresh addresses queues behind a known peer's or
   miner's claim of the same length.
