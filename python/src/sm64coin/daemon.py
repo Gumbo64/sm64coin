@@ -160,22 +160,23 @@ class Daemon:
 
 
 def seal(template_hex: str, proof: bytes, sig: bytes, timestamp=None) -> str:
-    """The template blob (v0.3: it ends with the empty proof, a 0 byte, and the empty signature, 64
-    zero bytes) with `proof` and its signature `sig` (`sign.sign_proof`) in their place, and the block
+    """The template blob (v0.4: it ends with the empty proof, a 0 byte, the empty signature, 64
+    zero bytes, and the empty proof records, a 0 byte: the daemon reattaches the template's records)
+    with `proof` and its signature `sig` (`sign.sign_proof`) in their place, and the block
     header's timestamp replaced by `timestamp` (unix seconds; default: now). The seed does not depend
     on the timestamp, so a miner stamps its block when it submits and the signature stays valid.
     Header: varint major, varint minor, varint timestamp, prev_id (32), nonce (4), ..."""
     blob = bytes.fromhex(template_hex)
-    if len(blob) < 65 or any(blob[-65:]):
-        raise ValueError("template does not end with an empty proof and signature; is this an SM64Coin v0.3 daemon?")
+    if len(blob) < 66 or any(blob[-66:]):
+        raise ValueError("template does not end with an empty proof, signature and proof records; is this an SM64Coin v0.4 daemon?")
     if len(sig) != 64:
         raise ValueError("a signature is 64 bytes")
-    blob = blob[:-65]
+    blob = blob[:-66]
     _, i = get_varint_loose(blob, 0)   # major version
     _, i = get_varint_loose(blob, i)   # minor version
     _, j = get_varint_loose(blob, i)   # timestamp
     ts = int(time.time()) if timestamp is None else int(timestamp)
-    return (blob[:i] + varint(ts) + blob[j:] + varint(len(proof)) + bytes(proof) + bytes(sig)).hex()
+    return (blob[:i] + varint(ts) + blob[j:] + varint(len(proof)) + bytes(proof) + bytes(sig) + b"\x00").hex()
 
 
 def get_varint_loose(b: bytes, i: int):

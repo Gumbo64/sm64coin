@@ -329,12 +329,14 @@ mod tests {
         put_varint(&mut tpl, 1_795_313_181);
         tpl.extend((0..40u8).map(|i| i ^ 0x55));
         let body = tpl.clone();
-        tpl.extend_from_slice(&[0u8; 65]);
+        tpl.extend_from_slice(&[0u8; 66]); // v0.4: empty proof, signature and proof records
         let key = sm64pow::sign::Keypair::from_entropy(&[9; 32]).unwrap();
         let seed = [3u8; 32];
         let proof = sm64pow::commit::commit(&sm64pow::proof::Proof { frames: 5, start: sm64pow::proof::Start::Parent, inputs: vec![sm64_binds::GamePad::new(0, 0, 0); 4] }); // v0.4: committed
         let sealed = hex::decode(seal_with(&hex::encode(&tpl), &hex::encode(seed), &key, &proof, Some(1_800_000_000)).unwrap()).unwrap();
         assert_eq!(get_timestamp(&sealed).unwrap(), 1_800_000_000);
+        assert_eq!(sealed.last(), Some(&0), "no proof records");
+        let sealed = &sealed[..sealed.len() - 1];
         let sig: [u8; 64] = sealed[sealed.len() - 64..].try_into().unwrap();
         let pid = sm64pow::proof_id(&proof);
         assert!(sm64pow::sign::check(&seed, &key.extra_nonce(), &pid, 5, &sig).is_ok());
@@ -343,5 +345,6 @@ mod tests {
         assert_eq!(sealed[n - 1] as usize, proof.len());
         assert_eq!(sealed.len(), body.len() + 1 + proof.len() + 64, "same-size timestamp varint");
         assert!(seal_with(&hex::encode(&body), &hex::encode(seed), &key, &proof, None).is_err(), "a v0.2 template");
+        assert!(seal_with(&hex::encode(&tpl[..tpl.len() - 1]), &hex::encode(seed), &key, &proof, None).is_err(), "a v0.3 template");
     }
 }

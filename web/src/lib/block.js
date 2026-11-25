@@ -17,20 +17,22 @@ export function varint(n) {
   return out;
 }
 
-/** The v0.3 block: the template (ending with the empty proof, a 0x00 byte, and the empty signature, 64 zero
- * bytes) with varint(len(proof)) || proof || sig in their place. `sig`: 64 bytes (or hex). */
+/** The v0.4 block: the template (ending with the empty proof, a 0x00 byte, the empty signature, 64 zero
+ * bytes, and the empty proof records, a 0x00 byte: the daemon reattaches the template's records at
+ * submit_block) with varint(len(proof)) || proof || sig || 0x00 in their place. `sig`: 64 bytes (or hex). */
 export function seal(templateHex, proof, sig) {
   const t = hexToBytes(templateHex);
   if (typeof sig === 'string') sig = hexToBytes(sig);
   if (!sig || sig.length !== 64) throw new Error('a block needs a 64-byte signature');
-  const n0 = t.length;
-  if (n0 < 65 || t.subarray(n0 - 65).some((b) => b !== 0)) throw new Error('template does not end with an empty proof and signature; is this an SM64Coin v0.3 daemon?');
+  const n0 = t.length, tail = 66;
+  if (n0 < tail || t.subarray(n0 - tail).some((b) => b !== 0)) throw new Error('template does not end with an empty proof, signature and proof records; is this an SM64Coin v0.4 daemon?');
   const len = varint(proof.length);
-  const out = new Uint8Array(n0 - 65 + len.length + proof.length + 64);
-  out.set(t.subarray(0, n0 - 65), 0);
-  out.set(len, n0 - 65);
-  out.set(proof, n0 - 65 + len.length);
-  out.set(sig, n0 - 65 + len.length + proof.length);
+  const out = new Uint8Array(n0 - tail + len.length + proof.length + 64 + 1);
+  out.set(t.subarray(0, n0 - tail), 0);
+  out.set(len, n0 - tail);
+  out.set(proof, n0 - tail + len.length);
+  out.set(sig, n0 - tail + len.length + proof.length);
+  out[out.length - 1] = 0; // no proof records
   return bytesToHex(out);
 }
 

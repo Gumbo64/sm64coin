@@ -207,16 +207,17 @@ pub fn sign_proof(key: &crate::sign::Keypair, seed: &[u8; 32], blob: &[u8]) -> R
     Ok(key.sign_run(seed, &crate::proof_id::active(blob), frames))
 }
 
-/// The submit-ready block: the template blob (ending with the empty proof,
-/// a 0 byte, and the empty signature, 64 zero bytes) with `proof` and its
-/// signature in their place, and the header timestamp set to `timestamp`
-/// when given (the seed excludes it, so the signature stays valid).
+/// The submit-ready block: the template blob (v0.4: ending with the empty proof,
+/// a 0 byte, the empty signature, 64 zero bytes, and the empty proof records,
+/// a 0 byte: the daemon reattaches the template's records at submit_block) with
+/// `proof` and its signature in their place, and the header timestamp set to
+/// `timestamp` when given (the seed excludes it, so the signature stays valid).
 pub fn seal_block(template: &[u8], proof_blob: &[u8], sig: &[u8; 64], timestamp: Option<u64>) -> Result<Vec<u8>> {
     let n = template.len();
-    if n < 65 || template[n - 65..].iter().any(|&b| b != 0) {
-        anyhow::bail!("template does not end with an empty proof and signature; is this an SM64Coin v0.3 daemon?");
+    if n < TEMPLATE_TAIL || template[n - TEMPLATE_TAIL..].iter().any(|&b| b != 0) {
+        anyhow::bail!("template does not end with an empty proof, signature and proof records; is this an SM64Coin v0.4 daemon?");
     }
-    let mut blob = template[..n - 65].to_vec();
+    let mut blob = template[..n - TEMPLATE_TAIL].to_vec();
     if let Some(ts) = timestamp {
         // Header: varint major, varint minor, varint timestamp, ...
         let vl = |b: &[u8]| b.iter().position(|x| x & 0x80 == 0).map(|i| i + 1).ok_or_else(|| anyhow::anyhow!("truncated header"));
@@ -231,8 +232,12 @@ pub fn seal_block(template: &[u8], proof_blob: &[u8], sig: &[u8; 64], timestamp:
     put_varint(&mut blob, proof_blob.len() as u64);
     blob.extend_from_slice(proof_blob);
     blob.extend_from_slice(sig);
+    blob.push(0); // no proof records (block::sm64_proofs; the daemon fills a template's)
     Ok(blob)
 }
+
+/// A template's empty tail: proof length 0, a zero signature, records length 0 (v0.4).
+pub const TEMPLATE_TAIL: usize = 66;
 
 fn put_varint(out: &mut Vec<u8>, mut n: u64) {
     while n >= 0x80 {

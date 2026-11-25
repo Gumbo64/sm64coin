@@ -104,9 +104,11 @@ def test_keypair_from_secret_and_generate():
 def test_seal_with_signature():
     ts_old, ts_new = 1000, 123456
     head = varint(16) + varint(16) + varint(ts_old) + bytes(32) + bytes(4) + b"tail"
-    template = (head + b"\0" + bytes(64)).hex()
+    template = (head + b"\0" + bytes(64) + b"\0").hex()   # v0.4: empty proof, signature, proof records
     proof, sig = b"\x01\x00\x00\xaa\xbb\xcc\xdd", bytes(range(64))
     out = bytes.fromhex(seal(template, proof, sig, ts_new))
-    assert out == varint(16) + varint(16) + varint(ts_new) + bytes(32) + bytes(4) + b"tail" + varint(len(proof)) + proof + sig
+    assert out == varint(16) + varint(16) + varint(ts_new) + bytes(32) + bytes(4) + b"tail" + varint(len(proof)) + proof + sig + b"\0"
     with pytest.raises(ValueError):
         seal(head.hex() + "00", proof, sig, 1)   # old-style unsigned template
+    with pytest.raises(ValueError):
+        seal((head + b"\0" + bytes(64)).hex(), proof, sig, 1)   # a v0.3 template

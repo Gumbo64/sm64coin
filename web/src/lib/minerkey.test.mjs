@@ -2,18 +2,19 @@ import assert from 'node:assert/strict';
 import { seal, bytesToHex, hexToBytes } from './block.js';
 import { setSignerImpl, newMinerKey, templateParams, signRun } from './minerkey.js';
 
-// seal: a v0.3 template ends with the empty proof (0x00) and 64 zero bytes (the empty signature).
+// seal: a v0.4 template ends with the empty proof (0x00), 64 zero bytes (the empty signature) and the empty proof records (0x00).
 {
   const head = '0b0b8080e0c4a4a006' + '11'.repeat(40);
-  const tpl = head + '00' + '00'.repeat(64);
+  const tpl = head + '00' + '00'.repeat(64) + '00';
   const proof = new Uint8Array([1, 2, 3]);
   const sig = new Uint8Array(64).map((_, i) => i + 1);
-  assert.equal(seal(tpl, proof, sig), head + '03' + '010203' + bytesToHex(sig));
-  assert.equal(seal(tpl, proof, bytesToHex(sig)), head + '03' + '010203' + bytesToHex(sig)); // hex sig
+  assert.equal(seal(tpl, proof, sig), head + '03' + '010203' + bytesToHex(sig) + '00');
+  assert.equal(seal(tpl, proof, bytesToHex(sig)), head + '03' + '010203' + bytesToHex(sig) + '00'); // hex sig
   // A proof of 200 bytes: two-byte varint length.
   assert.equal(seal(tpl, new Uint8Array(200), sig).slice(head.length, head.length + 4), 'c801');
-  assert.throws(() => seal(head + '00', proof, sig), /v0\.3/); // an old template (no signature field)
-  assert.throws(() => seal(tpl.slice(0, -2) + '01', proof, sig), /v0\.3/);
+  assert.throws(() => seal(head + '00', proof, sig), /v0\.4/); // an old template (no signature field)
+  assert.throws(() => seal(tpl.slice(0, -2) + '01', proof, sig), /v0\.4/);
+  assert.throws(() => seal(tpl.slice(0, -2), proof, sig), /v0\.4/); // a v0.3 template (no records field)
   assert.throws(() => seal(tpl, proof, new Uint8Array(63)), /64-byte/);
 }
 
