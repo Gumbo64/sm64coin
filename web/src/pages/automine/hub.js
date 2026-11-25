@@ -40,6 +40,7 @@ export class VizHub {
     this.level = new Uint8Array(CAP);
     this.area = new Uint8Array(CAP);
     this.flags = new Uint8Array(CAP);
+    this.dist = new Float32Array(CAP).fill(-1); // frames to go to the step's target (negative: none known)
     this.nodeId = new Int32Array(CAP);
     this.stepOf = new Uint16Array(CAP); // the worker's search-step number (w.cur.n) a node belongs to
     this.paths = new Map(); // `${worker}:${step key}:${node id}` -> raw pads (4 bytes a frame) of a node's path from its step's root, or 'asked'
@@ -129,14 +130,14 @@ export class VizHub {
     const now = performance.now();
     if (!w.cur || w.cur.key !== m.key) {
       w.curN = (w.curN || 0) + 1;
-      w.cur = { key: m.key, n: w.curN, step: m.step, t: 0, nodes: 0, sim: 0, best: null };
+      w.cur = { key: m.key, n: w.curN, step: m.step, target: m.step.target, t: 0, nodes: 0, sim: 0, best: null };
       w.keys[w.curN & 4095] = m.key;
       w.lastSim = null;
       w.best = null;
       w.bestPads = null;
       w.prefix = m.prefix || null;
       // The step's root is the cloud's first point.
-      this.add(i, w.cur.n, 0, -1, w.played, m.step.pos, w.starsBase, m.step.level, m.step.area, 0);
+      this.add(i, w.cur.n, 0, -1, w.played, m.step.pos, w.starsBase, m.step.level, m.step.area, 0, m.step.target ? m.step.target.d0 : -1);
     }
     if (m.prefix) w.prefix = m.prefix;
     const c = w.cur;
@@ -145,7 +146,7 @@ export class VizHub {
     if (w.lastSim && m.simFrames >= w.lastSim.sim && now > w.lastSim.at) w.fps = (m.simFrames - w.lastSim.sim) / ((now - w.lastSim.at) / 1000);
     w.lastSim = { sim: m.simFrames, at: now };
     for (const n of m.nodes) {
-      this.add(i, c.n, n[0], n[1], w.played + n[2], [n[3], n[4], n[5]], n[6], n[7], n[8], n[9]);
+      this.add(i, c.n, n[0], n[1], w.played + n[2], [n[3], n[4], n[5]], n[6], n[7], n[8], n[9], n.length > 10 ? n[10] : -1);
     }
     if (m.best) {
       const prev = w.best;
@@ -166,7 +167,7 @@ export class VizHub {
     this.notify();
   }
 
-  add(w, step, id, parent, frame, pos, stars, level, area, flags) {
+  add(w, step, id, parent, frame, pos, stars, level, area, flags, dist = -1) {
     const slot = this.n % CAP;
     const old = this.keyAt[slot];
     if (old >= 0) this.index.delete(old);
@@ -180,6 +181,7 @@ export class VizHub {
     this.level[slot] = level;
     this.area[slot] = area;
     this.flags[slot] = flags;
+    this.dist[slot] = dist;
     this.nodeId[slot] = id;
     this.stepOf[slot] = step & 4095;
     this.parentSlot[slot] = parent >= 0 ? this.index.get((w * 4096 + (step & 4095)) * 1e8 + parent) ?? -1 : -1;

@@ -43,10 +43,10 @@ export function startMock(hub, count, { runAfter = 0 } = {}) {
       const b = nodes[bestId];
       const sNew = gotStar ? stars + 1 : stars;
       const line = JSON.stringify({
-        step: { frame0: 100000 + frame0, seed: 7, goal: 'Star', level: z.level, area: z.area, pos: nodes[0].p },
+        step: { frame0: 100000 + frame0, seed: 7, goal: 'Star', level: z.level, area: z.area, pos: nodes[0].p, target: { label: 'Mission 3-0 (PLUNDER IN THE SUNKEN SHIP)', kind: 'Mission::ReachStar', n: 3, d0: 160 } },
         t, nodes_total: nodes.length, sim_frames: sim,
         best: { id: b.id, frame: b.frame, stars: sNew, keys: 0, pos: b.p },
-        nodes: fresh.map((n) => [n.id, n.parent, n.frame, n.p[0], n.p[1], n.p[2], sNew, z.level, z.area, n.frame > 200 ? 1 : 0]),
+        nodes: fresh.map((n) => [n.id, n.parent, n.frame, n.p[0], n.p[1], n.p[2], sNew, z.level, z.area, n.frame > 200 ? 1 : 0, Math.max(1, 160 - n.frame * 0.35 + (r() - 0.3) * 30)]),
         pads: (() => { padsAll = []; for (let f = 0; f < b.frame; f++) padsAll.push(f % 90 < 60 ? 0 : 0x8000, Math.round(Math.sin(f / 40 + i) * 60), 100); return padsAll; })(),
       });
       hub.ingest(i, line);

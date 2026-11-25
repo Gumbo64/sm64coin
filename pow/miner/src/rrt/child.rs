@@ -231,9 +231,9 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
 
     let generator = guide::wrap(obrrt_spec::wrap(Arc::new(Registry))?)?;
     let save = game.save_state();
-    let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator)?;
+    let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator.clone())?;
     if job.viz {
-        engine.on_round = Some(viz::sampler(job, &root, state_bytes));
+        engine.on_round = Some(viz::sampler(job, &root, state_bytes, generator.clone()));
     } else {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -609,7 +609,11 @@ fn pos_of(c: &Value) -> [f32; 3] {
 ///   "t": seconds since the step began, "nodes_total", "sim_frames",
 ///   "best": {"id", "frame" (from the step's start), "stars", "keys", "pos"},  // most progress, then soonest
 ///   "nodes": [[id, parent, frame (from the step's start), x, y, z, stars, level, area, flags]],
-///   // up to NODES new nodes since the last sample (evenly thinned; flags bit 0: more progress than the root)
+///   // up to NODES new nodes since the last sample (evenly thinned; flags bit 0: more progress than the root);
+///   // an 11th number `d` when the step has a target: the nearest target's estimated frames to go (the search's own
+///   // ETA, distance at a walking pace), absent when no target is reachable from that node
+///   // "step".target (from the first line with the feed on): {"label", "kind", "n" (candidates), "d0" (the root's
+///   // frames to go)}, absent when the step has none
 ///   "pads": [button, stickX, stickY, ...]   // only when `best` changed: its inputs from the step's start
 /// }
 /// ```
@@ -624,10 +628,13 @@ pub mod viz {
     /// (`sm64miner.viz_state(key, bytes)`, key = the viz feed's step key) so the page can start the game at the step's
     /// root and replay only the step's own inputs. The page can also ask for the inputs of a sampled node of this tree
     /// (`sm64miner.viz_req(key)` -> JSON ids; answered with `viz_path(key, id, flat pads)`; page-side only on cross-origin isolated pages).
-    pub fn sampler(job: &Job, root: &St, state: Vec<u8>) -> Box<dyn FnMut(&Engine) + Send> {
+    pub fn sampler(job: &Job, root: &St, state: Vec<u8>, generator: Arc<dyn obrrt_core::Generator>) -> Box<dyn FnMut(&Engine) + Send> {
         let key = format!("{}:{}:{}:{}:{:?}", job.seed, job.frame0, root.level, root.area, job.goal);
         let mut state = Some(state);
-        let head = serde_json::json!({ "frame0": job.frame0, "seed": job.seed, "goal": format!("{:?}", job.goal), "level": root.level, "area": root.area, "pos": root.pos });
+        let mut head = serde_json::json!({ "frame0": job.frame0, "seed": job.seed, "goal": format!("{:?}", job.goal), "level": root.level, "area": root.area, "pos": root.pos });
+        let (job2, root2) = (job.clone(), root.clone());
+        // The step's targets, found at the first sample with the feed on (generating the root's objectives costs a little).
+        let mut targets: Option<Vec<Arc<dyn obrrt_core::Objective>>> = None;
         let (frame0, root_prog) = (job.frame0, root.progress());
         let mut last = Instant::now();
         let t0 = Instant::now();
@@ -646,6 +653,14 @@ pub mod viz {
                 return;
             }
             last = Instant::now();
+            if targets.is_none() {
+                let (t, info) = step_targets(&job2, &root2, &*generator);
+                if let Some(i) = info {
+                    head["target"] = i;
+                }
+                targets = Some(t);
+            }
+            let tg = targets.as_deref().unwrap_or(&[]);
             if let Some(st) = state.take() {
                 send_state(&key, &st);
             }
@@ -671,7 +686,14 @@ pub mod viz {
                 .map(|i| {
                     let nd = &nodes[i];
                     let s = &nd.st;
-                    serde_json::json!([i, nd.parent, s.frame.saturating_sub(frame0), s.pos[0], s.pos[1], s.pos[2], s.stars, s.level, s.area, (s.progress() > root_prog) as u8])
+                    let mut v = serde_json::json!([i, nd.parent, s.frame.saturating_sub(frame0), s.pos[0], s.pos[1], s.pos[2], s.stars, s.level, s.area, (s.progress() > root_prog) as u8]);
+                    if !tg.is_empty() {
+                        let d = frames_to_go(tg, s, &root2);
+                        if d.is_finite() {
+                            v.as_array_mut().unwrap().push(serde_json::json!((d * 10.0).round() / 10.0));
+                        }
+                    }
+                    v
                 })
                 .collect();
             seen = n;
@@ -686,6 +708,41 @@ pub mod viz {
             }
             emit(&msg.to_string());
         })
+    }
+
+    /// The objectives the page's "closing in" chart measures against: the root's objectives that head for what the step
+    /// wants (a course step: stars; a castle step: the target painting, else any painting or door), the 6 nearest to
+    /// the root, and the label of the nearest. Nothing about the search changes: only its public objectives are asked.
+    fn step_targets(job: &Job, root: &St, generator: &dyn obrrt_core::Generator) -> (Vec<Arc<dyn obrrt_core::Objective>>, Option<Value>) {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(job.seed ^ 0x7a11);
+        let all = generator.generate(root, &mut rng);
+        let pick = |f: &dyn Fn(&dyn obrrt_core::Objective) -> bool| -> Vec<Arc<dyn obrrt_core::Objective>> { all.iter().filter(|o| f(&***o)).cloned().collect() };
+        let mut c: Vec<Arc<dyn obrrt_core::Objective>> = Vec::new();
+        if job.goal == Goal::Enter {
+            if let Some(t) = job.target {
+                let names: Vec<String> = obrrt_objectives::paintings().iter().filter(|p| p.dest == t as u32).map(|p| format!("Painting {}", p.name)).collect();
+                c = pick(&|o| o.kind() == "Painting::Enter" && names.iter().any(|n| o.key() == *n || o.key().starts_with(&format!("{n} "))));
+            }
+            if c.is_empty() {
+                c = pick(&|o| o.kind() == "Painting::Enter");
+            }
+            if c.is_empty() {
+                c = pick(&|o| o.kind() == "StarDoor::Enter" || o.kind() == "Door::Enter");
+            }
+        } else {
+            c = pick(&|o| o.kind() == "Star::Collect" || o.kind().starts_with("Mission::Reach"));
+        }
+        let mut scored: Vec<(f64, Arc<dyn obrrt_core::Objective>)> = c.into_iter().map(|o| (o.eta(root, root, &mut obrrt_core::Mem::default()).frames(), o)).filter(|x| x.0.is_finite()).collect();
+        scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+        scored.truncate(6);
+        let info = scored.first().map(|(d, o)| serde_json::json!({ "label": o.key(), "kind": o.kind(), "n": scored.len(), "d0": (d * 10.0).round() / 10.0 }));
+        (scored.into_iter().map(|x| x.1).collect(), info)
+    }
+
+    /// The nearest target's frames to go from `s` (infinite when none can be reached).
+    fn frames_to_go(tg: &[Arc<dyn obrrt_core::Objective>], s: &St, root: &St) -> f64 {
+        tg.iter().map(|o| o.eta(s, root, &mut obrrt_core::Mem::default()).frames()).fold(f64::INFINITY, f64::min)
     }
 
     #[cfg(target_arch = "wasm32")]

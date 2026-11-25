@@ -3,8 +3,11 @@
 // per running search tree) and the campaign's log lines, parsed into plain objects. The page never
 // looks at the raw lines elsewhere, so a change of the feed's format is a change here.
 //
-// A viz line: {step:{frame0,seed,goal,level,area,pos}, t, nodes_total, sim_frames,
-//   best:{id,frame,stars,keys,pos}, nodes:[[id,parent,frame,x,y,z,stars,level,area,flags]], pads:[b,sx,sy,...]}
+// A viz line: {step:{frame0,seed,goal,level,area,pos,target?}, t, nodes_total, sim_frames,
+//   best:{id,frame,stars,keys,pos}, nodes:[[id,parent,frame,x,y,z,stars,level,area,flags,d?]], pads:[b,sx,sy,...]}
+// `step.target` ({label, kind, n, d0}: what the step heads for, e.g. "Mission 3-0 (PLUNDER IN THE SUNKEN SHIP)"
+// or "Painting bob"; d0 its frames to go from the step's root) and a node's `d` (the nearest target's estimated
+// frames to go: the search's own ETA, distance at a walking pace) are present when the step has a target.
 // Optional (not sent yet, used when present): `prefix`, the pads (same flat layout) the campaign
 // had played before this step began, so the step's best path can be replayed from the block's start.
 
@@ -15,7 +18,7 @@ export function parseViz(line) {
   if (!m || !m.step) return null;
   const s = m.step;
   return {
-    step: { frame0: s.frame0 ?? 0, seed: s.seed ?? 0, goal: String(s.goal ?? ''), level: s.level ?? 0, area: s.area ?? 1, pos: s.pos || [0, 0, 0] },
+    step: { frame0: s.frame0 ?? 0, seed: s.seed ?? 0, goal: String(s.goal ?? ''), level: s.level ?? 0, area: s.area ?? 1, pos: s.pos || [0, 0, 0], target: s.target || null },
     key: `${s.seed}:${s.frame0}:${s.level}:${s.area}:${s.goal}`,
     t: m.t || 0,
     nodesTotal: m.nodes_total || 0,
