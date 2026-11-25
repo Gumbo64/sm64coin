@@ -35,6 +35,7 @@ dir are the same: **just replace the binaries; no resync.**
   reset. The game never reads them (tests/reserved_bits.rs) and the poke pads never use them; miners now
   clear them before sealing. Consensus still accepts them. The chain export tool gets a
   `--clear-reserved-bits` flag for `.m64` output.
+- **RPC:** `get_block_template`'s `sm64_valid_at` is never earlier than the chain's launch (before launch it announced blocks the node then refused); `submit_block` refuses a block stamped before the launch at once, and every refusal comes back as an error with a readable reason.
 - **Fix (tests/nodes):** a state the node verified long ago is no longer evicted from its cache while it
   is the tip's parent (this was a flaky `NeedParent` in the test suite).
 - **Tools:** `pow/tools/board/` has the leaderboard's functional checks and benches, runnable against a
