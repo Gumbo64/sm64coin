@@ -34,6 +34,8 @@ pub const PROTO: u8 = 1;
 pub const MAX_MSG: usize = 256 * 1024;
 /// Largest inflated payload (a step's JSON, a run's pads) accepted.
 pub const MAX_INFLATED: usize = 8 * 1024 * 1024;
+/// Most members listed.
+const MAX_MEMBERS: usize = 256;
 /// Most steps / templates kept.
 const MAX_STEPS: usize = 16;
 /// Prefix of the team code.
@@ -339,6 +341,12 @@ impl Group {
         Ok(())
     }
 
+    /// Test hook: announces a template although we are not the leader (the others must ignore it).
+    #[doc(hidden)]
+    pub fn forge_template(&self, json: &str) {
+        self.send(Msg::Template { json: deflate(json.as_bytes()) });
+    }
+
     fn adopt_template(&self, json: String) {
         let tid = template_id(&json);
         let mut st = self.inner.state.lock().unwrap();
@@ -506,7 +514,13 @@ impl Group {
                     return;
                 }
                 let name: String = name.chars().take(40).collect();
-                let new = self.inner.state.lock().unwrap().members.insert(id, (name.clone(), fps, n0_future::time::Instant::now())).is_none();
+                let new = {
+                    let mut st = self.inner.state.lock().unwrap();
+                    if st.members.len() >= MAX_MEMBERS && !st.members.contains_key(&id) {
+                        return;
+                    }
+                    st.members.insert(id, (name.clone(), fps, n0_future::time::Instant::now())).is_none()
+                };
                 if new {
                     self.note(format!("{} joined", if name.is_empty() { from.fmt_short().to_string() } else { name }));
                     // Tell the newcomer we are here too.

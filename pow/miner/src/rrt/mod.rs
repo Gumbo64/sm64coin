@@ -642,7 +642,12 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             let ckpt = (game.save_state(), played.len());
             tree_sync(o, &mut job, &played, st.level, cp_n);
             // The block's first castle step is the same for every search of it: shared.
-            let key = (step == 1 && o.exchange.is_some()).then(|| step_key(&job));
+            let key = (step == 1 && o.exchange.is_some()).then(|| {
+                // The scratch directory differs between machines (the roadmap and priors are in the env): not part of the step's identity.
+                let (mut j, sp) = (job.clone(), o.scratch.display().to_string());
+                j.env.iter_mut().for_each(|(_, v)| *v = v.replace(&sp, "<scratch>"));
+                step_key(&j)
+            });
             let shared: Option<StepOut> = key.as_ref().zip(o.exchange.as_ref()).and_then(|(k, ex)| {
                 let r: SharedStep = serde_json::from_str(&ex("step_get", k)?).ok()?;
                 (r.key == *k).then_some(r.out)

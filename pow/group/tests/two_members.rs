@@ -50,6 +50,13 @@ fn leader_and_two_members_share_template_step_and_run() {
     wait("members", || leader.members().len() == 3);
     // A member's own template is ignored (only the leader's are valid): a member cannot publish.
     assert!(a.publish_template(&tpl("bb")).is_err());
+    // A template from a member who is not the leader is ignored by everyone (also by the leader).
+    let tid_before = b.template().unwrap().0;
+    a.forge_template(&tpl("evil"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(b.template().unwrap().0, tid_before, "a member's template must be ignored");
+    assert_eq!(leader.template().unwrap().0, tid_before);
+    assert!(b.log_since(0).1.iter().any(|l| l.contains("not the leader")));
     // The leader moves on: a new template resets steps and runs for everyone.
     leader.publish_template(&tpl("cc")).unwrap();
     a.wait_template(g, T).expect("new template");
