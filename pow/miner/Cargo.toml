@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sm64pow = { path = "../sm64pow" }
+sm64pow = { path = "../sm64pow", features = ["normalise"] }
 sm64-binds = { workspace = true }
 # The search crates (objective-rrt-v2 in github.com/Gumbo64/sm64-AI-binds): the rolling-horizon
 # GA and the state tree, over a HookedGame whose step hook is the SM64Coin perturbation

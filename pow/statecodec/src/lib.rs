@@ -21,6 +21,8 @@ pub mod logistic;
 pub mod range;
 pub mod statectx;
 pub mod statemix;
+#[cfg(any(feature = "normalise", feature = "experimental"))]
+pub mod mix2;
 mod trig;
 
 pub use codec::*;
