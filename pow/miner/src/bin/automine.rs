@@ -12,7 +12,7 @@
 use anyhow::{Result, bail};
 use clap::Parser;
 use sm64coin_miner::{beam, reset, rh, routes::Library, rpc, rrt};
-#[path = "automine/groupmine.rs"]
+#[path = "../automine_group.rs"]
 mod groupmine;
 use sm64pow::proof::Start;
 use sm64pow::sm64_binds::SaveState;
@@ -316,12 +316,19 @@ fn main() -> Result<()> {
     let gfps = group.clone();
     std::thread::spawn(move || {
         let (mut last, mut at) = (0u64, std::time::Instant::now());
+        let mut win: std::collections::VecDeque<(std::time::Instant, u64)> = std::collections::VecDeque::new();
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
             let n = sm64coin_miner::rrt::SIM_FRAMES.load(std::sync::atomic::Ordering::Relaxed);
             let dt = at.elapsed().as_secs_f64();
             if let Some(g) = &gfps {
-                g.set_fps(((n - last) as f64 / dt.max(1e-3)) as f32);
+                // The members' list shows a minute's average (the search reports its frames in bursts).
+                win.push_back((std::time::Instant::now(), n));
+                while win.len() > 2 && win[1].0.elapsed().as_secs() > 60 {
+                    win.pop_front();
+                }
+                let (t0, n0) = win[0];
+                g.set_fps(((n - n0) as f64 / t0.elapsed().as_secs_f64().max(1.0)) as f32);
             }
             println!("progress frames={n} fps={:.0}", (n - last) as f64 / dt.max(1e-3));
             (last, at) = (n, std::time::Instant::now());

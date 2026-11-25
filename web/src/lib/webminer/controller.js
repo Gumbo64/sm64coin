@@ -439,6 +439,7 @@ class MinerController {
       });
     };
     for (let i = 0; i < count; i++) launch(i);
+    this.groupRun(); // a group run already held for this template (a late joiner)
   }
 
   async submit(c, t, r) {

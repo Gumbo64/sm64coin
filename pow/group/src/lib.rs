@@ -6,7 +6,7 @@
 //! from anyone else); when the chain moves on it announces the new one. Members share exactly what the
 //! searches of one block already share locally (measured: independent searches win, periodic tree-node sync gave
 //! no gain): the first castle step's outcome (`step_get`/`step_put`, [`Msg::Step`]) and finished or shorter runs
-//! ([`Msg::Run`], the same fields the web miner's workers exchange: pads, objective keys, step starts). Whoever
+//! ([`Msg::Run`]: the sealed proof, which replays to the pads, plus the objective keys and step starts the web miner's workers exchange for biasing searches). Whoever
 //! finds the winning run submits it; the reward goes to the template's address (the group's).
 //!
 //! The transport is iroh-gossip over an iroh endpoint (relay + direct, hole-punched). The team code is a

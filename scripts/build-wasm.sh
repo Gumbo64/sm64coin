@@ -25,6 +25,6 @@ fi
 if [ -z "${NO_GROUPWEB:-}" ]; then
   export CC_wasm32_unknown_unknown="${CC_wasm32_unknown_unknown:-$(command -v clang || echo /usr/lib/llvm-18/bin/clang)}"
   export AR_wasm32_unknown_unknown="${AR_wasm32_unknown_unknown:-$(command -v llvm-ar || echo /usr/lib/llvm-18/bin/llvm-ar)}"
-  build groupweb groupweb sm64coin_groupweb || echo "build-wasm.sh: group mining module not built (the site works without it)" >&2
+  wasm-pack build "$ROOT/pow/groupweb" --release --target web --out-dir "$ROOT/web/src/wasm/groupweb" --out-name sm64coin_groupweb || echo "build-wasm.sh: group mining module not built (the site works without it)" >&2
 fi
 exit 0
