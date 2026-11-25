@@ -189,6 +189,7 @@ class MinerController {
     this.running = false;
     this.workers = [];
     this.rate.clear();
+    this.hub.roster = null; // nothing to show when the visualisations are switched on after this
     this.phase = 'idle';
     this.error = null;
     this.emit(true);

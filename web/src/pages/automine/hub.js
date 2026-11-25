@@ -22,6 +22,23 @@ export const SPEEDS = [0.25, 0.5, 1, 2, 4];
 const DEFAULT_SETTINGS = { open: false, start: 'end', leadSec: 5, speed: 1, places: true, records: true, minGain: 10 };
 const loadSettings = () => { try { return { ...DEFAULT_SETTINGS, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null') || {}) }; } catch { return { ...DEFAULT_SETTINGS }; } };
 
+/** A worker's campaign position, from its log lines (what the views need of it before any viz line). */
+const liteWorker = (start) => ({ start, line: 'loading the game…', steps: [], stepNo: 0, played: 0, keysBase: 0, starsBase: 0 });
+
+function logInto(w, line, ev) {
+  w.line = line;
+  if (ev.kind === 'step') {
+    w.stepNo = ev.n;
+    w.played = ev.frame;
+    if (ev.stars >= 0) { w.starsBase = ev.stars; w.keysBase = ev.keys; }
+    w.steps.push({ n: ev.n, name: ev.name, frame: ev.frame, budget: ev.budget, stars: ev.stars, keys: ev.keys, done: null, t0: Date.now() });
+    if (w.steps.length > 60) w.steps.shift();
+  } else if (ev.kind === 'done') {
+    const s = w.steps[w.steps.length - 1];
+    if (s) s.done = ev;
+  }
+}
+
 export class VizHub {
   constructor() {
     this.enabled = false; // collecting (the visualisations are switched on)
@@ -34,6 +51,10 @@ export class VizHub {
     this.round = 0;
     this.settings = loadSettings();
     this.reel = { on: true, follow: null, queue: [], clips: 0 }; // the highlight reel: playing on/paused, follow worker N (null: all), queued clips
+    // The current round's template and workers, kept (small: no tree data) while the visualisations are off, so that
+    // switching them on mid-round shows the round's workers at once: {template, parentRaw, workers: [{start, stepNo,
+    // played, starsBase, keysBase, line, steps}]}.
+    this.roster = null;
     this.clear();
   }
 
@@ -86,34 +107,43 @@ export class VizHub {
   }
 
   setEnabled(on) {
+    const was = this.enabled;
     this.enabled = !!on;
     if (!on) { this.clear(); this.workers = []; this.blocks = []; }
+    if (on && !was && this.roster) this.build(this.roster);
     this.notify();
     if (!on) { this.version++; this.subs.forEach((f) => f(this.version)); }
   }
 
   /** A round starts: a new template, `count` workers each on `starts[i]`. */
   newRound({ template, starts, parentRaw }) {
+    this.roster = { template, parentRaw: parentRaw || null, t0: Date.now() / 1000, workers: starts.map((start) => liteWorker(start)) };
     if (!this.enabled) return;
+    this.build(this.roster);
+    this.notify();
+  }
+
+  /** The views' state for the round in `r` (this.roster): what newRound sets up, plus where each worker's campaign is. */
+  build(r) {
     const keep = { blocks: this.blocks, toasts: this.toasts };
     this.clear();
     this.blocks = keep.blocks;
     this.toasts = keep.toasts;
     this.round++;
-    this.template = template;
-    this.startKind = starts[0] || 'parent';
-    this.parentRaw = parentRaw || null;
+    this.template = r.template;
+    this.startKind = r.workers[0]?.start || 'parent';
+    this.parentRaw = r.parentRaw;
     this.portable = new Map(); // converted start states for the game view (startState.js portableFor)
-    this.t0 = Date.now() / 1000;
-    this.workers = starts.map((start, i) => ({
-      i, start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0,
-      fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, root: null, keys: {}, found: false, runs: 0,
+    this.t0 = r.t0;
+    this.workers = r.workers.map((l, i) => ({
+      i, cur: null, fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, root: null, keys: {}, found: false, runs: 0,
+      ...l, steps: l.steps.map((x) => ({ ...x })),
     }));
-    this.notify();
   }
 
   /** Worker `i` begins a new search (a fresh campaign) from `start`. */
   restartWorker(i, start) {
+    if (this.roster && this.roster.workers[i]) this.roster.workers[i] = liteWorker(start);
     const w = this.workers[i];
     if (!w) return;
     this.mirrors[i] = null;
@@ -124,22 +154,14 @@ export class VizHub {
 
   /** A campaign log line of worker `i`. */
   log(i, line) {
+    const ev = parseLog(line);
+    const l = this.roster && this.roster.workers[i];
+    if (l) logInto(l, line, ev); // kept while the visualisations are off too (a few lines a step)
     if (!this.enabled) return;
     const w = this.workers[i];
     if (!w) return;
-    w.line = line;
-    const ev = parseLog(line);
-    if (ev.kind === 'step') {
-      w.stepNo = ev.n;
-      w.played = ev.frame;
-      if (ev.stars >= 0) { w.starsBase = ev.stars; w.keysBase = ev.keys; }
-      w.steps.push({ n: ev.n, name: ev.name, frame: ev.frame, budget: ev.budget, stars: ev.stars, keys: ev.keys, done: null, t0: Date.now() });
-      if (w.steps.length > 60) w.steps.shift();
-      w.cur = null;
-    } else if (ev.kind === 'done') {
-      const s = w.steps[w.steps.length - 1];
-      if (s) s.done = ev;
-    }
+    logInto(w, line, ev);
+    if (ev.kind === 'step') w.cur = null;
     this.notify();
   }
 
