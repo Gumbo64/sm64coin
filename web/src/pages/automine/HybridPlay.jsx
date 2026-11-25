@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { acquireEngine } from '../../components/EngineSlot.jsx';
+import { e2eHook } from '../../lib/e2e.js';
 
 // Hybrid mining: play by hand from a node of the search tree. The node's save state (the headless game's memory and the
 // block's perturbation as the search had them there, from the worker's search: rrt::child::hybrid) is loaded into the shared
@@ -33,7 +34,7 @@ export default function HybridDriver({ hub, engine, req, rec, stop, setClock, se
           if (!r) return;
           start = r.start; task = r.task;
           req.msg = r.msg;
-          window.__lastNodeStart = { mode: 'local', ms: Math.round(performance.now() - t0), pert: r.msg.pert, pos: [...engine.get_game_state().pos] };
+          e2eHook('__lastNodeStart', { mode: 'local', ms: Math.round(performance.now() - t0), pert: r.msg.pert, pos: [...engine.get_game_state().pos] });
           onReady(r.msg);
         } else {
           setStatus('loading the node\'s state…');
@@ -43,7 +44,7 @@ export default function HybridDriver({ hub, engine, req, rec, stop, setClock, se
           engine.load_portable_state(portable);
           start = { kind: 'node', state: captureState(engine, null, engine.powerOn), progress: readProgress(engine), pertBytes: new TextEncoder().encode(msg.pert) };
           task = withConfig(hub.template);
-          window.__lastNodeStart = { mode: 'mailbox', pert: msg.pert, pos: [...engine.get_game_state().pos] };
+          e2eHook('__lastNodeStart', { mode: 'mailbox', pert: msg.pert, pos: [...engine.get_game_state().pos] });
         }
 
         // The manual miner's recorder, starting from the node: its perturbation is the node's (not a fresh block start), the

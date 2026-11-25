@@ -24,7 +24,7 @@ import { levelName } from './automine/levels.js';
 import { localInputs } from './automine/localNode.js';
 import { announceMined } from '../lib/payout.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
-import { e2eHook } from '../lib/e2e.js';
+import { e2e, e2eHook } from '../lib/e2e.js';
 
 // The manual miner: play Super Mario 64 yourself. A block is the game's next
 // progress point (a star, a Bowser key, the Grand Star after 70 stars), played
@@ -266,7 +266,7 @@ function Miner() {
     setClock(null);
     // Fast path: the page has the step's start state, its root perturbation and the node's path (its tree mirror), so it
     // rebuilds the node's state itself. Otherwise (or when that fails) the search is asked, which answers between rounds.
-    const inp = window.__forceMailbox ? null : localInputs(hub, sel);
+    const inp = (e2e() && window.__forceMailbox) ? null : localInputs(hub, sel);
     if (inp) {
       setPlayText('rebuilding the node\'s state…');
       setPlay({ phase: 'playing', sel, local: inp, msg: { level: sel.level, area: sel.area, stars: sel.stars, pos: sel.pos } });

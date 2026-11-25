@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CAP } from './hub.js';
 import { useHub, useVisible } from './useHub.js';
+import { e2eHook } from '../../lib/e2e.js';
 import { levelName, levelIcon, workerColor } from './levels.js';
 import { Panel, Toolbar, ToolBtn } from '../../components/ui.jsx';
 
@@ -462,7 +463,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
           gl.current = null;
         };
         // The window's debug hook (the headless test and the console): the scene's pieces.
-        window.__cloud = { camera, controls, world, scene, get shown() { return shown; }, get fitted() { return fitted; }, THREE, project: (x, y, z) => { const v = new THREE.Vector3(x, y, z).applyMatrix4(world.matrixWorld).project(camera); const r = dom.getBoundingClientRect(); return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height]; }, get geomMesh() { return geomMesh; }, slotOf: (k) => slotOf[k] };
+        e2eHook('__cloud', { camera, controls, world, scene, get shown() { return shown; }, get fitted() { return fitted; }, THREE, project: (x, y, z) => { const v = new THREE.Vector3(x, y, z).applyMatrix4(world.matrixWorld).project(camera); const r = dom.getBoundingClientRect(); return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height]; }, get geomMesh() { return geomMesh; }, slotOf: (k) => slotOf[k] });
         void builtVer;
       } catch (e) { setErr(String(e.message || e)); }
     })();
