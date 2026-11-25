@@ -13,10 +13,11 @@ export function startMock(hub, count, { runAfter = 0 } = {}) {
   const timers = [];
   for (let i = 0; i < count; i++) {
     const r = rng(1234 + i * 77);
-    let step = 0, zi = 0, nodes = [], frame0 = 0, t = 0, bestId = 0, padsAll = [], sim = 0, stars = 0, started = false;
+    let step = 0, zi = 0, nodes = [], frame0 = 0, t = 0, bestId = 0, padsAll = [], sim = 0, stars = 0, started = false, seen = new Set();
     const begin = () => {
       const [level, area, name] = ZONES[zi % ZONES.length];
       step++;
+      seen = new Set();
       nodes = [{ id: 0, parent: -1, frame: 0, p: [(r() - 0.5) * 800, 200, (r() - 0.5) * 800] }];
       bestId = 0; padsAll = []; t = 0; sim = 0;
       hub.log(i, `step ${step}: ${name} at frame ${frame0}, ${stars} stars 0 keys: mock; budget ${200 + zi * 50} M frames`);
@@ -39,14 +40,17 @@ export function startMock(hub, count, { runAfter = 0 } = {}) {
         if (nd.frame > nodes[bestId].frame) bestId = nd.id;
       }
       sim += N * 900;
+      const newKeys = [];
+      for (const nd of fresh) { const k = Math.floor(nd.p[0] / 220) * 4096 + Math.floor(nd.p[2] / 220) + 1e6 * (i % 2 ? 0 : 0); if (!seen.has(k) && seen.size < 60 + t * 2) { seen.add(k); newKeys.push(k); } }
       const gotStar = r() < 0.04 && t > 3;
       const b = nodes[bestId];
       const sNew = gotStar ? stars + 1 : stars;
       const line = JSON.stringify({
-        step: { frame0: 100000 + frame0, seed: 7, goal: 'Star', level: z.level, area: z.area, pos: nodes[0].p, target: { label: 'Mission 3-0 (PLUNDER IN THE SUNKEN SHIP)', kind: 'Mission::ReachStar', n: 3, d0: 160 } },
+        step: { frame0: 100000 + frame0, seed: 7, goal: 'Star', level: z.level, area: z.area, pos: nodes[0].p },
         t, nodes_total: nodes.length, sim_frames: sim,
         best: { id: b.id, frame: b.frame, stars: sNew, keys: 0, pos: b.p },
-        nodes: fresh.map((n) => [n.id, n.parent, n.frame, n.p[0], n.p[1], n.p[2], sNew, z.level, z.area, n.frame > 200 ? 1 : 0, Math.max(1, 160 - n.frame * 0.35 + (r() - 0.3) * 30)]),
+        nodes: fresh.map((n) => [n.id, n.parent, n.frame, n.p[0], n.p[1], n.p[2], sNew, z.level, z.area, n.frame > 200 ? 1 : 0]),
+        cov: { places: seen.size, records: Math.floor(t / 7), new: newKeys },
         pads: (() => { padsAll = []; for (let f = 0; f < b.frame; f++) padsAll.push(f % 90 < 60 ? 0 : 0x8000, Math.round(Math.sin(f / 40 + i) * 60), 100); return padsAll; })(),
       });
       hub.ingest(i, line);

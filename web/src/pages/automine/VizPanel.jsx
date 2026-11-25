@@ -2,14 +2,14 @@ import React, { useEffect, useState } from 'react';
 import './automine.css';
 import { useHub } from './useHub.js';
 import BlocksHistory from './BlocksHistory.jsx';
-import EnvelopeView from './EnvelopeView.jsx';
+import CoverageView from './CoverageView.jsx';
 import LimitChart from '../../lib/LimitChart.jsx';
 import { SideCard } from '../../components/ui.jsx';
 import { frames as fmtFrames, coins } from '../../lib/format.js';
 import { secondsUntilAllowed } from '../../lib/resetPolicy.js';
 
 // The Mine page's auto-mining side cards (only loaded, and only running, when the visualisations are switched on):
-// the time-limit chart, the block's numbers, the "Closing in" chart and the blocks mined (VizSide), and the toasts.
+// the time-limit chart, the block's numbers, the "Places reached" chart and the blocks mined (VizSide), and the toasts.
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 export function VizToasts({ hub }) {
@@ -49,11 +49,11 @@ export function VizTop({ hub, mode }) {
   );
 }
 
-/** The "Closing in" chart and the blocks this session mined. */
+/** The "Places reached" chart and the blocks this session mined. */
 export function VizBottom({ hub }) {
   return (
     <>
-      <EnvelopeView hub={hub} />
+      <CoverageView hub={hub} />
       <BlocksHistory hub={hub} />
     </>
   );

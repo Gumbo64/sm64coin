@@ -5,10 +5,10 @@
 import { parseViz, parseLog, flatToRaw, proofInputs } from '../../lib/webminer/vizFeed.js';
 import { TreeMirror } from '../../lib/webminer/treeMirror.js';
 import { levelName } from './levels.js';
+import { Coverage } from './coverage.js';
 
 /** The point cloud keeps the newest CAP sampled search nodes (a ring buffer). */
 export const CAP = 50000;
-const ENV_CAP = 4000;
 // The highlight reel's queue (clips waiting for the one playing to finish), and how old a clip may be when its turn comes.
 const REEL_QUEUE = 8;
 const REEL_STALE_MS = 120000;
@@ -65,7 +65,7 @@ export class VizHub {
     this.parentRaw = null; // the parent's end state (the node's SaveState bytes), when the node had it
     this.workers = [];
     this.runs = []; // finished runs: {t (s after the parent), frames, w}
-    this.samples = []; // per-sample best: {w, frame (from the block's start), p (stars + keys), t}
+    this.cover = new Coverage(); // the "Places reached" chart's data (coverage.js)
     this.reel.queue = [];
     this.edgeBytes = 0;
     this.hl = null; // the node the game view highlights in the cloud: {w, step, id}
@@ -82,7 +82,6 @@ export class VizHub {
     this.level = new Uint8Array(CAP);
     this.area = new Uint8Array(CAP);
     this.flags = new Uint8Array(CAP);
-    this.dist = new Float32Array(CAP).fill(-1); // frames to go to the step's target (negative: none known)
     this.nodeId = new Int32Array(CAP);
     this.stepOf = new Uint16Array(CAP); // the worker's search-step number (w.cur.n) a node belongs to
     this.paths = new Map(); // `${worker}:${step key}:${node id}` -> raw pads (4 bytes a frame) of a node's path from its step's root, or {asked: time}
@@ -176,7 +175,7 @@ export class VizHub {
     const now = performance.now();
     if (!w.cur || w.cur.key !== m.key) {
       w.curN = (w.curN || 0) + 1;
-      w.cur = { key: m.key, n: w.curN, step: m.step, target: m.step.target, t: 0, nodes: 0, sim: 0, best: null };
+      w.cur = { key: m.key, n: w.curN, step: m.step, t: 0, nodes: 0, sim: 0, best: null };
       w.keys[w.curN & 4095] = m.key;
       this.dropPaths(i);
       w.lastSim = null;
@@ -184,7 +183,7 @@ export class VizHub {
       w.bestPads = null;
       w.prefix = m.prefix || null;
       // The step's root is the cloud's first point.
-      this.add(i, w.cur.n, 0, -1, w.played, m.step.pos, w.starsBase, m.step.level, m.step.area, 0, m.step.target ? m.step.target.d0 : -1);
+      this.add(i, w.cur.n, 0, -1, w.played, m.step.pos, w.starsBase, m.step.level, m.step.area, 0);
     }
     if (m.prefix) w.prefix = m.prefix;
     const c = w.cur;
@@ -193,7 +192,7 @@ export class VizHub {
     if (w.lastSim && m.simFrames >= w.lastSim.sim && now > w.lastSim.at) w.fps = (m.simFrames - w.lastSim.sim) / ((now - w.lastSim.at) / 1000);
     w.lastSim = { sim: m.simFrames, at: now };
     for (const n of m.nodes) {
-      this.add(i, c.n, n[0], n[1], w.played + n[2], [n[3], n[4], n[5]], n[6], n[7], n[8], n[9], n.length > 10 ? n[10] : -1);
+      this.add(i, c.n, n[0], n[1], w.played + n[2], [n[3], n[4], n[5]], n[6], n[7], n[8], n[9]);
     }
     if (m.best) {
       const prev = w.best;
@@ -201,19 +200,20 @@ export class VizHub {
       c.best = w.best;
       if (m.pads) { w.bestPads = m.pads; w.bestStep = { played: w.played, key: m.key, prefix: w.prefix }; }
       const p = m.best.stars + m.best.keys;
-      if (!prev || prev.stars + prev.keys !== p || prev.frame !== m.best.frame) {
-        this.samples.push({ w: i, frame: w.played + m.best.frame, p, t: Date.now() / 1000 });
-        if (this.samples.length > ENV_CAP) this.samples.splice(0, this.samples.length - ENV_CAP);
-      }
       if (m.pads) {
         if (!prev || p > prev.stars + prev.keys) this.toast(`worker ${i + 1}: ${m.best.stars} ★${m.best.keys ? ` ${m.best.keys} 🔑` : ''} reached at frame ${w.played + m.best.frame}`, 'best');
       }
+    }
+    if (m.cov) {
+      let lead = null;
+      for (const x of this.workers) if (x.cur && (!lead || x.stepNo > lead.stepNo)) lead = x;
+      this.cover.add(i, m.key, m.cov, lead ? lead.cur.key : m.key, this.workers.length, lead ? lead.stepNo : w.stepNo);
     }
     if (m.clip) this.addClip(i, m);
     this.notify();
   }
 
-  add(w, step, id, parent, frame, pos, stars, level, area, flags, dist = -1) {
+  add(w, step, id, parent, frame, pos, stars, level, area, flags) {
     const key = (w * 4096 + (step & 4095)) * 1e8 + id;
     // A node can come twice (a manual node the page added itself, then the tree's own sample of it): the same slot.
     const had = this.index.get(key);
@@ -232,7 +232,6 @@ export class VizHub {
     this.level[slot] = level;
     this.area[slot] = area;
     this.flags[slot] = had === undefined ? flags : flags | (this.flags[slot] & 2);
-    this.dist[slot] = dist;
     this.nodeId[slot] = id;
     this.stepOf[slot] = step & 4095;
     this.parentSlot[slot] = parent >= 0 ? this.index.get((w * 4096 + (step & 4095)) * 1e8 + parent) ?? -1 : -1;
