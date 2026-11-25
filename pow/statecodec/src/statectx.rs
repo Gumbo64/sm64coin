@@ -430,7 +430,7 @@ mod tests {
             .map(|i| {
                 let r = lcg(&mut s);
                 if r % 5 == 0 {
-                    pad = GamePad::new(if r % 3 == 0 { 0x8000 } else { 0 }, (lcg(&mut s) % 161) as i8 - 80, (lcg(&mut s) % 161) as i8 - 80);
+                    pad = GamePad::new(if r % 3 == 0 { 0x8000 } else { 0 }, ((lcg(&mut s) % 161) as i32 - 80) as i8, ((lcg(&mut s) % 161) as i32 - 80) as i8);
                 }
                 let f = Features { action: 0x0C40_0201 + (i as u32 / 50 % 4), fwd: (i as i32 % 40) << 8, ..Default::default() };
                 Frame { features: f, pad, poked: lcg(&mut s) % 11 == 0 }

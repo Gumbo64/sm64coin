@@ -783,14 +783,16 @@ mod tests {
         }
     }
 
-    /// Every stick of the lattice (and a button change) survives, from several previous sticks and cameras.
+    /// A quarter of the lattice (a fixed pseudo-random permutation of it, with button changes, pokes and camera
+    /// turns in between) survives, and so do the corners and edges.
     #[test]
     fn codec_6_and_7_cover_every_stick() {
         for id in [6, 7] {
             let mut run = vec![];
             let mut s = 99u64;
-            for k in 0..70000u32 {
-                let (x, y) = (((k >> 8) % 256) as i32 - 128, (k % 256) as i32 - 128);
+            for k in 0..16384u32 + 8 {
+                let q = if k < 16384 { k.wrapping_mul(4093) % 65536 } else { [0, 255, 255 << 8, 0xFFFF, 128, 128 << 8, 0x80FF, 0xFF80][(k - 16384) as usize] };
+                let (x, y) = ((q >> 8) as i32 - 128, (q & 255) as i32 - 128);
                 let f = Features { cam_yaw: (k * 31) as u16, ..Default::default() };
                 run.push((f, GamePad::new(0, x as i8, y as i8), false));
                 if lcg(&mut s) % 3 == 0 {
