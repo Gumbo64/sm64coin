@@ -15,7 +15,7 @@
 //!   this node opens a window of [`POF_WINDOW_SECONDS`] (30 s, this node's
 //!   clock). A sibling (same parent, so the same height) that becomes
 //!   eligible inside the window, carries **strictly fewer frames** (at equal
-//!   frames: a lower cn_fast_hash(sm64_sig)) than our
+//!   frames: the smaller canonical size, then the lower cn_fast_hash(seed)) than our
 //!   current block at that height, and has **another miner key** (another
 //!   template: a different seed) displaces it: the node reorganises to it
 //!   ([`Policy::displaces`]). After the window, or once our block has a
@@ -58,7 +58,7 @@ pub struct Seen {
     pub stale: bool,
     /// Its timestamp.
     pub stamp: u64,
-    /// The equal-length tie-break ([`Tie`]: the canonical proof size, then cn_fast_hash(sm64_sig);
+    /// The equal-length tie-break ([`Tie`]: the canonical proof size, then cn_fast_hash(seed);
     /// lower wins; [`NO_TIE`] when unknown).
     pub tie: Tie,
 }
@@ -87,7 +87,7 @@ impl Policy {
         self.note_eligible_tie(id, parent, seed, frames, stamp, now, NO_TIE)
     }
 
-    /// [`Policy::note_eligible`] with the block's tie-break hash, `cn_fast_hash(sm64_sig)` ([`tie_of`]).
+    /// [`Policy::note_eligible`] with the block's tie-break ([`tie_of`]).
     #[allow(clippy::too_many_arguments)]
     pub fn note_eligible_tie(&mut self, id: [u8; 32], parent: [u8; 32], seed: [u8; 32], frames: u32, stamp: u64, now: u64, tie: Tie) {
         let (blocks, first) = self.maps();
@@ -152,7 +152,7 @@ impl Policy {
 
 /// The equal-length tie-break between siblings of different keys: the smaller canonical proof
 /// size wins ([`canonical_size`]: simpler, more compressible inputs, smaller blocks), then the
-/// lower `cn_fast_hash(sm64_sig)`. Ordered by (size, hash).
+/// lower `cn_fast_hash(seed)`. Ordered by (size, hash).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tie {
     pub size: u32,
@@ -162,9 +162,15 @@ pub struct Tie {
 /// "Unknown": never wins a tie.
 pub const NO_TIE: Tie = Tie { size: u32::MAX, hash: [0xff; 32] };
 
-/// A block's tie-break: its proof's [`canonical_size`] and `cn_fast_hash(sm64_sig)`.
-pub fn tie_of(proof: &[u8], sig: &[u8; 64]) -> Tie {
-    Tie { size: canonical_size(proof), hash: crate::sign::cn_fast_hash(sig) }
+/// A block's tie-break: its proof's [`canonical_size`], then `cn_fast_hash(seed)`: one ticket per
+/// template, fixed before any search. v0.4 (fairness-research V04.md): the v0.3 final key,
+/// `cn_fast_hash(sm64_sig)`, is grindable by the run's owner (equal-frame variants re-signed), and
+/// near the difficulty floor, where most heights are exact ties, that made the tie a
+/// compute-weighted lottery favouring farms (a 30 % farm got 2.47x its share). Caveat: a miner
+/// can still pick among template keys before searching (one hash and one scalar multiplication
+/// per key): docs/V0.4-DESIGN.md section 1.6.
+pub fn tie_of(proof: &[u8], seed: &[u8; 32]) -> Tie {
+    Tie { size: canonical_size(proof), hash: crate::sign::cn_fast_hash(seed) }
 }
 
 /// The size of a proof that every node sees the same for the same block id (v0.4: the id is the
@@ -238,7 +244,7 @@ impl SizeCounter {
 }
 
 /// Inside the window, between siblings of different keys: strictly fewer frames wins; at equal
-/// frames, the smaller canonical proof size, then the lower signature hash, at every node whatever
+/// frames, the smaller canonical proof size, then the lower seed hash, at every node whatever
 /// the arrival order (the auction-smoothness simulation: window-edge splits 0.8 % -> 0). Only the
 /// run's owner can change its inputs or signature; grinding them is real optimisation (simpler
 /// inputs) or only matters for exact ties.

@@ -88,19 +88,32 @@ pub fn window_frames(difficulty: u64, winner_frames: u32, seconds: u64) -> u32 {
     }
 }
 
-/// Each included proof is paid `base / divisor` of new issuance, on top of the miner's unchanged
-/// `base + fees` (decided: extra issuance, 128). A gate: None pays proofs nothing (to set from
-/// the imitation-cost result).
-pub const PROPOSED_REWARD_DIVISOR: Option<u64> = Some(128);
+/// Each included proof is paid `min(base / divisor, base * pot_percent / 100 / n)` of new
+/// issuance, on top of the miner's unchanged `base + fees` (decided: extra issuance, divisor 128).
+/// The pot bounds the total (fairness-research V04.md: a total proof pot of about 10-25 % of the
+/// block reward is about proportional near the floor; 50 % over-corrects); with 25 % and 128 it
+/// binds above 32 proofs. Both are gates: None pays proofs nothing / leaves the total unbounded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reward {
+    pub divisor: Option<u64>,
+    pub pot_percent: Option<u64>,
+}
 
-/// What one included proof is paid when the block's base reward is `base` (0 with the gate off).
-pub fn proof_reward(base: u64, divisor: Option<u64>) -> u64 {
-    divisor.map_or(0, |d| base / d.max(1))
+pub const PROPOSED_REWARD: Reward = Reward { divisor: Some(128), pot_percent: Some(25) };
+
+/// What each of `n` included proofs is paid when the block's base reward is `base`.
+pub fn proof_reward(base: u64, n: usize, r: &Reward) -> u64 {
+    let Some(d) = r.divisor else { return 0 };
+    let per = base / d.max(1);
+    match (r.pot_percent, n) {
+        (Some(p), n) if n > 0 => per.min(((base as u128 * p as u128 / 100) / n as u128) as u64),
+        _ => per,
+    }
 }
 
 /// The most a coinbase with `n` included proofs may pay in all (None: overflow).
-pub fn coinbase_total(base: u64, fees: u64, n: usize, divisor: Option<u64>) -> Option<u64> {
-    base.checked_add(fees)?.checked_add(proof_reward(base, divisor).checked_mul(n as u64)?)
+pub fn coinbase_total(base: u64, fees: u64, n: usize, r: &Reward) -> Option<u64> {
+    base.checked_add(fees)?.checked_add(proof_reward(base, n, r).checked_mul(n as u64)?)
 }
 
 /// A payout address a template commits (Monero's standard address or subaddress public keys).
@@ -447,6 +460,8 @@ pub struct Winner {
     pub frames: u32,
     /// Block h's retarget difficulty (the windows are in auction time at it).
     pub difficulty: u64,
+    /// Block h's committed input hash (a record may not repeat the winner's run).
+    pub input_hash: [u8; 32],
 }
 
 /// The structural checks of a block's records (docs/V0.4-DESIGN.md section 2.4, rules 1-8;
@@ -478,6 +493,7 @@ pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start
     let mut keys = std::collections::HashSet::new();
     let mut counted = 0;
     let mut last: Option<(u32, [u8; 32])> = None;
+    let mut runs = std::collections::HashSet::new();
     for (i, (r, f)) in records.iter().zip(&facts).enumerate() {
         let bad = |why: &str| Invalid(format!("proof {i}: {why}"));
         if f.height != winner.height || f.prev_id != winner.prev_id {
@@ -486,11 +502,18 @@ pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start
         if f.key == winner.key || !keys.insert(f.key) {
             return Err(bad("one proof per key (and not the winner's key)"));
         }
-        let order = (f.run.frames, f.run.input_hash);
+        // Canonical order by an ungrindable key (one ticket per template: the seed's hash), as the
+        // tie-break (pof::tie_of); keys are distinct, so seeds are, so the order is strict.
+        let order = (f.run.frames, cn_fast_hash(&f.seed));
         if last.is_some_and(|l| l >= order) {
-            return Err(bad("records must be in strictly increasing (frames, input hash) order"));
+            return Err(bad("records must be in strictly increasing (frames, seed hash) order"));
         }
         last = Some(order);
+        // One run counts once: an identical run on another seed (runs are seed-bound, so this is
+        // all but impossible honestly) is a duplicate.
+        if f.run.input_hash == winner.input_hash || !runs.insert(f.run.input_hash) {
+            return Err(bad("the same run twice (input hash)"));
+        }
         if !sign::verify(&f.key, &sign::message(&f.seed, &f.run.input_hash, f.run.frames), &r.sig) {
             return Err(bad("the signature does not verify with the template's key"));
         }
@@ -598,12 +621,12 @@ mod tests {
 
     fn winner() -> (Keypair, Winner) {
         let k = Keypair::from_entropy(&[200; 32]).unwrap();
-        (k.clone(), Winner { height: 5, prev_id: PREV, key: k.public, frames: 2000, difficulty: D })
+        (k.clone(), Winner { height: 5, prev_id: PREV, key: k.public, frames: 2000, difficulty: D, input_hash: [0xcc; 32] })
     }
 
     fn set(n: usize) -> (Vec<Record>, [u8; 32]) {
         let mut v: Vec<(Record, Facts)> = (0..n).map(|i| record(&Keypair::from_entropy(&[i as u8 + 1; 32]).unwrap(), 5, &PREV, &run(2000 + 37 * i as u32, i as u16), i % 4)).collect();
-        v.sort_by_key(|(_, f)| (f.run.frames, f.run.input_hash));
+        v.sort_by_key(|(_, f)| (f.run.frames, cn_fast_hash(&f.seed)));
         let leaves: Vec<[u8; 32]> = v.iter().map(|(r, f)| f.leaf(&r.sig)).collect();
         (v.into_iter().map(|(r, _)| r).collect(), root(&leaves))
     }
@@ -707,6 +730,14 @@ mod tests {
         let b = record(&k2, 5, &PREV, &run(2200, 2), 0).0;
         assert!(!inv(&[a.clone(), b.clone()], Start::Parent, &PROPOSED));
         assert!(inv(&[b.clone(), a.clone()], Start::Parent, &PROPOSED), "order");
+        // The same run under two keys counts once (and may not repeat the winner's run).
+        let mut same = [record(&k1, 5, &PREV, &run(2100, 9), 0).0, record(&k2, 5, &PREV, &run(2100, 9), 0).0];
+        same.sort_by_key(|r| cn_fast_hash(&r.facts().unwrap().seed));
+        assert!(inv(&same, Start::Parent, &PROPOSED), "dedupe by input hash");
+        let ws = record(&k1, 5, &PREV, &run(2100, 8), 0).0;
+        let w2 = Winner { input_hash: ws.facts().unwrap().run.input_hash, ..w };
+        let leaves = [ws.leaf().unwrap()];
+        assert!(matches!(check(&[ws], Some(&root(&leaves)), &w2, Start::Parent, &PROPOSED), Err(RecordFault::Invalid(_))), "the winner's run");
         assert!(inv(&[a.clone(), a.clone()], Start::Parent, &PROPOSED), "duplicate");
         let a2 = record(&k1, 5, &PREV, &run(2300, 3), 1).0;
         assert!(inv(&[a.clone(), a2], Start::Parent, &PROPOSED), "one proof per key");
@@ -734,14 +765,17 @@ mod tests {
     }
 
     #[test]
-    fn rewards_come_on_top_of_the_miners() {
+    fn rewards_come_on_top_of_the_miners_and_the_pot_bounds_them() {
         let base = 1_125_800_000_000_000u64; // ~1125.8 SM64, v0.3's first blocks
-        let d = PROPOSED_REWARD_DIVISOR;
-        assert_eq!(proof_reward(base, d), base / 128);
-        assert_eq!(coinbase_total(base, 7, 0, d), Some(base + 7), "no proofs: v0.3's coinbase");
-        assert_eq!(coinbase_total(base, 0, 64, d), Some(base + base / 2), "the cap: +50 % at most");
-        assert_eq!(coinbase_total(base, 0, 64, None), Some(base), "the reward gate off");
-        assert_eq!(coinbase_total(u64::MAX, 1, 0, d), None);
+        let r = PROPOSED_REWARD;
+        assert_eq!(proof_reward(base, 1, &r), base / 128);
+        assert_eq!(proof_reward(base, 32, &r), base / 128, "the pot binds only above 32 proofs");
+        assert_eq!(coinbase_total(base, 7, 0, &r), Some(base + 7), "no proofs: v0.3's coinbase");
+        assert_eq!(coinbase_total(base, 0, 64, &r), Some(base + 64 * (base / 4 / 64)), "the cap: the pot, 25 %");
+        let open = Reward { pot_percent: None, ..r };
+        assert_eq!(coinbase_total(base, 0, 64, &open), Some(base + 64 * (base / 128)), "no pot: +50 % at the cap");
+        assert_eq!(coinbase_total(base, 0, 64, &Reward { divisor: None, ..r }), Some(base), "the reward gate off");
+        assert_eq!(coinbase_total(u64::MAX, 1, 0, &r), None);
     }
 
     #[test]
