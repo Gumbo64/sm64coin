@@ -426,6 +426,10 @@ const MAX_RESPONSE: u64 = 64 << 20;
 const RPC_ALLOWED: &[&str] = &[
     "get_info", "get_block_count", "get_block", "get_block_header_by_hash", "get_block_header_by_height",
     "get_block_headers_range", "get_block_template", "submit_block",
+    // proof-of-play (the miner's parent state and cycle) and the node's leaderboard
+    "get_sm64_cycle", "get_sm64_state", "sm64_board", "sm64_board_join",
+    // read-only calls a wallet makes (restricted-RPC safe)
+    "get_version", "get_fee_estimate", "get_last_block_header", "get_output_distribution", "hard_fork_info",
 ];
 
 fn host_is_ip(h: &str) -> bool {
