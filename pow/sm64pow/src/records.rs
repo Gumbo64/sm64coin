@@ -513,6 +513,12 @@ pub struct Winner {
 /// height's natural start (power-on iff block h's parent is the genesis block or ends the
 /// cycle). Returns each record's facts and how many count for weight.
 pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start: Start, w: &Window) -> Result<(Vec<Facts>, usize), RecordFault> {
+    check_opts(records, root, winner, Some(start), w)
+}
+
+/// [`check`] with the natural start optional: None skips rule 8 (a block already accepted whose
+/// parent's end state is not at hand; used to count weight after a restart).
+pub fn check_opts(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start: Option<Start>, w: &Window) -> Result<(Vec<Facts>, usize), RecordFault> {
     use RecordFault::*;
     let committed = root.copied().unwrap_or([0; 32]);
     let feats = crate::features::active();
@@ -568,12 +574,96 @@ pub fn check(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, start
         if f.run.frames == 0 || f.run.frames > archive || f.run.frames > crate::rules::active().max_frames_any() {
             return Err(bad("outside the proof window"));
         }
-        if f.run.start != start {
+        if start.is_some_and(|s| f.run.start != s) {
             return Err(bad("a proof starts where the height starts (no restarts)"));
         }
         counted += weight.is_some_and(|wf| f.run.frames <= wf) as usize;
     }
     Ok((facts, counted))
+}
+
+// ---- proof outputs in the including block's coinbase (stage C, docs/V0.4-DESIGN.md 3.2) ----
+
+/// How long after the displacement window closes a node waits for proofs before building the
+/// template for the next height (node policy, decided 10 s: section 3.3).
+pub const COLLECTION_GRACE_SECONDS: u64 = 10;
+
+/// One proof payout in the including block's coinbase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProofOut {
+    pub key: [u8; 32],
+    pub view_tag: u8,
+    pub tx_pubkey: [u8; 32],
+    pub amount: u64,
+}
+
+/// The wire size of one [`ProofOut`] (`sm64pow_proof_outputs`): key, view tag, additional tx
+/// pubkey, amount u64 LE.
+pub const PROOF_OUT_LEN: usize = 32 + 1 + 32 + 8;
+
+impl ProofOut {
+    pub fn to_bytes(&self) -> [u8; PROOF_OUT_LEN] {
+        let mut b = [0u8; PROOF_OUT_LEN];
+        b[..32].copy_from_slice(&self.key);
+        b[32] = self.view_tag;
+        b[33..65].copy_from_slice(&self.tx_pubkey);
+        b[65..].copy_from_slice(&self.amount.to_le_bytes());
+        b
+    }
+}
+
+/// The coinbase outputs that pay a (verified) records field, in record order, output index
+/// `first_index + i`. Empty when there are no records or `proof_rewards` is off. Err: the field
+/// doesn't parse or a record's payout isn't a point.
+pub fn proof_outputs(field: &[u8], base_reward: u64, first_index: u64) -> Result<Vec<ProofOut>, String> {
+    if field.is_empty() || !crate::features::active().proof_rewards {
+        return Ok(vec![]);
+    }
+    let recs = decode(field).map_err(|e| format!("the proofs field does not parse: {e}"))?;
+    let amount = proof_reward(base_reward, recs.len(), &PROPOSED_REWARD);
+    let mut out = Vec::with_capacity(recs.len());
+    for (i, r) in recs.iter().enumerate() {
+        let f = r.facts().map_err(|e| format!("proof {i}: {e}"))?;
+        let leaf = f.leaf(&r.sig);
+        let o = crate::payout::proof_output(&leaf, &f.payout, first_index + i as u64).ok_or_else(|| format!("proof {i}: the payout keys are not points"))?;
+        out.push(ProofOut { key: o.key, view_tag: o.view_tag, tx_pubkey: o.tx_pubkey, amount });
+    }
+    Ok(out)
+}
+
+/// The coinbase rule for proof outputs (docs/V0.4-DESIGN.md 3.2). `outs` are the coinbase's
+/// outputs in order as `(key, view tag, amount)`, `add_keys` its additional tx pubkeys.
+/// With rewards on and n records: exactly `1 + n` outputs, outputs `1..=n` the proof outputs
+/// (key, amount, and the view tag unless it is 0 = an untagged output), and `add_keys[1 + i]` the
+/// record's `R_j` (`add_keys.len() == outs.len()`; entry 0 is the miner's, unconstrained). With no
+/// records or rewards off: exactly one output and no more additional keys than outputs.
+pub fn check_miner_tx(field: &[u8], base_reward: u64, outs: &[([u8; 32], u8, u64)], add_keys: &[[u8; 32]]) -> Result<(), String> {
+    let want = proof_outputs(field, base_reward, 1)?;
+    if outs.len() != 1 + want.len() {
+        return Err(format!("the coinbase has {} outputs, {} expected ({} proofs paid)", outs.len(), 1 + want.len(), want.len()));
+    }
+    if want.is_empty() {
+        return if add_keys.len() <= 1 { Ok(()) } else { Err("the coinbase carries additional keys but pays no proofs".into()) };
+    }
+    if add_keys.len() != outs.len() {
+        return Err("the coinbase's additional tx pubkeys must match its outputs one to one".into());
+    }
+    for (i, w) in want.iter().enumerate() {
+        let (key, tag, amount) = outs[1 + i];
+        if key != w.key {
+            return Err(format!("proof output {i}: wrong output key"));
+        }
+        if amount != w.amount {
+            return Err(format!("proof output {i}: pays {amount}, expected {}", w.amount));
+        }
+        if tag != 0 && tag != w.view_tag {
+            return Err(format!("proof output {i}: wrong view tag"));
+        }
+        if add_keys[1 + i] != w.tx_pubkey {
+            return Err(format!("proof output {i}: wrong additional tx pubkey"));
+        }
+    }
+    Ok(())
 }
 
 // ---- fork choice ----

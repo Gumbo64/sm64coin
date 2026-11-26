@@ -89,6 +89,25 @@ pub fn proof_output(leaf: &[u8; 32], payout: &Payout, index: u64) -> Option<Proo
     Some(ProofOutput { key: derive_public_key(&d, index, &payout.spend)?, view_tag: view_tag(&d, index), tx_pubkey: tx_pub.compress().to_bytes() })
 }
 
+/// Monero's subaddress `(major, minor)` of the wallet with view secret `a` and spend public key
+/// `B`: `m = H_s("SubAddr\0" || a || major LE32 || minor LE32)`, `D = B + m G`, `C = a D`.
+/// Returns `(D, C)` (the subaddress's spend and view public keys); `(0, 0)` is the main address
+/// `(B, a G)`. None: `a` is not a canonical scalar or `B` is not a point.
+pub fn subaddress(view_secret: &[u8; 32], spend_public: &[u8; 32], major: u32, minor: u32) -> Option<([u8; 32], [u8; 32])> {
+    let a: Option<Scalar> = Scalar::from_canonical_bytes(*view_secret).into();
+    let (a, b) = (a?, point(spend_public)?);
+    if major == 0 && minor == 0 {
+        return Some((*spend_public, (&a * ED25519_BASEPOINT_TABLE).compress().to_bytes()));
+    }
+    let mut buf = b"SubAddr\0".to_vec();
+    buf.extend_from_slice(view_secret);
+    buf.extend_from_slice(&major.to_le_bytes());
+    buf.extend_from_slice(&minor.to_le_bytes());
+    let m = Scalar::from_bytes_mod_order(cn_fast_hash(&buf));
+    let d = b + &m * ED25519_BASEPOINT_TABLE;
+    Some((d.compress().to_bytes(), (d * a).compress().to_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +178,26 @@ mod tests {
         // Deterministic and per-record.
         assert_eq!(proof_output(&leaf, &p, 1), Some(o));
         assert_ne!(proof_output(&[8; 32], &p, 1).unwrap().key, o.key);
+    }
+
+    /// Subaddress derivation: (0,0) is the main address; a payout to subaddress (0,k) is found
+    /// by the wallet's view secret; distinct indices give distinct keys.
+    #[test]
+    fn subaddresses() {
+        let s = |x: u8| Scalar::from_bytes_mod_order([x; 32]);
+        let (a, b) = (s(5), s(6));
+        let cap_b = (&b * ED25519_BASEPOINT_TABLE).compress().to_bytes();
+        let cap_a = (&a * ED25519_BASEPOINT_TABLE).compress().to_bytes();
+        assert_eq!(subaddress(a.as_bytes(), &cap_b, 0, 0), Some((cap_b, cap_a)));
+        let (d1, c1) = subaddress(a.as_bytes(), &cap_b, 0, 1).unwrap();
+        let (d2, _) = subaddress(a.as_bytes(), &cap_b, 0, 2).unwrap();
+        let (d3, _) = subaddress(a.as_bytes(), &cap_b, 1, 0).unwrap();
+        assert!(d1 != d2 && d1 != d3 && d1 != cap_b);
+        assert_eq!(c1, (point(&d1).unwrap() * a).compress().to_bytes());
+        let p = Payout { subaddress: true, spend: d1, view: c1 };
+        let o = proof_output(&[3; 32], &p, 2).unwrap();
+        let d = key_derivation(&o.tx_pubkey, a.as_bytes()).unwrap();
+        assert_eq!(derive_public_key(&d, 2, &d1), Some(o.key));
+        assert!(subaddress(&[0xff; 32], &cap_b, 0, 1).is_none(), "not a canonical scalar");
     }
 }

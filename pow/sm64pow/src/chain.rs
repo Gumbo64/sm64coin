@@ -366,6 +366,10 @@ pub enum RecordsVerdict {
     NeedParent,
 }
 
+fn is_state_coded(blob: &[u8]) -> bool {
+    crate::commit::split(blob).ok().and_then(|(_, enc)| enc.first().copied()).is_some_and(|c| crate::statecodec::state_codec(c).is_some())
+}
+
 /// Replays the runs of records that passed `records::check` (their `facts`, their committed
 /// proof blobs), all from `parent` (block h's parent, the parent of every proof), with no time
 /// limit (a proof is bounded by the window instead), on up to `threads` threads. The verdict is
@@ -385,7 +389,15 @@ pub fn verify_records(parent: Parent, facts: &[crate::records::Facts], proofs: &
                     let i = c * per + j;
                     let f = &facts[i];
                     let id = f.leaf(&[0; 64]); // a cache id per run (not a block id)
-                    *v = Some(rebuild_committed_block(&id, parent, &Seed(f.seed), proofs[i]));
+                    let seed = Seed(f.seed);
+                    // A state-coded record: keep its decoded inputs (by input hash) so it can be
+                    // re-encoded for a peer without a second replay (stagec.rs).
+                    if is_state_coded(proofs[i]) && crate::stagec::inputs_for(&f.run.input_hash).is_none() {
+                        if let Ok(Ok(pl)) = played_committed_block(&id, parent, &seed, proofs[i]) {
+                            crate::stagec::note_inputs(f.run.input_hash, &pl.wanted());
+                        }
+                    }
+                    *v = Some(rebuild_committed_block(&id, parent, &seed, proofs[i]));
                 }
             });
         }

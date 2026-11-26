@@ -446,6 +446,26 @@ impl Policy {
         w(alt_len, tainted(alt)) > w(main_len, tainted(main))
     }
 
+    /// [`Policy::fork_choice`] with proof weight (docs/V0.4-DESIGN.md 2.6): `main` and `alt` are
+    /// the chains above the fork point as `(seed, counted proofs)` per block, nearest the fork
+    /// first. With `proof_weight` on: records::prefer_alt, "longer AND heavier", a block weighs
+    /// `1 + counted` and a tainted block 0, the length penalty as v0.3. A chain's blocks beyond
+    /// the entries given (`len` larger than the slice) weigh 1 each. Off: exactly
+    /// [`Policy::fork_choice`].
+    pub fn fork_choice_weighted(&self, main_len: u64, main: &[([u8; 32], u32)], alt_len: u64, alt: &[([u8; 32], u32)]) -> bool {
+        let seeds = |s: &[([u8; 32], u32)]| s.iter().map(|x| x.0).collect::<Vec<_>>();
+        if !crate::features::active().proof_weight {
+            return self.fork_choice(main_len, &seeds(main), alt_len, &seeds(alt));
+        }
+        let near = (FORK_CHOICE_DEPTH + 1) as usize;
+        let side = |len: u64, s: &[([u8; 32], u32)]| crate::records::Side {
+            len,
+            weight: s.iter().filter(|(seed, _)| !self.tainted(seed)).map(|(_, c)| 1 + *c as u64).sum::<u64>() + len.saturating_sub(s.len() as u64),
+            tainted: s.iter().take(near).any(|(seed, _)| self.tainted(seed)),
+        };
+        crate::records::prefer_alt(side(main_len, main), side(alt_len, alt), None)
+    }
+
     /// Keeps recent evidence in `path` across restarts, loading what is there now.
     pub fn persist(&mut self, path: std::path::PathBuf) {
         if let Ok(b) = std::fs::read(&path) {
@@ -767,5 +787,27 @@ mod tests {
         }
         assert!(p.wire_for(&seed).is_none() && p.take_outbox().is_none());
         assert!(p.tainted(&seed) && p.fork_choice(1, &[seed], 1, &[[1; 32]]));
+    }
+
+    /// Proof weight in fork choice (the default features: weight on): longer AND heavier; a tainted
+    /// block weighs 0 and the length penalty stays. (The switch-off path is tests/stagec.rs.)
+    #[test]
+    fn weighted_fork_choice_taint_weighs_zero() {
+        let mut p = Policy::default();
+        let b = |i: u8, c: u32| ([i; 32], c);
+        // alt longer and heavier: switch; longer but lighter: keep; heavier but not longer: keep
+        assert!(p.fork_choice_weighted(2, &[b(1, 3), b(2, 3)], 3, &[b(3, 3), b(4, 3), b(5, 3)]));
+        assert!(!p.fork_choice_weighted(2, &[b(1, 9), b(2, 9)], 3, &[b(3, 0), b(4, 0), b(5, 0)]));
+        assert!(!p.fork_choice_weighted(3, &[b(1, 0), b(2, 0), b(6, 0)], 3, &[b(3, 9), b(4, 9), b(5, 9)]));
+        // a tainted block of the alternative weighs 0 (its counted proofs vanish): 3 + 3 + 0 = 6 < main's 8
+        p.local_counted.insert([5; 32], true);
+        let main = [b(1, 3), b(2, 3)];
+        let alt = [b(3, 3), b(4, 3), b(5, 90)];
+        assert!(!p.fork_choice_weighted(2, &main, 3, &alt), "taint: weight 0 and the 1.5 block penalty (a lead of 2 is needed)");
+        // untainted: weight 4 + 4 + 91 beats 8, length 3 > 2: switches
+        let clean = Policy::default();
+        assert!(clean.fork_choice_weighted(2, &main, 3, &alt));
+        // entries fewer than the length: the rest weigh 1
+        assert!(clean.fork_choice_weighted(1, &[b(1, 0)], 3, &[b(3, 0)]), "2 unknown blocks weigh 2: 3 > 1");
     }
 }

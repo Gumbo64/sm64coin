@@ -1437,3 +1437,146 @@ pub extern "C" fn sm64pow_template_nonce(miner_nonce: *const u8, miner_nonce_len
     }
     copy_out(&nonce, out, cap)
 }
+
+// ---- Stage C and the remaining v0.4 wiring (stagec.rs, records.rs) ----
+
+fn guard<T>(what: &str, fail: T, f: impl FnOnce() -> Result<T, String> + std::panic::UnwindSafe) -> T {
+    match std::panic::catch_unwind(f) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            set_error(e);
+            fail
+        }
+        Err(_) => {
+            set_error(format!("panic in {what}"));
+            fail
+        }
+    }
+}
+
+/// The coinbase outputs paying the block's (verified) proofs `field`, in record order, output index
+/// `first_index + i`: 73 bytes per record = output key (32) || view tag (1) || additional tx
+/// pubkey R_j (32) || amount u64 LE (8). Size-then-fill. 0 for no records or `proof_rewards` off;
+/// SIZE_MAX if the field doesn't parse (reason in sm64pow_last_error).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_proof_outputs(field: *const u8, field_len: usize, base_reward: u64, first_index: u32, out: *mut u8, cap: usize) -> usize {
+    let field = blob_arg(field, field_len);
+    let outs = guard("sm64pow_proof_outputs", None, || crate::records::proof_outputs(field, base_reward, first_index as u64).map(Some));
+    match outs {
+        Some(v) => copy_out(&v.iter().flat_map(|o| o.to_bytes()).collect::<Vec<u8>>(), out, cap),
+        None => usize::MAX,
+    }
+}
+
+/// The coinbase rule for proof outputs. `outs`: n_outs x (key 32 || view tag 1 || amount u64 LE 8)
+/// (view tag 0 = untagged output: not compared); `add_keys`: n_add x 32. 1 ok, 0 invalid (reason in
+/// sm64pow_last_error). See records::check_miner_tx.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_check_miner_tx(field: *const u8, field_len: usize, base_reward: u64, outs: *const u8, n_outs: usize, add_keys: *const u8, n_add: usize) -> i32 {
+    let (field, o, a) = (blob_arg(field, field_len), blob_arg(outs, n_outs * 41), blob_arg(add_keys, n_add * 32));
+    let outs: Vec<([u8; 32], u8, u64)> = o.chunks_exact(41).map(|c| (c[..32].try_into().unwrap(), c[32], u64::from_le_bytes(c[33..].try_into().unwrap()))).collect();
+    let keys: Vec<[u8; 32]> = a.chunks_exact(32).map(|c| c.try_into().unwrap()).collect();
+    guard("sm64pow_check_miner_tx", 0, || crate::records::check_miner_tx(field, base_reward, &outs, &keys).map(|_| 1))
+}
+
+/// How many of the block's records count for weight, structurally (no replay); arguments as
+/// sm64pow_verify_records up to h_difficulty. 0 when proof_weight is off or anything fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_count_records(
+    field: *const u8, field_len: usize, nonce: *const u8, nonce_len: usize, h_height: u64, h_prev32: *const u8, h_prev_is_genesis: i32, h_nonce: *const u8, h_nonce_len: usize,
+    h_proof: *const u8, h_proof_len: usize, h_difficulty: u64,
+) -> u32 {
+    let Some(prev_id) = (unsafe { id_arg(h_prev32) }) else { return 0 };
+    let h = crate::included::Parent1 { height: h_height, prev_id, prev_is_genesis: h_prev_is_genesis != 0, nonce: blob_arg(h_nonce, h_nonce_len), proof: blob_arg(h_proof, h_proof_len), difficulty: h_difficulty };
+    let (field, nonce) = (blob_arg(field, field_len), blob_arg(nonce, nonce_len));
+    std::panic::catch_unwind(|| crate::stagec::count_records(field, nonce, &h)).unwrap_or(0)
+}
+
+/// Fork choice with proof weight: the two chains above the fork point (`n_main` / `n_alt` blocks,
+/// seeds 32 bytes each, `counted` per block, nearest the fork point first; `main_len` / `alt_len`
+/// may exceed the entries given: the rest weigh 1 each). 1: switch to the alternative.
+/// `proof_weight` on: longer AND heavier (a tainted block weighs 0, the 1.5-block penalty stays);
+/// off: exactly sm64pow_fork_choice.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_fork_choice_weighted(main_len: u64, main_seeds: *const u8, main_counted: *const u32, n_main: usize, alt_len: u64, alt_seeds: *const u8, alt_counted: *const u32, n_alt: usize) -> i32 {
+    let side = |s: *const u8, c: *const u32, n: usize| -> Vec<([u8; 32], u32)> {
+        if s.is_null() || n == 0 {
+            return vec![];
+        }
+        let seeds = unsafe { std::slice::from_raw_parts(s, 32 * n) };
+        (0..n).map(|i| (seeds[32 * i..32 * i + 32].try_into().unwrap(), if c.is_null() { 0 } else { unsafe { *c.add(i) } })).collect()
+    };
+    let (m, a) = (side(main_seeds, main_counted, n_main), side(alt_seeds, alt_counted, n_alt));
+    std::panic::catch_unwind(|| crate::equivocation::policy().lock().unwrap_or_else(|e| e.into_inner()).fork_choice_weighted(main_len, &m, alt_len, &a)).unwrap_or(alt_len > main_len) as i32
+}
+
+/// The records pre-pass of a sync batch in chain order (call after sm64pow_preverify): `n` full block
+/// blobs in `blocks` (`offsets` has n + 1 entries), their ids (`ids`, n x 32) and their own
+/// retarget difficulties (`difficulties`, n entries; 0 = unknown: the window is not applied). Replays
+/// the records of every block whose parent block h is the previous block of the batch, in parallel,
+/// caching the runs. Returns how many records it replayed. Never decides validity.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_preverify_records(n: usize, ids: *const u8, blocks: *const u8, offsets: *const u64, difficulties: *const u64, threads: u32) -> u64 {
+    if n == 0 || ids.is_null() || offsets.is_null() {
+        return 0;
+    }
+    let (ids, offsets) = unsafe { (std::slice::from_raw_parts(ids, n * 32), std::slice::from_raw_parts(offsets, n + 1)) };
+    let total = offsets[n] as usize;
+    let blobs: &[u8] = if total == 0 || blocks.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(blocks, total) } };
+    let mut batch = Vec::with_capacity(n);
+    for i in 0..n {
+        let (a, b) = (offsets[i] as usize, offsets[i + 1] as usize);
+        if a > b || b > blobs.len() {
+            return 0;
+        }
+        let d = if difficulties.is_null() { 0 } else { unsafe { *difficulties.add(i) } };
+        batch.push(crate::stagec::SyncBlock { id: ids[32 * i..32 * i + 32].try_into().unwrap(), blob: &blobs[a..b], difficulty: d });
+    }
+    std::panic::catch_unwind(|| crate::stagec::preverify_records(&batch, threads as usize)).unwrap_or(0) as u64
+}
+
+/// The proofs `field` with every record proof in an encoding a peer with codec set `mask32` (NULL:
+/// the baseline) decodes. Size-then-fill. 0: no change needed. SIZE_MAX with an error: the field
+/// doesn't parse, or a state-coded record's inputs aren't cached (send the block as it is).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_records_for_peer(field: *const u8, field_len: usize, mask32: *const u8, out: *mut u8, cap: usize) -> usize {
+    let (field, mask) = (blob_arg(field, field_len), mask_arg(mask32));
+    match std::panic::catch_unwind(|| crate::stagec::field_for_peer(field, &mask)) {
+        Ok(Ok(None)) => 0,
+        Ok(Ok(Some(b))) => copy_out(&b, out, cap),
+        Ok(Err(e)) => {
+            set_error(e);
+            usize::MAX
+        }
+        Err(_) => {
+            set_error("panic in sm64pow_records_for_peer".into());
+            usize::MAX
+        }
+    }
+}
+
+/// Unix second at which the template on tip `tip_id32` should be built: the tip's eligible time
+/// (pof.rs) + the displacement window (rules::POF_WINDOW_SECONDS) + the 10 s collection grace. 0: unknown.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_records_ready_at(tip_id32: *const u8) -> u64 {
+    let Some(id) = (unsafe { id_arg(tip_id32) }) else { return 0 };
+    std::panic::catch_unwind(|| crate::stagec::records_ready_at(&id)).unwrap_or(0)
+}
+
+/// Monero subaddress (major, minor) of the wallet with view secret `view_secret32` and spend public
+/// key `spend_public32`: `spend_out32` = D, `view_out32` = C. (0, 0) is the main address itself.
+/// 1 ok, 0 not canonical / not a point.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_subaddress(view_secret32: *const u8, spend_public32: *const u8, major: u32, minor: u32, spend_out32: *mut u8, view_out32: *mut u8) -> i32 {
+    let (Some(a), Some(b)) = (unsafe { id_arg(view_secret32) }, unsafe { id_arg(spend_public32) }) else { return 0 };
+    match crate::payout::subaddress(&a, &b, major, minor) {
+        Some((d, c)) => {
+            unsafe {
+                std::ptr::copy_nonoverlapping(d.as_ptr(), spend_out32, 32);
+                std::ptr::copy_nonoverlapping(c.as_ptr(), view_out32, 32);
+            }
+            1
+        }
+        None => 0,
+    }
+}

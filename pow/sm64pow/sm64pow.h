@@ -219,6 +219,51 @@ size_t sm64pow_template_nonce(const uint8_t *miner_nonce, size_t miner_nonce_len
                               const uint8_t *spend32, const uint8_t *view32, const uint8_t *root32,
                               uint8_t *out, size_t cap);
 
+/* ---- v0.4 stage C and wiring ---- */
+/* The coinbase outputs that pay a block's (verified) sm64_proofs `field`, in record order, output index
+ * first_index + i (m = 1: first_index 1). Per record 73 bytes: output key P_j (32) || view tag (1) ||
+ * additional tx pubkey R_j (32) || amount u64 LE (8); amount = min(R/128, 25% pot / n) of base_reward.
+ * Size-then-fill. 0: no records or proof_rewards off. SIZE_MAX: the field doesn't parse (last_error). */
+size_t sm64pow_proof_outputs(const uint8_t *field, size_t field_len, uint64_t base_reward, uint32_t first_index,
+                             uint8_t *out, size_t cap);
+/* The coinbase rule. outs: n_outs x 41 bytes (key 32 || view tag 1 || amount u64 LE 8), the coinbase's outputs in
+ * order (view tag 0 = untagged txout_to_key, not compared; otherwise it must equal the derived tag);
+ * add_keys: n_add x 32 (tx_extra_additional_pub_keys). With proof_rewards on and n records: n_outs == 1 + n,
+ * outputs 1..n match sm64pow_proof_outputs, n_add == n_outs and add_keys[1+i] == R_j (add_keys[0] free).
+ * No records or rewards off: n_outs == 1 and n_add <= 1. 1 ok, 0 invalid (last_error). The money check's raise
+ * by the proofs' total is the caller's (records::coinbase_total). */
+int32_t sm64pow_check_miner_tx(const uint8_t *field, size_t field_len, uint64_t base_reward,
+                               const uint8_t *outs, size_t n_outs, const uint8_t *add_keys, size_t n_add);
+/* How many of the block's records count for weight (structural check, no replay, no start check); arguments as
+ * sm64pow_verify_records up to h_difficulty. 0 when proof_weight is off or anything fails. */
+uint32_t sm64pow_count_records(const uint8_t *field, size_t field_len, const uint8_t *nonce, size_t nonce_len,
+                               uint64_t h_height, const uint8_t *h_prev32, int32_t h_prev_is_genesis,
+                               const uint8_t *h_nonce, size_t h_nonce_len, const uint8_t *h_proof, size_t h_proof_len,
+                               uint64_t h_difficulty);
+/* Fork choice with proof weight: the chains above the fork point, seeds 32 bytes and counted-proofs per block
+ * (nearest the fork first; main_len/alt_len above the entries given: the rest weigh 1). 1: switch to alt.
+ * proof_weight on: longer AND heavier (block weight 1 + counted, 0 if equivocation-tainted; the 1.5-block length
+ * penalty stays). Off: exactly sm64pow_fork_choice. The 36-block reorg cap stays with the caller. */
+int32_t sm64pow_fork_choice_weighted(uint64_t main_len, const uint8_t *main_seeds, const uint32_t *main_counted, size_t n_main,
+                                     uint64_t alt_len, const uint8_t *alt_seeds, const uint32_t *alt_counted, size_t n_alt);
+/* Sync pre-pass for records, after sm64pow_preverify: n full block blobs in chain order (blocks[offsets[i]..offsets[i+1]],
+ * n + 1 offsets), ids (n x 32), each block's own retarget difficulty (0: unknown, window not applied). Replays the
+ * records of blocks whose parent block h is the previous block of the batch, in parallel, caching run summaries.
+ * Returns how many records it replayed. Never decides validity. */
+uint64_t sm64pow_preverify_records(size_t n, const uint8_t *ids, const uint8_t *blocks, const uint64_t *offsets,
+                                   const uint64_t *difficulties, uint32_t threads);
+/* The sm64_proofs field with every record proof in an encoding a peer with codec set mask32 (NULL: baseline) decodes.
+ * Size-then-fill. 0: no change needed. SIZE_MAX (last_error): unparsable, or a state-coded record's inputs are not
+ * cached (inputs of recently replayed records are kept, 256): send the block as it is. */
+size_t sm64pow_records_for_peer(const uint8_t *field, size_t field_len, const uint8_t *mask32, uint8_t *out, size_t cap);
+/* Unix second at which the template on tip should be built: the tip's eligible time (as sm64pow_note_eligible
+ * recorded it) + displacement window (30 s) + collection grace (10 s). 0: unknown. */
+uint64_t sm64pow_records_ready_at(const uint8_t *tip_id32);
+/* Monero subaddress (major, minor): spend_out32 = D = B + m G, view_out32 = C = a D, m = Hs("SubAddr\0" || a ||
+ * major LE32 || minor LE32); (0, 0) is the main address (B, a G). 1 ok, 0 bad key. */
+int32_t sm64pow_subaddress(const uint8_t *view_secret32, const uint8_t *spend_public32, uint32_t major, uint32_t minor,
+                           uint8_t *spend_out32, uint8_t *view_out32);
+
 #ifdef __cplusplus
 }
 #endif

@@ -69,6 +69,7 @@ pub mod pof;
 pub mod preverify;
 pub mod queue;
 pub mod replay;
+pub mod stagec;
 // 6: the daemon's C ABI
 pub mod ffi;
 // beside the consensus path

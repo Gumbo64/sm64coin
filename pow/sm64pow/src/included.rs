@@ -92,6 +92,7 @@ impl Judge for Real {
             if commit::proof_hash(&pr) != f.run.input_hash {
                 return Ok(Judged::BadWitness("the played inputs do not hash to the committed input hash".into()));
             }
+            crate::stagec::note_inputs(f.run.input_hash, &pr.inputs);
             let norm = commit::commit(&pr);
             return Ok(match verdict(rebuild_committed_block(&id, parent, &seed, &norm)?) {
                 None => Judged::Valid(Some(norm)),
