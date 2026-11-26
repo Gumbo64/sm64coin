@@ -164,3 +164,46 @@ fn the_xz_block_recommitted() {
     corrupt[n - 20] ^= 0xff;
     assert!(matches!(verify_committed_block(&[0x31; 32], Parent::Genesis, &seed, 1, &corrupt).unwrap(), CommittedVerdict::BadEncoding(_)));
 }
+
+/// The start byte of a committed header is not covered by the block id or the signature (the id
+/// commits the input hash, the signature the hash and the frames): only the inputs' hash vouches
+/// for it, and a state-coded blob's hash is only known after its replay. A relay that flips the
+/// start of a valid block's state-coded copy must get a bad encoding, never an invalid verdict
+/// (the daemon's queue would remember the block id as decided, and drop the good copies).
+#[test]
+fn a_flipped_start_is_a_bad_encoding_never_an_invalid_block() {
+    if !init() {
+        return;
+    }
+    let blocks = mainnet(2);
+    let flip = |c: &[u8]| {
+        let mut f = c.to_vec();
+        let at = c.iter().position(|b| b & 0x80 == 0).unwrap() + 1; // after varint(frames)
+        f[at] ^= 1;
+        f
+    };
+    // Block 1 (from power-on on the genesis block) claiming a start from the parent's state.
+    let b1 = &blocks[0];
+    let (c1, pr1) = recommit(&b1.id, Parent::Genesis, b1);
+    assert_eq!(commit::header(&c1).unwrap().start, Start::PowerOn);
+    for (what, blob) in [("state codec", flip(&c1)), ("run-length", flip(&commit::commit_with(&RunLength, &pr1)))] {
+        assert_eq!(commit::proof_id(&blob), commit::proof_id(&c1), "{what}: same id");
+        let v = verify_committed_block(&b1.id, Parent::Genesis, &b1.seed, b1.difficulty, &blob).unwrap();
+        assert!(matches!(v, CommittedVerdict::BadEncoding(_)), "{what}: {v:?}");
+    }
+    assert!(valid(&verify_committed_block(&b1.id, Parent::Genesis, &b1.seed, b1.difficulty, &c1).unwrap()));
+    // Block 2 (from block 1's end state) claiming a power-on start (a restart: refused by the rules
+    // or too early, or replayed to a hash mismatch: a bad encoding in every case).
+    let b2 = &blocks[1];
+    let p2 = Parent::Block { id: b1.id, gap_seconds: b2.ts - b1.ts };
+    let (c2, pr2) = recommit(&b2.id, p2, b2);
+    assert_eq!(commit::header(&c2).unwrap().start, Start::Parent);
+    for gap in [b2.ts - b1.ts, 1 << 20] {
+        let p = Parent::Block { id: b1.id, gap_seconds: gap };
+        for (what, blob) in [("state codec", flip(&c2)), ("run-length", flip(&commit::commit_with(&RunLength, &pr2)))] {
+            let v = verify_committed_block(&b2.id, p, &b2.seed, b2.difficulty, &blob).unwrap();
+            assert!(matches!(v, CommittedVerdict::BadEncoding(_)), "{what}, gap {gap}: {v:?}");
+        }
+    }
+    assert!(valid(&verify_committed_block(&b2.id, p2, &b2.seed, b2.difficulty, &c2).unwrap()));
+}

@@ -129,6 +129,18 @@ fn check_with(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u6
         }
     }
     let key = run_key(parent, start, seed, &key_src);
+    // v0.4: a state-coded committed blob's start byte is only authenticated by its replay (the
+    // decoded inputs hash with it; the signature covers the frames, not the start), so a rule that
+    // only the claimed start breaks is said about this blob, never about the block id: a relay
+    // could flip the start of a valid block's state-coded copy. (A stateless blob's start was
+    // hash-checked by commit::open; a cache hit above matched these exact bytes.)
+    let unauth_start = committed.is_some() && state.is_some();
+    let start_fault = |why: String, bad: &mut Option<String>| -> Result<BlockVerdict> {
+        if unauth_start {
+            *bad = Some(format!("{why} (by the unauthenticated start of a state-coded blob)"));
+        }
+        Ok(BlockVerdict::Invalid(why))
+    };
     // The time limit before the replay (so a replay's verdict never depends on
     // the timestamp, and can be remembered by run). Checked BEFORE the parent's
     // state is needed: a run over the limit, or one that already failed, must
@@ -150,11 +162,11 @@ fn check_with(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u6
     }
     let (game, before) = match start_game(start, parent, parent_state(parent), difficulty.is_some())? {
         None => return Ok(BlockVerdict::NeedParent),
-        Some(Err(why)) => return Ok(BlockVerdict::Invalid(why)),
+        Some(Err(why)) => return start_fault(why, bad),
         Some(Ok((g, p, delay))) => {
             if let (Some(d), true) = (difficulty, delay > 0) {
                 if elapsed < delay {
-                    return Ok(BlockVerdict::Invalid(format!("a restart is allowed {delay} s after the parent, this block is {elapsed} s after it")));
+                    return start_fault(format!("a restart is allowed {delay} s after the parent, this block is {elapsed} s after it"), bad);
                 }
                 limit = rules().max_frames(d, elapsed - delay);
                 if let Some(pr) = &pr {
@@ -166,9 +178,10 @@ fn check_with(id: &[u8; 32], parent: &Parent, seed: &Seed, difficulty: Option<u6
             (g, p)
         }
     };
-    // (the claimed length and a known-invalid run were checked before the parent's state was needed)
+    // (the claimed length and a known-invalid run were checked before the parent's state was
+    // needed; only a restart's shorter limit, which depends on the start, can fail here)
     if difficulty.is_some() && claimed > limit {
-        return Ok(BlockVerdict::Invalid(format!("{claimed} frames exceeds the limit of {limit}")));
+        return start_fault(format!("{claimed} frames exceeds the limit of {limit}"), bad);
     }
     // RPC calls that replay draw on a budget (crate::admit::RpcScope).
     let timer = crate::admit::rpc_replay_gate().map_err(|e| anyhow::anyhow!(e))?;

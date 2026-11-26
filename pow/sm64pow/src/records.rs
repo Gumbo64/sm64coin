@@ -575,7 +575,13 @@ pub fn check_opts(records: &[Record], root: Option<&[u8; 32]>, winner: &Winner, 
             return Err(bad("outside the proof window"));
         }
         if start.is_some_and(|s| f.run.start != s) {
-            return Err(bad("a proof starts where the height starts (no restarts)"));
+            // The start byte is the proof header's, not the leaf's: a relay can flip it. Only a
+            // stateless encoding that decodes to the committed hash vouches for it (then the run
+            // itself starts elsewhere: invalid); any other copy is a bad witness.
+            return Err(match commit::open(&r.proof, crate::rules::active().max_frames_any(), false) {
+                Ok(commit::Opened::Run(..)) => bad("a proof starts where the height starts (no restarts)"),
+                _ => BadWitness(format!("proof {i}: its header's start is not the height's and its encoding does not vouch for it")),
+            });
         }
         counted += weight.is_some_and(|wf| f.run.frames <= wf) as usize;
     }
@@ -885,6 +891,16 @@ pub(crate) mod tests {
         let hdr = commit::header(&t[3].proof).unwrap();
         t[3].proof = commit::join(&hdr, &[0, 1, 2, 3, 4]); // a (bad) raw encoding: the replay's business
         assert!(check(&t, Some(&root), &w, Start::Parent, &PROPOSED).is_ok());
+        // ... and the header's start byte (the leaf commits the input hash, not the start): a
+        // flipped start is a bad witness; with a state-coded body nothing can vouch for it either.
+        for state_coded in [false, true] {
+            let mut t = rs.clone();
+            let mut h = commit::header(&t[2].proof).unwrap();
+            h.start = Start::PowerOn;
+            t[2].proof = if state_coded { commit::join(&h, &[4, 1, 2, 3]) } else { commit::join(&h, commit::split(&rs[2].proof).unwrap().1) };
+            assert_eq!(t[2].leaf().unwrap(), rs[2].leaf().unwrap(), "same leaf");
+            assert!(bw(check(&t, Some(&root), &w, Start::Parent, &PROPOSED)), "flipped start, state-coded {state_coded}");
+        }
     }
 
     #[test]
