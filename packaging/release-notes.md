@@ -19,6 +19,26 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.0: a new chain
+
+**0.5 starts a new chain** (new network ids and genesis block; heights restart at 0). 0.4 coins and blocks do not
+carry over, and 0.4 and 0.5 nodes refuse each other. The network starts as soon as nodes run 0.5.
+
+**What you have to do**
+- **Node operators:** install 0.5.0 and start with a **fresh data dir** (move `~/.sm64coin` aside; keep your wallet
+  files). Ports, address prefixes and the ROM are unchanged.
+- **Wallets:** keep your `.keys` file and let the wallet rescan from height 0. The website's wallet does this on its own.
+- **Miners:** update `automine` (or the wallet app, or use the website).
+
+**What changes**
+- **Cap switches are blocks:** pressing the red (wing), green (metal) or blue (vanish) cap switch is progress, like a
+  star or a Bowser key: each colour once per cycle (a cycle is now about 76 blocks). A restart's delay still counts
+  only stars, keys and the Grand Star.
+- **Mined coins unlock after 6 blocks** (about 2 hours) instead of 72 (24 hours).
+- **Miners:** smaller proofs from the exact input canonicaliser (about 80x faster than the replay-guided one; on by
+  default in the web miner), and a found run is handed over within about 10 s instead of at the end of the search step.
+
+
 ### 0.4.1: a new chain
 
 **0.4 starts a new chain** (new network ids and genesis block; heights restart at 0). 0.3 coins and blocks do
