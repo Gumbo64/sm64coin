@@ -73,7 +73,7 @@ export default function BoardJoin({ onJoined = () => {} }) {
             </div>
           )}
           {busy && <p className="muted">{busy}…</p>}
-          {msg && <p>{msg}</p>}
+          {msg && <div className="notice ok" role="status">{msg}</div>}
           {err && <p className="walleterr">{err}</p>}
         </>
       )}
