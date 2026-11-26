@@ -175,15 +175,18 @@ export function makeTreeSync(chan) {
   return (payload) => {
     const m = JSON.parse(payload);
     if (m.tag !== tag) { tag = m.tag; ring = []; given.clear(); }
-    ring.push(...m.recs);
-    let bytes = ring.reduce((n, r) => n + r.pads.length + 80, 0);
-    while (bytes > RING_BYTES && ring.length > 1) bytes -= ring.shift().pads.length + 80;
-    chan.post('tree', { tag, recs: ring });
+    // A fast poll (between rounds; `poll`) offers only the first nodes of new zones (`zf`) and takes only those of the others.
+    if (m.recs.length || !m.poll) {
+      ring.push(...m.recs);
+      let bytes = ring.reduce((n, r) => n + r.pads.length + 80, 0);
+      while (bytes > RING_BYTES && ring.length > 1) bytes -= ring.shift().pads.length + 80;
+      chan.post('tree', { tag, recs: ring });
+    }
     const recs = [];
     for (const t of chan.peers('tree')) {
       if (t.tag !== tag) continue;
       for (const r of t.recs) {
-        if (given.has(r.pads)) continue;
+        if (given.has(r.pads) || (m.poll && !r.zf)) continue;
         given.add(r.pads);
         recs.push(r);
       }

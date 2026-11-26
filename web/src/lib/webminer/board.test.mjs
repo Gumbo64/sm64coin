@@ -67,3 +67,19 @@ console.log('board ok');
   assert.equal(m.reqs[0].id, 9);
   assert.equal(m.goal.level, 1);
 }
+
+// Tree sync's fast poll: new-zone first nodes (zf) go out and come in between rounds; ordinary records wait for a round.
+{
+  const { makeTreeSync } = await import('./board.js');
+  const posts = {};
+  const mk = (me) => makeTreeSync({ post: (k, v) => { posts[me] = v; }, peers: () => Object.entries(posts).filter(([k]) => k !== me).map(([, v]) => v) });
+  const a = mk('a'), b = mk('b');
+  const rec = (pads, zf) => ({ pads, level: 6, pos: [0, 0, 0], progress: [0, 0], ...(zf ? { zf: true } : {}) });
+  JSON.parse(a(JSON.stringify({ tag: 'T', recs: [rec('aa', false), rec('bb', true)], poll: false })));
+  const fast = JSON.parse(b(JSON.stringify({ tag: 'T', recs: [], poll: true })));
+  assert.deepEqual(fast.recs.map((r) => r.pads), ['bb'], 'a poll takes only the new-zone record');
+  assert.equal(JSON.parse(b(JSON.stringify({ tag: 'T', recs: [], poll: true }))).recs.length, 0, 'once');
+  const round = JSON.parse(b(JSON.stringify({ tag: 'T', recs: [], poll: false })));
+  assert.deepEqual(round.recs.map((r) => r.pads), ['aa'], 'the round brings the rest, not the one already given');
+  console.log('tree sync poll ok');
+}

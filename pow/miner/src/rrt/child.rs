@@ -1053,6 +1053,10 @@ pub mod tsync {
     const CELL_SEP: f32 = 150.0;
     /// Imports per sync round, and the largest message (JSON bytes) offered.
     const MAX_IMPORT: usize = 48;
+    /// The new-zone fast path: seconds between its polls, states offered and states taken per poll.
+    const FAST_SECS: f64 = 1.0;
+    const FAST_K: usize = 2;
+    const FAST_IMPORT: usize = 2;
 
     #[derive(Serialize, Deserialize)]
     struct Rec {
@@ -1061,6 +1065,9 @@ pub mod tsync {
         level: u16,
         pos: [f32; 3],
         progress: (u8, i16),
+        /// The first node its sender had in a new (level, area): offered at once, and taken by the others at once.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        zf: bool,
     }
 
     pub fn enc(p: &[GamePad]) -> String {
@@ -1090,23 +1097,34 @@ pub mod tsync {
         let max_pads = job.max_path as usize;
         let frame0 = root.frame;
         let mut last = Instant::now();
+        let mut last_fast = Instant::now();
         Box::new(move |e: &mut Engine| {
-            if last.elapsed().as_secs_f64() < every {
+            let due = last.elapsed().as_secs_f64() >= every;
+            // Between rounds: about once a second, the first nodes in new zones go out and the others' are taken (at most
+            // FAST_K sent and FAST_IMPORT taken per second a worker, so it stays cheap).
+            let fast = !due && last_fast.elapsed().as_secs_f64() >= FAST_SECS;
+            if !due && !fast {
                 return;
             }
-            last = Instant::now();
-            let ids = e.sync_candidates(k, CELL_SEP);
-            let recs: Vec<Rec> = ids
-                .iter()
-                .filter_map(|&i| {
-                    let n = &e.tree.nodes[i as usize];
-                    let pads = e.tree.path(i);
-                    (n.st.frame >= frame0 && pads.len() == (n.st.frame - frame0) as usize && pads.len() <= max_pads).then(|| Rec { pads: enc(&pads), level: n.st.level, pos: n.st.pos, progress: n.st.progress() })
-                })
-                .collect();
-            let msg = serde_json::json!({ "tag": tag, "recs": recs }).to_string();
+            last_fast = Instant::now();
+            let ids = if due {
+                last = Instant::now();
+                e.sync_candidates(k, CELL_SEP)
+            } else {
+                Vec::new()
+            };
+            let firsts = e.sync_zone_firsts(FAST_K);
+            let mk = |i: u32, zf: bool| {
+                let n = &e.tree.nodes[i as usize];
+                let pads = e.tree.path(i);
+                (n.st.frame >= frame0 && pads.len() == (n.st.frame - frame0) as usize && pads.len() <= max_pads).then(|| Rec { pads: enc(&pads), level: n.st.level, pos: n.st.pos, progress: n.st.progress(), zf })
+            };
+            let recs: Vec<Rec> = firsts.iter().filter_map(|&i| mk(i, true)).chain(ids.iter().filter_map(|&i| mk(i, false))).collect();
+            let msg = serde_json::json!({ "tag": tag, "recs": recs, "poll": fast }).to_string();
             let mut s = stats.lock().unwrap();
-            s.rounds += 1;
+            if due {
+                s.rounds += 1;
+            }
             s.offered += recs.len() as u32;
             let Some(reply) = ex("tree_sync", &msg) else { return };
             #[derive(Deserialize)]
@@ -1116,7 +1134,7 @@ pub mod tsync {
             let Ok(r) = serde_json::from_str::<Reply>(&reply) else { return };
             let before = e.total_frames_emulated();
             let mut got = 0;
-            for rec in r.recs.iter().take(MAX_IMPORT) {
+            for rec in r.recs.iter().take(if fast { FAST_IMPORT } else { MAX_IMPORT }) {
                 let Some(pads) = dec(&rec.pads, max_pads) else { continue };
                 s.received += 1;
                 match e.sync_import(&pads, Some((rec.level, rec.pos, rec.progress))) {
@@ -1131,8 +1149,8 @@ pub mod tsync {
                 }
             }
             s.frames += e.total_frames_emulated() - before;
-            if got > 0 || s.rounds <= 2 {
-                println!("tree sync {}: offered {}, received {}, added {} ({} frames replayed)", s.rounds, recs.len(), r.recs.len(), got, e.total_frames_emulated() - before);
+            if got > 0 || firsts.len() > 0 || (due && s.rounds <= 2) {
+                println!("tree sync {}{}: offered {} ({} new-zone), received {}, added {} ({} frames replayed)", s.rounds, if fast { " (fast)" } else { "" }, recs.len(), firsts.len(), r.recs.len(), got, e.total_frames_emulated() - before);
             }
         })
     }
