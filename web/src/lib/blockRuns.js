@@ -97,8 +97,7 @@ export function replayOptions(run, ctx) {
       if (run.frames <= s * 30) continue;
       opts.push({ key: `tail${s}`, label: `Watch the last ${s} s`, to: ready ? `${base}&f=${tailFrame(ctx.cycleEnd, run.frames, s)}` : base, disabled: off });
     }
-    opts.push({ key: 'm64', label: 'Download .m64 (this run)', download: 'run', disabled: ctx.hasPads ? undefined : 'loading the run…' });
-    opts.push({ key: 'cycle', label: 'Download .m64 (whole cycle)', download: 'cycle', disabled: ready ? undefined : 'loading the run…' });
+    opts.push({ key: 'm64', label: 'Download .m64', hint: 'Mupen64 movie of the cycle from power-on to this run', download: 'cycle', disabled: ready ? undefined : 'loading the run…' });
   } else if (run.source === 'alt') {
     opts.push({ key: 'open', label: "Open this block's page", hint: 'a sibling block the node saw at this height', to: `/block/${run.hash}` });
   } else {

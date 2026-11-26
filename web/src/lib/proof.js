@@ -99,6 +99,38 @@ export function toM64(pads) {
   return out;
 }
 
+/**
+ * A Mupen64(Plus) movie of `pads` (the US ROM, from power-on): the same 4-byte samples as toM64 after a header Mupen
+ * accepts (60 VI/s, VI count 2 per sample, start from power-on, controller 1, the ROM's name, CRC1 and country) and
+ * one leading empty poll (Mupen reads the first sample one poll before the game's first frame). Checked against
+ * Mupen64Plus with the 120-star run (every star on the expected frame).
+ */
+export function toMupenM64(pads) {
+  const n = pads.length + 1;
+  const out = new Uint8Array(0x400 + n * 4);
+  const dv = new DataView(out.buffer);
+  out.set([0x4d, 0x36, 0x34, 0x1a], 0); // "M64\x1a"
+  dv.setUint32(0x4, 3, true); // version
+  dv.setUint32(0x8, Math.floor(Date.now() / 1000) >>> 0, true); // movie uid
+  dv.setUint32(0xC, n * 2, true); // VI count
+  dv.setUint32(0x10, 0, true); // rerecords
+  out[0x14] = 60; // VI/s
+  out[0x15] = 1; // controllers
+  dv.setUint32(0x18, n, true); // input samples
+  dv.setUint16(0x1C, 2, true); // start from power-on
+  dv.setUint32(0x20, 1, true); // controller 1 present
+  out.set(new TextEncoder().encode('SUPER MARIO 64'), 0xC4); // ROM internal name
+  out.set([0x63, 0x5a, 0x2b, 0xff], 0xE4); // the US ROM's CRC1 (ROM bytes 0x10..0x14)
+  dv.setUint16(0xE8, 0x45, true); // country 'E' (US)
+  pads.forEach((p, i) => {
+    const o = 0x400 + (i + 1) * 4;
+    dv.setUint16(o, p.button, false);
+    out[o + 2] = p.stick_x & 0xff;
+    out[o + 3] = p.stick_y & 0xff;
+  });
+  return out;
+}
+
 export function download(name, bytes, type = 'application/octet-stream') {
   const url = URL.createObjectURL(new Blob([bytes], { type }));
   const a = document.createElement('a');

@@ -7,7 +7,7 @@ import { runsAt, groupRuns, limitShift, replayOptions } from '../lib/blockRuns.j
 import { blockProof, splitProof, SIG_BYTES } from '../lib/replay/core.js';
 import { daemon } from '../lib/rpc.js';
 import { getCycle } from '../lib/replay/client.js';
-import { rawToPads, toM64, download } from '../lib/proof.js';
+import { rawToPads, toMupenM64, download } from '../lib/proof.js';
 import { coins, short, when, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
 import BlockReplay from './BlockReplay.jsx';
@@ -149,10 +149,8 @@ function BlockDetails({ b, cycle, whole = null, json, env }) {
   const gap = parentTs ? h.timestamp - parentTs : null;
   const key = payoutKey(json);
   const replayTo = `/block/${h.hash}?replay`;
-  const dl = (what) => {
-    if (what === 'run') download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)));
-    else download(`sm64coin-cycle-to-block${h.height}.m64`, toM64(rawToPads(cycle.played_pads)));
-  };
+  // The .m64: the cycle from power-on up to this block's run (the only file that plays on its own), Mupen64 format.
+  const dl = () => download(`sm64coin-cycle-to-block${h.height}.m64`, toMupenM64(rawToPads(cycle.played_pads)));
   const progress = own ? `${eventName(own.event)}; the cycle stands at ${cycle.stars} ★${cycle.keys ? `, ${cycle.keys} Bowser key${cycle.keys > 1 ? 's' : ''}` : ''}${cycle.grand_star ? ', the Grand Star (the cycle ends)' : ''}` : null;
   return (
     <>
@@ -192,7 +190,7 @@ function BlockDetails({ b, cycle, whole = null, json, env }) {
             {b.tx_hashes && b.tx_hashes.map((t) => <React.Fragment key={t}><dt></dt><dd className="mono">{t}</dd></React.Fragment>)}
             <dt>Version</dt><dd>{json.major_version}.{json.minor_version}</dd>
             {h.height > 0 && <>
-              <dt>Perturbation</dt><dd>{b.sm64_random_amount} poke(s) of {b.sm64_burst_length} frames per {b.sm64_window_length}, reseeded every {b.sm64_reseed_frames} frames</dd>
+              <dt>Perturbation</dt><dd>{b.sm64_random_amount} poke(s) of {b.sm64_burst_length} frames per {b.sm64_window_length}{b.sm64_reseed_frames ? `, reseeded every ${b.sm64_reseed_frames} frames` : ', seeded once from the block\'s seed'}</dd>
               <dt>Seed hash</dt><dd className="mono">{b.sm64_seed_hash}</dd>
               {facts.sig && <><dt>Signature (full)</dt><dd className="mono">{facts.sig}</dd></>}
             </>}
@@ -291,19 +289,15 @@ function BlockPanel({ b, cycle, json, view }) {
       <h3>Proof of play</h3>
       <dl className="kv small">
         <dt>Run length</dt><dd>{b.sm64_frames} frames ({frames(b.sm64_frames)}), limit {b.sm64_max_frames} ({frames(b.sm64_max_frames)})</dd>
-        <dt>Perturbation</dt><dd>{b.sm64_random_amount} poke(s) of {b.sm64_burst_length} frames per {b.sm64_window_length}, reseeded every {b.sm64_reseed_frames} frames</dd>
+        <dt>Perturbation</dt><dd>{b.sm64_random_amount} poke(s) of {b.sm64_burst_length} frames per {b.sm64_window_length}{b.sm64_reseed_frames ? `, reseeded every ${b.sm64_reseed_frames} frames` : ', seeded once from the block\'s seed'}</dd>
         <dt>Seed hash</dt><dd className="mono">{b.sm64_seed_hash}</dd>
       </dl>
       <h3>Cycle</h3>
       <CycleInfo cycle={cycle} block={b} />
       <h3>Downloads</h3>
       <p className="small">
-        <button disabled={!b.sm64_played_pads} onClick={() => download(`sm64coin-block${h.height}.m64`, toM64(rawToPads(b.sm64_played_pads)))}>.m64: this block's run</button>
-        <br /><span className="muted">every frame as played, pokes included</span>
-      </p>
-      <p className="small">
-        <button onClick={() => download(`sm64coin-cycle-to-block${h.height}.m64`, toM64(rawToPads(cycle.played_pads)))}>.m64: the whole cycle</button>
-        <br /><span className="muted">{cycle.played_pads.length / 8} frames over {cycle.blocks.length} block{cycle.blocks.length === 1 ? '' : 's'}, unperturbed</span>
+        <button onClick={() => download(`sm64coin-cycle-to-block${h.height}.m64`, toMupenM64(rawToPads(cycle.played_pads)))}>Download .m64</button>
+        <br /><span className="muted">Mupen64 movie of the cycle from power-on to this block: {cycle.played_pads.length / 8} frames over {cycle.blocks.length} block{cycle.blocks.length === 1 ? '' : 's'}, every frame as played (pokes included). Needs the US ROM.</span>
       </p>
     </div>
   );
