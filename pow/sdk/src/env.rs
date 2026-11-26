@@ -95,7 +95,7 @@ impl Task {
         let params = sm64pow::params(retarget);
         let elapsed = t.sm64_timestamp.saturating_sub(t.sm64_parent_timestamp);
         let limit = sm64pow::rules().max_frames(retarget, elapsed);
-        if limit != t.sm64_max_frames || params.rng.random_amount != t.sm64_random_amount || params.reseed_frames != t.sm64_reseed_frames {
+        if (!t.sm64_rules.is_empty() && t.sm64_rules != sm64pow::rules().name()) || limit != t.sm64_max_frames || params.rng.random_amount != t.sm64_random_amount || params.reseed_frames != t.sm64_reseed_frames {
             bail!(
                 "this SDK's rules ({}: {} frames, {} pokes) differ from the daemon's ({}: {} frames, {} pokes): rebuild with the daemon's sm64pow",
                 sm64pow::rules().name(),

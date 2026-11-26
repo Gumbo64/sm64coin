@@ -5,10 +5,11 @@
 // lib/perturb.js readProgress): one per star, per Bowser key, per cap switch
 // pressed (v0.5) and for the Grand Star with 70+ stars.
 //
-// star-cycle-70: a block is the next progress point from the start state.
+// star-cycle-70-caps (v0.5): a block is the next progress point from the start state; the points are stars, Bowser
+// keys, the three cap switches and the Grand Star (lib/perturb.js readProgress). (star-cycle-70, v0.2-v0.4: no caps.)
 export const KNOWN_RULES = {
   // `start` and `now` are readProgress() results.
-  'star-cycle-70': (start, now) => now.points > start.points,
+  'star-cycle-70-caps': (start, now) => now.points > start.points,
 };
 
 export function successFor(rulesName) {

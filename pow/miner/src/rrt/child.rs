@@ -199,7 +199,10 @@ fn caps_pressed(st: &St) -> u32 {
 
 /// Whether `st` has made progress the rules count past `root`: a star, a key or a cap switch.
 fn more_progress(st: &St, root: &St) -> bool {
-    st.progress() > root.progress() || caps_pressed(st) > caps_pressed(root)
+    // The points sum, as the rules compare it (not the (keys, stars) order): a state that lost an unsaved star and
+    // pressed a cap has not made progress.
+    let points = |s: &St| { let (k, n) = s.progress(); k as i64 + n as i64 + caps_pressed(s) as i64 };
+    points(st) > points(root)
 }
 
 fn meets(job: &Job, root: &St, st: &St) -> bool {

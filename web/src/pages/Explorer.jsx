@@ -68,7 +68,7 @@ export default function Explorer() {
           const ev = b.event || '';
           if (/^c\d+s\d+$/.test(ev)) stars += 1;
           else if (/^key\d$/.test(ev)) keys += 1;
-          else if (ev !== 'grand') known = false;
+          else if (ev !== 'grand' && ev !== 'wing' && ev !== 'metal' && ev !== 'vanish') known = false; // a cap switch adds no star or key
           return { b, i, stars, keys };
         });
         const exact = known && stars === c.stars && keys === c.keys;

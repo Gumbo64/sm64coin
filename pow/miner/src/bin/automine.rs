@@ -374,7 +374,7 @@ fn main() -> Result<()> {
         };
         let elapsed = t.sm64_timestamp.saturating_sub(t.sm64_parent_timestamp);
         let limit_now = sm64pow::rules().max_frames(t.sm64_retarget_difficulty.max(1), elapsed);
-        if limit_now != t.sm64_max_frames || params.rng.random_amount != t.sm64_random_amount || params.rng.window_length != t.sm64_window_length {
+        if (!t.sm64_rules.is_empty() && t.sm64_rules != sm64pow::rules().name()) || limit_now != t.sm64_max_frames || params.rng.random_amount != t.sm64_random_amount || params.rng.window_length != t.sm64_window_length {
             bail!(
                 "this miner's rules ({}, {} frames) differ from the daemon's ({}, {} frames): rebuild one of them",
                 sm64pow::rules().name(),

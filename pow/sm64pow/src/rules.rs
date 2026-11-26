@@ -347,7 +347,7 @@ pub const RPC_SUBMIT_AHEAD_SECONDS: u64 = 30;
 
 impl Rules for StarCycle {
     fn name(&self) -> &'static str {
-        "star-cycle-70"
+        "star-cycle-70-caps"
     }
     fn goal(&self) -> &'static str {
         "Make the game's next progress (a star, a Bowser key, a cap switch (red, green or blue), or the Grand Star after 70 stars) from the previous block's end state, while the controller is randomly poked. The Grand Star ends the cycle; the next block starts from power-on."

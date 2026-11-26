@@ -153,6 +153,7 @@ export function eventName(before, after) {
   // course/star use the node's event or the save file. A key or the Grand Star is exact.
   if (after[2] && !before[2]) return 'grand';
   if (after[1] > before[1]) return `key${after[1]}`;
+  if (after[0] > before[0]) return null; // a star (with or without a cap in the same run): the star is the event, as in Rust and Python
   const caps = (after[4] || 0) & ~(before[4] || 0); // v0.5: wing 1, metal 2, vanish 4
   if (caps) return ['wing', 'metal', 'vanish'][31 - Math.clz32(caps & -caps)];
   return null;

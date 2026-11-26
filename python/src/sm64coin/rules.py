@@ -1,4 +1,4 @@
-"""Mirror of the consensus rules in pow/sm64pow/src/{lib,rules}.rs (`StarCycle`, "star-cycle-70").
+"""Mirror of the consensus rules in pow/sm64pow/src/{lib,rules}.rs (`StarCycle`, "star-cycle-70-caps").
 
 The Rust crate is the source of truth. Each block is the game's next progress (a star, a Bowser
 key, a cap switch, the Grand Star after 70 stars) played from the parent's end state (or from power-on, see
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from .perturb import PokeConfig, Progress
 
-NAME = "star-cycle-70"
+NAME = "star-cycle-70-caps"
 BASE_FRAMES = 20 * 60 * 30
 MIN_FRAMES = 20 * 30
 SHRINK_PERCENT = 98
