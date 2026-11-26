@@ -121,3 +121,19 @@ fn a_dump_must_start_at_a_power_on_block() {
     assert!(e.contains("start the export at a block that starts from power-on"), "{e}");
     let _ = std::fs::remove_dir_all(out);
 }
+
+/// All 34 v0.2 blocks: the portable start states of blocks 11 and 32 do not continue exactly under
+/// sm64-binds 2.1.1's translator (an object's raw words were relocated as pointers: a small penguin's
+/// state in block 11, see docs/DIVERGENCE.md); sm64-binds >= 2.3.1 (commit 5b7bfd2) fixes it. The test
+/// accepts both, and fails on any other block, so a translator regression shows up.
+/// Slow (~20 s), so run with `--ignored`.
+#[test]
+#[ignore]
+fn portable_states_of_all_fixture_blocks() {
+    let Some(rom_info) = rom() else { return eprintln!("skipping: no ROM") };
+    let out = dir("all");
+    let s = export(&blocks(1000), &opts(out, rom_info), &mut |_| {}).unwrap();
+    assert_eq!(s.plain_replay_mismatches, Vec::<u64>::new());
+    let ok = s.portable_mismatches.is_empty() || s.portable_mismatches == vec![11, 32];
+    assert!(ok, "portable mismatches {:?}", s.portable_mismatches);
+}
