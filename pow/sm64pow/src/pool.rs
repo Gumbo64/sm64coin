@@ -5,8 +5,11 @@
 //! Our tip is block h. Its pool holds proofs for height h (templates on B_{h-1}) that the NEXT
 //! block may include. Offers are judged cheap-first (parse, facts, height and parent, key, run,
 //! window, signature, start), then replayed once (the cache makes the including block's replay a
-//! hit); at most `2 * cap` replays per parent; an invalid or bad-witness record means the caller
-//! drops its sender. Records are stored with their proof in the smallest stateless encoding.
+//! hit). Replay budgets per parent: each source (peer host) at most [`PER_SOURCE_REPLAYS`];
+//! replays that found no valid record at most `2 * cap` in all, after which only sources that
+//! delivered a valid record before (and the local node) are replayed, so sybil peers with garbage
+//! can't spend the budget honest relays need; at most `4 * cap` replays in all. An invalid or
+//! bad-witness record means the caller drops its sender. Records are stored with their proof in the smallest stateless encoding.
 //! The last [`KEEP_TIPS`] tips' pools are kept (a short reorg loses nothing), and the last
 //! [`KEEP_SELECTIONS`] templates' fields are remembered by root, because miners get templates
 //! without the field and the daemon reattaches it at submit.
@@ -25,8 +28,14 @@ use std::sync::Mutex;
 
 pub const KEEP_TIPS: usize = 8;
 pub const KEEP_SELECTIONS: usize = 32;
-/// Replays per parent, as a multiple of the cap (design section 6.2).
+/// Replays per parent that found no valid record, as a multiple of the cap (design section 6.2).
 pub const REPLAY_BUDGET_PER_CAP: usize = 2;
+/// Replays per parent in all, as a multiple of the cap (a valid record is a real search).
+pub const MAX_REPLAYS_PER_CAP: usize = 4;
+/// Replays per parent for one source (a peer's host; the local node is not limited).
+pub const PER_SOURCE_REPLAYS: usize = 16;
+/// Sources remembered as having delivered a valid record.
+const VOUCHED: usize = 1024;
 /// Records waiting to be relayed, at most.
 const MAX_RELAY: usize = 512;
 
@@ -62,6 +71,9 @@ struct TipPool {
     keys: HashSet<[u8; 32]>,
     runs: HashSet<[u8; 32]>,
     replays: usize,
+    /// Replays that found no valid record.
+    failed: usize,
+    per_source: std::collections::HashMap<String, usize>,
 }
 
 pub struct Pool {
@@ -70,6 +82,8 @@ pub struct Pool {
     /// Our current tip is the last of `tips`; `relay` holds new records (wire bytes) for it.
     relay: VecDeque<Vec<u8>>,
     selections: VecDeque<([u8; 32], Vec<u8>)>,
+    /// Sources (hosts) that delivered a valid record.
+    vouched: crate::admit::Bounded<String, ()>,
 }
 
 /// A record that passed the cheap checks, with what the replay and the insert need.
@@ -80,11 +94,13 @@ pub struct Admitted {
     facts: Facts,
     leaf: [u8; 32],
     order: Order,
+    /// The offering source's host ("" for the local node).
+    src: String,
 }
 
 impl Pool {
     pub fn new(window: Window) -> Pool {
-        Pool { window, tips: VecDeque::new(), relay: VecDeque::new(), selections: VecDeque::new() }
+        Pool { window, tips: VecDeque::new(), relay: VecDeque::new(), selections: VecDeque::new(), vouched: crate::admit::Bounded::new(VOUCHED) }
     }
 
     /// Our new tip is block h (its parent B_{h-1} in `h`): the pool collects proofs for h. A tip
@@ -96,7 +112,7 @@ impl Pool {
             let t = self.tips.remove(i).unwrap();
             self.tips.push_back(t);
         } else {
-            self.tips.push_back(TipPool { id, winner, parent, entries: vec![], keys: HashSet::new(), runs: HashSet::new(), replays: 0 });
+            self.tips.push_back(TipPool { id, winner, parent, entries: vec![], keys: HashSet::new(), runs: HashSet::new(), replays: 0, failed: 0, per_source: Default::default() });
             while self.tips.len() > KEEP_TIPS {
                 self.tips.pop_front();
             }
@@ -115,6 +131,8 @@ impl Pool {
             return Err(ignored("included proofs are off"));
         }
         let window = self.window;
+        let src = crate::admit::context().map(|c| c.host).unwrap_or_default();
+        let vouched = src.is_empty() || self.vouched.get(&src).is_some();
         let Some(tip) = self.tips.back_mut() else { return Err(ignored("no tip yet")) };
         let rec = records::decode_one(bytes).map_err(|e| Offer::Invalid(e.to_string()))?;
         let facts = rec.facts().map_err(|e| Offer::Invalid(e.to_string()))?;
@@ -144,23 +162,44 @@ impl Pool {
             Some(s) if s != facts.run.start => return Err(Offer::Invalid("a proof starts where the height starts".into())),
             Some(_) => {}
         }
-        if tip.replays >= REPLAY_BUDGET_PER_CAP * window.cap {
+        if tip.replays >= MAX_REPLAYS_PER_CAP * window.cap {
             return Err(ignored("the replay budget for this parent is spent"));
+        }
+        if tip.failed >= REPLAY_BUDGET_PER_CAP * window.cap && !vouched {
+            return Err(ignored("the replay budget for this parent is spent (for sources without a valid record)"));
+        }
+        let mine = tip.per_source.get(&src).copied().unwrap_or(0);
+        if !src.is_empty() && mine >= PER_SOURCE_REPLAYS {
+            return Err(ignored("this source's replay budget for this parent is spent"));
+        }
+        if !src.is_empty() {
+            if tip.per_source.len() >= 4096 && mine == 0 {
+                return Err(ignored("too many sources for this parent"));
+            }
+            tip.per_source.insert(src.clone(), mine + 1);
         }
         tip.replays += 1;
         let leaf = facts.leaf(&rec.sig);
-        Ok(Admitted { tip: tip.id, parent: tip.parent, rec, facts, leaf, order })
+        Ok(Admitted { tip: tip.id, parent: tip.parent, rec, facts, leaf, order, src })
     }
 
     /// Stores a judged record (None: it is not valid, nothing is stored). The tip may have moved
     /// since [`Pool::admit`]: the record then goes to its own tip's pool, if still kept.
     pub fn insert(&mut self, a: Admitted, judged: Judged) -> Offer {
+        if matches!(judged, Judged::Invalid(_) | Judged::BadWitness(_)) {
+            if let Some(t) = self.tips.iter_mut().find(|t| t.id == a.tip) {
+                t.failed += 1;
+            }
+        }
         let normalized = match judged {
             Judged::Valid(n) => n,
             Judged::Invalid(w) => return Offer::Invalid(w),
             Judged::BadWitness(w) => return Offer::BadWitness(w),
             Judged::NeedParent => return Offer::NeedParent,
         };
+        if !a.src.is_empty() {
+            self.vouched.insert(a.src.clone(), ());
+        }
         let is_current = self.tips.back().is_some_and(|t| t.id == a.tip);
         let Some(tip) = self.tips.iter_mut().find(|t| t.id == a.tip) else { return Offer::Ignored };
         if tip.keys.contains(&a.facts.key) || tip.runs.contains(&a.facts.run.input_hash) {
@@ -435,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn budget_is_twice_the_cap_per_parent_and_worse_than_the_cap_is_skipped_unreplayed() {
+    fn budget_is_four_times_the_cap_per_parent_and_worse_than_the_cap_is_skipped_unreplayed() {
         let (p, _, _) = tip_pool();
         let (p, j) = (Mutex::new(p), Fake::new());
         // fill with 64 long records, then offer shorter ones: each is replayed until the budget
@@ -446,14 +485,63 @@ mod tests {
         assert_eq!(offer(&p, &j, &record(&kp(100), 5, &PREV, &run(2330, 1), 0).0), Offer::Ignored, "worse than the 64th: no replay");
         assert_eq!(j.n(), 64);
         let mut news = 0;
-        for i in 0..80u8 {
-            if offer(&p, &j, &record(&kp(101 + i), 5, &PREV, &run(1500 + i as u32, 2000 + i as u16), 0).0) == Offer::New {
+        let kp2 = |i: u16| {
+            let mut e = [3u8; 32];
+            e[..2].copy_from_slice(&i.to_le_bytes());
+            Keypair::from_entropy(&e).unwrap()
+        };
+        for i in 0..200u16 {
+            if offer(&p, &j, &record(&kp2(i), 5, &PREV, &run(1500 - i as u32, 3000 + i), 0).0) == Offer::New {
                 news += 1;
             }
         }
-        assert_eq!(news, 64, "128 replays in all");
-        assert_eq!(j.n(), 128);
-        assert_eq!(p.lock().unwrap().len(), 128);
+        assert_eq!(news, 192, "256 replays in all (each one shorter, so worth trying)");
+        assert_eq!(j.n(), 256);
+        assert_eq!(p.lock().unwrap().len(), 256);
+    }
+
+    #[test]
+    fn per_source_budgets_and_failed_replays_spare_vouched_sources() {
+        use crate::admit::{Context, Source, enter};
+        let (p, _, _) = tip_pool();
+        let (p, j) = (Mutex::new(p), Fake::new());
+        let from = |host: &str| enter(Some(Context { host: host.into(), source: Source::Relay }));
+        let mut k = 0u8;
+        let mut next = |frames: u32| {
+            k += 1;
+            record(&kp(k), 5, &PREV, &run(frames, k as u16 + 500), 0).0
+        };
+        // An honest relay delivers a valid record: vouched.
+        {
+            let _g = from("honest");
+            assert_eq!(offer(&p, &j, &next(2100)), Offer::New);
+        }
+        // One source: at most PER_SOURCE_REPLAYS replays per parent.
+        {
+            let _g = from("chatty");
+            for _ in 0..PER_SOURCE_REPLAYS {
+                assert_eq!(offer(&p, &j, &next(2100)), Offer::New);
+            }
+            assert_eq!(offer(&p, &j, &next(2100)), Offer::Ignored, "this source's budget");
+        }
+        // Sybils with garbage (every replay invalid) spend the failure budget, 1 replay each.
+        for i in 0..(REPLAY_BUDGET_PER_CAP * 64) {
+            let r = next(2100);
+            j.bad.lock().unwrap().push(r.facts().unwrap().key);
+            let _g = from(&format!("sybil{i}"));
+            assert!(matches!(offer(&p, &j, &r), Offer::Invalid(_)));
+        }
+        let before = j.n();
+        {
+            let _g = from("newcomer");
+            assert_eq!(offer(&p, &j, &next(2100)), Offer::Ignored, "no valid record yet: not replayed once the failure budget is spent");
+        }
+        assert_eq!(j.n(), before);
+        {
+            let _g = from("honest");
+            assert_eq!(offer(&p, &j, &next(2100)), Offer::New, "a vouched source still is");
+        }
+        assert_eq!(offer(&p, &j, &next(2100)), Offer::New, "and the local node");
     }
 
     #[test]
