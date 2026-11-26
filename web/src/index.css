@@ -64,7 +64,7 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .paysto .mono { color: var(--acc); }
 .notice { background: #2b2410; border: 1px solid var(--acc); border-radius: 8px; padding: 8px 10px; font-size: 13px; margin: 8px 0; }
 .notice button { margin-top: 6px; }
-.notice.ok { background: #10261a; border-color: #4ade80; }
+.notice.ok { background: #166534; border-color: #4ade80; color: #f0fdf4; }
 .mine2 { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
 .mine2 .gamecol .sm64canvas { width: min(100%, calc((100vh - 200px) * 4 / 3)); height: auto; aspect-ratio: 4 / 3; }
 .mine2 .side { margin: 0; position: sticky; top: 12px; }
