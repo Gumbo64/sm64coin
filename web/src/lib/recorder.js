@@ -62,6 +62,10 @@ export class Recorder {
   // --- controls ---
   restart() { this.rewindTo(0); }
   back(seconds) { this.rewindTo(Math.max(0, this.frame() - Math.round(seconds * 30))); }
+  /** After a finished run that is not final (over the limit, refused, ...): put the game `seconds` before the finishing frame
+   * (the nearest save, then the recorded pads; the last 3 s at normal speed) so the player can try for a shorter run on the
+   * same template. The slots stay. */
+  rewindFromEnd(seconds) { this.rewindTo(Math.max(0, this.pads.length - Math.max(1, Math.round(seconds * 30)))); }
   setSpeed(s) { this.speed = s; }
   setLimit(n) { this.limit = n; }
   togglePause() { this.paused = !this.paused; this.status(); }

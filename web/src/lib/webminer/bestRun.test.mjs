@@ -141,6 +141,9 @@ function world({ limitAt, tipAt = Infinity, events = [] }) {
   assert.equal(a.signedOther('seed1', 'aabc'), 3000, 'a different run');
   assert.equal(a.signedOther('seed2', 'aabc'), null);
   assert.equal(signedSeeds(st).signedOther('seed1', 'aabc'), 3000, 'after a refresh');
+  a.forget('seed1'); // the node refused the submission: nothing was stored, a shorter run may be signed
+  assert.equal(a.signedOther('seed1', 'aabc'), null);
+  assert.equal(signedSeeds(st).signedOther('seed1', 'aabc'), null, 'forgotten after a refresh too');
   const bad = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
   const b = signedSeeds(bad);
   b.record('s', 'ff', 10);

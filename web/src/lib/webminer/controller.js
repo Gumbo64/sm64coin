@@ -13,6 +13,7 @@ import { frames as fmtFrames } from '../format.js';
 import { boardSize, setVizFlag, patchMail } from './board.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
 import { announceMined } from '../payout.js';
+import { confirmBlock } from '../mineflow.js';
 import { VizHub } from '../../pages/automine/hub.js';
 import { e2eHook } from '../e2e.js';
 import { offerRun, holdUntilValid, signedSeeds, clampLead, DEFAULT_LEAD } from './bestRun.js';
@@ -511,12 +512,22 @@ class MinerController {
       this.signed.record(t.sm64_seed_hash, r.proof, r.frames);
       const sig = await signRun(t.minerKey, t.sm64_seed_hash, proof);
       if (!this.noSubmit) await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
-      this.stats = { ...this.stats, accepted: this.stats.accepted + 1 };
-      hub.submission('accepted', { height: t.height, frames: r.frames });
-      announceMined(t.height, t.expected_reward);
-      this.flash = { kind: 'accepted', until: Date.now() + 8000 };
-      setTimeout(() => this.emit(true), 8100);
-      say(`★ BLOCK ${t.height} SUBMITTED: ${r.frames} frames, to ${this.address.slice(0, 12)}…`);
+      if (this.noSubmit) { this.blockMined(t, r, say); return; }
+      // The node took it (it may hold it until it is due): "mined" is announced only once the block is in the chain.
+      hub.submission('sent', { height: t.height, frames: r.frames });
+      say(`block ${t.height} SENT: ${r.frames} frames; waiting for the node to put it in the chain`);
+      confirmBlock({
+        blockAt: async (h) => { try { const b = await daemon('get_block', { height: h }); return { prev_hash: b.block_header.prev_hash, blob: b.blob }; } catch { return null; } },
+        now, sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+      }, t, t.minerKey.public_hex, ts).then((res) => {
+        if (res.status === 'accepted') this.blockMined(t, r, say);
+        else {
+          say(`block ${t.height} NOT accepted: ${res.why}`);
+          hub.submission('rejected', { height: t.height, frames: r.frames, note: res.why });
+          this.flash = { kind: 'rejected', until: Date.now() + 10000 };
+          setTimeout(() => this.emit(true), 10100);
+        }
+      });
     } catch (e) {
       say(`block rejected: ${e}`);
       hub.submission('rejected', { height: t.height, frames: r.frames, note: String(e) });
@@ -527,6 +538,15 @@ class MinerController {
     }
   }
 }
+
+MinerController.prototype.blockMined = function blockMined(t, r, say) {
+  this.stats = { ...this.stats, accepted: this.stats.accepted + 1 };
+  this.hub.submission('accepted', { height: t.height, frames: r.frames });
+  announceMined(t.height, t.expected_reward);
+  this.flash = { kind: 'accepted', until: Date.now() + 8000 };
+  setTimeout(() => this.emit(true), 8100);
+  say(`★ BLOCK ${t.height} ACCEPTED: ${r.frames} frames, to ${this.address.slice(0, 12)}…`);
+};
 
 export const miner = new MinerController();
 e2eHook('__sm64miner', miner); // for the e2e scripts (?e2e only)
