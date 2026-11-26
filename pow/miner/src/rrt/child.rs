@@ -112,6 +112,15 @@ pub struct Job {
     pub manual: Vec<Vec<(u16, i8, i8)>>,
     #[serde(default)]
     pub manual_weight: f64,
+    /// Hand-off window (the browser build): once a tree node meets the step's goal the search runs on for at most
+    /// this many emulated frames / seconds (0: that limit is off; both 0: no window, the engine's own stop rules
+    /// only) and then ends, so the page gets the run while a shorter one may still turn up. Without it a step
+    /// only ended on the engine's "good exit" (a controllable state after the star's dance, see `Tree::good_exits`)
+    /// or its budget, long after a node had the star.
+    #[serde(default)]
+    pub grace_frames: u64,
+    #[serde(default)]
+    pub grace_secs: f64,
 }
 
 /// The channel the step's process reaches the other workers by (set by the browser build before
@@ -293,6 +302,35 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
             e.cfg.round_plans = (e.cfg.round_plans * 2).min(full);
             if let Some(f) = inner.as_mut() {
                 f(e);
+            }
+        }));
+    }
+    // The hand-off window: after each round, look at the nodes added since for the goal; the first sets the engine's
+    // frame budget (read at the top of every round) to a few frames on, and a wall-clock mark ends it too.
+    if job.grace_frames > 0 || job.grace_secs > 0.0 {
+        let (jb, rt) = (job.clone(), root.clone());
+        let (mut seen, mut met_at): (usize, Option<std::time::Instant>) = (1, None);
+        let mut inner = engine.on_hybrid.take();
+        engine.on_hybrid = Some(Box::new(move |e| {
+            if let Some(f) = inner.as_mut() {
+                f(e);
+            }
+            if met_at.is_none() {
+                let hit = e.tree.nodes.iter().skip(seen).any(|n| meets(&jb, &rt, &n.st) && n.st.frame.saturating_sub(jb.frame0) <= jb.max_path);
+                seen = e.tree.nodes.len();
+                if hit {
+                    met_at = Some(std::time::Instant::now());
+                    if jb.grace_frames > 0 {
+                        let end = e.total_frames_emulated() + jb.grace_frames;
+                        e.cfg.max_frames = Some(e.cfg.max_frames.map_or(end, |m| m.min(end)));
+                    }
+                    println!("hand-off: the goal is met at {} frames; ending within {} frames / {} s", e.total_frames_emulated(), jb.grace_frames, jb.grace_secs);
+                }
+            }
+            if let Some(t) = met_at {
+                if jb.grace_secs > 0.0 && t.elapsed().as_secs_f64() >= jb.grace_secs {
+                    e.cfg.max_frames = Some(0);
+                }
             }
         }));
     }

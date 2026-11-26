@@ -68,6 +68,10 @@ pub struct RrtOptions {
     pub checkpoints: usize,
     /// Wall-clock cap of one tree (0: none; the campaign has none).
     pub step_seconds: f64,
+    /// Hand-off window of a step once a node meets its goal (frames / seconds, 0: off; see `child::Job::grace_frames`).
+    /// The browser sets it; the native campaign has none (its steps stop at the engine's good exit).
+    pub grace_frames: u64,
+    pub grace_secs: f64,
     pub mem_mb: usize,
     pub seed: u64,
     /// Frames a run may take (0: the most any difficulty allows).
@@ -164,6 +168,7 @@ fn step_key(job: &Job) -> String {
     // The anytime miner's settings change what a search looks for, not which step it is: a shared first castle step stays shared.
     j.env.retain(|(k, _)| !matches!(k.as_str(), "OBRRT_GOOD_MAX_FRAME" | "OBRRT_GUIDE_KEYS" | "OBRRT_GUIDE_WEIGHT"));
     (j.manual, j.manual_weight) = (Vec::new(), 0.0);
+    (j.grace_frames, j.grace_secs) = (0, 0.0);
     j.max_path = 0;
     let text = serde_json::to_string(&j).unwrap_or_default();
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -180,6 +185,8 @@ impl Default for RrtOptions {
             stall: 0,
             checkpoints: 8,
             step_seconds: 0.0,
+            grace_frames: 0,
+            grace_secs: 0.0,
             mem_mb: 1500,
             seed: 1,
             frame_cap: 0,
@@ -627,6 +634,8 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             sync_tag: String::new(),
             manual: Vec::new(),
             manual_weight: 0.0,
+            grace_frames: o.grace_frames,
+            grace_secs: o.grace_secs,
         };
         // A known run that this step starts like: the tree gets its nodes (every `seed_chunk` frames, none at its last frame).
         if let Some(sr) = &o.seed_run {

@@ -79,6 +79,13 @@ pub struct MineRequest {
     pub normalise: bool,
     #[serde(default)]
     pub frame_cap: usize,
+    /// Hand-off window: once a tree node meets a step's goal, the step ends within this many emulated frames or
+    /// seconds (whichever first; 0: off) and the page gets the run, rather than the step running on until the
+    /// engine's own stop rule (a controllable state after the star's dance) or its budget.
+    #[serde(default = "grace_frames_default")]
+    pub grace_frames: u64,
+    #[serde(default = "grace_secs_default")]
+    pub grace_secs: f64,
     /// The search's memory budget per step (MB; native default 1500, too much for several
     /// workers in one browser tab).
     #[serde(default = "mem_default")]
@@ -149,6 +156,12 @@ fn pads_to_hex(p: &[GamePad]) -> String {
         b.push(g.stick_y as u8);
     }
     hex::encode(b)
+}
+fn grace_frames_default() -> u64 {
+    1_000_000
+}
+fn grace_secs_default() -> f64 {
+    10.0
 }
 fn extra_env_default() -> String {
     "OBRRT_ROUND=16".into()
@@ -246,6 +259,8 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
         checkpoints: r.checkpoints.unwrap_or(d.checkpoints),
         seed: r.salt,
         frame_cap: r.frame_cap,
+        grace_frames: r.grace_frames,
+        grace_secs: r.grace_secs,
         mem_mb: r.mem_mb,
         viz: r.viz,
         beat: r.beat,
