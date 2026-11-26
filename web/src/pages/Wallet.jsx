@@ -336,10 +336,9 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
         <div className="controls">
           <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(address)}>Copy</button>
           {/* an explicit click here sets the payout address; a bare ?address= link never does (it asks first) */}
-          <Link to="/mine" onClick={() => miner.setAddress(address)}><button>Auto-mine to it</button></Link>
           <Link to="/mine" onClick={() => miner.setAddress(address)}><button>Mine to it</button></Link>
         </div>
-        <p className="muted">The Mine and Auto-mine pages now pay their rewards to this address.</p>
+        <p className="muted">The Mine page now pays its rewards to this address.</p>
         <p className="muted">Balances and history come from the node you are connected to and are trusted as it reports them (a remote node could show wrong ones; it cannot spend your coins).</p>
       </div>
       <div className="stats">
