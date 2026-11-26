@@ -343,8 +343,8 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
         <p className="muted">Balances and history come from the node you are connected to and are trusted as it reports them (a remote node could show wrong ones; it cannot spend your coins).</p>
       </div>
       <div className="stats">
-        <div className="stat"><div className="label">Balance</div><div className="value">{snap ? eng.fmt(snap.balance) : '…'}</div></div>
-        <div className="stat"><div className="label">Unlocked</div><div className="value">{snap ? eng.fmt(snap.unlocked) : '…'}</div></div>
+        <div className="stat"><div className="label">Balance</div><div className="value" title={snap ? eng.fmt(snap.balance) : undefined}>{snap ? eng.fmtShort(snap.balance) : '…'}</div></div>
+        <div className="stat"><div className="label">Unlocked</div><div className="value" title={snap ? eng.fmt(snap.unlocked) : undefined}>{snap ? eng.fmtShort(snap.unlocked) : '…'}</div></div>
         <div className="stat"><div className="label">Scanned to</div><div className="value">{snap ? `${snap.height} / ${snap.daemon}` : '…'}</div></div>
         <div className="stat"><div className="label">Sync</div><div className="value">{progress != null ? `${Math.round(progress * 100)}%` : 'idle'}</div></div>
       </div>
@@ -464,7 +464,7 @@ function Send({ w, snap, run, refresh }) {
       <p><input className="wide mono" placeholder="SM64… recipient address" value={to} onChange={(e) => { setTo(e.target.value); setDraft(null); }} /></p>
       <p>
         <input placeholder="amount" value={amt} size={16} onChange={(e) => { setAmt(e.target.value); setDraft(null); }} />{' '}
-        <span className="muted">spendable {snap ? eng.fmt(snap.unlocked) : '…'}</span>
+        <span className="muted" title={snap ? eng.fmt(snap.unlocked) : undefined}>spendable {snap ? eng.fmtShort(snap.unlocked) : '…'}</span>
       </p>
       {!draft && <button disabled={!ok} onClick={prepare}>Review</button>}
       {draft && (

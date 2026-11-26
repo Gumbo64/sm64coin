@@ -162,6 +162,15 @@ export const fmt = (a) => {
   const whole = v / ATOMIC, frac = (v % ATOMIC).toString().padStart(12, '0').replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : `${whole}`;
 };
+/** A balance for display: at most `dp` decimals, cut (never rounded up: it never shows more than there is), thousands
+ * grouped. The exact amount is fmt(). */
+export const fmtShort = (a, dp = 4) => {
+  if (a === undefined || a === null) return '';
+  const v = BigInt(a);
+  const whole = (v / ATOMIC).toLocaleString();
+  const frac = (v % ATOMIC).toString().padStart(12, '0').slice(0, dp).replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : whole;
+};
 export const parseAmount = (s) => {
   const m = /^\s*(\d+)(?:\.(\d{1,12}))?\s*$/.exec(s || '');
   return m ? BigInt(m[1]) * ATOMIC + BigInt((m[2] || '').padEnd(12, '0') || '0') : null;
