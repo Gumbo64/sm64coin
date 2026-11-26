@@ -253,7 +253,7 @@ markers. Here they are grouped by what they do.
   recover an end state that isn't cached.
 - **Game build.** The exact headless WASM build of Mario 64 that consensus
   runs (`GAME_BUILD`). A different build is a hard fork. v0.4's is sm64-binds
-  2.1.2 (`4a657a09...`); v0.3's was 2.1.1 (`897378b4...`).
+  2.1.2 (`73f3e66d...`); v0.3's was 2.1.1 (`897378b4...`).
 
 ## Safe to skip
 
