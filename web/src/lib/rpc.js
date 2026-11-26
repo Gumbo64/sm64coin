@@ -21,6 +21,8 @@ export const usingPublicFallback = () => fallback;
 let note = ''; // visible warning about the node's chain (old v0.2 node), '' for none
 export const nodeNote = () => note;
 const chosen = () => { try { return (localStorage.getItem(KEY) || '').trim(); } catch { return ''; } };
+/** True when the node was set by hand (localStorage 'sm64coin.node'), not the build default or the public node. */
+export const isChosenNode = () => !!chosen();
 export const getNode = () => (chosen() || (fallback ? publicNode : DEFAULT_NODE)).replace(/\/+$/, '');
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);

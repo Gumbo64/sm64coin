@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import { resolveNode } from './lib/rpc.js';
 import { autoSync } from './lib/webminer/sync.js';
+import { frameBuster } from './lib/security.js';
 import './index.css';
 
 // The game (emscripten) listens for keys on the whole window and cancels the
@@ -25,4 +26,5 @@ for (const type of ['keydown', 'keyup', 'keypress']) {
 // first page asks the chain anything (at most a few seconds).
 // Worker sync is on by default: the first visit of a session may reload once (before anything renders) so the page comes
 // back cross-origin isolated (lib/webminer/sync.js).
-autoSync().then((reloading) => { if (!reloading) resolveNode().finally(() => createRoot(document.getElementById('root')).render(<App />)); });
+// Framed by another page: stop before anything runs (the headers' frame-ancestors 'none' does the same where the host can send them).
+if (!frameBuster()) autoSync().then((reloading) => { if (!reloading) resolveNode().finally(() => createRoot(document.getElementById('root')).render(<App />)); });

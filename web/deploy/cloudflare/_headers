@@ -1,0 +1,29 @@
+# Response headers of the dedicated origin (Cloudflare Pages). See docs/WEB-SECURITY.md and docs/CLOUDFLARE-PAGES.md.
+# COEP require-corp (not credentialless): isolation in every browser, so SharedArrayBuffer works without coi-sw.js. The app loads
+# nothing cross-origin except CORS fetches (node RPC, GitHub release check), which require-corp allows. If you ever add a third-party
+# image or script, it needs CORS or a Cross-Origin-Resource-Policy header.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), publickey-credentials-get=(self), publickey-credentials-create=(self)
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+
+# Hashed build output never changes
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Web worker bundles: the miner's wasm-bindgen glue is instantiated with new Function, which needs 'unsafe-eval' in a WORKER's policy
+# (a worker takes the CSP of its own response). Everything else, the document included, keeps the strict policy.
+/workers/*
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Cache-Control: public, max-age=31536000, immutable
+
+# The wallet engine: files next to the site, revalidated on each load
+/wallet/*
+  Cache-Control: no-cache

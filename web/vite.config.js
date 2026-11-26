@@ -30,6 +30,10 @@ const proxy = {
 export default defineConfig({
   base: process.env.SM64COIN_BASE || '/',
   plugins: [react()],
+  // Worker bundles in their own folder: deploy/cloudflare/_headers gives /workers/* (the wasm-bindgen glue is built with
+  // new Function in a worker) a CSP that allows it, and the document and everything else the strict one.
+  worker: { rollupOptions: { output: { entryFileNames: 'workers/[name]-[hash].js', chunkFileNames: 'workers/[name]-[hash].js' } } },
+  build: { outDir: process.env.SM64COIN_OUTDIR || 'dist' },
   resolve: {
     dedupe: ['react', 'react-dom'],
     // The package's src/ (its headless game and loader for the client-side replay worker):

@@ -8,6 +8,8 @@ import Network from './pages/Network.jsx';
 import Info from './pages/Info.jsx';
 import NewBlockBanner from './lib/NewBlockBanner.jsx';
 import UpdateBanner from './lib/UpdateBanner.jsx';
+import LinkAddressBanner from './lib/LinkAddressBanner.jsx';
+import LegacyBanner from './lib/LegacyBanner.jsx';
 import MinerLight from './lib/MinerLight.jsx';
 
 // The wallet page is lazy: its engine (a wasm web worker) is fetched only when it is opened.
@@ -34,6 +36,8 @@ export default function App() {
         </nav>
         <MinerLight />
       </header>
+      <LegacyBanner />
+      <LinkAddressBanner />
       <UpdateBanner />
       <NewBlockBanner />
       <main>

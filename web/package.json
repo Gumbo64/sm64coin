@@ -7,6 +7,8 @@
     "dev": "vite",
     "dev:host": "vite --host",
     "build": "vite build",
+    "build:app": "node scripts/build-app.mjs",
+    "test": "for t in $(git ls-files 'src/*.test.mjs'); do node $t || exit 1; done",
     "preview": "vite preview"
   },
   "dependencies": {
