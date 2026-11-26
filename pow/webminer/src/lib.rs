@@ -77,6 +77,12 @@ pub struct MineRequest {
     /// work per block, so the page can skip it (the default).
     #[serde(default)]
     pub normalise: bool,
+    /// Run the replay-free exact canonicaliser before sealing (sm64pow::exact, docs/INPUTS.md of the input
+    /// analysis: exact stick classes and unread buttons by Mario's action; ~5 % smaller proofs; two extra
+    /// replays of the run (~1 s native), replay-checked with the original as the fallback). On by default;
+    /// ignored when `normalise` (the slow replay-guided one) is set.
+    #[serde(default = "yes")]
+    pub normalise_exact: bool,
     #[serde(default)]
     pub frame_cap: usize,
     /// Hand-off window: once a tree node meets a step's goal, the step ends within this many emulated frames or
@@ -178,6 +184,10 @@ fn sync_k_default() -> usize {
 fn mem_default() -> usize {
     600
 }
+fn yes() -> bool {
+    true
+}
+
 fn one() -> usize {
     1
 }
@@ -285,6 +295,9 @@ pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsEr
         Attempt::Found(m) => {
             let proof = if r.normalise {
                 sm64pow::normalise::seal_proof_normalised_at(start, parent.as_ref(), &seed, &params, &m.pads).map_err(err)?
+            } else if r.normalise_exact {
+                use sm64pow::normalise::{Method, StickPick};
+                sm64pow::normalise::seal_proof_exact_report(start, parent.as_ref(), &seed, &params, &m.pads, Method::Exact, StickPick::Model).map_err(err)?.0
             } else {
                 sm64pow::seal_proof_at(start, parent.as_ref(), &seed, &params, &m.pads).map_err(err)?
             };

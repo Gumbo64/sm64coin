@@ -73,3 +73,63 @@ fn normalised_blocks_replay_identically_and_are_smaller() {
     }
     eprintln!("total: {frames_total} frames, original {orig_total} B, sealed {sealed_total} B ({:.1} % of the original)", 100.0 * sealed_total as f64 / orig_total as f64);
 }
+
+/// The replay-free canonicaliser (src/exact.rs) on the same blocks: per block the exact rules'
+/// run is replay-checked and sealed; sizes and times are printed next to the replay-guided
+/// normaliser's (NORMALISE_BLOCKS=n, default 3; NORMALISE_REPLAY=1 also times the replay-guided
+/// setting and the exact+replay combination).
+#[test]
+fn exact_canonicaliser_on_chain_blocks() {
+    use sm64pow::normalise::{Method, StickPick, exact_pads, seal_proof_exact_report};
+    let rom = std::env::var("SM64COIN_ROM").unwrap_or_else(|_| "../../baserom.us.z64".into());
+    let Ok(b) = std::fs::read(&rom) else {
+        eprintln!("skipping: no ROM at {rom} (set SM64COIN_ROM)");
+        return;
+    };
+    let _ = sm64pow::init(b);
+    let n: usize = std::env::var("NORMALISE_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let both = std::env::var("NORMALISE_REPLAY").is_ok();
+    let mut ts = std::collections::HashMap::new();
+    let mut cycle: Vec<sm64pow::sm64_binds::GamePad> = vec![];
+    let (mut orig_total, mut exact_total, mut frames_total) = (0usize, 0usize, 0usize);
+    for l in include_str!("fixtures/mainnet_v02.jsonl").lines().take(n) {
+        let j: serde_json::Value = serde_json::from_str(l).unwrap();
+        let id: [u8; 32] = hex(j["id"].as_str().unwrap()).try_into().unwrap();
+        let prev: [u8; 32] = hex(j["prev"].as_str().unwrap()).try_into().unwrap();
+        let t = j["ts"].as_u64().unwrap();
+        let parent = match ts.get(&prev) {
+            None => Parent::Genesis,
+            Some(pt) => Parent::Block { id: prev, gap_seconds: t - pt },
+        };
+        ts.insert(id, t);
+        let seed = Seed::from_hex(j["seed"].as_str().unwrap()).unwrap();
+        let difficulty = j["difficulty"].as_u64().unwrap();
+        let blob = hex(j["proof"].as_str().unwrap());
+        let (frames, start, _, _) = sm64pow::proof::split_blob(&blob).unwrap();
+        let played = played_block(&id, parent, &seed, &blob).unwrap().unwrap();
+        if start == Start::PowerOn {
+            cycle.clear();
+        }
+        let parent_state = if start == Start::Parent { Some(sm64pow::statecodec::state_after(&cycle).unwrap()) } else { None };
+        let p = sm64pow::params(difficulty);
+        let t0 = std::time::Instant::now();
+        let pick = if std::env::var("NORMALISE_PICK").as_deref() == Ok("rep") { StickPick::Rep } else { StickPick::Model };
+        let (pads, st) = exact_pads(start, parent_state.as_ref(), &seed, &p, &played, pick).unwrap_or_else(|e| panic!("block {}: the exact check failed: {e:#}", j["height"]));
+        let te = t0.elapsed().as_secs_f64();
+        assert_eq!(pads.len(), played.len());
+        let method = if both { Method::ExactThenReplay } else { Method::Exact };
+        let t1 = std::time::Instant::now();
+        let (sealed, rep) = seal_proof_exact_report(start, parent_state.as_ref(), &seed, &p, &played, method, pick).unwrap();
+        eprintln!(
+            "block {}: {frames} frames, original {} B, exact {:?} B ({:.1} %), exact+replay {:?}, sealed {} B ({:.1} %); exact canonicaliser {te:.2} s, plain seal {:.2} s, seal total {:.2} s; sticks changed {} (neutral {}), bits cleared {} set {}, pinned {}",
+            j["height"], rep.original, rep.exact, 100.0 * rep.exact.unwrap_or(rep.original) as f64 / rep.original as f64, rep.exact_then_replay, sealed.len(),
+            100.0 * sealed.len() as f64 / rep.original as f64, rep.plain_secs, t1.elapsed().as_secs_f64(), st.sticks_changed, st.sticks_neutral, st.button_bits_cleared, st.button_bits_set, st.pinned
+        );
+        assert!(sealed.len() <= rep.original);
+        orig_total += rep.original;
+        exact_total += rep.exact.unwrap_or(rep.original);
+        frames_total += frames as usize;
+        cycle.extend(played);
+    }
+    eprintln!("total: {frames_total} frames, original {orig_total} B, exact {exact_total} B ({:.1} %)", 100.0 * exact_total as f64 / orig_total as f64);
+}

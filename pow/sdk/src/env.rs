@@ -351,6 +351,14 @@ impl MiningEnv {
         sm64pow::normalise::seal_proof_normalised_at(self.task.start, self.task.parent.as_deref(), &self.task.seed, &self.task.params, &self.pads).expect("replaying own run")
     }
 
+    /// The proof blob after the replay-free exact canonicaliser (sm64pow::exact: exact stick classes and
+    /// unread buttons from the input analysis; ~0.1-1 s, ~5 % smaller proofs; replay-checked, the original
+    /// run is the fallback). [`MiningEnv::proof`] saves more (~20 %) but takes seconds to a minute.
+    pub fn proof_exact(&self) -> Vec<u8> {
+        use sm64pow::normalise::{Method, StickPick, seal_proof_exact_report};
+        seal_proof_exact_report(self.task.start, self.task.parent.as_deref(), &self.task.seed, &self.task.params, &self.pads, Method::Exact, StickPick::Model).expect("replaying own run").0
+    }
+
     /// [`MiningEnv::proof`] without the normaliser: the run exactly as played.
     pub fn proof_unnormalised(&self) -> Vec<u8> {
         // Only the non-poked frames' inputs are stored; replays to find them.

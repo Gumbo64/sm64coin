@@ -328,3 +328,189 @@ fn check_sealed(start: Start, parent: Option<&sm64_binds::SaveState>, seed: &See
     };
     Ok(mem_hash(&end) == mem_hash(&o) && end.pert == o.pert)
 }
+
+// ---------------------------------------------------------------------------------------------
+// The replay-free canonicaliser (exact.rs): the exact rules of the input analysis instead of
+// probing. One pass reads Mario's action per frame; the rules need no game; the result is replayed
+// once and must end in the same memory and perturbation state.
+
+/// What [`seal_proof_exact_report`] does after the exact rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    /// The exact rules only (replay-free: two replays of the run, no per-frame probing).
+    Exact,
+    /// The exact rules, then the replay-guided [`CONSERVATIVE`] pass on their result (candidates are
+    /// sealed separately and the smallest wins).
+    ExactThenReplay,
+}
+
+/// Which member of a stick's class [`exact_pads`] writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StickPick {
+    /// The class representative (the most central stick), neutral where the action reads none.
+    Rep,
+    /// The cheapest member by the sealing codecs' guide model: the stick as played, the previous
+    /// frame's, the representative, neutral and the model's favourite and ring sticks, whichever of
+    /// them lies in the class. Same rules, same guarantee; the choice only prices them.
+    Model,
+}
+
+/// The exact rules' canonical run, replay-checked: the same frame count, the same end memory and
+/// perturbation state, poked frames as played. Err when the check fails (use the original).
+pub fn exact_pads(start: Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad], pick: StickPick) -> Result<(Vec<GamePad>, crate::exact::Stats)> {
+    let mk = || -> Result<SM64MiningGame> { Ok(crate::game::mining_start(start, parent, seed, p)?.0) };
+    // One pass: Mario's action at the start of each frame, which frames the perturbation pokes.
+    let mut g = mk()?;
+    let n = played.len();
+    let (mut actions, mut poked, mut feats, mut digests) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    for &w in played {
+        let f = read_features(&g.game)?;
+        actions.push(f.action);
+        if pick == StickPick::Model {
+            feats.push(f);
+        }
+        let (got, pk) = perturbed_step(&mut g.game, &mut g.pert, w)?;
+        anyhow::ensure!(got == w, "the run to canonicalise isn't what the perturbation plays");
+        poked.push(pk);
+        let v = crate::game::read_view(&g.game)?;
+        digests.push((v.clock, v.digest));
+    }
+    let (end_hash, end_pert) = (mem_hash(&g), g.pert.clone());
+    let (pads, stats) = match pick {
+        StickPick::Rep => crate::exact::canonicalise(played, &actions, &poked),
+        StickPick::Model => {
+            let mut pl = crate::exact::plan(played, &actions, &poked);
+            let mut model = Model::new(guide_cfg());
+            let mut meter = CostMeter::default();
+            let mut out: Vec<GamePad> = Vec::with_capacity(n);
+            let mut prev = GamePad::default();
+            for i in 0..n {
+                let want = played[i];
+                if poked[i] {
+                    model.poked();
+                    out.push(want);
+                    prev = want;
+                    continue;
+                }
+                let f = &feats[i];
+                let mut cur = GamePad::new(pl.buttons[i], want.stick_x, want.stick_y);
+                if !pl.fixed[i] && pl.atoms[i] != crate::exact::ALL_ATOMS {
+                    let ws = (want.stick_x, want.stick_y);
+                    let mut cand: Vec<(i8, i8)> = vec![ws, (prev.stick_x, prev.stick_y), (0, 0)];
+                    if pl.atoms[i] != 0 {
+                        cand.push(crate::exact::classes(pl.atoms[i]).rep_of(ws.0, ws.1));
+                    }
+                    for q in model.candidates(f).into_iter().map(from_pad).chain(model.ring_candidates(f, to_pad(cur)).into_iter().map(from_pad)) {
+                        cand.push((q.stick_x, q.stick_y));
+                    }
+                    let mut best = (model.cost_pad(f, to_pad(cur)), ws);
+                    for &c in &cand {
+                        if c != ws && pl.same_class(i, c, ws) {
+                            let cost = model.cost_pad(f, to_pad(GamePad::new(cur.button, c.0, c.1)));
+                            if cost < best.0 - 1e-9 {
+                                best = (cost, c);
+                            }
+                        }
+                    }
+                    cur = GamePad::new(cur.button, best.1.0, best.1.1);
+                    if best.1 != ws {
+                        pl.stats.sticks_changed += 1;
+                        if best.1 == (0, 0) {
+                            pl.stats.sticks_neutral += 1;
+                        }
+                    }
+                }
+                out.push(cur);
+                model.code_pad(&mut meter, f, to_pad(cur));
+                prev = cur;
+            }
+            (out, pl.stats)
+        }
+    };
+    // The check: replay from the start as a verifier would.
+    let mut g = mk()?;
+    for (i, &w) in pads.iter().enumerate() {
+        let (got, pk) = g.step(w)?;
+        anyhow::ensure!(
+            got == w && pk == poked[i] && {
+                let v = crate::game::read_view(&g.game)?;
+                (v.clock, v.digest) == digests[i]
+            },
+            "frame {i} (action {:#x}): the canonical pad {w:?} (the run's {:?}) leads elsewhere (played {got:?}); the frame before: canonical {:?}, run's {:?}, action {:#x}",
+            actions[i], played[i], if i > 0 { pads[i - 1] } else { w }, if i > 0 { played[i - 1] } else { w }, if i > 0 { actions[i - 1] } else { 0 }
+        );
+    }
+    anyhow::ensure!(mem_hash(&g) == end_hash && g.pert == end_pert, "the canonical run ends in a different state");
+    Ok((pads, stats))
+}
+
+/// What [`seal_proof_exact_report`] measured.
+#[derive(Clone, Debug, Default)]
+pub struct ExactReport {
+    /// The original run's best blob size.
+    pub original: usize,
+    /// The exact canonical run's blob (None: failed its check or no change).
+    pub exact: Option<usize>,
+    /// After the replay-guided pass on top (ExactThenReplay only).
+    pub exact_then_replay: Option<usize>,
+    pub sealed: usize,
+    pub stats: crate::exact::Stats,
+    /// Seconds spent in the exact canonicaliser (passes + check), and in the replay-guided pass.
+    pub exact_secs: f64,
+    pub replay_secs: f64,
+    /// Seconds the plain [`seal_proof_at`] of the original run took (every codec).
+    pub plain_secs: f64,
+}
+
+/// [`seal_proof_normalised_report`] with the exact canonicaliser: the original run and the exact
+/// canonical run (and with [`Method::ExactThenReplay`] the replay-guided pass on top of it), each
+/// sealed in every codec; a candidate is used only if its proof decodes to its run and replays
+/// valid with the original's end state ([`check_sealed`]); the smallest wins, the original is
+/// always a candidate.
+pub fn seal_proof_exact_report(start: Start, parent: Option<&sm64_binds::SaveState>, seed: &Seed, p: &Params, played: &[GamePad], method: Method, pick: StickPick) -> Result<(Vec<u8>, ExactReport)> {
+    let as_played = played;
+    let stripped = without_reserved_bits(start, parent, seed, p, played);
+    let played = &stripped[..];
+    let t_plain = std::time::Instant::now();
+    let mut best = seal_proof_at(start, parent, seed, p, played)?;
+    let plain_secs = t_plain.elapsed().as_secs_f64();
+    if played != as_played && !check_sealed(start, parent, seed, p, played, played, &best).unwrap_or(false) {
+        let blob = seal_proof_at(start, parent, seed, p, as_played)?;
+        let n = blob.len();
+        return Ok((blob, ExactReport { original: n, sealed: n, ..Default::default() }));
+    }
+    let mut rep = ExactReport { original: best.len(), plain_secs, ..Default::default() };
+    let t0 = std::time::Instant::now();
+    let exact = exact_pads(start, parent, seed, p, played, pick);
+    rep.exact_secs = t0.elapsed().as_secs_f64();
+    let Ok((pads, stats)) = exact else { rep.sealed = best.len(); return Ok((best, rep)) };
+    rep.stats = stats;
+    if pads != played {
+        if let Ok(blob) = seal_proof_at(start, parent, seed, p, &pads) {
+            if check_sealed(start, parent, seed, p, played, &pads, &blob).unwrap_or(false) {
+                rep.exact = Some(blob.len());
+                if blob.len() < best.len() {
+                    best = blob;
+                }
+            }
+        }
+    }
+    if method == Method::ExactThenReplay {
+        let t1 = std::time::Instant::now();
+        if let Ok(more) = normalise_played(start, parent, seed, p, &pads, &CONSERVATIVE) {
+            if more != played {
+                if let Ok(blob) = seal_proof_at(start, parent, seed, p, &more) {
+                    if check_sealed(start, parent, seed, p, played, &more, &blob).unwrap_or(false) {
+                        rep.exact_then_replay = Some(blob.len());
+                        if blob.len() < best.len() {
+                            best = blob;
+                        }
+                    }
+                }
+            }
+        }
+        rep.replay_secs = t1.elapsed().as_secs_f64();
+    }
+    rep.sealed = best.len();
+    Ok((best, rep))
+}

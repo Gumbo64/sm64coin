@@ -36,6 +36,10 @@ struct Args {
     chain: u32,
     #[arg(long)]
     keep: bool,
+    /// After each found run, seal it plain, with the exact canonicaliser (sm64pow::exact) and with the
+    /// replay-guided normaliser, and print sizes and seconds (the proof stays the plain one).
+    #[arg(long)]
+    compare_normalisers: bool,
 }
 
 fn stand_in_seed(n: u64) -> sm64pow::Seed {
@@ -96,7 +100,22 @@ fn main() -> Result<()> {
             let t0 = std::time::Instant::now();
             match rrt::mine(start, state.as_ref(), &seed, &params, &o, &stop, |m| println!("  [{label}] {m}"))? {
                 Attempt::Found(m) => {
+                    let t_plain = std::time::Instant::now();
                     let blob = sm64pow::seal_proof_at(start, state.as_ref(), &seed, &params, &m.pads)?;
+                    if a.compare_normalisers {
+                        let plain_secs = t_plain.elapsed().as_secs_f64();
+                        use sm64pow::normalise::{Method, StickPick, seal_proof_exact_report, seal_proof_normalised_report};
+                        let t1 = std::time::Instant::now();
+                        let ex = seal_proof_exact_report(start, state.as_ref(), &seed, &params, &m.pads, Method::Exact, StickPick::Model)?;
+                        let ex_secs = t1.elapsed().as_secs_f64();
+                        let t2 = std::time::Instant::now();
+                        let rp = seal_proof_normalised_report(start, state.as_ref(), &seed, &params, &m.pads)?;
+                        println!(
+                            "{label}: NORMALISERS {} frames: plain {} B ({plain_secs:.2} s); exact {} B ({:.1} %, {ex_secs:.2} s, exact canonicaliser {:.2} s, {} sticks changed, {} bits cleared); replay-guided {} B ({:.1} %, {:.1} s)",
+                            m.pads.len(), blob.len(), ex.0.len(), 100.0 * ex.0.len() as f64 / blob.len() as f64, ex.1.exact_secs, ex.1.stats.sticks_changed, ex.1.stats.button_bits_cleared,
+                            rp.0.len(), 100.0 * rp.0.len() as f64 / blob.len() as f64, t2.elapsed().as_secs_f64()
+                        );
+                    }
                     let id = sm64pow::proof_id(&blob);
                     let p = match parent {
                         None => chain::Parent::Genesis,

@@ -76,6 +76,12 @@ pub mod ffi;
 pub mod mining;
 #[cfg(feature = "normalise")]
 pub mod normalise;
+#[cfg(feature = "normalise")]
+pub mod exact;
+#[cfg(feature = "normalise")]
+mod exact_arctan;
+#[cfg(feature = "normalise")]
+mod exact_table;
 
 pub use emulator::{GAME_BUILD, default_rom_path, game_build_id, generator, init, init_default};
 pub use game::{SM64MiningGame, SM64MiningSave};

@@ -156,6 +156,11 @@ struct Args {
     /// smaller proofs, which win equal-frame ties).
     #[arg(long)]
     no_normalise: bool,
+    /// Use the replay-free exact canonicaliser (sm64pow::exact: the input analysis' exact stick classes and
+    /// unread buttons, replay-checked; ~0.1-1 s per block, ~5 % smaller proofs) instead of the replay-guided
+    /// normaliser (10-60 s, ~20 % smaller).
+    #[arg(long)]
+    exact_normalise: bool,
     /// Search on for a shorter run while a found run waits for the limit (rrt only).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     anytime: bool,
@@ -839,6 +844,23 @@ fn normalised(a: &Args, start: Start, parent: Option<&SaveState>, seed: &sm64pow
         return proof;
     }
     let t0 = std::time::Instant::now();
+    if a.exact_normalise {
+        use sm64pow::normalise::{Method, StickPick, seal_proof_exact_report};
+        return match seal_proof_exact_report(start, parent, seed, params, pads, Method::Exact, StickPick::Model) {
+            Ok((better, rep)) if better.len() < proof.len() => {
+                println!("  exact-normalised: {} -> {} bytes ({:.1} %) in {:.2} s", proof.len(), better.len(), 100.0 * better.len() as f64 / proof.len() as f64, t0.elapsed().as_secs_f64());
+                better
+            }
+            Ok(_) => {
+                println!("  exact-normalised: no smaller proof ({} bytes) in {:.2} s", proof.len(), t0.elapsed().as_secs_f64());
+                proof
+            }
+            Err(e) => {
+                println!("  exact normaliser failed ({e:#}); sealing the run as played");
+                proof
+            }
+        };
+    }
     match sm64pow::normalise::seal_proof_normalised_report(start, parent, seed, params, pads) {
         Ok((better, rep)) if better.len() < proof.len() => {
             println!("  normalised: {} -> {} bytes ({:.1} %; conservative {:?}, aggressive {:?}) in {:.1} s", proof.len(), better.len(), 100.0 * better.len() as f64 / proof.len() as f64, rep.tried[0], rep.tried[1], t0.elapsed().as_secs_f64());
