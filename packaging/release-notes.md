@@ -19,21 +19,21 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
-### 0.4.0: a new chain
+### 0.4.1: a new chain
 
 **0.4 starts a new chain** (new network ids and genesis block; heights restart at 0). 0.3 coins and blocks do
 not carry over, and 0.3 and 0.4 nodes refuse each other. There is no waiting period: the network starts as soon
 as nodes run 0.4.
 
 **What you have to do**
-- **Node operators:** install 0.4.0 and start with a **fresh data dir** (move `~/.sm64coin` aside; keep your
+- **Node operators:** install 0.4.1 and start with a **fresh data dir** (move `~/.sm64coin` aside; keep your
   wallet files). Ports, address prefixes and the ROM are unchanged.
 - **Wallets:** keep your `.keys` file, delete the wallet cache and let the wallet rescan from height 0 (a 0.3 cache
   is refused: "Genesis block mismatch"). The website's wallet rescans on its own.
 - **Miners:** update `automine` (or the wallet app, or use the website). Nothing to configure: a run that can win
   is submitted as a block, a run that loses its height is published as a proof and paid.
 - **Bot authors:** proofs now start with a committed header (`frames, start, input_hash`) before the encoding;
-  the SDKs (Python `sm64-binds>=2.3.3`, the web client `sm64-binds-frontend ^2.3.3`) do this. BOTS.md has the layout.
+  the SDKs (Python `sm64-binds>=2.3.4`, the web client `sm64-binds-frontend ^2.3.4`) do this. BOTS.md has the layout.
 
 **What changes**
 - **Committed inputs:** a proof's header commits the hash of its inputs and the block id uses that hash, so proof
@@ -45,8 +45,9 @@ as nodes run 0.4.
   (or a fresh subaddress) its template committed; the block's miner keeps its full reward.
 - **Fork choice:** a chain must be longer AND heavier (blocks plus counted proofs) to win; the 36-block reorg cap
   and the equivocation penalty stay (an equivocated block weighs nothing).
-- **Game build:** sm64-binds 2.1.2 (splash spawns and the object memory pools behave as on the N64, e.g. the
-  Wiggler).
+- **Game build:** sm64-binds 2.1.4 (game build `5e3b86e1`): splash spawns, the object memory pools (e.g. the
+  Wiggler) and the surface pools (2,300 surfaces / 7,000 nodes, counted per area from 0) behave as on the N64.
+  0.4.1 replaces the unlaunched 0.4.0, whose game build (2.1.2) still had the port's unbounded surface pools.
 - **Launch floor:** blocks stamped before the release are refused (a chain backdated from the genesis block could
   otherwise be pre-mined); the floor is already past, so nobody waits.
 - **Hardening:** a header byte the block id doesn't cover can't make a block invalid; a bad copy of a block is

@@ -3,7 +3,7 @@ name = "sm64coin"
 version = "0.1.0"
 description = "Write Super Mario 64 bots that mine SM64Coin: the perturbation contract, a daemon client and offline practice"
 requires-python = ">=3.9"
-dependencies = ["sm64-binds>=2.3.3"]  # 2.3.3: the v0.4 game build (splash-spawn pool-limit fix; 2.1.2 has it too, but 2.2.0-2.3.2 do not). read_memory arrived in 2.1.0
+dependencies = ["sm64-binds>=2.3.4"]  # 2.3.3: the v0.4 game build (splash-spawn pool-limit fix; 2.1.2 has it too, but 2.2.0-2.3.2 do not). read_memory arrived in 2.1.0
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

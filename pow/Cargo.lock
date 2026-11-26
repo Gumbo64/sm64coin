@@ -1516,6 +1516,7 @@ dependencies = [
 [[package]]
 name = "objective-scattershot"
 version = "0.1.0"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
 dependencies = [
  "anyhow",
  "lz4_flex",
@@ -1532,6 +1533,7 @@ dependencies = [
 [[package]]
 name = "obrrt-core"
 version = "0.1.0"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
 dependencies = [
  "anyhow",
  "rand",
@@ -1543,6 +1545,7 @@ dependencies = [
 [[package]]
 name = "obrrt-objectives"
 version = "0.1.0"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
 dependencies = [
  "obrrt-core",
  "rand",
@@ -1552,6 +1555,7 @@ dependencies = [
 [[package]]
 name = "obrrt-search"
 version = "0.1.0"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
 dependencies = [
  "anyhow",
  "lz4_flex",
@@ -1568,6 +1572,7 @@ dependencies = [
 [[package]]
 name = "obrrt-spec"
 version = "0.1.0"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
 dependencies = [
  "anyhow",
  "objective-scattershot",
@@ -2268,9 +2273,9 @@ checksum = "826167069c09b99d56f31e9ae5c99049e932a98c9dc2dac47645b08dbbf76ba7"
 
 [[package]]
 name = "sm64-binds"
-version = "2.1.2"
+version = "2.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8e3fe38fb64f8831f18486c72f8e831db110ae76fdc3f3c11ce6867efa41216"
+checksum = "6a2e53dc0c0cfa87cc92e03c3e209135354096ad100793d97ef30aae1e7c8d69"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2286,6 +2291,7 @@ dependencies = [
 [[package]]
 name = "sm64_ai"
 version = "0.1.0"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
 dependencies = [
  "anyhow",
  "byteorder",

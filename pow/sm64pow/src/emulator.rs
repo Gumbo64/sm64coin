@@ -18,7 +18,7 @@ static GENERATOR: OnceLock<SM64GameGenerator> = OnceLock::new();
 /// (sm64-binds' build id). A node or miner with any other build would see a
 /// different game, so [`init`] refuses it. Changing the game build is a hard
 /// fork: update this together with the address tables (pow/tools/gen_sm64_addrs.py).
-pub const GAME_BUILD: &str = "73f3e66d5cbb590507f3414379fe1aff7fbcdf57";
+pub const GAME_BUILD: &str = "5e3b86e14bab07ee6c0e7b1d955bc8b259b7cb82";
 
 /// The build id of a game (from its save-state header, bytes 12..32).
 pub fn game_build_id(g: &SM64GameGenerator) -> Result<String> {
