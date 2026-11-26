@@ -433,12 +433,12 @@ function Miner() {
   const over = lim && used > lim;
   const fromStartBtn = running ? (
     <ToolBtn key="fs" on={playFromStart} onClick={() => setPlayFromStart(!playFromStart)}
-      title="On: classic manual mining from the block's beginning (power-on / the parent's end): no search tree, nothing to click into. Off: this panel follows the auto-miner and you can play on from any node of its search.">⏮ Play from the start</ToolBtn>
+      title="On: classic manual mining from the block's beginning (power-on / the parent's end): no search tree, nothing to click into. Off: this panel follows the auto-miner and you can play on from any node of its search.">⏮ Manual mining</ToolBtn>
   ) : null;
   const hybridWhy = !hybridOK ? 'Playing from a node needs the running auto-miner with worker sync (the Auto-mine card: Enable worker sync, then Start).' : '';
   const gameSettings = (
     <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
-      <label htmlFor="game-pfs">Play from the start</label>
+      <label htmlFor="game-pfs">Manual mining</label>
       <div className="ctl">
         <input id="game-pfs" type="checkbox" checked={playFromStart} title="On: manual mining ignores hybrid mining entirely: always from the block's beginning, no search tree to play from, no clicking into nodes. Off: while the auto-miner runs, click a node of the search cloud and press Play from here." onChange={(e) => setPlayFromStart(e.target.checked)} />
         <span className="muted">{playFromStart ? 'classic manual miner, hybrid mining is off' : running ? 'hybrid: the game follows the auto-miner, click a node to play on from it' : 'applies once you start auto-mining'}</span>
@@ -790,7 +790,7 @@ function Help() {
       <p><b>Miner keys:</b> <b>G</b> restart the attempt (from the block's start) · <b>Backspace</b> back 5 s (<b>Shift+Backspace</b> 30 s, <b>[</b> 1 s) ·
         <b>P</b> pause · <b>T</b> or Start take over during a replay · <b>1</b>–<b>6</b> speed ¼×, ½×, 1×, 2×, 4×, 10× ·
         hold D-pad down (Left Shift) for 10× , D-pad up (R) to go back 10 s · <b>N</b> new template.</p>
-      <p><b>Save states</b> (4 slots, like an emulator): <b>Z X C V</b> (or the 💾 buttons) save slot 1–4, <b>7 8 9 0</b> (or ⏏) load it. A slot keeps the game and your recording up to that moment; loading puts both back (the recording is exactly the pads that led there, even if it is longer than your current one), and you play on, so the run is still a valid proof. Slots belong to the current attempt's block template and are cleared when it changes (a new block, a new template, Play from the start toggled). In hybrid play they are relative to the segment.</p>
+      <p><b>Save states</b> (4 slots, like an emulator): <b>Z X C V</b> (or the 💾 buttons) save slot 1–4, <b>7 8 9 0</b> (or ⏏) load it. A slot keeps the game and your recording up to that moment; loading puts both back (the recording is exactly the pads that led there, even if it is longer than your current one), and you play on, so the run is still a valid proof. Slots belong to the current attempt's block template and are cleared when it changes (a new block, a new template, Manual mining toggled). In hybrid play they are relative to the segment.</p>
       <p>Going back is instant: the game is saved every 5 s of play (in the browser), so it restores the nearest save
         and replays your inputs from there (fast, then the last 3 s at normal speed). The pokes are deterministic, so
         it is exactly the same game.</p>

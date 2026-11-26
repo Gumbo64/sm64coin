@@ -27,9 +27,9 @@ export function ReelSettings({ hub }) {
   const reel = hub.reel;
   return (
     <>
-      <span className="lab">Highlight reel</span>
+      <span className="lab">Autoplay</span>
       <div className="ctl">
-        <button type="button" onClick={() => hub.setReel({ on: !reel.on })} title="The reel plays what the workers find: a new place, or a faster route to a place. A clip always plays to its end.">{reel.on ? '⏸ Pause' : '▶ Resume'}</button>
+        <button type="button" onClick={() => hub.setReel({ on: !reel.on })} title="Autoplay plays what the workers find: a new place, or a faster route to a place. A clip always plays to its end.">{reel.on ? '⏸ Pause' : '▶ Resume'}</button>
         <span className="muted">{reel.queue.length ? `${reel.queue.length} clip${reel.queue.length === 1 ? '' : 's'} queued` : 'no clips queued'} · {reel.clips} so far</span>
       </div>
       <span className="lab">Start point</span>
@@ -306,8 +306,8 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
         <span className={info.error ? 'error' : ''}>{info.text}{info.total > 0 && <span className="muted"> · {info.frame.toLocaleString()} / {info.total.toLocaleString()} frames</span>}{info.verdict && <span className="muted"> · {info.verdict}</span>}</span>
         {shown && <span>run {shown.frames} frames: <b>{shown.status}</b>{shown.status === 'accepted' && <> · <Link to={`/block/${shown.height}`}>block {shown.height}'s replay →</Link></>}</span>}
       </div>
-      <Toolbar label="Reel">
-        <ToolBtn on={reel.on} onClick={() => hub.setReel({ on: !reel.on })} title="The highlight reel plays what the workers find (a new place, a faster route). Off: it stays on this clip.">{reel.on ? '⏸ Reel' : '▶ Reel'}</ToolBtn>
+      <Toolbar label="Autoplay">
+        <ToolBtn on={reel.on} onClick={() => hub.setReel({ on: !reel.on })} title="Autoplay plays what the workers find (a new place, a faster route). Off: it stays on this clip.">{reel.on ? '⏸ Autoplay' : '▶ Autoplay'}</ToolBtn>
         {toolbar}
       </Toolbar>
     </>
