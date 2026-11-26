@@ -131,10 +131,23 @@ mod prepass {
             .map(|b| {
                 let s = crate::template::split_sealed(b.blob).ok()?;
                 let f = crate::template::facts(&s.parts).ok()?;
-                let records = if s.field.is_empty() { vec![] } else { records::decode(&s.field).ok()? };
+                let mut records = if s.field.is_empty() { vec![] } else { records::decode(&s.field).ok()? };
+                // Only records the block commits (their leaves give its coinbase's root) are worth a
+                // replay: anyone can attach other records to a block in transit (a bad witness the
+                // sequential check refuses), and they must not cost a replay each here.
+                if !records.is_empty() && !commits(&s.parts.miner_tx, &records) {
+                    records.clear();
+                }
                 Some(Parsed { id: b.id, prev_id: f.prev_id, seed: f.seed, proof: s.proof, records, difficulty: b.difficulty })
             })
             .collect()
+    }
+
+    /// Whether `recs` are the records a block with coinbase `miner_tx` commits (root TLV).
+    fn commits(miner_tx: &[u8], recs: &[Record]) -> bool {
+        let Some(root) = crate::template::coinbase_nonce(miner_tx).ok().flatten().and_then(|n| records::nonce_fields(&n)).and_then(|f| f.root) else { return false };
+        let leaves: Option<Vec<[u8; 32]>> = recs.iter().map(|r| r.leaf().ok()).collect();
+        leaves.is_some_and(|l| records::root(&l) == root)
     }
 
     /// Replays one record from `from`; true if it ran a replay.
@@ -214,7 +227,10 @@ mod prepass {
             // the end state of the block before b).
             if let Some(&nx) = seg.get(k + 1) {
                 let nb = &ps[nx];
-                if !nb.records.is_empty() {
+                // Only for a block whose own run verified (the block pre-pass ran first, or it was
+                // known): records cost a replay each, so only a winning run makes a node try them
+                // (docs/V0.4-DESIGN.md section 6.3), as in the sequential check.
+                if !nb.records.is_empty() && info(&nb.id).is_some() {
                     let from = match &before {
                         Some((s, _)) if !s.ends_cycle => Some(Origin::State(s.clone())),
                         Some(_) => Some(Origin::PowerOn),

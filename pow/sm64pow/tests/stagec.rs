@@ -298,7 +298,19 @@ fn stage_c_each_switch_on_and_off() {
         ids.extend_from_slice(&[0x33; 32]);
         let blobs: Vec<u8> = [bh.clone(), bi.clone()].concat();
         let offs = [0u64, bh.len() as u64, blobs.len() as u64];
+        // The including block's own run is not known to be valid (these synthetic blocks have none):
+        // its records are not worth a replay, only a winning run makes a node try them.
         let before = sm64pow::cache::replays();
+        assert_eq!(sm64pow_preverify_records(2, ids.as_ptr(), blobs.as_ptr(), offs.as_ptr(), [0u64, 0].as_ptr(), 3), 0, "the including block's run is unverified");
+        assert_eq!(sm64pow::cache::replays(), before);
+        // Stand-in: block h+1's id names a verified run (the pre-pass of blocks runs first).
+        assert!(matches!(sm64pow::chain::verify_any(&[0x33; 32], sm64pow::chain::Parent::Genesis, &seed, 1, &new).unwrap(), sm64pow::chain::CommittedVerdict::Run(sm64pow::chain::BlockVerdict::Valid { .. })));
+        // Records the block doesn't commit (another root: a field attached in transit) are not replayed.
+        let bx = mk(&[0x32; 32], 101, Some(&[7; 32]), &field2);
+        let blobs_x: Vec<u8> = [bh.clone(), bx.clone()].concat();
+        let offs_x = [0u64, bh.len() as u64, blobs_x.len() as u64];
+        assert_eq!(sm64pow_preverify_records(2, ids.as_ptr(), blobs_x.as_ptr(), offs_x.as_ptr(), [0u64, 0].as_ptr(), 3), 0, "not the committed root");
+        assert_eq!(sm64pow::cache::replays(), before);
         let r = sm64pow_preverify_records(2, ids.as_ptr(), blobs.as_ptr(), offs.as_ptr(), [0u64, 0].as_ptr(), 3);
         assert_eq!(r, n as u64, "every record replayed once");
         assert_eq!(sm64pow::cache::replays() - before, n as u64);
