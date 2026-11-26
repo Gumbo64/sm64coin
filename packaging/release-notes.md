@@ -19,30 +19,47 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
-### 0.3.3: fixes (no consensus change)
+### 0.4.0: a new chain
 
-- **Miners:** `automine` no longer exits when a run's pokes pick "save and quit" in the star's save menu (about 1.5 % of
-  templates): the start settles through the title screen, and any failed attempt moves on to the next template.
-- **Nodes:** `get_info` and `get_version` report `sm64coin_version`, `sm64_game_build` and `sm64_rules`, also on the
-  restricted RPC, so wallets and the website can show which node version they talk to.
-- **Website** (also live on GitHub Pages): versions on the Info page with a short explainer of the auction; block pages
-  with the envelope graph and a replay picker; faster replays from saved block states; the auto-miner's position goal
-  as its own objective with a strength setting; new areas shared between workers within a second; faster start-up;
-  a check that the node is on this chain (old 0.2 nodes fall back to the public node).
+**0.4 starts a new chain** (new network ids and genesis block; heights restart at 0). 0.3 coins and blocks do
+not carry over, and 0.3 and 0.4 nodes refuse each other. There is no waiting period: the network starts as soon
+as nodes run 0.4.
 
-### 0.3.2: a security fix (no consensus change)
+**What you have to do**
+- **Node operators:** install 0.4.0 and start with a **fresh data dir** (move `~/.sm64coin` aside; keep your
+  wallet files). Ports, address prefixes and the ROM are unchanged.
+- **Wallets:** keep your `.keys` file, delete the wallet cache and let the wallet rescan from height 0 (a 0.3 cache
+  is refused: "Genesis block mismatch"). The website's wallet rescans on its own.
+- **Miners:** update `automine` (or the wallet app, or use the website). Nothing to configure: a run that can win
+  is submitted as a block, a run that loses its height is published as a proof and paid.
+- **Bot authors:** proofs now start with a committed header (`frames, start, input_hash`) before the encoding;
+  the SDKs (Python `sm64-binds>=2.3.3`, the web client `sm64-binds-frontend ^2.3.3`) do this. BOTS.md has the layout.
 
-- **Fix:** a crafted run-length proof with a run length near 2^64 could wrap the decoder's limit check and
-  crash a node (or, on 32-bit/WebAssembly builds, be read as a different length). The length is now checked
-  before any addition or cast, in the node and in the web wallet. Every valid block is decoded exactly as
-  before. Found by the new formal checks (Kani). **Update your node.**
-
-**0.3.1** (still in this release): smaller proofs from the miners' input normaliser, no reserved controller
-bits in miners' runs, clearer RPC refusals, a cache fix, and the leaderboard's test tools.
-Same chain, genesis, ports and data dir as 0.3.0: just replace the binaries.
-
-**Coming from 0.2?** 0.3 started a new chain on 2026-11-26 00:00 UTC: use a fresh data dir and let your wallet
-rescan (see the [0.3.0 notes](https://github.com/Gumbo64/sm64coin/releases/tag/v0.3.0)).
+**What changes**
+- **Committed inputs:** a proof's header commits the hash of its inputs and the block id uses that hash, so proof
+  encodings are transport. Nodes negotiate the codecs they decode (0-2 always; state codecs 3-7, 6 and 7 new and
+  smaller) and re-encode for each peer. A badly encoded copy never makes a block invalid.
+- **Included proofs:** each block carries up to 64 near-best runs for the previous height (other miners' runs
+  within 60 s of auction time of the winner, one per key): the chain archives them.
+- **Proof rewards:** each included proof is paid min(R/128, 25 % of R / n) of new issuance, to the payout address
+  (or a fresh subaddress) its template committed; the block's miner keeps its full reward.
+- **Fork choice:** a chain must be longer AND heavier (blocks plus counted proofs) to win; the 36-block reorg cap
+  and the equivocation penalty stay (an equivocated block weighs nothing).
+- **Game build:** sm64-binds 2.1.2 (splash spawns and the object memory pools behave as on the N64, e.g. the
+  Wiggler).
+- **Launch floor:** blocks stamped before the release are refused (a chain backdated from the genesis block could
+  otherwise be pre-mined); the floor is already past, so nobody waits.
+- **Hardening:** a header byte the block id doesn't cover can't make a block invalid; a bad copy of a block is
+  forgotten and another peer's copy tried; the proof pool budgets replays per peer; the sync pre-pass only
+  replays proofs of verified blocks.
+- **Miners and SDKs:** wait for the height's proofs before building on a block (`sm64_records_ready_at`), a fresh
+  payout subaddress per template (`--payout-view-secret`), the input normaliser (smaller proofs) and every 0.3.1-0.3.3
+  fix (the RLE decode overflow fix, "save and quit" starts, refusal reasons, `sm64coin_version` in `get_info`).
+- **Wallets, explorers:** block ids come from the proof header (no decoder); `get_block` returns
+  `sm64_input_hash`, `sm64_codec` and `sm64_records_bytes`. Wallet binaries and the web wallet engine are rebuilt
+  (new block field).
+- **Website:** everything from 0.3.3 (block pages with the envelope graph and replay picker, versions on the Info
+  page, the chain check, now against the 0.4 genesis).
 
 Update: required
 
