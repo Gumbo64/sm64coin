@@ -11,7 +11,7 @@ import { prepareStart } from '../lib/cycle.js';
 import { readProgress } from '../lib/perturb.js';
 import { loadStart } from './automine/startState.js';
 import { withConfig } from '../lib/task.js';
-import { successFor } from '../lib/rules.js';
+import { successFor, MAX_RUN_FRAMES } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import PlayView from '../components/PlayView.jsx';
 import EngineSlot, { acquireEngine } from '../components/EngineSlot.jsx';
@@ -585,7 +585,7 @@ function Miner() {
                     <dl className="kv">
                       <dt>Block</dt><dd>{task.height}</dd>
                       <dt>Difficulty</dt><dd>{task.difficulty}</dd>
-                      <dt>Time limit now</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames)</dd>
+                      <dt>Time limit now</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames){(limit ?? task.sm64_max_frames) >= MAX_RUN_FRAMES ? ', the maximum' : ''}</dd>
                       <dt>Pokes</dt><dd>{task.sm64_random_amount} × {task.sm64_burst_length} frames per {task.sm64_window_length}</dd>
                       <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
                       <dt>Paying</dt><dd>{isAddress(paying || '') ? <span className="mono" title={paying}>{short(paying)}</span> : <em>no address</em>}</dd>

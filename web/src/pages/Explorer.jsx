@@ -1,3 +1,4 @@
+import { MAX_RUN_FRAMES } from '../lib/rules.js';
 import React, { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import CycleTimeline, { RecentCycles, eventName } from '../lib/CycleTimeline.jsx';
@@ -105,7 +106,7 @@ export default function Explorer() {
           <Stat label="Height" value={info.height - 1} />
           <Stat label="Retarget difficulty" value={info.difficulty} />
           <Stat label="Difficulty now" value={task ? task.difficulty : '–'} />
-          <Stat label="Time limit now" value={task ? `${(task.sm64_max_frames / 30 / 60).toFixed(2)} min` : '–'} />
+          <Stat label="Time limit now" value={task ? `${(task.sm64_max_frames / 30 / 60).toFixed(2)} min${task.sm64_max_frames >= MAX_RUN_FRAMES ? ' (the maximum)' : ''}` : '–'} />
           <Stat label="Pokes / window" value={task ? `${task.sm64_random_amount}/${task.sm64_window_length}` : '–'} />
           <Stat label="Target block time" value={`${info.target} s`} />
           <Stat label="Peers" value={info.outgoing_connections_count + info.incoming_connections_count} />
