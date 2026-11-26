@@ -94,6 +94,8 @@ int32_t sm64pow_queue_replay_now(const uint8_t *id32, const uint8_t *parent32, i
                                  uint32_t frames, uint64_t stamp, const uint8_t *sig64);
 int32_t sm64pow_queue_wait(uint32_t timeout_ms, uint8_t *out_id32);
 int32_t sm64pow_queue_take_cleared(const uint8_t *id32);
+/* v0.4: a copy of block id32 was a bad encoding or a bad witness: the queue forgets the id (another copy is judged afresh). */
+void sm64pow_queue_forget(const uint8_t *id32);
 /* The next new evidence to relay to peers (272 bytes to out); 0: none. */
 size_t sm64pow_take_evidence(uint8_t *out, size_t cap);
 /* Where to build when the tip (tip_seed32) is childless: -1 the tip, i the i-th of

@@ -601,6 +601,17 @@ impl Queue {
         st.ready.pop_front()
     }
 
+    /// A copy of claim `id` turned out to be a bad copy after the queue's verdict (v0.4: a bad
+    /// encoding, or a bad witness of its proof records found when the daemon added it): nothing is
+    /// known about the block, so the id is forgotten and another copy (another peer's, a sync) is
+    /// queued and judged afresh instead of being refused as already decided.
+    pub fn forget(&self, id: &[u8; 32]) {
+        let mut st = self.st.lock().unwrap();
+        let (cleared, known, ..) = st.maps();
+        cleared.remove(id);
+        known.remove(id);
+    }
+
     /// Whether `id`'s valid verdict is waiting to be consumed (and consumes it).
     pub fn take_cleared(&self, id: &[u8; 32]) -> bool {
         self.st.lock().unwrap().maps().0.remove(id).is_some()
@@ -925,5 +936,18 @@ mod tests {
         assert_eq!(v, Verdict::Valid(321));
         assert!(q.take_cleared(&[5; 32]));
         assert_eq!(q.replay_now(job(5, 321, unix_now(), "")), Verdict::Process, "known: the daemon's normal path");
+    }
+
+    #[test]
+    fn a_bad_copy_is_forgotten_so_another_copy_is_judged_afresh() {
+        // The queue said valid, then the daemon found the copy's records a bad witness: forget it.
+        let q = Queue::new(1, valid_replay());
+        assert_eq!(q.replay_now(job(7, 300, unix_now(), "relay")), Verdict::Valid(300));
+        let far = unix_now() + 100_000;
+        assert_eq!(q.submit(job(7, 300, far, "honest")), Err(Refused::Known), "decided: refused");
+        q.forget(&[7; 32]);
+        assert!(!q.take_cleared(&[7; 32]), "the cleared verdict goes too");
+        q.submit(job(7, 300, far, "honest")).unwrap();
+        q.stop();
     }
 }

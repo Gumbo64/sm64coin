@@ -788,6 +788,15 @@ pub extern "C" fn sm64pow_queue_also(id32: *const u8) {
     let _ = std::panic::catch_unwind(|| crate::queue::global().also(&id, crate::admit::context()));
 }
 
+/// A copy of block `id` was refused as a bad copy (a bad encoding, -3 from verify, or a bad witness
+/// of its records, -3 from sm64pow_verify_records): the replay queue forgets the id, so another
+/// copy is judged afresh (queue.rs `forget`). Never marks anything invalid.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_queue_forget(id32: *const u8) {
+    let Some(id) = (unsafe { id_arg(id32) }) else { return };
+    let _ = std::panic::catch_unwind(|| crate::queue::global().forget(&id));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_queue_take_cleared(id32: *const u8) -> i32 {
     let Some(id) = (unsafe { id_arg(id32) }) else { return 0 };
