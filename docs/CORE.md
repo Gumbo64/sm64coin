@@ -57,7 +57,8 @@ C++ glue in the fork:
    (`get_block_id_blob`). Before any replay, `sm64_sig` must verify with the
    miner key the coinbase commits (`chain::verify_signed_block`). `proof_id` hashes the decoded run for codecs 0-2 and
    the canonical bytes for codecs 3-5.
-6. **Timestamp**: strictly after the parent (v0.4: no launch-time floor; `Rules::launch_timestamp` is 0),
+6. **Timestamp**: strictly after the parent, not before the launch on mainnet and stagenet (v0.4: `Rules::launch_timestamp`
+   is the release moment, already past at launch: no waiting, but no chain backdated before it),
    and at most 120 s ahead of the node's clock
    (`Blockchain::sm64_check_timestamp`, `CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT`).
 7. **Hold** (relay policy, not consensus): a block extending the tip that is

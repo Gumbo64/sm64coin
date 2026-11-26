@@ -306,9 +306,14 @@ pub const STAR_CYCLE: StarCycle = StarCycle {
     restart_point_seconds: 240,
     restart_max_seconds: 8 * 3600,
     // ==== end v0.3 CHOSEN PARAMETERS
-    // v0.4: no launch-time gate (maintainer, 2026-11-25: the new network id and genesis already
-    // separate the chain; no waiting period of any kind). v0.3 had 1_795_651_200.
-    launch_timestamp: 0,
+    // v0.4: the release moment, already in the past when anyone runs the node (no waiting period:
+    // maintainer, 2026-11-25). Not 0: the genesis block is stamped 0, so with no floor a chain from
+    // it could claim decades it never spent (every gap at the limit's cap) and be pre-mined offline
+    // from the published genesis, then win at launch (docs/V0.4-DESIGN.md decision 12). The daemon
+    // refuses mainnet and stagenet blocks stamped before it (testnet: none, test tooling replays
+    // older chains). PLACEHOLDER 2026-11-26 06:48 UTC: set to the v0.4 tag time just before tagging.
+    // v0.3 had 1_795_651_200.
+    launch_timestamp: 1_795_675_680,
 };
 
 /// Publish-on-find (v0.3, relay policy; FAIRNESS.md sections 6-7, 9): a run
