@@ -1,0 +1,100 @@
+# The website on its own origin (Cloudflare Pages, e.g. https://app.eboy.au): same app as pages.yml, built for base '/' with
+# VITE_DEDICATED=1 and the response headers of web/deploy/cloudflare/_headers (CSP with frame-ancestors, HSTS, COOP/COEP,
+# Permissions-Policy ...). See docs/CLOUDFLARE-PAGES.md for the one-time Cloudflare setup.
+#
+# Repository secrets: CLOUDFLARE_API_TOKEN (token with "Cloudflare Pages: Edit"), CLOUDFLARE_ACCOUNT_ID. Optional repository
+# variable CF_PAGES_PROJECT (default sm64coin). Without the two secrets the workflow ends after the first job, green.
+# The legacy GitHub Pages site (pages.yml) keeps being deployed: it is where existing wallets live until they are moved.
+name: Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'pow/webminer/**', 'pow/miner/**', 'pow/sm64pow/**', 'pow/Cargo.lock', 'scripts/build-wasm.sh', 'scripts/build-wallet-wasm.sh', 'monero', '.github/workflows/cloudflare-pages.yml', '.github/workflows/wallet-engine.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-pages
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    outputs:
+      configured: ${{ steps.c.outputs.configured }}
+    steps:
+      - id: c
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$TOKEN" ] && [ -n "$ACCOUNT" ]; then echo "configured=true" >> "$GITHUB_OUTPUT"
+          else echo "configured=false" >> "$GITHUB_OUTPUT"; echo "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set: skipping the Cloudflare deploy." >> "$GITHUB_STEP_SUMMARY"; fi
+
+  wallet-engine:
+    needs: check
+    if: needs.check.outputs.configured == 'true'
+    uses: ./.github/workflows/wallet-engine.yml
+
+  deploy:
+    needs: [check, wallet-engine]
+    if: ${{ !cancelled() && needs.check.outputs.configured == 'true' }}   # deployed even when the wallet engine failed to build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow/perturb-wasm
+            pow/webminer
+          key: wasm
+      - name: Toolchain for the web miner (clang, llvm, private repo access)
+        continue-on-error: true
+        env:
+          SM64_AI_BINDS_TOKEN: ${{ secrets.SM64_AI_BINDS_TOKEN }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm
+          if [ -n "$SM64_AI_BINDS_TOKEN" ]; then
+            git config --global url."https://x-access-token:${SM64_AI_BINDS_TOKEN}@github.com/Gumbo64/".insteadOf "https://github.com/Gumbo64/"
+          fi
+      - name: Browser WASM modules (perturbation, web miner)
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          REQUIRE_WEBMINER: "1"
+        run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - name: Wallet engine (wasm); without it the Wallet page says it is unavailable
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wallet-engine
+          path: web/public/wallet
+      - run: npm ci
+        working-directory: web
+      - name: Unit tests
+        run: for t in $(git ls-files 'src/*.test.mjs'); do node "$t" || exit 1; done
+        working-directory: web
+      - name: Build for the dedicated origin (base /, VITE_DEDICATED=1, _headers, _redirects)
+        run: npm run build:app
+        working-directory: web
+        env:
+          VITE_DEFAULT_NODE: http://127.0.0.1:16481
+          VITE_GIT_SHA: ${{ github.sha }}
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy web/dist-app --project-name=${{ vars.CF_PAGES_PROJECT || 'sm64coin' }} --branch=main --commit-dirty=true

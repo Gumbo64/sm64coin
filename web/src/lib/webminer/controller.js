@@ -70,13 +70,23 @@ class FrameRate {
   }
 }
 
+function clearAddressParam() {
+  try {
+    const u = new URL(window.location.href);
+    if (u.searchParams.has('address')) { u.searchParams.delete('address'); window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash); }
+  } catch { /* no history */ }
+}
+
 class MinerController {
   constructor() {
     this.hub = new VizHub();
     this.rate = new FrameRate();
     this.subs = new Set();
     const q = new URLSearchParams(window.location.search).get('address');
-    this.address = q && isAddress(q.trim()) ? q.trim() : ls('sm64coin.address', '');
+    this.address = ls('sm64coin.address', '');
+    // A payout address in the page's URL is never applied silently (a phishing link would make the visitor mine for someone else):
+    // it waits here until the visitor confirms it in the banner (acceptLinkAddress).
+    this.linkAddress = q && isAddress(q.trim()) && q.trim() !== this.address ? q.trim() : '';
     this.count = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 1));
     const m = ls('sm64coin.resetMode', 'when-stuck');
     this.mode = RESET_MODES.includes(m) ? m : 'when-stuck';
@@ -108,7 +118,7 @@ class MinerController {
   subscribe = (fn) => { this.subs.add(fn); return () => this.subs.delete(fn); };
   getSnapshot = () => this.snap;
   makeSnap() {
-    return { address: this.address, count: this.count, mode: this.mode, vizOn: this.vizOn, playFromStart: this.playFromStart, hybridOK: hybrid.available, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
+    return { address: this.address, linkAddress: this.linkAddress, count: this.count, mode: this.mode, vizOn: this.vizOn, playFromStart: this.playFromStart, hybridOK: hybrid.available, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
   }
   /** Wakes the views: at most 4 times a second, at once when `now`. */
   emit(now = false) {
@@ -155,6 +165,10 @@ class MinerController {
   /** v0.4: where proof rewards of this miner's templates go: `fn()` returns a payout address (a fresh subaddress per template) or null for the mining address. */
   setPayoutProvider(fn) { this.payoutFn = fn; }
   payoutAddress() { try { return (this.payoutFn && this.payoutFn()) || this.address; } catch { return this.address; } }
+  /** The visitor confirmed the address that came with the page's link: it becomes the (remembered) mining address. */
+  acceptLinkAddress() { const a = this.linkAddress; this.linkAddress = ''; clearAddressParam(); if (a) this.setAddress(a); else this.emit(true); }
+  /** The visitor refused it: the stored address stays. */
+  dismissLinkAddress() { this.linkAddress = ''; clearAddressParam(); this.emit(true); }
   setAddress(a) { this.address = a; if (isAddress(a)) lsSet('sm64coin.address', a); this.emit(true); }
   setCount(n) { this.count = Math.max(1, Math.min(32, Number(n) || 1)); this.emit(true); }
   setMode(m) { this.mode = m; lsSet('sm64coin.resetMode', m); this.emit(true); }

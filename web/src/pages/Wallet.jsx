@@ -1,10 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { getNode } from '../lib/rpc.js';
+import { getNode, isChosenNode } from '../lib/rpc.js';
 import { loadStored, saveStored, forgetStored } from '../lib/wallet/store.js';
 import * as eng from '../lib/wallet/engine.js';
 import { BLOCK_TARGET_SECONDS } from '../lib/rules.js';
 import * as pk from '../lib/wallet/passkey.js';
+import { DEDICATED, NEW_SITE_URL } from '../lib/security.js';
+import { reencryptForMove, exportMinerState, parseMinerState, mergeMinerState } from '../lib/migrate.js';
+import { miner } from '../lib/webminer/controller.js';
+import { useMiner } from '../lib/webminer/useMiner.js';
 
 // A lite wallet in the browser: the fork's wallet2 (WebAssembly, in a web worker) scans the chain
 // through the node's RPC. Keys are made and used inside the worker; what is stored (IndexedDB) is the
@@ -144,6 +148,7 @@ export default function Wallet() {
         {busy && <p className="muted">{busy}…</p>}
       </div>
       {stage === 'none' && <Onboard run={run} adopt={adopt} busy={!!busy} />}
+      {DEDICATED && (stage === 'none' || stage === 'locked') && <ImportFromOld />}
       {stage === 'locked' && <Unlock rec={rec} run={run} adopt={adopt} forget={forget} busy={!!busy} />}
       {stage === 'open' && (
         <Open w={w} passkey={passkey} address={address} viewOnly={viewOnly} snap={snap} progress={progress} seed={seed} setSeed={setSeed}
@@ -331,8 +336,9 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
         <p className="mono break addr">{address}</p>
         <div className="controls">
           <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(address)}>Copy</button>
-          <Link to={`/mine?address=${address}`}><button>Auto-mine to it</button></Link>
-          <Link to={`/mine?address=${address}`}><button>Mine to it</button></Link>
+          {/* an explicit click here sets the payout address; a bare ?address= link never does (it asks first) */}
+          <Link to="/mine" onClick={() => miner.setAddress(address)}><button>Auto-mine to it</button></Link>
+          <Link to="/mine" onClick={() => miner.setAddress(address)}><button>Mine to it</button></Link>
         </div>
         <p className="muted">The Mine and Auto-mine pages now pay their rewards to this address.</p>
         <p className="muted">Balances and history come from the node you are connected to and are trusted as it reports them (a remote node could show wrong ones; it cannot spend your coins).</p>
@@ -355,6 +361,7 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
         {seed && <p className="mono seedbox">{seed}</p>}
       </div>
       <ExportKeys w={w} run={run} onShown={done} passkey={passkey} />
+      {!DEDICATED && <Migrate w={w} run={run} passkey={passkey} address={address} />}
       {viewOnly && <p className="muted">View-only: spends made by the full wallet are not visible here, so this balance can be higher than the real one (change from a payment shows up as received).</p>}
       {!viewOnly && <Board w={w} run={run} />}
       <Txs snap={snap} />
@@ -478,6 +485,7 @@ function Board({ w, run }) {
   const [name, setName] = useState(() => { try { return localStorage.getItem(NAME_KEY) || ''; } catch { return ''; } });
   const [msg, setMsg] = useState('');
   const [confirm, setConfirm] = useState(false);
+  const node = eng.daemonUri();
   const join = () => run('Signing and submitting', async () => {
     setConfirm(false);
     const n = name.trim();
@@ -488,24 +496,103 @@ function Board({ w, run }) {
   return (
     <div className="card">
       <h3>Leaderboard</h3>
-      <p className="walleterr">Joining sends this wallet's private view key to the node. The view key lets the node see every incoming payment to this wallet; it cannot spend.</p>
+      <p className="walleterr">Joining sends this wallet's private view key to the node <span className="mono" data-testid="board-node">{node}</span>. The view key lets the node see every incoming payment to this wallet; it cannot spend.</p>
       <p className="muted">
         Opt in to show your blocks on the <Link to="/leaderboard">Leaderboard</Link>. The entry is signed here with your
         spend key (only you can name this address); to count your blocks, nodes are given your address and secret view key,
         so anyone can then see all incoming payments to this wallet (not spend). Use a dedicated mining wallet. An entry
         cannot be removed once shared, only renamed.
       </p>
+      {isChosenNode() && <p className="walleterr">That node was set by hand (Network page), not the site's default. Only continue if you run it or trust its operator.</p>}
       <input placeholder="display name" value={name} maxLength={32} onChange={(e) => { setName(e.target.value); setConfirm(false); }} />{' '}
       {!confirm && <button disabled={!name.trim()} onClick={() => setConfirm(true)}>Join / rename…</button>}
       {confirm && (
         <div className="notice" data-testid="board-confirm">
-          Join as <b>{name.trim()}</b>: this sends the wallet's <b>private view key</b> to the node, with the address and the
+          Join as <b>{name.trim()}</b>: this sends the wallet's <b>private view key</b> to the node <b className="mono">{node}</b>, with the address and the
           signed name. With the view key the node, and every node it shares the entry with, can see all incoming payments
           to this wallet; it cannot spend them. This cannot be undone.<br />
           <button onClick={join}>Send the view key and join</button>{' '}
           <button onClick={() => setConfirm(false)}>Cancel</button>
         </div>
       )}
+      {msg && <p>{msg}</p>}
+    </div>
+  );
+}
+
+const download2 = download;
+/** Legacy origin only: move the wallet (and the miner's signed-seed memory) to the dedicated origin. */
+function Migrate({ w, run, passkey, address }) {
+  const s = useMiner();
+  const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState('');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [res, setRes] = useState(null);
+  const [msg, setMsg] = useState('');
+  const ok = pw.length >= 8 && pw === pw2 && (passkey || cur);
+  const prepare = () => run('Preparing the move', async () => {
+    if (passkey) { const k = await pk.openPasskey(); await eng.checkPassword(w, k.password); } else await eng.checkPassword(w, cur);
+    const r = await reencryptForMove(eng, w, pw);
+    setRes(r); setCur(''); setPw(''); setPw2('');
+    download2(r.name, r.doc, 'application/json');
+    markBackedUp(address);
+  });
+  const minerFile = () => {
+    try { download2('sm64coin-miner-state.json', exportMinerState(localStorage), 'application/json'); setMsg('Saved. On the new site: Wallet, "Import from the old site".'); } catch (e) { setMsg(String(e.message || e)); }
+  };
+  return (
+    <div className="card" data-testid="migrate-card">
+      <h3>Move to the new site</h3>
+      {!open ? (
+        <>
+          <p className="muted">The app now lives at <b>{NEW_SITE_URL.replace(/^https:\/\//, '')}</b>, on an address of its own (this one is shared with other pages of the same GitHub account). Move this wallet there with a backup file; nothing is sent anywhere.</p>
+          <button onClick={() => setOpen(true)}>Start moving…</button>
+        </>
+      ) : (
+        <>
+          {s.running && <p className="walleterr">The miner is running on this site. <b>Stop it before you mine on the new site</b> with the same address: two sites signing runs for one template can break the one-run-per-template rule.{' '}
+            <button onClick={() => miner.stop()}>Stop mining</button></p>}
+          <ol className="muted">
+            <li>Choose a NEW password below (it protects the file; for a passkey wallet this turns the passkey wallet into a normal password wallet on the new site).</li>
+            <li>Save the downloaded file and write down the seed words shown (they are the real backup).</li>
+            <li>Open <a href={NEW_SITE_URL + '/wallet'} rel="noopener">{NEW_SITE_URL.replace(/^https:\/\//, '')}/wallet</a>, choose "Load backup file", pick the file, enter the new password.</li>
+            <li>Miners: also save the miner state below and import it there. Check the address on the new site is the same as here, then you may forget the wallet here.</li>
+          </ol>
+          {!passkey && <p><input type="password" placeholder="current password" value={cur} onChange={(e) => setCur(e.target.value)} /></p>}
+          <p><input type="password" placeholder="new password (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+            <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} /></p>
+          <button disabled={!ok} onClick={prepare}>{passkey ? 'Use the passkey, ' : ''}prepare and download the move file</button>{' '}
+          <button className="linkish" onClick={() => { setOpen(false); setRes(null); }}>close</button>
+          {res && (
+            <div className="notice" data-testid="migrate-done">
+              <p>Downloaded <b className="mono">{res.name}</b> for <span className="mono break">{res.address}</span>, locked with your new password.</p>
+              {res.seed ? <><p className="walleterr">Seed words (secret; they spend your coins):</p><p className="mono seedbox" data-testid="migrate-seed">{res.seed}</p></> : <p className="muted">This wallet has no seed words.</p>}
+              <button onClick={() => download2(res.name, res.doc, 'application/json')}>Download the file again</button>
+            </div>
+          )}
+          <p><button onClick={minerFile} disabled={s.running}>Download miner state (signed seeds)</button> {s.running && <span className="muted">stop the miner first</span>} {msg && <span className="muted">{msg}</span>}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Dedicated origin: bring the miner's signed-seed memory from the old site (the wallet comes in through "Backup file"). */
+export function ImportFromOld() {
+  const [msg, setMsg] = useState('');
+  const pick = async (f) => {
+    try {
+      const st = parseMinerState(new TextDecoder().decode(await readFile(f)));
+      const r = mergeMinerState(localStorage, st);
+      setMsg(`Imported ${r.added} signed seed(s), kept ${r.kept} already here. Reload the page. The payout address is not imported: set it on the Mine page.`);
+    } catch (e) { setMsg(e.message || String(e)); }
+  };
+  return (
+    <div className="card" data-testid="import-old">
+      <h3>Import from the old site</h3>
+      <p className="muted">Moving from gumbo64.github.io/sm64coin: open the old site's Wallet page, "Move to the new site", download the wallet file and the miner state. Pick the wallet file under "Load backup file" above; the miner state here (it stops a template being signed twice with different runs; stop mining on the old site first).</p>
+      <input type="file" accept=".json,application/json" onChange={(e) => e.target.files[0] && pick(e.target.files[0])} />
       {msg && <p>{msg}</p>}
     </div>
   );

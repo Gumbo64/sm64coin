@@ -3,6 +3,7 @@ run/
 pow/target/
 web/node_modules
 web/dist
+web/dist-app
 baserom.us.z64
 monero/build
 bin/

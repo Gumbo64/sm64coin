@@ -161,3 +161,7 @@ Effort: roughly 1 day for hosting, headers and CORS; 1-2 days for the migration 
 1. Today: this branch's meta CSP (test with a ROM), then account hygiene on `gumbo64.github.io` (no sibling projects, 2FA), Cloudflare HSTS/rate limits/CAA/method allowlist, view-key warning (4), `?address=` banner (9).
 2. This week: dedicated origin with real headers (section 3), `coi-sw.js` fallback/kill switch, e2e hooks stripped from production, frame-buster as interim.
 3. Next: migration panel and communication; VPS seed for P2P (6); dual-node tip check and coinbase-payout check (5); pin third-party GitHub Actions and checksum the unbound download (11).
+
+## 5. Implementation status (2026-11-26)
+
+Done in this branch: frame-buster (`lib/security.js`, `main.jsx`), view-key warning naming the node (Wallet, Leaderboard card), `?address=` confirmation banner, e2e hooks stripped from production (`VITE_E2E=1` to keep), `coi-sw.js` fetch fallback and remote kill file, meta CSP kept and checked against the real build, dedicated-origin build (`npm run build:app`, `web/deploy/cloudflare/`), `cloudflare-pages.yml`, the migration panel and importer (`lib/migrate.js`), node CORS defaults for both origins. Operational steps (Cloudflare, DNS, secrets, Pi): `docs/CLOUDFLARE-PAGES.md`. Not done: the VPS seed (6), dual-node tip check (5), action pinning and the `unbound` checksum (11).

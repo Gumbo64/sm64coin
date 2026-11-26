@@ -1,0 +1,2 @@
+# Single-page app: every path that is not a file serves the app (deep links such as /wallet, /block/123).
+/*  /index.html  200

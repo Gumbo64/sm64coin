@@ -2,6 +2,8 @@
 // so public/coi-sw.js (a service worker) adds them and the page reloads once. This module enables / disables it and says
 // what the state is and why, for the Auto-mine card's indicator.
 
+import { DEDICATED } from '../security.js';
+
 const KEY = 'sm64coin.coiReload'; // sessionStorage: {scrollY, enabled, at}: the reload came from the sync switch
 const swUrl = () => {
   // credentialless is Chromium's and Firefox 119+'s; others (Safari) only know require-corp.
@@ -16,6 +18,17 @@ const DIS = 'sm64coin.syncDisabled'; // localStorage: the user switched worker s
 const AUTO = 'sm64coin.coiAuto'; // sessionStorage: this session already tried the automatic reload
 const disabledByUser = () => { try { return localStorage.getItem(DIS) === '1'; } catch { return false; } };
 const ss = (f) => { try { return f(sessionStorage); } catch { return null; } };
+
+const OFF = `${import.meta.env.BASE_URL}coi-sw-off.txt`;
+/** The remote kill file (see public/coi-sw.js): when it says "off", the worker is not registered and an existing one is removed. */
+async function remotelyOff() {
+  try {
+    const r = await fetch(OFF, { cache: 'no-store' });
+    if (!(r.ok && /^\s*off\b/i.test(await r.text()))) return false;
+    for (const g of await navigator.serviceWorker.getRegistrations()) if (g.scope === scope()) await g.unregister();
+    return true;
+  } catch { return false; }
+}
 
 export const isolatedNow = () => typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
 
@@ -85,9 +98,10 @@ export function takeReloadNote() {
  */
 export async function autoSync() {
   try {
-    if (isolatedNow() || disabledByUser() || !window.isSecureContext || !('serviceWorker' in navigator)) return false;
+    if (isolatedNow() || DEDICATED || disabledByUser() || !window.isSecureContext || !('serviceWorker' in navigator)) return false;
     if (ss((s) => s.getItem(AUTO))) return false;
     ss((s) => s.setItem(AUTO, '1'));
+    if (await remotelyOff()) return false;
     const reg = await navigator.serviceWorker.register(swUrl(), { scope: scope() });
     await navigator.serviceWorker.ready;
     if (!(await until(() => !!navigator.serviceWorker.controller, 3000))) return false; // can't take control: fall back silently
