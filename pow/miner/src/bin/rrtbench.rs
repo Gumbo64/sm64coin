@@ -104,7 +104,7 @@ fn main() -> Result<()> {
                     let blob = sm64pow::seal_proof_at(start, state.as_ref(), &seed, &params, &m.pads)?;
                     let parent_kind = match parent {
                         None => chain::Parent::Genesis,
-                        Some(pid) => chain::Parent::Block { id: pid, gap_seconds: 0 },
+                        Some(pid) => chain::Parent::Block { id: pid, gap_seconds: 3600 }, // an hour: the frame limit grows with the gap
                     };
                     // v0.4 proofs are committed blobs: the node's check is verify_any.
                     let verdict = |b: &[u8]| -> Result<chain::BlockVerdict> {
