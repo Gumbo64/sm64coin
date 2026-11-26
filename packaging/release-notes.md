@@ -19,6 +19,17 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.3.3: fixes (no consensus change)
+
+- **Miners:** `automine` no longer exits when a run's pokes pick "save and quit" in the star's save menu (about 1.5 % of
+  templates): the start settles through the title screen, and any failed attempt moves on to the next template.
+- **Nodes:** `get_info` and `get_version` report `sm64coin_version`, `sm64_game_build` and `sm64_rules`, also on the
+  restricted RPC, so wallets and the website can show which node version they talk to.
+- **Website** (also live on GitHub Pages): versions on the Info page with a short explainer of the auction; block pages
+  with the envelope graph and a replay picker; faster replays from saved block states; the auto-miner's position goal
+  as its own objective with a strength setting; new areas shared between workers within a second; faster start-up;
+  a check that the node is on this chain (old 0.2 nodes fall back to the public node).
+
 ### 0.3.2: a security fix (no consensus change)
 
 - **Fix:** a crafted run-length proof with a run length near 2^64 could wrap the decoder's limit check and
