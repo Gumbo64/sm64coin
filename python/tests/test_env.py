@@ -175,14 +175,14 @@ def test_proof_encoding_round_trip():
 
 def test_seal_rewrites_the_timestamp_and_appends_proof_and_signature():
     # header: major 1, minor 1, timestamp 1_000_000_000 (5 bytes), prev_id (32), nonce (4), rest,
-    # then the v0.3 empty proof (0) and empty signature (64 zero bytes)
+    # then the v0.4 empty proof (0), empty signature (64 zero bytes) and empty proof records (0)
     hdr = bytes([1, 1]) + varint(1_000_000_000) + bytes(32) + bytes(4) + b"tail"
-    blob = (hdr + b"\x00" + bytes(64)).hex()
+    blob = (hdr + b"\x00" + bytes(64) + b"\x00").hex()
     sig = bytes(range(1, 65))
     out = bytes.fromhex(seal(blob, b"x" * 130, sig, 5))
-    assert out == bytes([1, 1, 5]) + bytes(32) + bytes(4) + b"tail" + bytes([0x82, 0x01]) + b"x" * 130 + sig
+    assert out == bytes([1, 1, 5]) + bytes(32) + bytes(4) + b"tail" + bytes([0x82, 0x01]) + b"x" * 130 + sig + b"\x00"
     out = bytes.fromhex(seal(blob, b"", sig, 2_000_000_000))
-    assert out == bytes([1, 1]) + varint(2_000_000_000) + bytes(32) + bytes(4) + b"tail" + b"\x00" + sig
+    assert out == bytes([1, 1]) + varint(2_000_000_000) + bytes(32) + bytes(4) + b"tail" + b"\x00" + sig + b"\x00"
     import time
     ts, i = 0, 2
     out = bytes.fromhex(seal(blob, b"ab", sig))  # default: now
@@ -194,9 +194,9 @@ def test_seal_rewrites_the_timestamp_and_appends_proof_and_signature():
             break
     assert abs(ts - time.time()) < 5
     with pytest.raises(ValueError):
-        seal((hdr + b"\x01" + bytes(64)).hex(), b"", sig)
+        seal((hdr + b"\x01" + bytes(64) + b"\x00").hex(), b"", sig)
     with pytest.raises(ValueError):
-        seal((hdr + b"\x00").hex(), b"", sig)   # old-style unsigned template
+        seal((hdr + b"\x00").hex(), b"", sig)   # old-style unsigned template (no proof-records byte)
 
 
 @need_verify

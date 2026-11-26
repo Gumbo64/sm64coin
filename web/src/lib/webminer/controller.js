@@ -15,7 +15,7 @@ import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPoli
 import { announceMined } from '../payout.js';
 import { VizHub } from '../../pages/automine/hub.js';
 import { e2eHook } from '../e2e.js';
-import { offerRun, holdUntilValid, signedSeeds, clampLead, DEFAULT_LEAD } from './bestRun.js';
+import { offerRun, holdUntilValid, signedSeeds, clampLead, DEFAULT_LEAD, waitRecordsReady, offerAsProof, proofVerdict } from './bestRun.js';
 import { Hybrid } from './hybrid.js';
 import { getPlayFromStart, setPlayFromStart, subscribePlayFromStart } from '../hybridSetting.js';
 
@@ -102,8 +102,10 @@ class MinerController {
     this.running = false;
     this.log = [];
     this.workers = [];
-    this.stats = { rounds: 0, found: 0, accepted: 0 };
-    this.phase = 'idle'; // idle | loading | mining | found | held | submitting
+    this.stats = { rounds: 0, found: 0, accepted: 0, proofs: 0, proofsPooled: 0 };
+    this.proofSent = new Set(); // seeds whose run was already offered as a proof (once per key)
+    this.payoutFn = null; // optional: () => a fresh subaddress for each template (e.g. from a lite wallet on the page); default: the mining address
+    this.phase = 'idle'; // idle | loading | waiting | mining | found | held | submitting
     this.flash = null; // {kind: 'accepted' | 'rejected', until}
     this.error = null; // {text, until}
     this.c = null;
@@ -148,6 +150,7 @@ class MinerController {
     if (this.phase === 'found') return { kind: 'found', label: 'run found', title: 'A run was found: sealing it' };
     if (this.phase === 'held') return { kind: 'found', label: 'waiting', title: 'Run found: held until the time limit has grown to it (the workers look for a shorter one meanwhile)' };
     if (this.phase === 'submitting') return { kind: 'found', label: 'submitting', title: 'Submitting the block' };
+    if (this.phase === 'waiting') return { kind: 'loading', label: 'waiting', title: "Waiting for the previous block's proofs to be collected (the node's sm64_records_ready_at) before taking a template" };
     if (this.phase === 'loading') return { kind: 'loading', label: 'loading', title: 'Auto-miner preparing (game, state, template)' };
     const reset = this.c && this.c.status && this.c.status.some((s) => s.start === 'power-on');
     if (reset) return { kind: 'reset', label: 'reset cycle', title: `Auto-miner: ${n} worker${n === 1 ? '' : 's'}, a reset-cycle (power-on) attempt${rate}` };
@@ -161,6 +164,9 @@ class MinerController {
   // ----- settings -----
   /** Seconds before a held run is valid at which it is submitted (default 5; remembered). */
   setLead(n) { this.lead = clampLead(n); lsSet('sm64coin.submitLead', String(this.lead)); this.emit(true); }
+  /** v0.4: where proof rewards of this miner's templates go: `fn()` returns a payout address (a fresh subaddress per template) or null for the mining address. */
+  setPayoutProvider(fn) { this.payoutFn = fn; }
+  payoutAddress() { try { return (this.payoutFn && this.payoutFn()) || this.address; } catch { return this.address; } }
   setAddress(a) { this.address = a; if (isAddress(a)) lsSet('sm64coin.address', a); this.emit(true); }
   setCount(n) { this.count = Math.max(1, Math.min(32, Number(n) || 1)); this.emit(true); }
   setMode(m) { this.mode = m; lsSet('sm64coin.resetMode', m); this.emit(true); }
@@ -258,6 +264,8 @@ class MinerController {
         const i = await daemon('get_info');
         if (c.template && i.top_block_hash !== (c.template.tip || c.template.prev_hash) && c.pool.some(Boolean)) {
           this.say(`new block ${i.height - 1} on the chain: restarting on the new template`);
+          // v0.4 stage B: a run held for the old tip lost its height; it is still a proof for it.
+          if (c.best && c.submitting !== c.template && !this.noSubmit) this.publishProof(c.template, c.best);
           this.round(c);
         }
       } catch { /* node hiccup */ }
@@ -275,6 +283,7 @@ class MinerController {
     c.pool.forEach((w) => w && w.terminate());
     c.pool = [];
     if (c.stopped) return;
+    const mine = (c.round = (c.round || 0) + 1); // a later round() (a new tip while this one waits) supersedes this one
     this.setPhase('loading');
     let t;
     try {
@@ -284,7 +293,23 @@ class MinerController {
       // the tip, so "a new block landed" means the tip moved from this, not from prev_hash.
       let tip = '';
       try { tip = (await daemon('get_info')).top_block_hash || ''; } catch { /* the template call will say */ }
-      t = await daemon('get_block_template', templateParams(address, key));
+      // v0.4: the payout address this template commits for its proofs (a subaddress per template if a provider gives one).
+      const payout = this.payoutAddress();
+      const params = templateParams(address, key, { sm64_payout_address: payout });
+      t = await daemon('get_block_template', params);
+      // v0.4: wait for the height's proofs (sm64_records_ready_at) so the template includes them.
+      if (Number(t.sm64_records_ready_at) > now()) {
+        this.setPhase('waiting');
+        const w = await waitRecordsReady(t, {
+          fetch: () => daemon('get_block_template', params), now, sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+          current: () => !c.stopped && c.round === mine,
+          onWait: (s) => say(`waiting ${s} s for the previous block's proofs before taking a template`),
+        });
+        if (!w) return;
+        t = w;
+        this.setPhase('loading');
+      }
+      t.payout = payout;
       t.tip = tip || t.prev_hash;
       t.minerKey = key; // travels with the template, hence with every run held for it
     } catch (e) {
@@ -293,7 +318,7 @@ class MinerController {
       setTimeout(() => this.round(c), 10000);
       return;
     }
-    if (c.stopped) return;
+    if (c.stopped || c.round !== mine) return;
     c.template = t;
     c.best = null; // the run every worker works to beat: per template (a held run of the last one must not carry over)
     c.attempt += 1;
@@ -455,6 +480,36 @@ class MinerController {
     for (let i = 0; i < count; i++) launch(i);
   }
 
+  /**
+   * v0.4 stage B: a run that lost its height is published as a proof for it (submit_sm64_proof), signed with the template's
+   * key (one run per key), if it is within the archive window. Once per seed. Logs the verdict; the proof pays an extra coinbase
+   * output (up to a 128th of the block reward) to the template's payout address when a later block includes it.
+   */
+  async publishProof(t, r) {
+    if (this.noSubmit || this.proofSent.has(t.sm64_seed_hash)) return;
+    this.proofSent.add(t.sm64_seed_hash);
+    const res = await offerAsProof({
+      template: t, run: r, signed: this.signed,
+      winnerFrames: async (height) => ((await daemon('get_sm64_cycle')).blocks || []).find((b) => b.height === height)?.frames ?? null,
+      proofBytes: hexToBytes,
+      sign: (proof) => signRun(t.minerKey, t.sm64_seed_hash, proof),
+      seal: (proof, sig) => seal(withTimestamp(t.blocktemplate_blob, Math.max(Math.floor(now()), templateTimestamp(t.blocktemplate_blob))), proof, sig),
+      submit: (hex) => daemon('submit_sm64_proof', { blob: hex }),
+    });
+    if (res.kind === 'sent') {
+      this.stats = { ...this.stats, proofs: this.stats.proofs + 1, proofsPooled: this.stats.proofsPooled + (res.result === 1 ? 1 : 0) };
+      const worth = res.result === 1 ? `; if a later block includes it, it pays up to ${(t.expected_reward / 128 / 1e12).toFixed(3)} SM64 to ${(t.payout || this.address).slice(0, 12)}…` : '';
+      this.say(`proof for height ${t.height} (${r.frames} frames): ${proofVerdict(res.result)}${res.reason ? ` (${res.reason})` : ''}${worth}`);
+    } else if (res.kind === 'outside') {
+      this.say(`not a proof for height ${t.height}: ${r.frames} frames is outside the archive window (the winner has ${res.winner}, the window ends at ${res.limit})`);
+    } else if (res.kind === 'second') {
+      this.say(`not publishing as a proof: a different run (${res.frames} frames) was already signed for this seed`);
+    } else {
+      this.say(`publishing the run as a proof failed: ${res.error}`);
+    }
+    this.emit(true);
+  }
+
   /** The one submit of a template: holds the best run (c.best; a shorter one replaces it while the workers search on) until it is valid, then submits it. */
   async submit(c, t) {
     const say = (m) => this.say(m);
@@ -481,6 +536,7 @@ class MinerController {
       if (h.kind === 'stale') {
         say('a new block landed while the run was held; the run was for the old tip');
         hub.submission('stale', { height: t.height, frames: r.frames });
+        await this.publishProof(t, r);
         return;
       }
       const validAt = h.validAt;
@@ -495,6 +551,7 @@ class MinerController {
       if (info.top_block_hash !== (t.tip || t.prev_hash)) {
         say('a new block landed first; the run was for the old tip');
         hub.submission('stale', { height: t.height, frames: r.frames });
+        await this.publishProof(t, r);
         return;
       }
       let ts = Math.max(Math.floor(now()), validAt, templateTimestamp(t.blocktemplate_blob));
@@ -520,6 +577,7 @@ class MinerController {
     } catch (e) {
       say(`block rejected: ${e}`);
       hub.submission('rejected', { height: t.height, frames: r.frames, note: String(e) });
+      if (r && !this.noSubmit) await this.publishProof(t, r); // the same signed run (no second signature), offered as a proof
       this.flash = { kind: 'rejected', until: Date.now() + 10000 };
       setTimeout(() => this.emit(true), 10100);
     } finally {

@@ -149,3 +149,56 @@ function world({ limitAt, tipAt = Infinity, events = [] }) {
 }
 
 console.log('bestRun ok');
+
+// ----- v0.4: wait for the height's proofs, and publish a lost run as a proof -----
+import { waitRecordsReady, offerAsProof, proofVerdict, MAX_RECORDS_WAIT } from './bestRun.js';
+import { windowFrames, dueElapsed } from '../rules.js';
+
+{
+  const clock = { t: 1000 };
+  const asks = [];
+  const d = { fetch: async () => { asks.push(clock.t); return { sm64_records_ready_at: 0, again: true }; }, now: () => clock.t,
+    sleep: async (ms) => { clock.t += ms / 1000; }, current: () => true, onWait: (s) => asks.push(`wait ${s}`) };
+  const r = await waitRecordsReady({ sm64_records_ready_at: 1040 }, d);
+  assert.equal(r.again, true);
+  assert.deepEqual(asks, ['wait 40', 1040], 'told once, took the template at the ready time');
+  // already ready: the same answer, no request
+  assert.deepEqual(await waitRecordsReady({ sm64_records_ready_at: 900, x: 1 }, d), { sm64_records_ready_at: 900, x: 1 });
+  assert.equal(asks.length, 2);
+  // a node with a far-off clock: bounded
+  clock.t = 0;
+  await waitRecordsReady({ sm64_records_ready_at: 1e9 }, { ...d, fetch: async () => ({}) });
+  assert.equal(clock.t, MAX_RECORDS_WAIT);
+  // a newer round (or stop) ends it
+  assert.equal(await waitRecordsReady({ sm64_records_ready_at: 1e9 }, { ...d, current: () => false }), null);
+}
+
+// the archive window agrees with Rust (docs/V0.4-DESIGN.md: window_frames(1, 3950, 60) = 4,650)
+assert.equal(windowFrames(1, 3950, 60), 4650);
+assert.ok(dueElapsed(1, 3950) > 300 && windowFrames(1, 3950, 0) >= 3950);
+
+{
+  const mk = (winner, res = { result: 1 }) => {
+    const sent = [];
+    const signed = signedSeeds(null);
+    return { sent, signed, d: { template: { height: 7, sm64_seed_hash: 'seed', sm64_retarget_difficulty: 1 }, run: { proof: 'aabb', frames: 4131 }, signed,
+      winnerFrames: async () => winner, proofBytes: (h) => h, sign: async () => 'sig', seal: (p, s) => `${p}|${s}`, submit: async (h) => { sent.push(h); return res; } } };
+  };
+  let w = mk(3950);
+  assert.deepEqual(await offerAsProof(w.d), { kind: 'sent', result: 1, reason: '' });
+  assert.deepEqual(w.sent, ['aabb|sig']);
+  assert.equal(w.signed.signedOther('seed', 'ccdd'), 4131, 'recorded: one run per key');
+  assert.equal((await offerAsProof({ ...w.d, run: { proof: 'ccdd', frames: 4000 } })).kind, 'second', 'never a second run for the seed');
+  assert.equal(w.sent.length, 1);
+  assert.equal((await offerAsProof(w.d)).kind, 'sent', 'the same run again is the same record');
+  w = mk(3950);
+  assert.deepEqual(await offerAsProof({ ...w.d, run: { proof: 'aabb', frames: 4782 } }), { kind: 'outside', winner: 3950, limit: 4650 });
+  assert.equal(w.sent.length, 0);
+  w = mk(null, { result: 0, reason: 'known' });  // winner unknown: the node decides
+  assert.deepEqual(await offerAsProof({ ...w.d, run: { proof: 'aabb', frames: 4782 } }), { kind: 'sent', result: 0, reason: 'known' });
+  w = mk(3950);
+  assert.equal((await offerAsProof({ ...w.d, submit: async () => { throw new Error('boom'); } })).kind, 'error');
+  assert.match(proofVerdict(0), /ignored/);
+  assert.equal(proofVerdict(1), 'in the pool');
+}
+console.log('v0.4 miner tests ok');

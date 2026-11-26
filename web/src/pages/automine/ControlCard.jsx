@@ -67,7 +67,7 @@ export default function ControlCard({ s }) {
         : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start auto-mining</button>}
       <div className="ui-stat">
         <span><b>{running && fps > 0 ? `${fmtRate(fps)} frames/s` : '—'}</b></span>
-        <span>{n} worker{n === 1 ? '' : 's'} · {stats.found} run{stats.found === 1 ? '' : 's'} found · {stats.accepted} block{stats.accepted === 1 ? '' : 's'}</span>
+        <span>{n} worker{n === 1 ? '' : 's'} · {stats.found} run{stats.found === 1 ? '' : 's'} found · {stats.accepted} block{stats.accepted === 1 ? '' : 's'}{stats.proofs ? ` · ${stats.proofs} proof${stats.proofs === 1 ? '' : 's'} published (${stats.proofsPooled} pooled)` : ''}</span>
       </div>
       <div className="ui-addr">
         Mining for {isAddress(address) ? <span className="mono paysto" title={address}>{short(address)}</span> : <em>no address</em>}{' '}

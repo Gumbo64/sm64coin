@@ -9,6 +9,7 @@ import time
 from . import rules
 from .daemon import Daemon
 from .sign import Keypair, proof_id
+from .payout import Payouts
 from .env import MiningEnv, Task, load_rom
 
 
@@ -95,8 +96,41 @@ def wait_until_valid(d, address, t, frames, stop, log=print, poll=2, key=None, l
     return max(int(time.time()), at)
 
 
+def proof_verdict(v):
+    return {1: "in the pool", 0: "ignored (known, not for the node's tip height, outside the window, or pool full)",
+            -2: "the node lacks the parent state", -3: "bad encoding"}.get(v, "refused")
+
+
+def publish_proof(d, signed, t, proof, frames, log=print, ts=None):
+    """v0.4 stage B: a run that lost its height (another block became the tip first, or it was displaced or
+    refused) is still a proof for that height. Signs it with the template's key (ONE run per key: a different run
+    already signed for this seed is never signed, the very same one is fine), checks the archive window
+    (`rules.window_frames`: at most 60 s of auction time after the winner's due time; the node has the last
+    word) and offers it with `submit_sm64_proof`. Returns the node's verdict (1 pooled), or None if not sent."""
+    prev = signed.signed_frames(t.seed_hash, proof)
+    if prev is not None:
+        log(f"  not publishing as a proof: a different run ({prev} frames) was already signed for this seed")
+        return None
+    w = d.winner_frames(t.height)
+    if w is not None:
+        limit = rules.window_frames(t.retarget_difficulty or t.difficulty, w)
+        if frames > limit:
+            log(f"  not a proof for height {t.height}: {frames} frames is outside the archive window "
+                f"(the winner has {w}, the window ends at {limit})")
+            return None
+    signed.record(t.seed_hash, proof, frames)
+    try:
+        v, why = d.submit_proof(d.seal(t, proof, ts))
+    except (OSError, RuntimeError, ValueError) as e:
+        log(f"  publishing the run as a proof failed: {e}")
+        return None
+    log(f"  published as a proof for height {t.height} ({frames} frames): {proof_verdict(v)}"
+        + (f" ({why})" if why else "") + ("; an included proof pays an extra coinbase output to its payout address" if v == 1 else ""))
+    return v
+
+
 def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_frames=None, next_key=None,
-              submit_lead=5, signed_file=None):
+              submit_lead=5, signed_file=None, payout_view_secret=None, publish_proofs=True):
     """Mines with `bot`: template -> bot -> submit, restarting on a new block. The block is
     played from the parent's end state (rebuilt from the daemon's cycle) or power-on, and stamped
     with the time of submission. `play_frames` lets the bot play past the template's limit
@@ -109,7 +143,14 @@ def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_fram
     equivocation, and honest nodes avoid the block). The run is signed and submitted once,
     `submit_lead` seconds before it is valid (already valid: at once), stamped with the second it
     becomes valid. `signed_file` (default `$SM64COIN_SIGNED_FILE` or ./sm64coin-signed.json) remembers
-    which seeds were signed, so a restart never signs a second run for a seed; pass "" for memory only."""
+    which seeds were signed, so a restart never signs a second run for a seed; pass "" for memory only.
+
+    v0.4 (docs/V0.4-DESIGN.md): the template for a new tip is taken only after the node's
+    `sm64_records_ready_at` (so the block includes the previous height's proofs); with `payout_view_secret`
+    (hex, the wallet's secret view key for `address`) each template commits a fresh payout subaddress (0, k),
+    k from a counter in `<signed_file>.payout`, else the template's payout is `address`; and a run that lost
+    its height (a new block first, a displacement, a refusal) is published as a proof (`publish_proof`) unless
+    `publish_proofs` is false."""
     load_rom(rom)
     # Restricted (public) RPC refuses a run due more than 30 s after it arrives (rules.rs RPC_SUBMIT_AHEAD_SECONDS).
     submit_lead = max(0, min(int(submit_lead), 25))
@@ -117,13 +158,15 @@ def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_fram
         signed_file = os.environ.get("SM64COIN_SIGNED_FILE", "sm64coin-signed.json")
     signed = SignedStore(signed_file)
     d = Daemon(daemon_url)
+    payouts = Payouts(address, payout_view_secret, signed_file) if payout_view_secret else None
     mined = 0
     rounds = 0
     while True:
         try:
             key = next_key(rounds) if next_key else Keypair.generate()
             rounds += 1
-            task, t = d.get_task(address, key, play_frames=play_frames)
+            task, t = d.get_task(address, key, play_frames=play_frames, payout=payouts.next() if payouts else None,
+                                 wait_ready=True, log=log)
         except OSError as e:
             log(f"daemon: {e}; retrying in 5 s")
             time.sleep(5)
@@ -155,6 +198,8 @@ def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_fram
                 ts = wait_until_valid(d, address, t, env.frame, flag.is_set, log, key=key, lead=submit_lead)
                 if ts is None:
                     log("  the run did not become valid before the chain moved; fetching a new template")
+                    if publish_proofs and flag.is_set():
+                        publish_proof(d, signed, t, env.proof(), env.frame, log)
                     continue
         finally:
             done.set()
@@ -179,3 +224,5 @@ def run_miner(bot, daemon_url, address, rom=None, blocks=0, log=print, play_fram
                 return
         except RuntimeError as e:
             log(f"  block rejected: {e}")
+            if publish_proofs:  # the same signed run (no second signature), offered as a proof
+                publish_proof(d, signed, t, proof, env.frame, log, ts)
