@@ -17,6 +17,8 @@ import PlayView from '../components/PlayView.jsx';
 import EngineSlot, { acquireEngine } from '../components/EngineSlot.jsx';
 import { Toolbar, ToolBtn, Cols, Row, SideCard, Panel, InfoPop, useStored } from '../components/ui.jsx';
 import RomGate from '../lib/RomGate.jsx';
+import NativeMiner from './automine/NativeMiner.jsx';
+import { getPlatform } from '../platform/index.js';
 import { miner, hybrid, isAddress } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
 import { encPads } from '../lib/webminer/hybrid.js';
@@ -41,7 +43,8 @@ import { e2e, e2eHook } from '../lib/e2e.js';
 // the reward address comes from the wallet app's "Play to mine" link
 // (?address=), or is pasted (and remembered).
 export default function Mine() {
-  return <RomGate><Miner /></RomGate>;
+  // Desktop app: the native miner needs no browser copy of the ROM, so its card shows above the ROM prompt.
+  return <RomGate fallback={getPlatform().nativeMiner ? <NativeMiner /> : null}><Miner /></RomGate>;
 }
 
 // The auto-miner's views, loaded only when they are needed (three.js, the visual game's reel, the charts).
@@ -565,6 +568,7 @@ function Miner() {
         )}
         side={(
           <>
+            {getPlatform().nativeMiner && <NativeMiner />}
             <ControlCard s={s} />
             {showAuto ? (
               <React.Suspense fallback={null}><VizTop hub={hub} mode={s.mode} /></React.Suspense>

@@ -6,6 +6,7 @@
 // (--rpc-access-control-origins, see scripts/public-node.sh).
 // Wallet RPC always goes through the proxy.
 import { probeChain, chainNote } from './nodechain.js';
+import { getPlatform } from '../platform/index.js';
 const KEY = 'sm64coin.node';
 
 // A build for a static host (GitHub Pages) has no proxy: VITE_DEFAULT_NODE (e.g. the
@@ -56,6 +57,13 @@ export const setNode = (url) => {
 };
 
 async function call(url, method, params = {}) {
+  // Desktop app: the same-origin node is the local one, reached through the Rust backend (no HTTP, no CORS, whitelisted methods).
+  const native = url === '/json_rpc' ? getPlatform().rpc : null;
+  if (native) {
+    const j = await withTimeout(native(method, params), 60000);
+    if (j.error) throw new Error(`${method}: ${j.error.message}`);
+    return j.result;
+  }
   // A node that never answers must not hang the page: abort after 60 s (the timer covers the body too).
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 60000);

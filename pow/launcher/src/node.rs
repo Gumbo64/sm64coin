@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 /// Websites allowed to call the node's RPC from a visitor's browser (comma separated, as monerod takes the list).
 pub const SITE_ORIGIN: &str = "https://gumbo64.github.io,https://sm64coin.pages.dev";
+/// The desktop app's webview origins (Tauri: tauri://localhost on Linux/macOS, http(s)://tauri.localhost on Windows).
+pub const APP_ORIGINS: &str = "tauri://localhost,http://tauri.localhost,https://tauri.localhost";
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {

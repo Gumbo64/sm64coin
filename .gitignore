@@ -16,3 +16,6 @@ dist/
 pow/launcher/target/
 web/public/wallet/
 web/wallet-wasm/work/
+web/dist-desktop
+desktop/src-tauri/target
+desktop/src-tauri/gen

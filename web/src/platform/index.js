@@ -1,0 +1,22 @@
+// One small platform layer, two implementations picked at startup: `browser` (a tab on the website) and `tauri` (the desktop
+// app, the same UI in a webview with a Rust backend). Pages ask for what they need and treat null as "not available here":
+//   platform.rpc(method, params)  JSON-RPC to the local node (desktop only; null in the browser: lib/rpc.js uses fetch)
+//   platform.node                 {status, start, stop} of the local node, or null
+//   platform.nativeMiner          {start, stop, status, subscribe, onState} of the native miner, or null
+//   platform.rom                  {status, set(path)} of the ROM kept by the app, or null
+// `await initPlatform()` once before the first render; `getPlatform()` after that.
+import { browser } from './browser.js';
+
+let current = browser;
+
+/** True when the page runs inside the Tauri webview. */
+export const inTauri = () => typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
+
+export async function initPlatform() {
+  if (inTauri()) {
+    try { current = (await import('./tauri.js')).tauri; } catch (e) { console.error('desktop platform failed to load', e); }
+  }
+  return current;
+}
+
+export const getPlatform = () => current;

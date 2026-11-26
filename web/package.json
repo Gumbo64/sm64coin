@@ -8,10 +8,12 @@
     "dev:host": "vite --host",
     "build": "vite build",
     "build:app": "node scripts/build-app.mjs",
+    "build:desktop": "vite build --mode desktop",
     "test": "for t in $(git ls-files 'src/*.test.mjs'); do node $t || exit 1; done",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.5",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router": "^7.9.4",

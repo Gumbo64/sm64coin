@@ -50,6 +50,16 @@ impl Proc {
         job::adopt(&child);
         Ok(Proc { name, child, log, stop_url: None })
     }
+    /// Like `spawn`, but stdout and stderr come back as pipes for the caller to read (e.g. to stream
+    /// progress); `log` is only the path `tail` reads, the caller may write it.
+    pub fn spawn_piped(name: &'static str, mut cmd: Command, log: PathBuf) -> Result<(Proc, std::process::ChildStdout, std::process::ChildStderr), String> {
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
+        #[cfg(windows)]
+        job::adopt(&child);
+        let (o, e) = (child.stdout.take().ok_or("no stdout")?, child.stderr.take().ok_or("no stderr")?);
+        Ok((Proc { name, child, log, stop_url: None }, o, e))
+    }
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }

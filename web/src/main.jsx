@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import { resolveNode } from './lib/rpc.js';
+import { initPlatform } from './platform/index.js';
 import { autoSync } from './lib/webminer/sync.js';
 import { frameBuster } from './lib/security.js';
 import './index.css';
@@ -44,4 +45,4 @@ window.addEventListener('vite:preloadError', (e) => {
 // Worker sync is on by default: the first visit of a session may reload once (before anything renders) so the page comes
 // back cross-origin isolated (lib/webminer/sync.js).
 // Framed by another page: stop before anything runs (the headers' frame-ancestors 'none' does the same where the host can send them).
-if (!frameBuster()) autoSync().then((reloading) => { if (!reloading) resolveNode().finally(() => createRoot(document.getElementById('root')).render(<App />)); });
+if (!frameBuster()) initPlatform().then(() => autoSync()).then((reloading) => { if (!reloading) resolveNode().finally(() => createRoot(document.getElementById('root')).render(<App />)); });

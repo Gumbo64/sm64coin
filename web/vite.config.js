@@ -27,13 +27,14 @@ const proxy = {
 }
 
 // SM64COIN_BASE: the path the site is served under (GitHub Pages: /<repo>/).
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: process.env.SM64COIN_BASE || '/',
   plugins: [react()],
   // Worker bundles in their own folder: deploy/cloudflare/_headers gives /workers/* (the wasm-bindgen glue is built with
   // new Function in a worker) a CSP that allows it, and the document and everything else the strict one.
   worker: { rollupOptions: { output: { entryFileNames: 'workers/[name]-[hash].js', chunkFileNames: 'workers/[name]-[hash].js' } } },
-  build: { outDir: process.env.SM64COIN_OUTDIR || 'dist' },
+  // `--mode desktop` builds the Tauri app's frontend (desktop/src-tauri/tauri.conf.json frontendDist).
+  build: { outDir: process.env.SM64COIN_OUTDIR || (mode === 'desktop' ? 'dist-desktop' : 'dist') },
   resolve: {
     dedupe: ['react', 'react-dom'],
     // The package's src/ (its headless game and loader for the client-side replay worker):
@@ -54,4 +55,4 @@ export default defineConfig({
   },
   server: { proxy, port: 5181, host: true, fs: { allow: [here, binds, ...(bindsDir ? [bindsDir] : [])] } },
   preview: { proxy, port: 4174 },
-})
+}))
