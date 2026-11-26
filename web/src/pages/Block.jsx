@@ -12,6 +12,24 @@ import { coins, short, when, frames } from '../lib/format.js';
 import RomGate from '../lib/RomGate.jsx';
 import BlockReplay from './BlockReplay.jsx';
 
+// The whole cycle this block belongs to (to its last block so far, or its end), not just up to this block: walk back
+// from the tip one cycle at a time (each step: the cycle ending there, then the block before its first). Falls back to
+// `upTo` (the cycle up to this block) for a block off the main chain or when the node can't say.
+async function fullCycle(upTo) {
+  try {
+    let hash = (await daemon('get_info')).top_block_hash;
+    for (let i = 0; i < 50 && hash; i++) {
+      const c = await getCycle(hash);
+      const blocks = c.blocks || [];
+      if (!blocks.length || c.start_height < upTo.start_height) return upTo;
+      if (c.start_height === upTo.start_height) return blocks.some((x) => x.hash === upTo.blocks[upTo.blocks.length - 1]?.hash) ? { ...c, blocks } : upTo;
+      const first = await daemon('get_block_header_by_hash', { hash: blocks[0].hash });
+      hash = first.block_header.height > 1 ? first.block_header.prev_hash : null;
+    }
+  } catch { /* the cycle up to this block will do */ }
+  return upTo;
+}
+
 // This block's run from its cycle (the last block): every frame's played pad, what it added, and
 // the proof's inputs (the non-poked frames; a stateless proof's are in get_block already).
 function ownRun(cycle, blk) {
@@ -47,12 +65,13 @@ export default function Block() {
   const [b, setB] = useState(null);
   const [err, setErr] = useState(null);
   const [cycle, setCycle] = useState(null); // get_sm64_cycle up to this block
+  const [whole, setWhole] = useState(null); // the whole cycle it belongs to (shown in the strip)
   const [env, setEnv] = useState(null); // {parentTs, alts}: what the envelope graph needs besides the block
 
   useEffect(() => {
     // `live`: answers for a block we've since navigated away from are dropped.
     let live = true;
-    setB(null); setErr(null); setCycle(null); setEnv(null);
+    setB(null); setErr(null); setCycle(null); setWhole(null); setEnv(null);
     const params = /^\d+$/.test(id) ? { height: Number(id) } : { hash: id };
     // The block (cheap for the node), then the cycle it belongs to, from its first block up to
     // it: where its run starts, and every frame as played (pokes included). getCycle replays it
@@ -68,6 +87,7 @@ export default function Block() {
             if (!live) return;
             const cyc = { ...c, blocks: c.blocks || [] };
             setCycle(cyc);
+            fullCycle(cyc).then((f) => live && setWhole(f));
             setB((x) => ({ ...x, ...ownRun(cyc, x) }));
           })
           .catch(() => live && setCycle(false));
@@ -87,7 +107,7 @@ export default function Block() {
     const num = (k) => (new RegExp(`"${k}":\\s*(\\d+)`).exec(b.json || '') || [])[1];
     json = { major_version: num('major_version') ?? '?', minor_version: num('minor_version') ?? '?' };
   }
-  const details = <BlockDetails b={b} cycle={cycle} json={json} env={env} />;
+  const details = <BlockDetails b={b} cycle={cycle} whole={whole} json={json} env={env} />;
   // ?replay: the replay viewer (needs the cycle and a ROM; the details stay below while either is missing).
   // Without it the page is only the block's details, whatever has loaded.
   if (replaying && h.height > 0 && cycle) {
@@ -114,7 +134,7 @@ async function loadEnvelope(h) {
   return { parentTs, alts };
 }
 
-function BlockDetails({ b, cycle, json, env }) {
+function BlockDetails({ b, cycle, whole = null, json, env }) {
   const h = b.block_header;
   const [more, setMore] = useState(false);
   const [pick, setPick] = useState(null); // the chart's selected dot (a group of runs)
@@ -181,7 +201,7 @@ function BlockDetails({ b, cycle, json, env }) {
       </div>
       {h.height > 0 && (
         <div className="card block-top">
-          {cycle ? <CycleStrip cycle={cycle} highlight={h.hash} />
+          {cycle ? <CycleStrip cycle={whole || cycle} highlight={h.hash} />
             : <p className="muted">{cycle === false ? "The node could not give this block's cycle." : 'Loading the cycle…'}</p>}
         </div>
       )}
