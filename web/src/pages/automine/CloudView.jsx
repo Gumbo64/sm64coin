@@ -1,3 +1,4 @@
+import { markOnce } from '../../lib/perf.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { CAP } from './hub.js';
 import { useHub, useVisible } from './useHub.js';
@@ -278,6 +279,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
           }
           shown = k;
           geo.setDrawRange(0, k);
+          if (k > 0) markOnce('cloud-points-drawn');
           geo.attributes.position.needsUpdate = true;
           geo.attributes.color.needsUpdate = true;
           geo.boundingSphere = null;

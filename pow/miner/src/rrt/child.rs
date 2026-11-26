@@ -199,6 +199,10 @@ fn meets(job: &Job, root: &St, st: &St) -> bool {
     }
 }
 
+/// The first round's plans in the browser (see `run_step`).
+#[cfg(target_arch = "wasm32")]
+const RAMP_FIRST: usize = 2;
+
 /// Runs one tree step in this process. Call once per process.
 pub fn run_step(job: &Job) -> Result<StepOut> {
     // Settings first: the objectives read them lazily, once.
@@ -276,6 +280,21 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
         }));
     } else {
         engine.on_hybrid = page;
+    }
+    // The browser's feed (and the page's first look at the search) comes after a round: with the full round's plans
+    // the first came 20-30 s after Start (one wasm thread). So the first rounds are small and double up to the
+    // configured size (2, 4, 8, 16 plans): same search, a first sample in a few seconds. Native runs keep their rounds.
+    #[cfg(target_arch = "wasm32")]
+    if job.viz && engine.cfg.round_plans > RAMP_FIRST {
+        let full = engine.cfg.round_plans;
+        let mut inner = engine.on_hybrid.take();
+        engine.cfg.round_plans = RAMP_FIRST;
+        engine.on_hybrid = Some(Box::new(move |e| {
+            e.cfg.round_plans = (e.cfg.round_plans * 2).min(full);
+            if let Some(f) = inner.as_mut() {
+                f(e);
+            }
+        }));
     }
     engine.run()?;
     let sync_out = (job.sync_secs > 0.0 && engine.on_sync.is_some()).then(|| {
