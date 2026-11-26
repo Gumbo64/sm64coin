@@ -10,6 +10,8 @@ import { markOnce } from '../../lib/perf.js';
 
 /** The point cloud keeps the newest CAP sampled search nodes (a ring buffer). */
 export const CAP = 50000;
+/** A node's `kind` when its worker did not say (old workers, the step's root, manual nodes), or the table is full. */
+export const NO_KIND = 255;
 // The highlight reel's queue (clips waiting for the one playing to finish), and how old a clip may be when its turn comes.
 const REEL_QUEUE = 8;
 const REEL_STALE_MS = 120000;
@@ -83,6 +85,8 @@ export class VizHub {
     this.level = new Uint8Array(CAP);
     this.area = new Uint8Array(CAP);
     this.flags = new Uint8Array(CAP);
+    this.kind = new Uint8Array(CAP).fill(NO_KIND); // the objective kind that made a node: index into kindNames (NO_KIND: not sent)
+    this.kindNames = []; // objective kinds seen this round, first seen first (the page-wide table the nodes' `kind` indexes)
     this.nodeId = new Int32Array(CAP);
     this.stepOf = new Uint16Array(CAP); // the worker's search-step number (w.cur.n) a node belongs to
     this.paths = new Map(); // `${worker}:${step key}:${node id}` -> raw pads (4 bytes a frame) of a node's path from its step's root, or {asked: time}
@@ -181,6 +185,7 @@ export class VizHub {
       w.keys[w.curN & 4095] = m.key;
       this.dropPaths(i);
       w.lastSim = null;
+      w.kindMap = []; // this step's kind table index -> the hub's (kindId)
       w.best = null;
       w.bestPads = null;
       w.prefix = m.prefix || null;
@@ -193,8 +198,9 @@ export class VizHub {
     w.nodesTotal = m.nodesTotal;
     if (w.lastSim && m.simFrames >= w.lastSim.sim && now > w.lastSim.at) w.fps = (m.simFrames - w.lastSim.sim) / ((now - w.lastSim.at) / 1000);
     w.lastSim = { sim: m.simFrames, at: now };
+    if (m.kinds) w.kindMap = m.kinds.map((k) => this.kindId(k));
     for (const n of m.nodes) {
-      this.add(i, c.n, n[0], n[1], w.played + n[2], [n[3], n[4], n[5]], n[6], n[7], n[8], n[9]);
+      this.add(i, c.n, n[0], n[1], w.played + n[2], [n[3], n[4], n[5]], n[6], n[7], n[8], n[9], n.length > 10 ? w.kindMap?.[n[10]] ?? NO_KIND : NO_KIND);
     }
     // The sampler's "best" node is the most progress, then the fewest frames: until the step gains a star or key every node ties
     // and the best is its first node (a path of ~15 frames). That isn't a route anyone found: there is no best path yet.
@@ -213,7 +219,17 @@ export class VizHub {
     this.notify();
   }
 
-  add(w, step, id, parent, frame, pos, stars, level, area, flags) {
+  /** The hub's id of an objective kind name (added to the table on first sight; NO_KIND when the table is full). */
+  kindId(name) {
+    let k = this.kindNames.indexOf(name);
+    if (k < 0) {
+      if (this.kindNames.length >= NO_KIND) return NO_KIND;
+      k = this.kindNames.push(name) - 1;
+    }
+    return k;
+  }
+
+  add(w, step, id, parent, frame, pos, stars, level, area, flags, kind = NO_KIND) {
     const key = (w * 4096 + (step & 4095)) * 1e8 + id;
     // A node can come twice (a manual node the page added itself, then the tree's own sample of it): the same slot.
     const had = this.index.get(key);
@@ -231,6 +247,7 @@ export class VizHub {
     this.worker[slot] = w;
     this.level[slot] = level;
     this.area[slot] = area;
+    if (had === undefined || kind !== NO_KIND) this.kind[slot] = kind;
     this.flags[slot] = had === undefined ? flags : flags | (this.flags[slot] & 2);
     this.nodeId[slot] = id;
     this.stepOf[slot] = step & 4095;

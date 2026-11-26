@@ -1,6 +1,6 @@
 import { markOnce } from '../../lib/perf.js';
 import React, { useEffect, useRef, useState } from 'react';
-import { CAP } from './hub.js';
+import { CAP, NO_KIND } from './hub.js';
 import { useHub, useVisible } from './useHub.js';
 import { e2eHook } from '../../lib/e2e.js';
 import { levelName, levelIcon, workerColor } from './levels.js';
@@ -19,8 +19,10 @@ import { isTouchDevice } from '../../components/TouchPad.jsx';
 // three.js is loaded when this view mounts, i.e. only with the visualisations on.
 
 const VIRIDIS = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
+// Objective kinds (Colour by > Objective): a kind's colour is its id in the hub's table, wrapping after 12 (the legend names them).
+const KIND_COLORS = ['#60a5fa', '#f7c948', '#4ade80', '#f472b6', '#fb923c', '#a78bfa', '#2dd4bf', '#f87171', '#a3e635', '#e879f9', '#38bdf8', '#fbbf24'];
 const STAR_COLORS = ['#7c8aa5', '#60a5fa', '#4ade80', '#f7c948', '#fb923c', '#f472b6', '#a78bfa', '#2dd4bf'];
-const MODES = [['stars', 'Stars'], ['frame', 'Game time'], ['worker', 'Worker'], ['progress', 'Made progress']];
+const MODES = [['stars', 'Stars'], ['frame', 'Game time'], ['worker', 'Worker'], ['progress', 'Made progress'], ['objective', 'Objective']];
 const clock = (f) => { const s = f / 30; return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`; };
 
 // Geometry is solid by default; areas with a roof or ceiling over the play space start see-through so the tree inside
@@ -200,6 +202,8 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
         const palette = {
           viridis: Array.from({ length: 64 }, (_, i) => scale(VIRIDIS, i / 63)),
           stars: STAR_COLORS.map((c) => new THREE.Color(c)),
+          kinds: KIND_COLORS.map((c) => new THREE.Color(c)),
+          none: new THREE.Color('#6b7280'),
         };
 
         async function loadGeometry(key) {
@@ -267,6 +271,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
             if (m === 'stars') c = palette.stars[hub.stars[i] % palette.stars.length];
             else if (m === 'frame') c = palette.viridis[Math.round(((hub.frame[i] - fmin) / Math.max(1, fmax - fmin)) * 63)];
             else if (m === 'worker') { tmp.set(workerColor(hub.worker[i])); c = tmp; }
+            else if (m === 'objective') c = hub.kind[i] === NO_KIND ? palette.none : palette.kinds[hub.kind[i] % palette.kinds.length];
             else c = hub.flags[i] & 1 ? palette.stars[3] : palette.stars[0];
             cols[k * 3] = c.r; cols[k * 3 + 1] = c.g; cols[k * 3 + 2] = c.b;
             slotOf[k] = i;
@@ -662,6 +667,14 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
       if (d <= (goal.radius || 300)) inBubble++;
     }
   }
+  // The legend of Colour by > Objective: the kinds among the shown level and area's nodes, commonest first.
+  const kindLegend = (() => {
+    if (mode !== 'objective') return [];
+    const zk = zone === 'auto' ? autoZone : zone;
+    const cnt = new Map();
+    for (let i = 0; i < n; i++) if (`${hub.level[i]}:${hub.area[i]}` === zk) cnt.set(hub.kind[i], (cnt.get(hub.kind[i]) || 0) + 1);
+    return [...cnt.entries()].sort((a, b) => b[1] - a[1]).map(([k, c]) => ({ k, c, name: k === NO_KIND ? 'unknown (older worker, root, manual)' : hub.kindNames[k] || '?', color: k === NO_KIND ? '#6b7280' : KIND_COLORS[k % KIND_COLORS.length] }));
+  })();
   void v;
   const playHere = canPlayFrom && sel && sel.current;
   const why = !canPlayFrom ? whyNot : sel && !sel.current ? 'That node belongs to a search step that is over: pick a node of the current step.' : '';
@@ -704,6 +717,11 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
         {goal && <span className="muted small">Sampling bubble active ({goal.pos.join(', ')}, radius {Math.round(goal.radius || 300)}) in {levelName(goal.level)}, area {goal.area}: {Math.round(share * 100)}% of the searches' plans start from a node inside it · {inBubble > 0 ? `${inBubble.toLocaleString()} sampled node${inBubble === 1 ? '' : 's'} inside` : goalNear === null ? 'no tree node in that area yet' : `no node inside yet (nearest ${Math.round(goalNear).toLocaleString()} units away), so plans sample as usual`}.</span>}
         {hub.manual && <span className="muted small">Last played segment: {hub.manual.nid != null ? `node ${hub.manual.nid} of worker ${hub.manual.w + 1}` : 'not in the tree'}, {hub.manual.frames} frames, finished at ({hub.manual.pos.map((x) => Math.round(x)).join(', ')}){hub.manual.note ? ` · ${hub.manual.note}` : ''}</span>}
       </div>
+      {kindLegend.length > 0 && (
+        <div className="viz-legend small" aria-label="Objective kinds">
+          {kindLegend.map((x) => <span key={x.k} title={`${x.c.toLocaleString()} nodes`} style={{ marginRight: 10, whiteSpace: 'nowrap' }}><i style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: x.color, marginRight: 4 }} />{x.name}</span>)}
+        </div>
+      )}
       <Toolbar label="Node actions">
         <ToolBtn on={!!playHere} disabled={!playHere} onClick={() => onPlayFrom && onPlayFrom(sel)} title={playHere ? 'Load this node\'s save state and play on by hand; the played segment becomes a high-weight node of the search tree' : (sel ? why || 'Only a node of a worker\'s current search step can be played from' : 'Select a node first')}>🎮 Play from here</ToolBtn>
         <ToolBtn disabled={!sel} onClick={() => onPlay && onPlay(sel.w, { step: sel.step, id: sel.id })} title="Replay the path to this node in the game panel">▶ {isBest ? 'This path' : 'This node'}</ToolBtn>

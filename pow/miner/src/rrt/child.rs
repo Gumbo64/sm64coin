@@ -696,8 +696,12 @@ fn pos_of(c: &Value) -> [f32; 3] {
 /// { "step": {"frame0", "seed", "goal", "level", "area", "pos": [x,y,z]},   // the step's root
 ///   "t": seconds since the step began, "nodes_total", "sim_frames",
 ///   "best": {"id", "frame" (from the step's start), "stars", "keys", "pos"},  // most progress, then soonest
-///   "nodes": [[id, parent, frame (from the step's start), x, y, z, stars, level, area, flags]],
-///   // up to NODES new nodes since the last sample (evenly thinned; flags bit 0: more progress than the root);
+///   "nodes": [[id, parent, frame (from the step's start), x, y, z, stars, level, area, flags, kind]],
+///   // up to NODES new nodes since the last sample (evenly thinned; flags bit 0: more progress than the root;
+///   // kind: index into "kinds", the objective kind that made the node, see below; older pages ignore the field);
+///   "kinds": ["Mario::PosTime", ...]   // the step's table of objective kinds (`Node::via`, first seen first), the whole
+///   // table whenever it grew since the last sample (and at the first sample / after the feed was off); a node's kind
+///   // is its index (the root's "root" is the table's first entry once a sample holds it, else the page gives it none)
 ///   // "cov": {"places": distinct floors this tree reached in the step (see [`Reel`]), "records": records broken so far
 ///   // (a node 10+ frames sooner than any earlier one to a 256-unit cell), "new": the hashed keys of the floors new since the last line}
 ///   "pads": [button, stickX, stickY, ...]   // only when `best` changed: its inputs from the step's start
@@ -735,6 +739,8 @@ pub mod viz {
         let mut best: Option<usize> = None;
         let mut reel = Reel::new(frame0, root);
         let mut edges = Edges::default();
+        let mut kinds: Vec<&'static str> = Vec::new(); // objective kinds seen in the sampled nodes (`Node::via`)
+        let mut kinds_sent = 0usize;
         Box::new(move |e: &Engine| {
             // The page can switch the feed off while the search runs: then this is the whole cost.
             if last.elapsed().as_secs_f64() < 1.0 {
@@ -784,7 +790,11 @@ pub mod viz {
                 .map(|i| {
                     let nd = &nodes[i];
                     let s = &nd.st;
-                    serde_json::json!([i, nd.parent, s.frame.saturating_sub(frame0), s.pos[0], s.pos[1], s.pos[2], s.stars, s.level, s.area, (s.progress() > root_prog) as u8])
+                    let kind = kinds.iter().position(|k| *k == nd.via).unwrap_or_else(|| {
+                        kinds.push(nd.via);
+                        kinds.len() - 1
+                    });
+                    serde_json::json!([i, nd.parent, s.frame.saturating_sub(frame0), s.pos[0], s.pos[1], s.pos[2], s.stars, s.level, s.area, (s.progress() > root_prog) as u8, kind])
                 })
                 .collect();
             for i in (seen..n).step_by(step) {
@@ -794,6 +804,10 @@ pub mod viz {
             let clip = reel.take();
             let fresh: Vec<u64> = std::mem::take(&mut reel.fresh);
             let mut msg = serde_json::json!({ "step": head, "t": t0.elapsed().as_secs_f64(), "nodes_total": n, "sim_frames": e.total_frames_emulated(), "nodes": sample });
+            if kinds.len() != kinds_sent || (refresh && !kinds.is_empty()) {
+                kinds_sent = kinds.len();
+                msg["kinds"] = serde_json::json!(kinds);
+            }
             // Coverage: the distinct floors this tree reached in the step, the records broken, and the floors that are new.
             msg["cov"] = serde_json::json!({ "places": reel.places.len(), "records": reel.records, "new": fresh });
             if let Some(c) = clip {

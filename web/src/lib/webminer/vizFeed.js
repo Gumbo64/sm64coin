@@ -4,7 +4,8 @@
 // looks at the raw lines elsewhere, so a change of the feed's format is a change here.
 //
 // A viz line: {step:{frame0,seed,goal,level,area,pos}, t, nodes_total, sim_frames,
-//   best:{id,frame,stars,keys,pos}, nodes:[[id,parent,frame,x,y,z,stars,level,area,flags]], pads:[b,sx,sy,...],
+//   best:{id,frame,stars,keys,pos}, nodes:[[id,parent,frame,x,y,z,stars,level,area,flags,kind?]], pads:[b,sx,sy,...],
+//   kinds:[objective kind names] (only when the step's table grew: a node's `kind` indexes it; older workers send neither)
 //   cov:{places,records,new:[floor keys]}}
 // `clip` (at most one per ~2 s): a highlight, see child.rs `viz`; the node's path is in the mirror (treeMirror.js).
 // Optional (not sent yet, used when present): `prefix`, the pads (same flat layout) the campaign
@@ -24,6 +25,7 @@ export function parseViz(line) {
     simFrames: m.sim_frames || 0,
     best: m.best || null,
     nodes: m.nodes || [],
+    kinds: Array.isArray(m.kinds) ? m.kinds.map(String) : null, // the step's objective-kind table (nodes' 11th field indexes it)
     pads: m.pads || null,
     prefix: m.prefix || null,
     cov: m.cov || null, // {places, records, new: [floor keys]}: the tree's coverage of the step (pages/automine/coverage.js)

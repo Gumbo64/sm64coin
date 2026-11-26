@@ -60,3 +60,23 @@ assert.equal(h.workers.length, 0);
   assert.equal(g.workers[0].best.stars, 1);
 }
 console.log('hub ok');
+
+// Objective kinds: a per-step table sent when it grows, nodes carry an index; nodes of older workers (no 11th field) get none.
+{
+  const { NO_KIND } = await import('./hub.js');
+  const g = new VizHub();
+  g.setEnabled(true);
+  g.newRound({ template: { height: 1 }, starts: ['power-on', 'power-on'], parentRaw: null });
+  const line = (nodes, kinds) => JSON.stringify({ step: { frame0: 0, seed: 7, goal: 'Stars', level: 6, area: 1, pos: [1, 2, 3] }, t: 1, nodes_total: 9, sim_frames: 10, nodes, ...(kinds ? { kinds } : {}) });
+  g.ingest(0, line([[1, 0, 15, 1, 2, 3, 0, 6, 1, 0, 0], [2, 1, 20, 1, 2, 3, 0, 6, 1, 0, 1]], ['Mario::PosTime', 'Mario::UserGoal']));
+  g.ingest(0, line([[3, 2, 30, 1, 2, 3, 0, 6, 1, 0, 1]])); // no new table: the step's earlier one holds
+  g.ingest(1, line([[1, 0, 15, 1, 2, 3, 0, 6, 1, 0, 0]], ['Mario::UserGoal'])); // another worker's own indices map onto the shared table
+  g.ingest(1, line([[2, 1, 16, 1, 2, 3, 0, 6, 1, 0]])); // an old worker's node: no kind
+  const of = (w, id) => { const s = g.index.get((w * 4096 + (g.workers[w].cur.n & 4095)) * 1e8 + id); return g.kindNames[g.kind[s]] ?? (g.kind[s] === NO_KIND ? null : '?'); };
+  assert.deepEqual(g.kindNames, ['Mario::PosTime', 'Mario::UserGoal']);
+  assert.equal(of(0, 1), 'Mario::PosTime');
+  assert.equal(of(0, 3), 'Mario::UserGoal');
+  assert.equal(of(1, 1), 'Mario::UserGoal');
+  assert.equal(of(1, 2), null);
+  assert.equal(of(0, 0), null);
+}
