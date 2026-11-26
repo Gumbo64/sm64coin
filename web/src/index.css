@@ -210,3 +210,7 @@ html { -webkit-text-size-adjust: 100%; }
 .block-head h2 { margin: 0; }
 .block-head .ui-toolbar { margin: 0; }
 .run-chart .limitchart { max-width: 520px; }
+
+/* Info > Versions */
+.kv.vers { grid-template-columns: 6.5rem 1fr; gap: 8px 12px; }
+.kv.vers dd { word-break: break-word; overflow-wrap: anywhere; }

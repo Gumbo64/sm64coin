@@ -78,6 +78,7 @@ jobs:
         env:
           SM64COIN_BASE: /${{ github.event.repository.name }}/
           VITE_DEFAULT_NODE: http://127.0.0.1:16481
+          VITE_GIT_SHA: ${{ github.sha }}   # the Info page links the commit
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist
