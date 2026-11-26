@@ -6,7 +6,7 @@ import * as eng from '../lib/wallet/engine.js';
 import { BLOCK_TARGET_SECONDS } from '../lib/rules.js';
 import * as pk from '../lib/wallet/passkey.js';
 import { DEDICATED, NEW_SITE_URL } from '../lib/security.js';
-import { reencryptForMove, exportMinerState, parseMinerState, mergeMinerState } from '../lib/migrate.js';
+import { reencryptForMove } from '../lib/migrate.js';
 import { miner } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
 
@@ -148,7 +148,6 @@ export default function Wallet() {
         {busy && <p className="muted">{busy}…</p>}
       </div>
       {stage === 'none' && <Onboard run={run} adopt={adopt} busy={!!busy} />}
-      {DEDICATED && (stage === 'none' || stage === 'locked') && <ImportFromOld />}
       {stage === 'locked' && <Unlock rec={rec} run={run} adopt={adopt} forget={forget} busy={!!busy} />}
       {stage === 'open' && (
         <Open w={w} passkey={passkey} address={address} viewOnly={viewOnly} snap={snap} progress={progress} seed={seed} setSeed={setSeed}
@@ -529,7 +528,6 @@ function Migrate({ w, run, passkey, address }) {
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [res, setRes] = useState(null);
-  const [msg, setMsg] = useState('');
   const ok = pw.length >= 8 && pw === pw2 && (passkey || cur);
   const prepare = () => run('Preparing the move', async () => {
     if (passkey) { const k = await pk.openPasskey(); await eng.checkPassword(w, k.password); } else await eng.checkPassword(w, cur);
@@ -538,9 +536,6 @@ function Migrate({ w, run, passkey, address }) {
     download2(r.name, r.doc, 'application/json');
     markBackedUp(address);
   });
-  const minerFile = () => {
-    try { download2('sm64coin-miner-state.json', exportMinerState(localStorage), 'application/json'); setMsg('Saved. On the new site: Wallet, "Import from the old site".'); } catch (e) { setMsg(String(e.message || e)); }
-  };
   return (
     <div className="card" data-testid="migrate-card">
       <h3>Move to the new site</h3>
@@ -557,7 +552,7 @@ function Migrate({ w, run, passkey, address }) {
             <li>Choose a NEW password below (it protects the file; for a passkey wallet this turns the passkey wallet into a normal password wallet on the new site).</li>
             <li>Save the downloaded file and write down the seed words shown (they are the real backup).</li>
             <li>Open <a href={NEW_SITE_URL + '/wallet'} rel="noopener">{NEW_SITE_URL.replace(/^https:\/\//, '')}/wallet</a>, choose "Load backup file", pick the file, enter the new password.</li>
-            <li>Miners: also save the miner state below and import it there. Check the address on the new site is the same as here, then you may forget the wallet here.</li>
+            <li>Check the address on the new site is the same as here, then you may forget the wallet here.</li>
           </ol>
           {!passkey && <p><input type="password" placeholder="current password" value={cur} onChange={(e) => setCur(e.target.value)} /></p>}
           <p><input type="password" placeholder="new password (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
@@ -571,29 +566,8 @@ function Migrate({ w, run, passkey, address }) {
               <button onClick={() => download2(res.name, res.doc, 'application/json')}>Download the file again</button>
             </div>
           )}
-          <p><button onClick={minerFile} disabled={s.running}>Download miner state (signed seeds)</button> {s.running && <span className="muted">stop the miner first</span>} {msg && <span className="muted">{msg}</span>}</p>
         </>
       )}
-    </div>
-  );
-}
-
-/** Dedicated origin: bring the miner's signed-seed memory from the old site (the wallet comes in through "Backup file"). */
-export function ImportFromOld() {
-  const [msg, setMsg] = useState('');
-  const pick = async (f) => {
-    try {
-      const st = parseMinerState(new TextDecoder().decode(await readFile(f)));
-      const r = mergeMinerState(localStorage, st);
-      setMsg(`Imported ${r.added} signed seed(s), kept ${r.kept} already here. Reload the page. The payout address is not imported: set it on the Mine page.`);
-    } catch (e) { setMsg(e.message || String(e)); }
-  };
-  return (
-    <div className="card" data-testid="import-old">
-      <h3>Import from the old site</h3>
-      <p className="muted">Moving from gumbo64.github.io/sm64coin: open the old site's Wallet page, "Move to the new site", download the wallet file and the miner state. Pick the wallet file under "Load backup file" above; the miner state here (it stops a template being signed twice with different runs; stop mining on the old site first).</p>
-      <input type="file" accept=".json,application/json" onChange={(e) => e.target.files[0] && pick(e.target.files[0])} />
-      {msg && <p>{msg}</p>}
     </div>
   );
 }
