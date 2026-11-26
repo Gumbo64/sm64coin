@@ -108,9 +108,9 @@ export default function Info() {
 
       <h3>Can I create my own auto-miner?</h3>
       <p>
-        Yes. Use the <Link to="/mine">Mine</Link> page right here (the Auto-mine card) in the browser, press <b>Start</b> on the wallet
-        app's Mining page, or run <span className="mono">sm64coin-automine</span> from the bundle. To write your own mining
-        bot, see the Rust and Python SDKs in the <a href={`${REPO}#writing-your-own-bot`} target="_blank" rel="noreferrer">README</a>.
+        Yes. Write your own mining bot with the Rust and Python SDKs: see the <a href={`${REPO}#writing-your-own-bot`} target="_blank" rel="noreferrer">README</a>.
+        To run the existing auto-miner instead, use the <Link to="/mine">Mine</Link> page right here (the Auto-mine card) in the browser,
+        press <b>Start</b> on the wallet app's Mining page, or run <span className="mono">sm64coin-automine</span> from the bundle.
       </p>
     </div>
   </>);
