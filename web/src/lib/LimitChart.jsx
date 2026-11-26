@@ -85,6 +85,7 @@ export default function LimitChart({ difficulty, parentTs: parentTs0, now, used,
         {!fixed && <line x1={x(Math.min(elapsed, tMax))} x2={x(Math.min(elapsed, tMax))} y1={T} y2={H - B} className="now" />}
         {used > 0 && <line x1={x(Math.min(elapsed, tMax)) - 10} x2={x(Math.min(elapsed, tMax)) + 10} y1={y(used)} y2={y(used)} className="cur"><title>{`your run so far: ${used} frames`}</title></line>}
         {env && <path d={env} className="env" />}
+        {hover && <g className="hovermark"><line x1={x(hover.t)} x2={x(hover.t)} y1={T} y2={H - B} className="cross" /><circle cx={x(hover.t)} cy={y(hover.f)} r={3.5} className="lim-pt" /></g>}
         {groups && groups.map((g, i) => {
           const sel = selected === g;
           const names = g.runs.map((r) => (r.winner ? 'winner' : r.source === 'alt' ? 'sibling block' : 'included run')).join(', ');
@@ -100,7 +101,6 @@ export default function LimitChart({ difficulty, parentTs: parentTs0, now, used,
           );
         })}
         {!groups && sorted.map((r, i) => <circle key={i} cx={x(r.t)} cy={y(r.frames)} r={5} className="dot"><title>{`run of ${r.frames} frames (${fmin(r.frames)}), finished ${mmss(r.t)} after the last block`}</title></circle>)}
-        {hover && <g><line x1={x(hover.t)} x2={x(hover.t)} y1={T} y2={H - B} className="cross" /><circle cx={x(hover.t)} cy={y(hover.f)} r={3.5} className="lim-pt" /></g>}
       </svg>
       <div className="muted lc-foot">
         {fixed ? (hover ? `${mmss(hover.t)} after the parent: limit ${hover.f} frames (${fmin(hover.f)})` : `difficulty ${difficulty}; the limit at each moment after the parent${shift ? ` (a restart from power-on: ${mmss(shift)} later)` : ''}`)

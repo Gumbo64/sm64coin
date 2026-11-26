@@ -137,6 +137,7 @@ table.small th, table.small td { padding: 4px 8px; font-size: 12px; }
 .limitchart .lim-pt { fill: #6ea8fe; stroke: var(--card); stroke-width: 2; }
 .limitchart .now { stroke: var(--mut); stroke-width: 1.5; stroke-dasharray: 4 3; }
 .limitchart .cross { stroke: var(--mut); stroke-width: 1; opacity: 0.5; }
+.limitchart .hovermark { pointer-events: none; } /* follows the pointer: never in the way of the dots' hover and click */
 .limitchart .cur { stroke: var(--fg); stroke-width: 2.5; }
 .limitchart .env { fill: none; stroke: var(--acc); stroke-width: 2; }
 .limitchart .dot { fill: var(--acc); stroke: #12162a; stroke-width: 2; }
