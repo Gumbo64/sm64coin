@@ -2348,6 +2348,7 @@ name = "sm64coin-sdk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "hex",
  "rand",
  "serde",

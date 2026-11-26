@@ -166,10 +166,37 @@ impl Calm {
     }
 }
 
-/// obrrt2's fixed boot: A on alternate frames, Start at 150-160 and 200-300,
+/// Which macros run before the search: the state-reactive ones ([`crate::macros`], the default) or the
+/// fixed schedules the miners shipped with ([`boot_legacy`], [`settle_legacy`]). Process-wide, set once at
+/// start-up (automine `--legacy-macros`, the web miner's `legacy_macros` request field, or the environment
+/// variable `SM64COIN_LEGACY_MACROS=1` natively). Either is just a different input sequence: a proof
+/// carries the inputs, so nodes replay it like any other.
+static LEGACY_MACROS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_legacy_macros(on: bool) {
+    LEGACY_MACROS.store(on, Ordering::Relaxed);
+}
+
+pub fn legacy_macros() -> bool {
+    LEGACY_MACROS.load(Ordering::Relaxed) || crate::sys::env::var("SM64COIN_LEGACY_MACROS").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// From power-on to a controllable Mario: [`crate::macros::boot`] (or the legacy fixed schedule, see
+/// [`legacy_macros`]). Played through the perturbation like everything else; `played` gets every pad.
+pub fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
+    if legacy_macros() { boot_legacy(game, played, max_frames) } else { crate::macros::boot(game, played, max_frames) }
+}
+
+/// From a parent's end state (a star's dance, then the save menu) to a controllable Mario:
+/// [`crate::macros::settle`] (or the legacy schedule, see [`legacy_macros`]).
+pub fn settle(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
+    if legacy_macros() { settle_legacy(game, played, max_frames) } else { crate::macros::settle(game, played, max_frames) }
+}
+
+/// The legacy boot, obrrt2's fixed one: A on alternate frames, Start at 150-160 and 200-300,
 /// 1680 frames; then idle until Mario is controllable and has stood still for
 /// 10 frames. Played through the perturbation like everything else.
-pub fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
+pub fn boot_legacy(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
     for i in 0..1680 {
         let mut b = 0;
         if (150..160).contains(&i) || (200..300).contains(&i) {
@@ -199,7 +226,7 @@ pub fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: us
 /// save menu ("save and continue"). Press A on alternate frames until Mario is
 /// controllable (A confirms the menu's first option), then idle until he has
 /// stood still for 10 frames, and read the state with its objects.
-pub fn settle(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
+pub fn settle_legacy(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
     let mut st = read_state(game, played.len() as u32, false);
     let mut calm = Calm::default();
     // Frames in a row stuck in a level change with no menu (see below).

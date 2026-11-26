@@ -31,6 +31,7 @@
 
 mod daemon;
 mod env;
+pub mod macros;
 mod miner;
 
 pub use daemon::{Cycle, CycleBlock, Daemon, Template, cycle_end_state, get_timestamp, seal, set_timestamp, sign_proof};

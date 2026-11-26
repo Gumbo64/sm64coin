@@ -12,6 +12,7 @@ pub mod beam;
 pub mod routes;
 pub mod hook;
 pub mod rh;
+pub mod macros;
 pub mod reset;
 pub mod signed;
 pub mod rrt;

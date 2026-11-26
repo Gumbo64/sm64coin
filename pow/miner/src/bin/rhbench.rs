@@ -75,7 +75,11 @@ fn main() -> Result<()> {
                         None => chain::Parent::Genesis,
                         Some(pid) => chain::Parent::Block { id: pid, gap_seconds: 0 },
                     };
-                    let v = chain::verify_block(&id, p, &seed, a.difficulty, &blob)?;
+                    // v0.4: the sealed proof is a committed blob (header with the input hash), verified as such.
+                    let v = match chain::verify_committed_block(&id, p, &seed, a.difficulty, &blob)? {
+                        chain::CommittedVerdict::Run(v) => v,
+                        chain::CommittedVerdict::BadEncoding(e) => chain::BlockVerdict::Invalid(format!("bad encoding: {e}")),
+                    };
                     println!("{label}: SUCCESS {} frames in {:.0} s (wall {:.0} s), simulated {} frames, proof {} bytes, verify: {:?}", m.pads.len(), m.seconds, t0.elapsed().as_secs_f64(), m.sim_frames, blob.len(), v);
                     if !matches!(v, chain::BlockVerdict::Valid { .. }) {
                         break;

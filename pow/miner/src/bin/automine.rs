@@ -97,6 +97,11 @@ struct Args {
     /// Stop after this many blocks (0: forever).
     #[arg(long, default_value_t = 0)]
     blocks: u64,
+    /// Play the fixed boot / settle input schedules of v0.4.0 (1680 frames from power-on, then wait for Mario to
+    /// stand still) instead of the state-reactive macros (sm64coin_miner::macros: the first controllable frame,
+    /// 36+ frames sooner from power-on). Either is just inputs in the proof. Also: SM64COIN_LEGACY_MACROS=1.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    legacy_macros: bool,
     /// Beam controller only: also learn routes from the chain (blocks from power-on only; default off).
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     chain_routes: bool,
@@ -240,6 +245,7 @@ fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
 
 fn main() -> Result<()> {
     let a = Args::parse();
+    rh::set_legacy_macros(a.legacy_macros);
     sm64coin_miner::update::spawn_check();
     if !a.address.starts_with("SM6") {
         // Not a mainnet address (SM64...): a test network's (--testnet, --stagenet) is checked by the daemon.

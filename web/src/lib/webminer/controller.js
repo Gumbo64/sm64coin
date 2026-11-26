@@ -33,6 +33,9 @@ const now = () => Date.now() / 1000;
 export const isolated = typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
 export { enableSync } from './sync.js';
 const ls = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+// The old fixed boot/settle input schedules instead of the state-reactive macros (the default): `?legacy_macros=1` on
+// the page, or localStorage `sm64.legacyMacros` = 1. Either is just inputs in the proof.
+const legacyMacros = () => { try { return new URLSearchParams(window.location.search).get('legacy_macros') === '1' || ls('sm64.legacyMacros', '0') === '1'; } catch { return false; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
 
 // Seconds of the frames/s moving average. Workers report once per search round (a round can take
@@ -465,7 +468,7 @@ class MinerController {
       const [stateBuf, stateXfer] = status[i].start === 'parent' && parentState_ ? forWorker(parentState_) : [null, []];
       w.postMessage({
         type: 'mine',
-        request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, miner_secret: t.minerKey.secret_hex, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1,
+        request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, miner_secret: t.minerKey.secret_hex, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1, ...(legacyMacros() ? { legacy_macros: true } : {}),
           // The best run so far (same start): only a shorter one counts, biased by its objectives.
           ...(c.best && c.best.start === status[i].start ? { beat: c.best.frames, guide_keys: [...new Set(c.best.keys || [])] } : {}) },
         parentState: stateBuf,

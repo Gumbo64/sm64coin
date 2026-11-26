@@ -25,3 +25,4 @@ sm64-binds = { workspace = true, features = ["wasm_js"] }
 # Only the fixture generator example (examples/make_fixture.rs) uses the
 # built-in miner's search.
 sm64coin-miner = { path = "../miner" }
+flate2 = "1"
