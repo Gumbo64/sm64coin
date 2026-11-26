@@ -260,7 +260,7 @@ function Onboard({ run, adopt, busy }) {
       {pkOk && (
         <div className="notice" data-testid="passkey-box">
           <b>Passkey wallet (optional)</b>
-          <p className="muted small">Needs a password manager that supports passkey PRF: Google Password Manager (Chrome, Edge, Android) and Apple Passwords work; Firefox, 1Password and Microsoft's do not yet. Save your seed words.</p>
+          <p className="muted small">Works with Google and Apple passwords. Save your seed words.</p>
           <p className="muted">Instead of a password, a passkey on this device (synced by your password manager or phone) makes and opens the wallet; the same passkey opens the same wallet on any device, on this website only. Nothing about the passkey is sent anywhere.</p>
           <p className="walleterr">If you delete the passkey, the coins are lost unless you saved the seed words: Show keys on the wallet page.</p>
           <p className="muted small" data-testid="passkey-site">The passkey wallet is tied to this site's address, <span className="mono">{window.location.hostname}</span> (gumbo64.github.io is shared by every GitHub Pages site of that account), and the same passkey opens a different wallet on any other site address; to move the wallet elsewhere, export its seed words.</p>
