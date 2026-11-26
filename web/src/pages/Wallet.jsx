@@ -312,7 +312,7 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
   });
   const showSeed = async () => {
     if (seed) { setSeed(''); return; }
-    setSeed(viewOnly ? 'view-only wallet: no seed' : (await eng.allKeys(w)).seed || 'this wallet has no seed words (use Export keys)');
+    setSeed(viewOnly ? 'view-only wallet: no seed' : (await eng.allKeys(w)).seed || 'this wallet has no seed words (use Show keys)');
     if (!viewOnly) done();
   };
   return (
@@ -347,18 +347,13 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
         <div className="stat"><div className="label">Scanned to</div><div className="value">{snap ? `${snap.height} / ${snap.daemon}` : '…'}</div></div>
         <div className="stat"><div className="label">Sync</div><div className="value">{progress != null ? `${Math.round(progress * 100)}%` : 'idle'}</div></div>
       </div>
-      <div className="card">
-        <div className="controls">
-          <button onClick={sync}>Sync now</button>
-          <button onClick={showSeed}>{seed ? 'Hide seed' : 'Show seed'}</button>
-          <button onClick={downloadBackup}>Download backup</button>
-          <button onClick={downloadKeys} title="the raw wallet2 .keys file, as the desktop wallet reads it">Download .keys</button>
-          <button onClick={lock}>Lock</button>
-          <button onClick={forget}>Forget</button>
-        </div>
-        {seed && <p className="mono seedbox">{seed}</p>}
-      </div>
-      <ExportKeys w={w} run={run} onShown={done} passkey={passkey} />
+      <ShowKeys w={w} run={run} onShown={done} passkey={passkey}>
+        <button onClick={sync}>Sync now</button>
+        <button onClick={downloadBackup}>Download backup</button>
+        <button onClick={downloadKeys} title="the raw wallet2 .keys file, as the desktop wallet reads it">Download .keys</button>
+        <button onClick={lock}>Lock</button>
+        <button onClick={forget}>Forget</button>
+      </ShowKeys>
       {!DEDICATED && <Migrate w={w} run={run} passkey={passkey} address={address} />}
       {viewOnly && <p className="muted">View-only: spends made by the full wallet are not visible here, so this balance can be higher than the real one (change from a payment shows up as received).</p>}
       {!viewOnly && <Board w={w} run={run} />}
@@ -368,7 +363,8 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
   );
 }
 
-function ExportKeys({ w, run, onShown, passkey }) {
+/** The wallet's actions (`children`: sync, backups, lock, forget) and the keys, shown after a confirmation. */
+function ShowKeys({ w, run, onShown, passkey, children }) {
   const [step, setStep] = useState(0); // 0 closed, 1 confirm + password, 2 shown
   const [pw, setPw] = useState('');
   const [k, setK] = useState(null);
@@ -383,8 +379,10 @@ function ExportKeys({ w, run, onShown, passkey }) {
   ) : null;
   return (
     <div className="card">
-      <h3>Export keys</h3>
-      {step === 0 && <button onClick={() => setStep(1)}>Export keys…</button>}
+      <div className="controls">
+        {step === 0 && <button onClick={() => setStep(1)}>Show keys…</button>}
+        {children}
+      </div>
       {step === 1 && (
         <>
           <p className="walleterr">Anyone who sees the spend key or the seed words can spend all of this wallet's coins. Show them only where nobody can look over your shoulder, and never paste them into a website or send them to anyone.</p>
