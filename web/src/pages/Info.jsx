@@ -106,7 +106,7 @@ export default function Info() {
         included) and open TCP port 16480.
       </p>
 
-      <h3>Can I run my own auto-miner?</h3>
+      <h3>Can I create my own auto-miner?</h3>
       <p>
         Yes. Use the <Link to="/mine">Mine</Link> page right here (the Auto-mine card) in the browser, press <b>Start</b> on the wallet
         app's Mining page, or run <span className="mono">sm64coin-automine</span> from the bundle. To write your own mining
