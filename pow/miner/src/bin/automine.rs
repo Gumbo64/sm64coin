@@ -459,7 +459,7 @@ fn main() -> Result<()> {
             let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
             let use_rrt = a.controller == "rrt";
             let first_stop = if start == Start::Parent { pstop.clone() } else { stop.clone() };
-            let mut r = if use_rrt { rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &first_stop, |m| println!("  {m}"))? } else { rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &first_stop, |m| println!("  {m}"))? };
+            let mut r = if use_rrt { survive(rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &first_stop, |m| println!("  {m}"))) } else { survive(rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &first_stop, |m| println!("  {m}"))) };
             let fallback = match &r {
                 _ if start == Start::PowerOn => None,
                 rh::Attempt::NoRoute(why) => Some(format!("no route from the parent's end state: {why}")),
@@ -473,7 +473,7 @@ fn main() -> Result<()> {
                     println!("  reset policy: taking the power-on start (reset cycle)");
                     start = Start::PowerOn;
                     parent_state = None;
-                    r = if use_rrt { rrt::mine(start, None, &seed, &params, &ro, &stop, |m| println!("  {m}"))? } else { rh::mine(start, None, &seed, &params, &o, &stop, |m| println!("  {m}"))? };
+                    r = if use_rrt { survive(rrt::mine(start, None, &seed, &params, &ro, &stop, |m| println!("  {m}"))) } else { survive(rh::mine(start, None, &seed, &params, &o, &stop, |m| println!("  {m}"))) };
                 }
             }
             match r {
@@ -677,6 +677,15 @@ fn rrt_options(a: &Args, attempt: u64, k: u64, guide: Option<&str>) -> rrt::RrtO
 }
 
 /// Writes the guide from the best run `m` (--guide) and returns the search's env for it.
+/// A failed attempt (e.g. a start that never settled) must not end the miner:
+/// log it and give up on this template; the loop takes the next one.
+fn survive(r: Result<rh::Attempt>) -> rh::Attempt {
+    r.unwrap_or_else(|e| {
+        println!("  attempt failed: {e:#}");
+        rh::Attempt::Gave(format!("error: {e:#}"))
+    })
+}
+
 fn guide_from(a: &Args, start: Start, parent: Option<&SaveState>, seed: &sm64pow::Seed, params: &sm64pow::Params, m: &rh::Mined) -> Option<String> {
     if a.guide_weight <= 0.0 || a.guide == "off" {
         return None;

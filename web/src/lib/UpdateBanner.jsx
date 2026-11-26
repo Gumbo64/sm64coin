@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { daemon } from './rpc.js';
+import { daemon, nodeNote } from './rpc.js';
 import { latestRelease, isNewer, nodeLacksState, SITE_VERSION } from './updates.js';
 
 // "Update available" notice (GitHub releases, checked from the browser, silent on any failure).
@@ -17,7 +17,9 @@ export default function UpdateBanner() {
       const old = await nodeLacksState(daemon);
       if (dead) return;
       let text = null;
-      if (old) {
+      if (nodeNote()) {
+        text = nodeNote();
+      } else if (old) {
         text = 'Your node is older than SM64Coin 0.2.8: some features fall back (update it).';
       } else if (rel && isNewer(rel.version, SITE_VERSION)) {
         text = `SM64Coin ${rel.version} is available.`;
