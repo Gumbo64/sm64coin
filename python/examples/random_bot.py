@@ -1,5 +1,5 @@
 """Random inputs: will essentially never win; shows the API (a block is the next point of progress:
-a star, a Bowser key or the Grand Star, from power-on in practice, from the parent end state on the chain).
+a star, a Bowser key, a cap switch or the Grand Star, from power-on in practice, from the parent end state on the chain).
 
   python examples/random_bot.py                              # offline practice
   python examples/random_bot.py http://127.0.0.1:16481 SM64...   # mine

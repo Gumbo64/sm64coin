@@ -2,7 +2,7 @@
 //!
 //! You write a [`Bot`]: something that, given a [`MiningEnv`], plays Super
 //! Mario 64, from where the block starts (power-on, or the parent block's end
-//! state) until the game's next progress point (a star, a Bowser key, or the
+//! state) until the game's next progress point (a star, a Bowser key, a cap switch, or the
 //! Grand Star). The SDK handles the rest:
 //! the controller perturbation (generated outside the game, the consensus contract, taken
 //! from `sm64pow` so it cannot drift), block templates from the daemon,

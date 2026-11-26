@@ -71,12 +71,12 @@ pub fn visual_progress_regions() -> Vec<u32> {
 }
 
 /// The game's progress from the bytes of [`visual_progress_regions`]
-/// (concatenated): `[stars, keys, grand_star (0/1), points]`. The same code
+/// (concatenated): `[stars, keys, grand_star (0/1), points, caps]` (caps: bit 0 wing, 1 metal, 2 vanish; points counts them). The same code
 /// nodes use to judge a block.
 #[wasm_bindgen]
 pub fn progress_points(bytes: &[u8]) -> Vec<u32> {
     let p = progress(bytes);
-    vec![p.stars, p.keys, p.grand_star as u32, p.points()]
+    vec![p.stars, p.keys, p.grand_star as u32, p.points(), p.caps as u32]
 }
 
 /// The memory regions to read from the headless build (the one native nodes replay with; the

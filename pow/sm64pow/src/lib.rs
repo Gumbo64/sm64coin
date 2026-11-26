@@ -2,7 +2,7 @@
 //!
 //! A block is sealed by playing Super Mario 64 on an emulated N64: its proof
 //! is a run of controller inputs that, replayed from the parent block's end
-//! state (or from power-on), makes the game's next progress point (a star, a
+//! state (or from power-on), makes the game's next progress point (a star, a cap switch, a
 //! Bowser key, or the Grand Star). While the run plays the controller is
 //! randomly "poked": pads replaced by random ones, drawn from the block's
 //! seed and the game state ([`sm64coin_perturb`]), so a run only works for

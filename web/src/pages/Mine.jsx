@@ -34,7 +34,7 @@ import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2e, e2eHook } from '../lib/e2e.js';
 
 // The manual miner: play Super Mario 64 yourself. A block is the game's next
-// progress point (a star, a Bowser key, the Grand Star after 70 stars), played
+// progress point (a star, a Bowser key, a cap switch, the Grand Star after 70 stars), played
 // on from where the previous block ended (the "70-star cycle"). Each attempt is
 // sealed to a block template (its seed drives the controller pokes), and a
 // successful run is submitted as the block's proof of play. Opens straight onto the game:
@@ -678,9 +678,9 @@ function CyclePanel({ task, start }) {
     <div className="cyclebox">
       <div><b>{start.kind === 'power-on' ? 'A new cycle: from power-on' : `Block ${n} of the cycle`}</b>
         {' '}<span className="muted">(height {height}{c ? `, cycle started at height ${task.sm64_cycle_start_height}` : ''})</span></div>
-      <div>So far: <b>{p.stars} ★</b> {p.keys > 0 ? <>and <b>{p.keys} Bowser key{p.keys > 1 ? 's' : ''}</b></> : null}
+      <div>So far: <b>{p.stars} ★</b> {p.keys > 0 ? <>and <b>{p.keys} Bowser key{p.keys > 1 ? 's' : ''}</b> </> : null}{p.caps ? <>and <b>{[1, 2, 4].filter((b) => p.caps & b).length} cap switch{p.caps & (p.caps - 1) ? 'es' : ''}</b></> : null}
         {' '}({p.points} point{p.points === 1 ? '' : 's'}){p.stars >= 70 ? ' — the Grand Star is next' : ''}</div>
-      <div><b>Goal:</b> {p.stars >= 70 && !p.grand ? 'get the Grand Star (the cycle ends there)' : 'get your next star or key'}.</div>
+      <div><b>Goal:</b> {p.stars >= 70 && !p.grand ? 'get the Grand Star (the cycle ends there)' : 'get your next star, key or cap switch'}.</div>
     </div>
   );
 }
@@ -765,7 +765,7 @@ export function NewTemplateBtn({ rec }) {
 function Help() {
   return (
     <div className="help muted">
-      <p><b>The cycle:</b> a block is the game's next progress point: a new <b>star</b>, a <b>Bowser key</b>, or the
+      <p><b>The cycle:</b> a block is the game's next progress point: a new <b>star</b>, a <b>Bowser key</b>, a <b>cap switch</b> (the red, green or blue switch palace button, once each), or the
         <b> Grand Star</b> (once you have 70 stars). You play on from where the previous block ended, so the game
         carries on through the whole 70-star run, one block at a time, whoever mines them. The Grand Star ends the
         cycle and the next block starts again from power-on. When you open this page the game is brought to the

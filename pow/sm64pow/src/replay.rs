@@ -141,7 +141,7 @@ pub(crate) fn replay(game: sm64_binds::SM64Game, before: Progress, seed: &Seed, 
             return Ok(Ok((g, now)));
         }
     }
-    Ok(Err("no progress was made (no new star, key or Grand Star)".into()))
+    Ok(Err("no progress was made (no new star, key, cap switch or Grand Star)".into()))
 }
 
 /// [`replay`] for a state-coded proof: the inputs are decoded from `body`
@@ -185,7 +185,7 @@ pub(crate) fn replay_state(game: sm64_binds::SM64Game, before: Progress, seed: &
             return Ok(Ok((g, now)));
         }
     }
-    Ok(Err("no progress was made (no new star, key or Grand Star)".into()))
+    Ok(Err("no progress was made (no new star, key, cap switch or Grand Star)".into()))
 }
 
 /// What a committed state-coded replay found (v0.4, commit.rs).
@@ -245,7 +245,7 @@ pub(crate) fn replay_committed(game: sm64_binds::SM64Game, before: Progress, see
     }
     crate::pof::note_size_of(&hdr.input_hash, size.finish()); // the run is known: its tie-break size
     Ok(match success {
-        None => Committed::Invalid("no progress was made (no new star, key or Grand Star)".into()),
+        None => Committed::Invalid("no progress was made (no new star, key, cap switch or Grand Star)".into()),
         Some((f, _)) if f + 1 != frames as usize => Committed::Invalid(format!("success at frame {} but the proof runs to {frames}", f + 1)),
         Some((_, now)) => Committed::Ok(g, now),
     })

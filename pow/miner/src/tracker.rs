@@ -440,7 +440,7 @@ pub(crate) struct Outcome {
 }
 
 /// The beam controller only mines from power-on (no stars, no keys).
-const POWER_ON: sm64pow::game::Progress = sm64pow::game::Progress { stars: 0, keys: 0, grand_star: false, star_flags: [0; 26] };
+const POWER_ON: sm64pow::game::Progress = sm64pow::game::Progress { stars: 0, keys: 0, grand_star: false, caps: 0, star_flags: [0; 26] };
 
 pub(crate) fn evaluate(
     game: &mut SM64MiningGame,

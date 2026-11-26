@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A mining bot. Play the run: call [`MiningEnv::step`] until
-/// `env.is_success()` (the game's next progress point: a star, a Bowser key or
+/// `env.is_success()` (the game's next progress point: a star, a Bowser key, a cap switch or
 /// the Grand Star, from wherever the block starts), then return. Return early
 /// (without success) if `stop()` becomes true (a new block arrived) or you
 /// give up; the miner then fetches a fresh template and calls you again.

@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// What one block asks of a miner: where the run starts (power-on, or the
 /// parent block's end state), the seed hash, and the time limit.
 ///
-/// Success: the game makes its next progress point (a star, a Bowser key, or
+/// Success: the game makes its next progress point (a star, a Bowser key, a cap switch, or
 /// the Grand Star with 70 stars) compared with the start's progress.
 #[derive(Clone)]
 pub struct Task {
@@ -183,7 +183,7 @@ impl Task {
                 return Ok(Verdict::Valid { frames: pr.frames });
             }
         }
-        Ok(Verdict::Invalid("no progress was made (no new star, key or Grand Star)".into()))
+        Ok(Verdict::Invalid("no progress was made (no new star, key, cap switch or Grand Star)".into()))
     }
 }
 
@@ -287,7 +287,7 @@ impl MiningEnv {
     }
 
     /// The success condition holds now, on the last frame played: one more
-    /// star, Bowser key or the Grand Star than the run started with.
+    /// star, Bowser key, cap switch or the Grand Star than the run started with.
     pub fn is_success(&self) -> bool {
         self.success
     }

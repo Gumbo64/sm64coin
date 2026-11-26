@@ -160,7 +160,7 @@ markers. Here they are grouped by what they do.
 - `blockchain.cpp:5199` (`prepare_handle_incoming_blocks`): the parallel pre-pass of a sync batch.
 - `blockchain.cpp:1625` (`create_block_template`): a template is stamped after its parent.
 - `blockchain.cpp:954` (`recalculate_difficulties`): disabled with `if (true || ...)`.
-- `blockchain.cpp:1321` (`prevalidate_miner_transaction`): the coinbase unlock window (72 blocks below `SM64COIN_UNLOCK6_HEIGHT`, 6 from it, v0.4.2; only the genesis coinbase carries 10).
+- `blockchain.cpp:1321` (`prevalidate_miner_transaction`): the coinbase unlock window (6 blocks, v0.5; v0.3-v0.4: 72; only the genesis coinbase carries 10).
 - `blockchain.cpp:5656` (`load_compiled_in_block_hashes`): Monero's compiled-in hashes are disabled.
 - `blockchain.h:55, 341-355, 1259-1261`: declarations of the hooks and the held-block map.
 - `src/cryptonote_core/cryptonote_core.cpp:96-122, 339, 349`: `--sm64-rom` and `--sm64-solo`.
@@ -175,7 +175,7 @@ markers. Here they are grouped by what they do.
 
 **Chain parameters** (`src/cryptonote_config.h`)
 
-- `:44` coinbase unlock window 72 (Monero: 60; v0.2: 4), 6 from `SM64COIN_UNLOCK6_HEIGHT` (v0.4.2, `sm64coin_mined_money_unlock_window(height)`).
+- `:44` coinbase unlock window 6 (Monero: 60; v0.2: 4; v0.3-v0.4: 72).
 - `:48` future time limit 120 s (was 2 h).
 - `:49` `SM64COIN_MAX_PROOF_BYTES`.
 - `:81-85` target 1200 s, window 60, lag 0, cut 6. These must agree with `rules.rs`.
@@ -218,8 +218,9 @@ markers. Here they are grouped by what they do.
 - **Seed.** `cn_fast_hash` of the block hashing blob with the timestamp
   zeroed. Every header field but the timestamp changes the pokes
   (`seed.rs`, `Blockchain::sm64_seed`).
-- **Progress / points.** Stars + Bowser keys (held or used) + the Grand Star
-  (counted only with 70 stars). A block must add exactly one point, and the
+- **Progress / points.** Stars + Bowser keys (held or used) + the three cap switches (the save
+  file's HAVE_WING/METAL/VANISH_CAP flags, v0.5) + the Grand Star
+  (counted only with 70 stars). A block must add a point, and the
   point must first appear on its last frame (`Rules::is_success`).
 - **Cycle.** The playthrough from power-on to the Grand Star. Each block
   continues from its parent's **end state** (the save state after its last

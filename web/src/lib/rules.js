@@ -2,8 +2,8 @@
 // recording. The daemon's rules (pow/sm64pow/src/rules.rs) are the authority:
 // if you change Rules::is_success there, change it here and add the new rules
 // name. The progress points themselves come from pow/perturb (WASM,
-// lib/perturb.js readProgress): one per star, per Bowser key, and for the
-// Grand Star with 70+ stars.
+// lib/perturb.js readProgress): one per star, per Bowser key, per cap switch
+// pressed (v0.5) and for the Grand Star with 70+ stars.
 //
 // star-cycle-70: a block is the next progress point from the start state.
 export const KNOWN_RULES = {

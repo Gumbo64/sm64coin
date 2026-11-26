@@ -1164,7 +1164,7 @@ pub extern "C" fn sm64pow_launch_timestamp() -> u64 {
 /// progress takes its limit (`Rules::restart_delay`); -1: not allowed.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_restart_delay(stars: u32, keys: u32, grand_star: bool) -> i64 {
-    let p = crate::rules::Progress { stars, keys, grand_star, star_flags: [0; 26] };
+    let p = crate::rules::Progress { stars, keys, grand_star, ..Default::default() };
     rules().restart_delay(&p).map_or(-1, |c| c.min(i64::MAX as u64) as i64)
 }
 

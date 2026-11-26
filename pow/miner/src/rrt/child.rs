@@ -42,7 +42,7 @@ pub enum Goal {
     /// in a course (not the castle): `target`'s level, or any level not in
     /// the job's skip list, in control (the castle's tree);
     Enter,
-    /// past the root's progress (stars, keys, the grand star), with
+    /// past the root's progress (stars, keys, cap switches, the grand star), with
     /// `need_flags` set in the save flags (a cap switch), in control;
     Progress,
     /// in the castle with `need_flags` set (the moat drained), in control.
@@ -191,6 +191,17 @@ fn in_control(st: &St) -> bool {
     st.action & 0x1C0 != 0x100 && st.controllable() && !st.modal()
 }
 
+/// The cap switches pressed (SAVE_FLAG_HAVE_WING/METAL/VANISH_CAP, flags bits 1-3): since v0.5 each is a
+/// progress point of the rules (sm64pow rules, perturb sm64.rs `Progress::caps`).
+fn caps_pressed(st: &St) -> u32 {
+    (st.save_flags & 0b1110).count_ones()
+}
+
+/// Whether `st` has made progress the rules count past `root`: a star, a key or a cap switch.
+fn more_progress(st: &St, root: &St) -> bool {
+    st.progress() > root.progress() || caps_pressed(st) > caps_pressed(root)
+}
+
 fn meets(job: &Job, root: &St, st: &St) -> bool {
     match job.goal {
         Goal::Enter => {
@@ -201,9 +212,9 @@ fn meets(job: &Job, root: &St, st: &St) -> bool {
                 }
                 && in_control(st)
                 // A castle star on the way also counts (it is the block's progress).
-                || st.progress() > root.progress()
+                || more_progress(st, root)
         }
-        Goal::Progress => st.progress() > root.progress() && st.save_flags & job.need_flags == job.need_flags,
+        Goal::Progress => more_progress(st, root) && st.save_flags & job.need_flags == job.need_flags,
         Goal::Flag => is_hub_level(st.level) && st.save_flags & job.need_flags == job.need_flags && st.action & 0x1C0 != 0x100,
     }
 }

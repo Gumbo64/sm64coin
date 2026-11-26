@@ -358,6 +358,7 @@ fn event_bytes(e: Option<crate::game::Event>) -> [u8; 3] {
         Some(crate::game::Event::Star { course, star }) => [1, course, star],
         Some(crate::game::Event::Key(k)) => [2, k, 0],
         Some(crate::game::Event::GrandStar) => [3, 0, 0],
+        Some(crate::game::Event::Cap(c)) => [4, c, 0],
     }
 }
 
@@ -366,6 +367,7 @@ fn event_from(b: [u8; 3]) -> Option<crate::game::Event> {
         1 => Some(crate::game::Event::Star { course: b[1], star: b[2] }),
         2 => Some(crate::game::Event::Key(b[1])),
         3 => Some(crate::game::Event::GrandStar),
+        4 => Some(crate::game::Event::Cap(b[1])),
         _ => None,
     }
 }

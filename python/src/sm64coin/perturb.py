@@ -221,7 +221,7 @@ def read_view(game):
     return view(b"".join(game.read_memory(a, n) for a, n in regions()))
 
 
-# ---- Progress: what a block must add (a star, a Bowser key, the Grand Star) ----
+# ---- Progress: what a block must add (a star, a Bowser key, a cap switch, the Grand Star) ----
 # Mirror of `progress` / `progress_regions` in pow/perturb/src/sm64.rs.
 
 ACT_JUMBO_STAR_CUTSCENE = 0x0000_1909
@@ -229,6 +229,9 @@ SAVE_FILE_SIZE = 0x38  # struct SaveFile
 SAVE_FILES = 4         # NUM_SAVE_FILES, two copies each
 SAVE_FLAGS = 8         # SaveFile.flags
 COURSE_STARS = 12      # SaveFile.courseStars[25]
+HAVE_WING_CAP = 1 << 1   # SAVE_FLAG_HAVE_WING_CAP (red switch)
+HAVE_METAL_CAP = 1 << 2  # green switch
+HAVE_VANISH_CAP = 1 << 3  # blue switch
 HAVE_KEY_1 = 1 << 4
 HAVE_KEY_2 = 1 << 5
 UNLOCKED_BASEMENT_DOOR = 1 << 6
@@ -239,15 +242,21 @@ GRAND_STAR_MIN_STARS = 70  # stars needed before the Grand Star counts (the 70-s
 @dataclass(frozen=True)
 class Progress:
     """How far into the game a state is: one point per star, per Bowser key (held, or already
-    used on its door) and for the Grand Star (with at least 70 stars)."""
+    used on its door), per cap switch pressed (v0.5) and for the Grand Star (with at least 70 stars)."""
     stars: int = 0
     keys: int = 0
     grand_star: bool = False
     # Which stars (bookkeeping, not consensus): index 0 the castle's secret stars, 1..=25 course
     # N's stars (bit k = star k+1).
     star_flags: tuple = (0,) * 26
+    # The cap switches pressed: bit 0 wing (red), 1 metal (green), 2 vanish (blue).
+    caps: int = 0
 
     def points(self) -> int:
+        return self.stars + self.keys + int(self.grand_star) + bin(self.caps).count("1")
+
+    def base_points(self) -> int:
+        """`points` without the cap switches (what the restart delay counts)."""
         return self.stars + self.keys + int(self.grand_star)
 
 
@@ -281,12 +290,13 @@ def progress(b: bytes) -> Progress:
         for c in range(25):
             star_flags[c + 1] = b[f + COURSE_STARS + c] & 0x7F
     keys = int(flags & (HAVE_KEY_1 | UNLOCKED_BASEMENT_DOOR) != 0) + int(flags & (HAVE_KEY_2 | UNLOCKED_UPSTAIRS_DOOR) != 0)
-    return Progress(stars, keys, action == ACT_JUMBO_STAR_CUTSCENE and stars >= GRAND_STAR_MIN_STARS, tuple(star_flags))
+    caps = int(flags & HAVE_WING_CAP != 0) | int(flags & HAVE_METAL_CAP != 0) << 1 | int(flags & HAVE_VANISH_CAP != 0) << 2
+    return Progress(stars, keys, action == ACT_JUMBO_STAR_CUTSCENE and stars >= GRAND_STAR_MIN_STARS, tuple(star_flags), caps)
 
 
 def event(before: Progress, after: Progress):
     """What a block added, as a short stable name: "c09s1" (course 9 star 1), "c00s3" (castle
-    secret star 3), "key1", "grand"; None if nothing (the first difference, like Rust `event`)."""
+    secret star 3), "key1", "wing"/"metal"/"vanish", "grand"; None if nothing (the first difference, like Rust `event`)."""
     if after.grand_star and not before.grand_star:
         return "grand"
     for c in range(26):
@@ -295,6 +305,9 @@ def event(before: Progress, after: Progress):
             return f"c{c:02d}s{(new & -new).bit_length()}"
     if after.keys > before.keys:
         return f"key{after.keys}"
+    new_caps = after.caps & ~before.caps
+    if new_caps:
+        return ("wing", "metal", "vanish")[(new_caps & -new_caps).bit_length() - 1]
     return None
 
 

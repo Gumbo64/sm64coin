@@ -179,7 +179,7 @@ pub fn features(bytes: &[u8]) -> Features {
     }
 }
 
-// --- Progress: what a block must add (a star, a Bowser key, the Grand Star).
+// --- Progress: what a block must add (a star, a Bowser key, a cap switch, the Grand Star).
 
 // include/sm64.h, src/game/save_file.h (the same in every wasm32 build).
 const ACT_JUMBO_STAR_CUTSCENE: u32 = 0x0000_1909;
@@ -187,6 +187,9 @@ const SAVE_FILE_SIZE: usize = 0x38; // struct SaveFile
 const SAVE_FILES: usize = 4; // NUM_SAVE_FILES, two copies each
 const SAVE_FLAGS: usize = 8; // SaveFile.flags
 const COURSE_STARS: usize = 12; // SaveFile.courseStars[25]
+const HAVE_WING_CAP: u32 = 1 << 1; // SAVE_FLAG_HAVE_WING_CAP (red switch)
+const HAVE_METAL_CAP: u32 = 1 << 2; // SAVE_FLAG_HAVE_METAL_CAP (green switch)
+const HAVE_VANISH_CAP: u32 = 1 << 3; // SAVE_FLAG_HAVE_VANISH_CAP (blue switch)
 const HAVE_KEY_1: u32 = 1 << 4;
 const HAVE_KEY_2: u32 = 1 << 5;
 const UNLOCKED_BASEMENT_DOOR: u32 = 1 << 6;
@@ -209,14 +212,17 @@ pub fn progress_regions_len(a: &Addrs) -> usize {
 }
 
 /// How far into the game a state is: one point per star, per Bowser key
-/// (held, or already used on its door, so it never goes back down) and for
-/// the Grand Star (with at least [`GRAND_STAR_MIN_STARS`] stars). A block's
+/// (held, or already used on its door, so it never goes back down), per cap
+/// switch pressed (v0.5: the save file's three HAVE_*_CAP flags, which are
+/// only ever set) and for the Grand Star (with at least [`GRAND_STAR_MIN_STARS`] stars). A block's
 /// run must add exactly one point; the Grand Star ends the cycle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Progress {
     pub stars: u32,
     pub keys: u32,
     pub grand_star: bool,
+    /// The cap switches pressed: bit 0 wing (red), 1 metal (green), 2 vanish (blue).
+    pub caps: u8,
     /// Which stars (bookkeeping, not consensus): index 0 the castle's secret
     /// stars, 1..=25 course N's stars (bit k = star k+1).
     pub star_flags: [u8; 26],
@@ -229,15 +235,21 @@ pub enum Event {
     Star { course: u8, star: u8 },
     Key(u8),
     GrandStar,
+    /// A cap switch: 1 wing (red), 2 metal (green), 3 vanish (blue).
+    Cap(u8),
 }
 
+/// The cap switches' event names, by [`Event::Cap`] - 1.
+pub const CAP_NAMES: [&str; 3] = ["wing", "metal", "vanish"];
+
 impl Event {
-    /// A short stable name: "c09s1" (course 9 star 1), "c00s3" (castle), "key1", "grand".
+    /// A short stable name: "c09s1" (course 9 star 1), "c00s3" (castle), "key1", "wing"/"metal"/"vanish", "grand".
     pub fn name(&self) -> String {
         match self {
             Event::Star { course, star } => format!("c{course:02}s{star}"),
             Event::Key(k) => format!("key{k}"),
             Event::GrandStar => "grand".into(),
+            Event::Cap(c) => CAP_NAMES[(*c as usize).clamp(1, 3) - 1].into(),
         }
     }
 }
@@ -256,12 +268,23 @@ pub fn event(before: &Progress, after: &Progress) -> Option<Event> {
     if after.keys > before.keys {
         return Some(Event::Key(after.keys as u8));
     }
+    // Precedence when one run adds several: Grand Star, star, key, cap (by colour: wing, metal, vanish).
+    let new_caps = after.caps & !before.caps;
+    if new_caps != 0 {
+        return Some(Event::Cap(new_caps.trailing_zeros() as u8 + 1));
+    }
     None
 }
 
 impl Progress {
-    pub fn points(&self) -> u32 {
+    /// [`points`](Progress::points) without the cap switches (the restart delay's measure of what a
+    /// restart throws away: it needs only what the C ABI's restart_delay(stars, keys, grand_star) has).
+    pub fn base_points(&self) -> u32 {
         self.stars + self.keys + self.grand_star as u32
+    }
+
+    pub fn points(&self) -> u32 {
+        self.base_points() + self.caps.count_ones()
     }
 }
 
@@ -275,6 +298,7 @@ pub fn progress(bytes: &[u8]) -> Progress {
     let file = u16_at(saves + SAVE_FILE_SIZE * 2 * SAVE_FILES) as usize;
     let flags = if (1..=SAVE_FILES).contains(&file) { u32_at(saves + (file - 1) * 2 * SAVE_FILE_SIZE + SAVE_FLAGS) } else { 0 };
     let keys = (flags & (HAVE_KEY_1 | UNLOCKED_BASEMENT_DOOR) != 0) as u32 + (flags & (HAVE_KEY_2 | UNLOCKED_UPSTAIRS_DOOR) != 0) as u32;
+    let caps = (flags & HAVE_WING_CAP != 0) as u8 | ((flags & HAVE_METAL_CAP != 0) as u8) << 1 | ((flags & HAVE_VANISH_CAP != 0) as u8) << 2;
     let mut star_flags = [0u8; 26];
     if (1..=SAVE_FILES).contains(&file) {
         let f = saves + (file - 1) * 2 * SAVE_FILE_SIZE;
@@ -283,7 +307,7 @@ pub fn progress(bytes: &[u8]) -> Progress {
             star_flags[c + 1] = bytes[f + COURSE_STARS + c] & 0x7f;
         }
     }
-    Progress { stars, keys, grand_star: action == ACT_JUMBO_STAR_CUTSCENE && stars >= GRAND_STAR_MIN_STARS, star_flags }
+    Progress { stars, keys, grand_star: action == ACT_JUMBO_STAR_CUTSCENE && stars >= GRAND_STAR_MIN_STARS, caps, star_flags }
 }
 
 #[cfg(test)]
@@ -321,5 +345,34 @@ mod tests {
         assert!(!progress(&b).grand_star, "needs 70 stars");
         b[MARIO_NUM_STARS] = 70;
         assert_eq!(progress(&b).points(), 73);
+    }
+
+    #[test]
+    fn cap_switches_are_points_and_events() {
+        let n = progress_regions_len(&HEADLESS);
+        let mut b = vec![0u8; n];
+        b[n - 2] = 1; // file 1
+        let flags = MARIO_SIZE as usize + SAVE_FLAGS;
+        assert_eq!((progress(&b).caps, progress(&b).points()), (0, 0));
+        let before = progress(&b);
+        b[flags] = 1; // SAVE_FLAG_FILE_EXISTS alone is nothing
+        assert_eq!(progress(&b).points(), 0);
+        b[flags] = (HAVE_METAL_CAP | 1) as u8;
+        let metal = progress(&b);
+        assert_eq!((metal.caps, metal.points()), (0b010, 1));
+        assert_eq!(event(&before, &metal), Some(Event::Cap(2)));
+        assert_eq!(event(&before, &metal).unwrap().name(), "metal");
+        b[flags] = (HAVE_WING_CAP | HAVE_METAL_CAP | HAVE_VANISH_CAP) as u8;
+        let all = progress(&b);
+        assert_eq!((all.caps, all.points(), all.base_points()), (0b111, 3, 0));
+        assert_eq!(event(&before, &all).unwrap().name(), "wing", "wing before metal before vanish");
+        assert_eq!(event(&metal, &all), Some(Event::Cap(1)));
+        // a star in the same run takes the event; the cap still counts as a point
+        let mut star = all;
+        star.stars = 1;
+        star.star_flags[3] = 1;
+        assert_eq!(event(&before, &star), Some(Event::Star { course: 3, star: 1 }));
+        assert_eq!(star.points(), 4);
+        assert_eq!(Event::Cap(3).name(), "vanish");
     }
 }

@@ -106,6 +106,9 @@ def test_success_and_cycle_end():
     s = Progress(12, 1, False)
     assert not rules.is_success(s, s)
     assert rules.is_success(s, Progress(13, 1, False)) and rules.is_success(s, Progress(12, 2, False))
+    # a cap switch is a progress point (v0.5), and never ends the cycle
+    assert rules.is_success(s, Progress(12, 1, False, caps=0b010)) and not rules.is_success(Progress(12, 1, False, caps=0b010), Progress(12, 1, False, caps=0b010))
+    assert rules.restart_delay(Progress(0, 0, False, caps=0b111)) == 4 * 3600
     assert not rules.ends_cycle(s) and rules.ends_cycle(Progress(70, 2, True))
     assert rules.target_seconds() == 1200
     # restart_waits_a_base_plus_the_progress_thrown_away

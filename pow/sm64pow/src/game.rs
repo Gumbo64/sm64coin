@@ -64,7 +64,7 @@ pub fn read_features(game: &SM64Game) -> Result<Features> {
     Ok(features(&read_region_bytes(game)?))
 }
 
-/// How far into the game a native (headless) game is: stars, Bowser keys,
+/// How far into the game a native (headless) game is: stars, Bowser keys, cap switches,
 /// the Grand Star (see the rules).
 pub fn read_progress(game: &SM64Game) -> Result<Progress> {
     let mut bytes = vec![0u8; progress_regions_len(&HEADLESS)];

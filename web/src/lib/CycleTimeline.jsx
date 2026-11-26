@@ -19,11 +19,13 @@ const COLORS = ['#f7c948', '#60a5fa', '#4ade80', '#f472b6', '#fb923c', '#a78bfa'
 const COURSES = ['Castle', 'BoB', 'WF', 'JRB', 'CCM', 'BBH', 'HMC', 'LLL', 'SSL', 'DDD', 'SL', 'WDW', 'TTM', 'THI', 'TTC', 'RR',
   'BitDW', 'BitFS', 'BitS', 'PSS', 'CotMC', 'TotWC', 'VCutM', 'WMotR', 'SA', 'Cake'];
 
-/** "c01s6" -> "BoB star 6", "key1" -> "Bowser key 1", "grand" -> "Grand Star". */
+/** "c01s6" -> "BoB star 6", "key1" -> "Bowser key 1", "wing" -> "Wing Cap switch", "grand" -> "Grand Star". */
+const CAP_SWITCHES = { wing: 'Wing Cap switch (red)', metal: 'Metal Cap switch (green)', vanish: 'Vanish Cap switch (blue)' };
 export function eventName(e) {
   const m = /^c(\d\d)s(\d)$/.exec(e || '');
   if (m) return `${COURSES[Number(m[1])] || 'course ' + Number(m[1])} ${Number(m[1]) === 0 ? 'secret star' : 'star'} ${m[2]}`;
   if ((e || '').startsWith('key')) return `Bowser key ${e.slice(3)}`;
+  if (CAP_SWITCHES[e]) return CAP_SWITCHES[e];
   if (e === 'grand') return 'Grand Star';
   return e || '?';
 }

@@ -1,7 +1,7 @@
 """Mirror of the consensus rules in pow/sm64pow/src/{lib,rules}.rs (`StarCycle`, "star-cycle-70").
 
 The Rust crate is the source of truth. Each block is the game's next progress (a star, a Bowser
-key, the Grand Star after 70 stars) played from the parent's end state (or from power-on, see
+key, a cap switch, the Grand Star after 70 stars) played from the parent's end state (or from power-on, see
 `env.Task`); the Grand Star ends the cycle. Difficulty is ONLY the time limit; the pokes are fixed.
 The limit grows continuously with the time since the parent after a grace period (`max_frames`).
 Daemon tasks carry the daemon's own numbers and `Task.from_template` refuses a mismatch, so a stale
@@ -137,7 +137,7 @@ def ends_cycle(end: Progress) -> bool:
 def restart_delay(parent: Progress):
     """How many seconds earlier a power-on restart on top of `parent` takes its limit (it is
     valid only that long after the parent). Mirrors StarCycle::restart_delay."""
-    return min(RESTART_BASE_SECONDS + parent.points() * RESTART_POINT_SECONDS,
+    return min(RESTART_BASE_SECONDS + parent.base_points() * RESTART_POINT_SECONDS,
                max(RESTART_MAX_SECONDS, RESTART_BASE_SECONDS))
 
 

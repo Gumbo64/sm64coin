@@ -35,8 +35,8 @@ function readRegions(engine) {
 }
 
 /**
- * How far into the game the engine is: {stars, keys, grand, points}. One point
- * per star, per Bowser key and for the Grand Star (with 70+ stars): computed
+ * How far into the game the engine is: {stars, keys, grand, points, caps}. One point
+ * per star, per Bowser key, per cap switch pressed (v0.5; `caps` is the bitmask wing 1, metal 2, vanish 4) and for the Grand Star (with 70+ stars): computed
  * by the same Rust code nodes judge blocks with. Needs perturbReady().
  */
 export function readProgress(engine) {
@@ -45,7 +45,7 @@ export function readProgress(engine) {
     PBUF = new Uint8Array(PROGRESS_REGIONS.reduce((s, [, l]) => s + l, 0));
   }
   const p = progress_points(gather(engine, PROGRESS_REGIONS, PBUF));
-  return { stars: p[0], keys: p[1], grand: p[2] === 1, points: p[3] };
+  return { stars: p[0], keys: p[1], grand: p[2] === 1, points: p[3], caps: p[4] };
 }
 
 /** A block's perturbation, for one game from the state the run starts at. */

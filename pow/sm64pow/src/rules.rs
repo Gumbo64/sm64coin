@@ -196,7 +196,7 @@ pub fn monero_retarget(timestamps: &[u64], cumulative: &[u128], target: u64, win
 /// | 2^24 | 0.3 | 0.3 | 0.3 | 0.4 | 2.1 | 10.5 |
 ///
 /// The 70-star cycle: each block is the game's next bit of progress (a
-/// star, a Bowser key, or the Grand Star after 70 stars), played on from the
+/// star, a Bowser key, a cap switch (v0.5), or the Grand Star after 70 stars), played on from the
 /// previous block's end state; the Grand Star ends the cycle and the next
 /// block starts from power-on. Difficulty is only the time limit; the pokes
 /// are the same at every difficulty, so a block's run never changes meaning
@@ -350,7 +350,7 @@ impl Rules for StarCycle {
         "star-cycle-70"
     }
     fn goal(&self) -> &'static str {
-        "Make the game's next progress (a star, a Bowser key, or the Grand Star after 70 stars) from the previous block's end state, while the controller is randomly poked. The Grand Star ends the cycle; the next block starts from power-on."
+        "Make the game's next progress (a star, a Bowser key, a cap switch (red, green or blue), or the Grand Star after 70 stars) from the previous block's end state, while the controller is randomly poked. The Grand Star ends the cycle; the next block starts from power-on."
     }
     fn params(&self, difficulty: u64) -> Params {
         let l8 = level8(difficulty);
@@ -384,7 +384,7 @@ impl Rules for StarCycle {
         if self.restart_base_seconds == u64::MAX {
             return None;
         }
-        let lost = (parent.points() as u64).saturating_mul(self.restart_point_seconds);
+        let lost = (parent.base_points() as u64).saturating_mul(self.restart_point_seconds);
         Some(self.restart_base_seconds.saturating_add(lost).min(self.restart_max_seconds.max(self.restart_base_seconds)))
     }
     fn target_seconds(&self) -> u64 {
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn restart_waits_a_base_plus_the_progress_thrown_away() {
         let r = &STAR_CYCLE;
-        let p = |stars| Progress { stars, keys: 0, grand_star: false, star_flags: [0; 26] };
+        let p = |stars| Progress { stars, ..Default::default() };
         assert_eq!(r.restart_delay(&p(0)), Some(r.restart_base_seconds));
         assert_eq!(r.restart_delay(&p(10)), Some(r.restart_base_seconds + 10 * r.restart_point_seconds));
         assert_eq!(r.restart_delay(&p(69)), Some(r.restart_max_seconds), "capped");
@@ -518,5 +518,21 @@ mod tests {
         assert!(r.is_success(&s, &Progress { keys: 2, ..s }));
         assert!(!r.ends_cycle(&s));
         assert!(r.ends_cycle(&Progress { stars: 70, keys: 2, grand_star: true, ..Default::default() }));
+    }
+
+    #[test]
+    fn a_cap_switch_is_a_progress_point() {
+        let r = &STAR_CYCLE;
+        let s = Progress { stars: 12, keys: 1, ..Default::default() };
+        let wing = Progress { caps: 0b001, ..s };
+        assert!(r.is_success(&s, &wing), "a cap switch alone is a block");
+        assert!(!r.is_success(&wing, &wing), "pressed once: not again");
+        assert!(r.is_success(&wing, &Progress { caps: 0b101, ..s }), "the next colour is another");
+        assert!(r.is_success(&s, &Progress { stars: 13, caps: 0b001, ..s }), "a star and a cap in one run");
+        assert!(!r.is_success(&Progress { caps: 0b111, ..s }, &Progress { caps: 0b111, ..s }));
+        assert!(!r.ends_cycle(&Progress { caps: 0b111, ..s }), "caps never end the cycle");
+        assert!(r.ends_cycle(&Progress { stars: 70, grand_star: true, caps: 0b111, ..Default::default() }));
+        // the restart delay counts stars, keys and the Grand Star only (the C ABI's measure)
+        assert_eq!(r.restart_delay(&wing), r.restart_delay(&s));
     }
 }

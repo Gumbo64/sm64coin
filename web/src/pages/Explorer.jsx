@@ -87,7 +87,7 @@ export default function Explorer() {
     if (b.height === 0) return '—';
     const p = prog.current[b.hash];
     if (!p) return '…';
-    const got = p.event && p.event !== 'grand' ? <span className="muted" title="What this block added: cNNsK = course NN star K (c00 = castle secret star), key1/key2 = Bowser keys"> · {eventName(p.event)}</span> : null;
+    const got = p.event && p.event !== 'grand' ? <span className="muted" title="What this block added: cNNsK = course NN star K (c00 = castle secret star), key1/key2 = Bowser keys, wing/metal/vanish = the cap switches"> · {eventName(p.event)}</span> : null;
     if (p.exact) return <>{p.stars} ★{p.keys ? ` ${p.keys} 🔑` : ''}{p.grand ? ' · Grand Star, cycle ends' : ''}{got}</>;
     return <span title="stars and keys are filled in shortly">{p.points} pts{got}</span>;
   };
@@ -122,7 +122,7 @@ export default function Explorer() {
       <RecentCycles />
       <div className="blocklist">
       <table>
-        <thead><tr><th>Height</th><th>Hash</th><th>Age</th><th>Difficulty</th><th>Reward</th><th>Txs</th><th title="Block weight: transactions and coinbase">Size</th><th title="The proof of play (encoded inputs), stored with the block on top of its size">Proof</th><th title="Length of the run that sealed the block">Run</th><th title="The game's progress after this block: stars and Bowser keys (the 70-star cycle)">Progress</th></tr></thead>
+        <thead><tr><th>Height</th><th>Hash</th><th>Age</th><th>Difficulty</th><th>Reward</th><th>Txs</th><th title="Block weight: transactions and coinbase">Size</th><th title="The proof of play (encoded inputs), stored with the block on top of its size">Proof</th><th title="Length of the run that sealed the block">Run</th><th title="The game's progress after this block: stars, Bowser keys and cap switches (the 70-star cycle)">Progress</th></tr></thead>
         <tbody>
           {blocks.map((b) => (
             <tr key={b.hash}>

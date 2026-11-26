@@ -75,12 +75,14 @@ pub struct Prog {
     pub stars: u32,
     pub keys: u32,
     pub grand_star: bool,
+    /// The cap switches pressed (bit 0 wing, 1 metal, 2 vanish).
+    pub caps: u8,
     pub points: u32,
 }
 
 impl From<Progress> for Prog {
     fn from(p: Progress) -> Prog {
-        Prog { stars: p.stars, keys: p.keys, grand_star: p.grand_star, points: p.points() }
+        Prog { stars: p.stars, keys: p.keys, grand_star: p.grand_star, caps: p.caps, points: p.points() }
     }
 }
 
