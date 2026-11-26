@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { maxFrames, MAX_RUN_FRAMES, MIN_RUN_FRAMES } from './rules.js';
+import { LAUNCH_TIMESTAMP } from './mineflow.js';
 
 // The frame-length auction for the block being mined: the time limit growing
 // from the parent's timestamp (the valid region under it), now, the run in
@@ -16,9 +17,19 @@ const fmin = (f) => `${(f / 1800).toFixed(f < 1800 ? 1 : 0)} min`;
 // curve right (a power-on restart is judged against the limit that many seconds earlier), `groups`
 // (lib/blockRuns.js groupRuns) draws one dot per group, the winner's ringed, and `onDot(group)`
 // makes dots clickable (`selected`: the group being looked at).
-export default function LimitChart({ difficulty, parentTs, now, used, runs, title = 'Time limit', shift = 0, groups = null, onDot = null, selected = null }) {
+export default function LimitChart({ difficulty, parentTs: parentTs0, now, used, runs, title = 'Time limit', shift = 0, groups = null, onDot = null, selected = null }) {
   const [hover, setHover] = useState(null);
-  if (!difficulty || !parentTs) return null;
+  // The first block's parent is the genesis block, stamped 0: its limit is drawn from the chain's launch (no block may be
+  // stamped before it, so that is when mining the first block began).
+  const first = !(parentTs0 >= LAUNCH_TIMESTAMP);
+  const parentTs = first ? LAUNCH_TIMESTAMP : parentTs0;
+  // Runs and groups are timed from the template's parent timestamp: move them onto the launch-based axis.
+  const off = parentTs - (parentTs0 || 0);
+  if (off) {
+    runs = runs.map((r) => ({ ...r, t: r.t - off }));
+    if (groups) groups = groups.map((g) => ({ ...g, t: g.t - off }));
+  }
+  if (!difficulty) return null;
   const fixed = now == null;
   const elapsed = fixed ? 0 : Math.max(0, now - parentTs);
   const lim = (t) => maxFrames(difficulty, t - shift);
@@ -58,6 +69,7 @@ export default function LimitChart({ difficulty, parentTs, now, used, runs, titl
     <div className="limitchart">
       <div className="lc-head">
         <b>{title}</b> {!fixed && <span className="muted">(the shortest run is valid first)</span>}
+        {first && <div className="muted small">First block: the genesis block has no real time, so the limit is drawn from the chain's launch ({new Date(LAUNCH_TIMESTAMP * 1000).toLocaleString()}).</div>}
         <span className="lc-legend">
           <span><i className="sw lim" />limit</span>
           <span><i className="sw run" />{fixed ? 'runs' : 'your finished runs'}</span>
