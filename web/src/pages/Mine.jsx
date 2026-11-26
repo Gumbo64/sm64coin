@@ -27,7 +27,7 @@ import { levelName } from './automine/levels.js';
 import { localInputs } from './automine/localNode.js';
 import { announceMined } from '../lib/payout.js';
 import { signedSeeds } from '../lib/webminer/bestRun.js';
-import { decideAfterWin, effectiveValidAt, launchFor, isNodeRefusal, refusalReason, confirmBlock, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
+import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2e, e2eHook } from '../lib/e2e.js';
 
@@ -176,8 +176,19 @@ function Miner() {
         const sig = await signRun(t.minerKey, seed, proof);
         await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
       } catch (e) {
-        if (isNodeRefusal(e)) { c.signed.forget(seed); c.used.delete(seed); } // the node stored nothing: a shorter run may still be tried here
-        return refused(isNodeRefusal(e) ? refusalReason(e) : `${e} (the node may still have it: if it does not show up, start a new template)`);
+        const reason = refusalReason(e);
+        if (refusedBeforeClaim(e)) {
+          // Refused before the node recorded a claim for this template: a shorter run may still be tried here.
+          c.signed.forget(seed); c.used.delete(seed);
+          return refused(reason);
+        }
+        // The node may already hold a signed claim for this template (a second, different run would be equivocation), or the
+        // submission may have gone through: the key stays spent. Next attempt: a new template; save slots belong to this one.
+        setLast((l) => (l && l.template === t ? { ...l, result: `rejected: ${reason}` } : l));
+        setOutcome({ kind: 'notaccepted', fresh: true, height: t.height, frames: r.frames, reason: `${reason}. The node may already hold this run for the template, so it can't sign another: moving to a new template (your save slots belong to the old one and are dropped)` });
+        say(`block not accepted: ${reason}; new template (one run per template, the node may hold this one)`);
+        if (c.cur === t) c.restart = true;
+        return { sent: false };
       }
       if (c.cur && c.cur.sm64_seed_hash === seed) setPractice(true);
       markLast(r, 'sent');
@@ -197,7 +208,7 @@ function Miner() {
           say(`★ BLOCK ${t.height} ACCEPTED: ${r.frames} frames (${frames(r.frames)}), ${coins(t.expected_reward)} SM64 to you`);
         } else {
           markLast(r, `not accepted: ${res.why}`);
-          setOutcome({ kind: 'notaccepted', height: t.height, frames: r.frames, reason: res.why });
+          setOutcome({ kind: 'notaccepted', fresh: true, height: t.height, frames: r.frames, reason: res.why });
           say(`block ${t.height} NOT accepted: ${res.why}; new template`);
           if (c.cur === t) c.restart = true; // this template's one run is spent
         }
@@ -241,7 +252,7 @@ function Miner() {
           const won = successFor(t.sm64_rules);
           if (!won) { say(`unknown rules "${t.sm64_rules}": update web/src/lib/rules.js`); return; }
           if (head !== t.prev_hash) { c.forcePower = false; setRuns([]); }
-          c.cur = t; c.tipNoted = false; setPractice(false); setOutcome((o) => (o && o.kind === 'sent' ? o : null));
+          c.cur = t; c.tipNoted = false; setPractice(false); setOutcome((o) => (o && (o.kind === 'sent' || o.fresh) ? { ...o, fresh: false } : null));
           head = t.prev_hash;
           c.tipTemplate = t;
           setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start); setPowerOnAt(t.sm64_power_on_at || 0);

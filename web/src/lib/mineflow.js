@@ -40,16 +40,30 @@ export function decideAfterWin({ now, validAt, frames, used = false, pending = n
   return { action: validAt > now ? 'hold' : 'send', replaces: !!pending };
 }
 
-/** Whether `e` (a thrown rpc.js error) is the node answering "no" to a submission (so nothing of it was stored),
- * as opposed to a timeout / network failure / HTTP error after which the block may or may not have arrived. */
-export function isNodeRefusal(e) {
-  const m = String((e && e.message) || e || '');
-  return /^submit_block: /.test(m) && !/^submit_block: HTTP \d+/.test(m);
-}
-
-/** The node's reason out of a refusal ("submit_block: <reason>" -> "<reason>"). */
+/** The node's reason out of a thrown rpc.js error ("submit_block: <reason>" -> "<reason>"). */
 export function refusalReason(e) {
   return String((e && e.message) || e || '').replace(/^(Error: )?submit_block: /, '') || 'refused';
+}
+
+// Refusals that the node (v0.3, core_rpc_server.cpp on_submitblock) gives BEFORE the block's claim is recorded
+// (Blockchain::sm64_hold -> sm64coin::note_claim, after the signature check). Only after one of these may the same template sign
+// another run: a recorded claim makes a second, different signed run for the template equivocation at that node, and
+// the refusals after it (budget, queue full, too early, a proof that fails its replay, a generic "failed verification" that
+// also covers an invalid proof, ...) leave the claim in place. Matched on the reason text; anything else, and every transport
+// failure (timeout, HTTP error: the block may have arrived), keeps the key spent.
+const PRE_CLAIM = [
+  /^Wrong param$/, /^Wrong block blob$/, /^Block bloc size is too big/, /^Unknown parent block$/,
+  /^Block is too old for restricted RPC$/, /^Busy: this address sent an invalid proof recently/,
+  /^This command is unsupported for bootstrap daemon$/,
+  /^Block not accepted: stamped \d+, before the chain's launch/, // checked in the RPC, before handle_block_found
+];
+
+/** Whether `e` is the node refusing a submission with a reason proven to come before it records the claim. */
+export function refusedBeforeClaim(e) {
+  const m = String((e && e.message) || e || '');
+  if (!/^(Error: )?submit_block: /.test(m) || /^(Error: )?submit_block: HTTP \d+/.test(m)) return false;
+  const why = refusalReason(e);
+  return PRE_CLAIM.some((re) => re.test(why));
 }
 
 /**
