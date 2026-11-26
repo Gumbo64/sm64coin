@@ -471,18 +471,18 @@ pub fn seal_proof_exact_report(start: Start, parent: Option<&sm64_binds::SaveSta
     let as_played = played;
     let stripped = without_reserved_bits(start, parent, seed, p, played);
     let played = &stripped[..];
-    let t_plain = std::time::Instant::now();
+    let t_plain = Stopwatch::start();
     let mut best = seal_proof_at(start, parent, seed, p, played)?;
-    let plain_secs = t_plain.elapsed().as_secs_f64();
+    let plain_secs = t_plain.secs();
     if played != as_played && !check_sealed(start, parent, seed, p, played, played, &best).unwrap_or(false) {
         let blob = seal_proof_at(start, parent, seed, p, as_played)?;
         let n = blob.len();
         return Ok((blob, ExactReport { original: n, sealed: n, ..Default::default() }));
     }
     let mut rep = ExactReport { original: best.len(), plain_secs, ..Default::default() };
-    let t0 = std::time::Instant::now();
+    let t0 = Stopwatch::start();
     let exact = exact_pads(start, parent, seed, p, played, pick);
-    rep.exact_secs = t0.elapsed().as_secs_f64();
+    rep.exact_secs = t0.secs();
     let Ok((pads, stats)) = exact else { rep.sealed = best.len(); return Ok((best, rep)) };
     rep.stats = stats;
     if pads != played {
@@ -496,7 +496,7 @@ pub fn seal_proof_exact_report(start: Start, parent: Option<&sm64_binds::SaveSta
         }
     }
     if method == Method::ExactThenReplay {
-        let t1 = std::time::Instant::now();
+        let t1 = Stopwatch::start();
         if let Ok(more) = normalise_played(start, parent, seed, p, &pads, &CONSERVATIVE) {
             if more != played {
                 if let Ok(blob) = seal_proof_at(start, parent, seed, p, &more) {
@@ -509,8 +509,24 @@ pub fn seal_proof_exact_report(start: Start, parent: Option<&sm64_binds::SaveSta
                 }
             }
         }
-        rep.replay_secs = t1.elapsed().as_secs_f64();
+        rep.replay_secs = t1.secs();
     }
     rep.sealed = best.len();
     Ok((best, rep))
+}
+
+/// Wall-clock seconds for the reports. `std::time::Instant::now()` panics on wasm32-unknown-unknown (the
+/// web miner), so there it reads 0.
+struct Stopwatch(#[cfg(not(target_arch = "wasm32"))] std::time::Instant);
+
+impl Stopwatch {
+    fn start() -> Self {
+        Stopwatch(#[cfg(not(target_arch = "wasm32"))] std::time::Instant::now())
+    }
+    fn secs(&self) -> f64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.0.elapsed().as_secs_f64();
+        #[cfg(target_arch = "wasm32")]
+        0.0
+    }
 }
