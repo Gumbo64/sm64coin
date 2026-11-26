@@ -65,7 +65,7 @@ export default function LimitChart({ difficulty, parentTs, now, used, runs, titl
         </span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img"
-        aria-label={fixed ? `Time limit at difficulty ${difficulty} with the runs of this block's height` : `Time limit now ${fmin(limitNow)} at difficulty ${difficulty}, ${mmss(elapsed)} after the last block`}>
+        aria-label={fixed ? `Time limit at difficulty ${difficulty} with the runs of this block's height` : `Accepting runs up to ${fmin(limitNow)} at difficulty ${difficulty}, ${mmss(elapsed)} after the last block`}>
         {yTicks.map((f) => <g key={f}><line x1={L} x2={W - R} y1={y(f)} y2={y(f)} className="grid" /><text x={L - 6} y={y(f) + 4} textAnchor="end" className="tick">{fmin(f)}</text></g>)}
         {xTicks.map((t) => <text key={t} x={x(t)} y={H - 8} textAnchor="middle" className="tick">{tickLabel(t, xStep)}</text>)}
         <path d={area} className="valid" />

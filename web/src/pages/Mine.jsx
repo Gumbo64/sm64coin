@@ -585,7 +585,7 @@ function Miner() {
                     <dl className="kv">
                       <dt>Block</dt><dd>{task.height}</dd>
                       <dt>Difficulty</dt><dd>{task.difficulty}</dd>
-                      <dt>Auction limit now</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames){(limit ?? task.sm64_max_frames) >= MAX_RUN_FRAMES ? ', the maximum' : ''}</dd>
+                      <dt>Accepting runs up to</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames){(limit ?? task.sm64_max_frames) >= MAX_RUN_FRAMES ? ': any run, the maximum' : `, loosens to ${frames(MAX_RUN_FRAMES)}`}</dd>
                       <dt>Pokes</dt><dd>{task.sm64_random_amount} × {task.sm64_burst_length} frames per {task.sm64_window_length}</dd>
                       <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
                       <dt>Paying</dt><dd>{isAddress(paying || '') ? <span className="mono" title={paying}>{short(paying)}</span> : <em>no address</em>}</dd>

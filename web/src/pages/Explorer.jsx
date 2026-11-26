@@ -106,7 +106,7 @@ export default function Explorer() {
           <Stat label="Height" value={info.height - 1} />
           <Stat label="Retarget difficulty" value={info.difficulty} />
           <Stat label="Difficulty now" value={task ? task.difficulty : '–'} />
-          <Stat label="Auction limit now" value={task ? `${(task.sm64_max_frames / 30 / 60).toFixed(2)} min${task.sm64_max_frames >= MAX_RUN_FRAMES ? ' (the maximum)' : ''}` : '–'} />
+          <Stat label="Accepting runs up to" value={task ? `${frames(task.sm64_max_frames)}${task.sm64_max_frames >= MAX_RUN_FRAMES ? ' (any run: the maximum)' : ` (loosens to ${frames(MAX_RUN_FRAMES)})`}` : '–'} />
           <Stat label="Pokes / window" value={task ? `${task.sm64_random_amount}/${task.sm64_window_length}` : '–'} />
           <Stat label="Target block time" value={`${info.target} s`} />
           <Stat label="Peers" value={info.outgoing_connections_count + info.incoming_connections_count} />
