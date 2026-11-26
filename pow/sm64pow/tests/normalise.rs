@@ -133,3 +133,71 @@ fn exact_canonicaliser_on_chain_blocks() {
     }
     eprintln!("total: {frames_total} frames, original {orig_total} B, exact {exact_total} B ({:.1} %)", 100.0 * exact_total as f64 / orig_total as f64);
 }
+
+/// Old (replay-guided) and new (exact) canonicaliser on the fixture blocks: each sealed proof must
+/// verify with the node's verifier (`verify_any`, the same verdict as the original run's proof:
+/// frames, progress, cycle end) and decode to the run's frame count. (Both sealers only return a
+/// candidate whose verifier replay ends in the original's memory and perturbation state, check_sealed.) NORMALISE_BLOCKS=n (default 3); NORMALISE_OLD=0 skips the slow replay-guided one.
+#[test]
+fn exact_and_replay_guided_proofs_verify_alike() {
+    use sm64pow::normalise::{Method, StickPick, seal_proof_exact_report, seal_proof_normalised_report};
+    let rom = std::env::var("SM64COIN_ROM").unwrap_or_else(|_| "../../baserom.us.z64".into());
+    let Ok(b) = std::fs::read(&rom) else {
+        eprintln!("skipping: no ROM at {rom} (set SM64COIN_ROM)");
+        return;
+    };
+    let _ = sm64pow::init(b);
+    let n: usize = std::env::var("NORMALISE_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let old = std::env::var("NORMALISE_OLD").as_deref() != Ok("0");
+    let mut ts = std::collections::HashMap::new();
+    let mut cycle: Vec<sm64pow::sm64_binds::GamePad> = vec![];
+    let (mut o, mut e, mut r, mut fr) = (0usize, 0usize, 0usize, 0usize);
+    for l in include_str!("fixtures/mainnet_v02.jsonl").lines().take(n) {
+        let j: serde_json::Value = serde_json::from_str(l).unwrap();
+        let id: [u8; 32] = hex(j["id"].as_str().unwrap()).try_into().unwrap();
+        let prev: [u8; 32] = hex(j["prev"].as_str().unwrap()).try_into().unwrap();
+        let t = j["ts"].as_u64().unwrap();
+        let parent = match ts.get(&prev) {
+            None => Parent::Genesis,
+            Some(pt) => Parent::Block { id: prev, gap_seconds: t - pt },
+        };
+        ts.insert(id, t);
+        let seed = Seed::from_hex(j["seed"].as_str().unwrap()).unwrap();
+        let difficulty = j["difficulty"].as_u64().unwrap();
+        let blob = hex(j["proof"].as_str().unwrap());
+        let (frames, start, _, _) = sm64pow::proof::split_blob(&blob).unwrap();
+        let played = played_block(&id, parent, &seed, &blob).unwrap().unwrap();
+        if start == Start::PowerOn {
+            cycle.clear();
+        }
+        let ps = if start == Start::Parent { Some(sm64pow::statecodec::state_after(&cycle).unwrap()) } else { None };
+        let p = sm64pow::params(difficulty);
+        let mut other = id;
+        other[0] ^= 0xff;
+        let verdict = |blob: &[u8]| match sm64pow::chain::verify_any(&other, parent, &seed, difficulty, blob).unwrap() {
+            sm64pow::chain::CommittedVerdict::Run(v @ BlockVerdict::Valid { .. }) => v,
+            v => panic!("block {}: not valid: {v:?}", j["height"]),
+        };
+        let (exact, rep) = seal_proof_exact_report(start, ps.as_ref(), &seed, &p, &played, Method::Exact, StickPick::Model).unwrap();
+        let mut cands = vec![("exact", exact.clone())];
+        if old {
+            cands.push(("replay-guided", seal_proof_normalised_report(start, ps.as_ref(), &seed, &p, &played).unwrap().0));
+        }
+        let (orig_pads, _) = (played.clone(), ());
+        let base = verdict(&sm64pow::seal_proof_at(start, ps.as_ref(), &seed, &p, &orig_pads).unwrap());
+        let mut sizes = vec![];
+        for (name, c) in &cands {
+            assert_eq!(verdict(c), base, "block {} {name}: verdict differs from the original run's", j["height"]);
+            let pr = sm64pow::mining::decode_proof_any(c, ps.as_ref(), &seed, &p).unwrap();
+            assert_eq!(pr.frames, frames);
+            sizes.push((*name, c.len()));
+        }
+        eprintln!("block {}: {frames} frames, original {} B, {sizes:?}", j["height"], rep.original);
+        o += rep.original;
+        e += exact.len();
+        r += cands.get(1).map_or(0, |c| c.1.len());
+        fr += frames as usize;
+        cycle.extend(played);
+    }
+    eprintln!("total {fr} frames: original {o} B, exact {e} B ({:.1} %), replay-guided {r} B ({:.1} %)", 100.0 * e as f64 / o as f64, 100.0 * r as f64 / o as f64);
+}
