@@ -32,7 +32,8 @@ assert.equal(tailFrame(10000, 100, 10), 9900);
 // options
 const win = r[0];
 let o = replayOptions(win, { cycleEnd: 10000, hasPads: true });
-assert.deepEqual(o.map((x) => x.key), ['start', 'tail5', 'tail10', 'm64', 'cycle']);
+assert.deepEqual(o.map((x) => x.key), ['start', 'tail5', 'tail10', 'm64']);
+assert.equal(o[3].download, 'cycle'); // the one .m64: the cycle from power-on to the run
 assert.equal(o[1].to, '/block/w?replay&f=9850');
 assert.ok(o.every((x) => !x.disabled));
 o = replayOptions(win, { cycleEnd: null, hasPads: false });
