@@ -22,6 +22,19 @@ for (const type of ['keydown', 'keyup', 'keypress']) {
   window.addEventListener(type, (e) => { if (!keysForGame(e)) e.stopPropagation(); }, true);
 }
 
+// A tab open across a deploy still runs the old build, whose lazily loaded pages (Wallet-<hash>.js, ...) the host no longer
+// has: the import fails and the page goes blank. Vite reports that as 'vite:preloadError': load the new build instead,
+// at most once a minute (so a real outage does not reload in a loop).
+window.addEventListener('vite:preloadError', (e) => {
+  const KEY = 'sm64coin.chunkReload';
+  let last = 0;
+  try { last = Number(sessionStorage.getItem(KEY) || 0); } catch { /* storage unavailable */ }
+  if (Date.now() - last < 60000) return;
+  try { sessionStorage.setItem(KEY, String(Date.now())); } catch { /* storage unavailable */ }
+  e.preventDefault();
+  location.reload();
+});
+
 // Your own node, else the public one (public-node.json) for this visit: decided before the
 // first page asks the chain anything (at most a few seconds).
 // Worker sync is on by default: the first visit of a session may reload once (before anything renders) so the page comes
