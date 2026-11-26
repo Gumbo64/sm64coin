@@ -15,17 +15,26 @@
 import { Player, Trail } from 'sm64-binds-frontend/replay';
 import { Perturbation, perturbReady, readProgress } from './perturb.js';
 import { captureState, restoreState } from './savestate.js';
+import { getBlockState, putBlockState } from './blockstates.js';
+import { parentState } from './webminer/parentState.js';
+import { portableFromRaw } from '../pages/automine/startState.js';
+
+// A parent this far in is fetched from the node (get_sm64_state, ~7 MB) rather than fast-forwarded,
+// when no cached state exists: below it the headless catch-up is quicker than the download.
+export const NODE_STATE_FROM_FRAME = 20000;
 
 const SNAP_EVERY = 240; // 8 s: about 150 states per 20 minutes of play
 const MAX_SNAPS = 260;
 
 export class CyclePlayer extends Player {
   /** pads: the whole cycle's played pads; start: the frame this block starts at. */
-  constructor(pads, onChange, { start, task, won }) {
+  constructor(pads, onChange, { start, task, won, boundaries = [] }) {
     let self = null;
     super(pads, (v) => onChange({ ...v, verify: self.verify() }));
     self = this;
     this.S = start;
+    this.boundaries = boundaries; // [{frame, hash}]: where each earlier block of the run ended (the last is `start`), oldest first
+    this.warmInfo = null; // how the start state was reached: {source, ms}
     this.won = won;
     this.task = task;
     this.pert = null; // made in attach(), once the WASM is loaded
@@ -48,6 +57,91 @@ export class CyclePlayer extends Player {
     const e = this.engine;
     e.canvas = this.canvas;
     this.trail.add(0, captureState(e)); // power-on
+    this.powerOnState = this.trail.states.get(0);
+    await this.warm().catch((err) => console.warn('replay: reusing saved states failed, fast-forwarding instead:', err));
+  }
+
+  // Brings the game to the block's start (frame S) without replaying the cycle when it can:
+  // the parent's end state from the cache (memory, then IndexedDB), else from the node, else by
+  // a headless fast-forward that keeps every block's end state it passes for next time. Progress
+  // is shown only while something slow really happens (the node's download, the fast-forward).
+  async warm() {
+    const S = this.S;
+    const last = this.boundaries[this.boundaries.length - 1];
+    if (!(S > 0) || !last || last.frame !== S) { this.warmInfo = { source: 'power-on', ms: 0 }; return; }
+    const t0 = performance.now();
+    const done = (source, state) => {
+      this.landAtStart(state);
+      this.warmInfo = { source, ms: Math.round(performance.now() - t0) };
+      console.info(`replay: start state from ${source} in ${this.warmInfo.ms} ms`);
+    };
+    const hit = await getBlockState(this.powerOnState, last.hash);
+    if (hit) { done(hit.from, hit.state); return; }
+    const e = this.engine;
+    const load = (portable) => {
+      if (this.pristine) e.load_state(this.pristine);
+      else restoreState(e, null, this.powerOnState);
+      e.load_portable_state(portable);
+    };
+    const capture = () => captureState(e, null, this.powerOnState);
+    if (S >= NODE_STATE_FROM_FRAME && e.portable_supported) {
+      try {
+        this.busy(0);
+        const raw = await parentState(last.hash);
+        const portable = await portableFromRaw(raw);
+        load(portable);
+        const state = capture();
+        putBlockState(this.powerOnState, last.hash, state);
+        done('node', state);
+        return;
+      } catch (err) { console.info('replay: no state from the node:', String(err?.message ?? err)); } finally { this.busy(null); }
+    }
+    if (!e.portable_supported || this.headlessFailed || !(await this.ensureHeadless())) return;
+    try {
+      let state = null;
+      for (const b of this.boundaries) {
+        this.busy(b.frame);
+        const res = await this.headless.run({ type: 'goto', target: b.frame, maxStart: Infinity, every: 0, land: true, events: false }, (m) => this.busy(m.frame));
+        if (res.cancelled) return;
+        load(res.state);
+        state = capture();
+        putBlockState(this.powerOnState, b.hash, state);
+      }
+      done('fast-forward', state);
+    } finally { this.busy(null); }
+  }
+
+  // After a start state from the cache or the node the worker's game is still at power-on: a seek
+  // inside the block is stepped from the state at S here unless it is long enough for the worker
+  // (about 4x faster, but starting from frame 0) to win.
+  planHeadless(target) {
+    const plan = super.planHeadless(target);
+    if (plan && this.warmInfo && this.warmInfo.source !== 'fast-forward' && this.warmInfo.source !== 'power-on' && target > this.S) {
+      const near = this.trail.nearest(target - 1);
+      if (near && near.frame >= this.S && target - 1 - near.frame < plan.wt / 4) return null;
+    }
+    return plan;
+  }
+
+  busy(frame) {
+    this.headlessBusy = frame !== null;
+    this.headlessProgress = frame;
+    this.dirty = true;
+    this.emit();
+  }
+
+  /** The engine is loaded with `state` (the game at frame S, before its pad): make that the player's position. */
+  landAtStart(state) {
+    restoreState(this.engine, null, state);
+    this.frame = this.S;
+    this.state = this.engine.get_game_state();
+    this.events = [];
+    this.evThrough = this.S;
+    this.rendered = false;
+    this.unchecked = false;
+    this.checkpoint(); // the perturbation's start, the start progress and the trail's state at S
+    this.dirty = true;
+    this.emit();
   }
 
   dispose() {

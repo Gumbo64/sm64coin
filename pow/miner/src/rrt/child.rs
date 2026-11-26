@@ -199,6 +199,10 @@ fn meets(job: &Job, root: &St, st: &St) -> bool {
     }
 }
 
+/// The first round's plans in the browser (see `run_step`).
+#[cfg(target_arch = "wasm32")]
+const RAMP_FIRST: usize = 2;
+
 /// Runs one tree step in this process. Call once per process.
 pub fn run_step(job: &Job) -> Result<StepOut> {
     // Settings first: the objectives read them lazily, once.
@@ -276,6 +280,21 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
         }));
     } else {
         engine.on_hybrid = page;
+    }
+    // The browser's feed (and the page's first look at the search) comes after a round: with the full round's plans
+    // the first came 20-30 s after Start (one wasm thread). So the first rounds are small and double up to the
+    // configured size (2, 4, 8, 16 plans): same search, a first sample in a few seconds. Native runs keep their rounds.
+    #[cfg(target_arch = "wasm32")]
+    if job.viz && engine.cfg.round_plans > RAMP_FIRST {
+        let full = engine.cfg.round_plans;
+        let mut inner = engine.on_hybrid.take();
+        engine.cfg.round_plans = RAMP_FIRST;
+        engine.on_hybrid = Some(Box::new(move |e| {
+            e.cfg.round_plans = (e.cfg.round_plans * 2).min(full);
+            if let Some(f) = inner.as_mut() {
+                f(e);
+            }
+        }));
     }
     engine.run()?;
     let sync_out = (job.sync_secs > 0.0 && engine.on_sync.is_some()).then(|| {
@@ -1053,6 +1072,10 @@ pub mod tsync {
     const CELL_SEP: f32 = 150.0;
     /// Imports per sync round, and the largest message (JSON bytes) offered.
     const MAX_IMPORT: usize = 48;
+    /// The new-zone fast path: seconds between its polls, states offered and states taken per poll.
+    const FAST_SECS: f64 = 1.0;
+    const FAST_K: usize = 2;
+    const FAST_IMPORT: usize = 2;
 
     #[derive(Serialize, Deserialize)]
     struct Rec {
@@ -1061,6 +1084,9 @@ pub mod tsync {
         level: u16,
         pos: [f32; 3],
         progress: (u8, i16),
+        /// The first node its sender had in a new (level, area): offered at once, and taken by the others at once.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        zf: bool,
     }
 
     pub fn enc(p: &[GamePad]) -> String {
@@ -1090,23 +1116,34 @@ pub mod tsync {
         let max_pads = job.max_path as usize;
         let frame0 = root.frame;
         let mut last = Instant::now();
+        let mut last_fast = Instant::now();
         Box::new(move |e: &mut Engine| {
-            if last.elapsed().as_secs_f64() < every {
+            let due = last.elapsed().as_secs_f64() >= every;
+            // Between rounds: about once a second, the first nodes in new zones go out and the others' are taken (at most
+            // FAST_K sent and FAST_IMPORT taken per second a worker, so it stays cheap).
+            let fast = !due && last_fast.elapsed().as_secs_f64() >= FAST_SECS;
+            if !due && !fast {
                 return;
             }
-            last = Instant::now();
-            let ids = e.sync_candidates(k, CELL_SEP);
-            let recs: Vec<Rec> = ids
-                .iter()
-                .filter_map(|&i| {
-                    let n = &e.tree.nodes[i as usize];
-                    let pads = e.tree.path(i);
-                    (n.st.frame >= frame0 && pads.len() == (n.st.frame - frame0) as usize && pads.len() <= max_pads).then(|| Rec { pads: enc(&pads), level: n.st.level, pos: n.st.pos, progress: n.st.progress() })
-                })
-                .collect();
-            let msg = serde_json::json!({ "tag": tag, "recs": recs }).to_string();
+            last_fast = Instant::now();
+            let ids = if due {
+                last = Instant::now();
+                e.sync_candidates(k, CELL_SEP)
+            } else {
+                Vec::new()
+            };
+            let firsts = e.sync_zone_firsts(FAST_K);
+            let mk = |i: u32, zf: bool| {
+                let n = &e.tree.nodes[i as usize];
+                let pads = e.tree.path(i);
+                (n.st.frame >= frame0 && pads.len() == (n.st.frame - frame0) as usize && pads.len() <= max_pads).then(|| Rec { pads: enc(&pads), level: n.st.level, pos: n.st.pos, progress: n.st.progress(), zf })
+            };
+            let recs: Vec<Rec> = firsts.iter().filter_map(|&i| mk(i, true)).chain(ids.iter().filter_map(|&i| mk(i, false))).collect();
+            let msg = serde_json::json!({ "tag": tag, "recs": recs, "poll": fast }).to_string();
             let mut s = stats.lock().unwrap();
-            s.rounds += 1;
+            if due {
+                s.rounds += 1;
+            }
             s.offered += recs.len() as u32;
             let Some(reply) = ex("tree_sync", &msg) else { return };
             #[derive(Deserialize)]
@@ -1116,7 +1153,7 @@ pub mod tsync {
             let Ok(r) = serde_json::from_str::<Reply>(&reply) else { return };
             let before = e.total_frames_emulated();
             let mut got = 0;
-            for rec in r.recs.iter().take(MAX_IMPORT) {
+            for rec in r.recs.iter().take(if fast { FAST_IMPORT } else { MAX_IMPORT }) {
                 let Some(pads) = dec(&rec.pads, max_pads) else { continue };
                 s.received += 1;
                 match e.sync_import(&pads, Some((rec.level, rec.pos, rec.progress))) {
@@ -1131,8 +1168,8 @@ pub mod tsync {
                 }
             }
             s.frames += e.total_frames_emulated() - before;
-            if got > 0 || s.rounds <= 2 {
-                println!("tree sync {}: offered {}, received {}, added {} ({} frames replayed)", s.rounds, recs.len(), r.recs.len(), got, e.total_frames_emulated() - before);
+            if got > 0 || firsts.len() > 0 || (due && s.rounds <= 2) {
+                println!("tree sync {}{}: offered {} ({} new-zone), received {}, added {} ({} frames replayed)", s.rounds, if fast { " (fast)" } else { "" }, recs.len(), firsts.len(), r.recs.len(), got, e.total_frames_emulated() - before);
             }
         })
     }
@@ -1160,6 +1197,12 @@ pub mod hybrid {
         level: u16,
         area: u8,
         pos: [f32; 3],
+        /// The goal's strength (the page's setting): the share of plans that go for it (0..1).
+        #[serde(default = "default_share")]
+        share: f64,
+    }
+    fn default_share() -> f64 {
+        0.35
     }
 
     #[derive(Deserialize)]
@@ -1191,7 +1234,7 @@ pub mod hybrid {
         let poll = serde_json::json!({ "tag": tag, "vkey": vkey }).to_string();
         let mut last = Instant::now();
         let mut first = true;
-        let mut goal: Option<([u16; 2], [f32; 3])> = None;
+        let mut goal: Option<([u16; 2], [f32; 3], f64)> = None;
         let (mut said, mut said_at) = ((0usize, 0u64, 0u64), Instant::now());
         Box::new(move |e: &mut Engine| {
             if !first && last.elapsed().as_secs_f64() < 0.5 {
@@ -1201,20 +1244,23 @@ pub mod hybrid {
             last = Instant::now();
             let Some(reply) = ex("hybrid", &poll) else { return };
             let Ok(r) = serde_json::from_str::<Reply>(&reply) else { return };
-            let g = r.goal.map(|g| ([g.level, g.area as u16], g.pos));
+            let g = r.goal.map(|g| ([g.level, g.area as u16], g.pos, g.share.clamp(0.0, 1.0)));
             if g != goal {
                 goal = g;
-                e.set_pos_goal(g.map(|(z, p)| ((z[0], z[1] as u8), p)));
+                e.set_pos_goal(g.map(|(z, p, _)| ((z[0], z[1] as u8), p)));
+                // The goal's own pool weight grows with its share of plans (a regular objective weighs 1).
+                e.set_pos_goal_strength(4.0 + 40.0 * g.map_or(0.0, |g| g.2), g.map_or(0.0, |g| g.2));
                 println!("position goal: {g:?}");
                 said = (0, 0, 0);
             }
-            // What the goal's PosTime objectives have done so far (the page logs it), every few seconds when it changed.
-            if goal.is_some() && said_at.elapsed().as_secs_f64() > 5.0 {
+            // What the goal's PosTime objectives have done so far (the page logs it), every 15 s, with how near the tree has got.
+            if goal.is_some() && said_at.elapsed().as_secs_f64() > 15.0 {
                 let st = e.pos_goal_stats();
-                if st != said {
+                if st != said || st.0 > 0 {
                     said = st;
                     said_at = Instant::now();
-                    let text = format!("position goal: {} Mario::PosTime objectives drawn to it, {} attempts, {} succeeded (a faster arrival)", st.0, st.1, st.2);
+                    let near = e.pos_goal_nearest().map_or(String::new(), |(d, id)| format!("; nearest tree state {} units away (node {id})", d.round()));
+                    let text = format!("position goal: {} Mario::UserGoal objectives drawn to it, {} attempts, {} succeeded (a faster arrival){near}", st.0, st.1, st.2);
                     ex("hybrid_out", &serde_json::json!({ "kind": "log", "text": text }).to_string());
                 }
             }

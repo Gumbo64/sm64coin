@@ -5,7 +5,7 @@ edition = "2024"
 description = "SDK for writing SM64Coin mining bots: the perturbation contract, a daemon client and a miner loop"
 
 [dependencies]
-sm64pow = { path = "../sm64pow" }
+sm64pow = { path = "../sm64pow", features = ["normalise"] }
 sm64-binds = { workspace = true }
 anyhow = { workspace = true }
 serde = { version = "1", features = ["derive"] }

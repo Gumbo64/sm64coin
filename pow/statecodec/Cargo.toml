@@ -4,5 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "SM64Coin's state-aware proof codecs (pure: no game, no emulator), shared by native nodes and the browser"
 
+[features]
+# The miner-side input normaliser's guide model (mix2lab.rs, pure; not consensus: no codec id uses it).
+normalise = []
+# Codec research: experimental codecs (ids 0xE0..), NOT part of consensus, never enabled by default.
+experimental = []
+
 [dependencies]
 sm64coin-perturb = { path = "../perturb" }

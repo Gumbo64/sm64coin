@@ -8,8 +8,10 @@ import { daemon } from '../lib/rpc.js';
 import { newMinerKey, templateParams, signRun } from '../lib/minerkey.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { prepareStart } from '../lib/cycle.js';
+import { readProgress } from '../lib/perturb.js';
+import { loadStart } from './automine/startState.js';
 import { withConfig } from '../lib/task.js';
-import { successFor } from '../lib/rules.js';
+import { successFor, MAX_RUN_FRAMES } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import PlayView from '../components/PlayView.jsx';
 import EngineSlot, { acquireEngine } from '../components/EngineSlot.jsx';
@@ -18,6 +20,7 @@ import RomGate from '../lib/RomGate.jsx';
 import { miner, hybrid, isAddress } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
 import { encPads } from '../lib/webminer/hybrid.js';
+import { DEFAULT_LEAD } from '../lib/webminer/bestRun.js';
 import { setPlayFromStart } from '../lib/hybridSetting.js';
 import { useVisible } from './automine/useHub.js';
 import ControlCard from './automine/ControlCard.jsx';
@@ -25,6 +28,8 @@ import CampaignStrips from './automine/CampaignStrips.jsx';
 import { levelName } from './automine/levels.js';
 import { localInputs } from './automine/localNode.js';
 import { announceMined } from '../lib/payout.js';
+import { signedSeeds } from '../lib/webminer/bestRun.js';
+import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2e, e2eHook } from '../lib/e2e.js';
 
@@ -83,10 +88,21 @@ function Miner() {
   const [runs, setRuns] = useState([]);
   // The run over the limit waiting for it (the auction): {validAt, frames}.
   const [pendingRun, setPending] = useState(null);
+  // Where the last run stands: {kind: 'sent' | 'accepted' | 'refused' | 'notaccepted', height, frames, reason?, at?} (shown as a notice;
+  // only 'accepted' means the block is in the chain). `practice`: this template's one run is sent, so more runs on it only practise.
+  const [outcome, setOutcome] = useState(null);
+  const [practice, setPractice] = useState(false);
+  const [launchAt, setLaunchAt] = useState(0); // the chain's launch (unix s) while it lies ahead, else 0
+  const [rewindSec, setRewindSec] = useStored('sm64coin.rewindSec', REWIND_DEFAULT);
+  const rewindRef = useRef(rewindSec);
+  rewindRef.current = rewindSec;
   const [tick, setTick] = useState(0);
   const rec = useRef(null);
   useEffect(() => { e2eHook('__miner', { rec }); }, []); // test hook, ?e2e only (read-only use: the touch-controls test)
-  const ctl = useRef({ restart: false, forcePower: false, discard: false, pending: null, discardPending: false });
+  const ctl = useRef({ restart: false, forcePower: false, discard: false, pending: null, discardPending: false, used: new Set(), cur: null, launch: 0, signed: null, tipNoted: false });
+  useEffect(() => { e2eHook('__mineflow', { ctl, get outcome() { return outcomeRef.current; } }); }, []);
+  const outcomeRef = useRef(null);
+  outcomeRef.current = outcome;
   // The last attempt, for debugging: its pads and the template it was played for.
   const [last, setLast] = useState(null);
   const say = (m) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 50));
@@ -106,7 +122,15 @@ function Miner() {
     const timer = setInterval(async () => {
       try {
         const i = await daemon('get_info');
-        if (head && i.top_block_hash !== head) { c.restart = true; say(`new block ${i.height - 1} on the chain: new template; your cycle continues from its end`); }
+        const launch = launchFor(i, e2e() ? Number(window.__launchAt || 0) : 0);
+        c.launch = launch;
+        setLaunchAt(launch > Date.now() / 1000 ? launch : 0);
+        if (head && i.top_block_hash !== head) {
+          if (c.cur && c.used.has(c.cur.sm64_seed_hash)) {
+            // This template's run is sent: the block (yours, usually) lands on top of it. Keep the practice state; the next attempt waits for the player.
+            if (!c.tipNoted) { c.tipNoted = true; say(`new block ${i.height - 1} on the chain: you can keep practising here, but only a new template (▶| new) can be submitted`); }
+          } else { c.restart = true; say(`new block ${i.height - 1} on the chain: new template; your cycle continues from its end`); }
+        }
       } catch { /* daemon hiccup */ }
     }, 2000);
     // The time limit grows every second from the parent's timestamp, and the chain
@@ -126,31 +150,77 @@ function Miner() {
       } catch { /* daemon hiccup */ } finally { refreshing = false; }
     }, 5000);
     const kill = async () => stopped || c.restart;
-    // Seals and submits a finished run on its own template (a newer one has other
-    // mempool transactions, which would change the seed), stamped when it is valid.
+    // Seals and submits a finished run on its own template (a newer one has other mempool transactions, which would
+    // change the seed), stamped when it is valid. Returns {sent}: whether the node took the block (it may still hold it
+    // until it is due). The key signs ONE run: the template is marked used at once, and only a refusal by the node (it
+    // stored nothing) frees it again. "Block mined" is announced only when the block is seen in the chain (confirm below).
+    // The debug panel's "last attempt" while the attempt is still running (the run being submitted, or confirmed).
+    const markLast = (r, result) => setLast((l) => (l && l.template === r.t ? { ...l, result } : { template: r.t, pads: r.done.pads, won: true, result }));
     const submitRun = async (r) => {
       const { t, done, st } = r;
+      const seed = t.sm64_seed_hash;
+      const refused = (reason, kind = 'refused') => {
+        markLast(r, `rejected: ${reason}`);
+        setOutcome({ kind, height: t.height, frames: r.frames, reason });
+        say(`block not accepted: ${reason}`);
+        return { sent: false };
+      };
+      const proof = proofFromRun(done.pads, done.poked, st.kind === 'power-on');
+      if (!c.signed) c.signed = signedSeeds((() => { try { return localStorage; } catch { return null; } })());
+      const other = c.signed.signedOther(seed, bytesToHex(proof));
+      if (other !== null) return refused(`this template's key already signed a different run (${other} frames); only one run per template: start a new template (▶| new)`, 'notaccepted');
+      c.signed.record(seed, bytesToHex(proof), r.frames);
+      c.used.add(seed);
+      const now = Date.now() / 1000;
+      let ts = Math.max(Math.floor(now), r.validAt, templateTimestamp(t.blocktemplate_blob));
+      if (st.kind === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
       try {
-        let ts = Math.max(Math.floor(Date.now() / 1000), r.validAt, templateTimestamp(t.blocktemplate_blob));
-        if (st.kind === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
-        const blob = withTimestamp(t.blocktemplate_blob, ts);
-        const proof = proofFromRun(done.pads, done.poked, st.kind === 'power-on');
-        const sig = await signRun(t.minerKey, t.sm64_seed_hash, proof);
-        await daemon('submit_block', [seal(blob, proof, sig)]);
-        setLast((l) => ({ ...l, result: 'accepted' }));
-        announceMined(t.height, t.expected_reward);
-        say(ts > Date.now() / 1000 + 1
-          ? `★ BLOCK ${t.height} SENT: ${r.frames} frames (${frames(r.frames)}); nodes hold it until ${new Date(ts * 1000).toLocaleTimeString()}, when it fits the limit`
-          : `★ BLOCK ${t.height} ACCEPTED: ${r.frames} frames (${frames(r.frames)}), ${coins(t.expected_reward)} SM64 to you`);
+        const sig = await signRun(t.minerKey, seed, proof);
+        await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
       } catch (e) {
-        setLast((l) => ({ ...l, result: `rejected: ${e}` }));
-        say(`block rejected: ${e} (download the attempt below to debug)`);
+        const reason = refusalReason(e);
+        if (refusedBeforeClaim(e)) {
+          // Refused before the node recorded a claim for this template: a shorter run may still be tried here.
+          c.signed.forget(seed); c.used.delete(seed);
+          return refused(reason);
+        }
+        // The node may already hold a signed claim for this template (a second, different run would be equivocation), or the
+        // submission may have gone through: the key stays spent. Next attempt: a new template; save slots belong to this one.
+        setLast((l) => (l && l.template === t ? { ...l, result: `rejected: ${reason}` } : l));
+        setOutcome({ kind: 'notaccepted', fresh: true, height: t.height, frames: r.frames, reason: `${reason}. The node may already hold this run for the template, so it can't sign another: moving to a new template (your save slots belong to the old one and are dropped)` });
+        say(`block not accepted: ${reason}; new template (one run per template, the node may hold this one)`);
+        if (c.cur === t) c.restart = true;
+        return { sent: false };
       }
+      if (c.cur && c.cur.sm64_seed_hash === seed) setPractice(true);
+      markLast(r, 'sent');
+      setOutcome({ kind: 'sent', height: t.height, frames: r.frames, at: ts });
+      say(`block ${t.height} SENT: ${r.frames} frames (${frames(r.frames)}), stamped ${new Date(ts * 1000).toLocaleTimeString()}; waiting for the node to put it in the chain`);
+      // Not announced yet: look for it in the chain until a few seconds past its due time.
+      confirmBlock({
+        blockAt: async (h) => { try { const b = await daemon('get_block', { height: h }); return { prev_hash: b.block_header.prev_hash, blob: b.blob }; } catch { return null; } },
+        now: () => (stopped ? Infinity : Date.now() / 1000),
+        sleep,
+      }, t, t.minerKey.public_hex, ts).then((res) => {
+        if (stopped) return;
+        if (res.status === 'accepted') {
+          markLast(r, 'accepted');
+          setOutcome({ kind: 'accepted', height: t.height, frames: r.frames, reward: t.expected_reward });
+          announceMined(t.height, t.expected_reward);
+          say(`★ BLOCK ${t.height} ACCEPTED: ${r.frames} frames (${frames(r.frames)}), ${coins(t.expected_reward)} SM64 to you`);
+        } else {
+          markLast(r, `not accepted: ${res.why}`);
+          setOutcome({ kind: 'notaccepted', fresh: true, height: t.height, frames: r.frames, reason: res.why });
+          say(`block ${t.height} NOT accepted: ${res.why}; new template`);
+          if (c.cur === t) c.restart = true; // this template's one run is spent
+        }
+      });
+      return { sent: true };
     };
-    // The pending run (over the limit when finished): sent once its valid time is within the
-    // nodes' future-timestamp window (CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT, 120 s); dropped if a
-    // new block lands first.
-    const SEND_AHEAD = 100;
+    // The pending run (over the limit when finished): sent DEFAULT_LEAD (5 s) before it is valid,
+    // like the auto-miner (v0.3 nodes refuse an RPC submission due more than 30 s ahead:
+    // rules.rs RPC_SUBMIT_AHEAD_SECONDS); dropped if a new block lands first.
+    const SEND_AHEAD = DEFAULT_LEAD;
     const pendingTimer = setInterval(async () => {
       const p = c.pending;
       if (!p) return;
@@ -184,6 +254,7 @@ function Miner() {
           const won = successFor(t.sm64_rules);
           if (!won) { say(`unknown rules "${t.sm64_rules}": update web/src/lib/rules.js`); return; }
           if (head !== t.prev_hash) { c.forcePower = false; setRuns([]); }
+          c.cur = t; c.tipNoted = false; setPractice(false); setOutcome((o) => (o && (o.kind === 'sent' || o.fresh) ? { ...o, fresh: false } : null));
           head = t.prev_hash;
           c.tipTemplate = t;
           setTask(t); setLim(t.sm64_max_frames); setStartMode(t.sm64_start); setPowerOnAt(t.sm64_power_on_at || 0);
@@ -194,7 +265,16 @@ function Miner() {
           setPhase({ kind: 'ff', done: 0, total: 0 });
           let st;
           try {
-            st = await prepareStart(engine, t, power, (done, total) => setPhase({ kind: 'ff', done, total }), () => stopped);
+            // The auto-miner already holds this parent's end state (the node's headless state): translated once into the
+            // visual game (the reel's path) instead of replaying the whole cycle in the drawing engine.
+            const h = miner.hub;
+            if (!power && t.sm64_start !== 'power-on' && miner.running && h.parentRaw && h.roster?.template?.prev_hash === t.prev_hash) {
+              try {
+                const state = await loadStart(engine, h, 'parent');
+                st = { kind: 'parent', state, progress: readProgress(engine), cycle: null };
+              } catch { st = undefined; }
+            }
+            if (!st) st = await prepareStart(engine, t, power, (done, total) => setPhase({ kind: 'ff', done, total }), () => stopped);
           } catch (e) { say(`could not reach the start: ${e}`); await sleep(3000); continue; }
           if (!st) break;
           setStart(st);
@@ -204,39 +284,55 @@ function Miner() {
           const r = new Recorder(engine, withConfig(t), st, won, setClock);
           r.setLimit(c.tipTemplate && c.tipTemplate.prev_hash === head ? c.tipTemplate.sm64_max_frames : t.sm64_max_frames);
           rec.current = r;
-          const done = await r.run(kill);
+          let done = await r.run(kill);
+          // A finished run that is not final does not end the attempt: the game goes back a few seconds on the SAME template
+          // (slots kept) for a shorter run, until the run is sent, the tip changes, or the player asks for a new template.
+          while (done && !stopped && !c.restart) {
+            const nFrames = done.pads.length;
+            say(`goal reached after ${nFrames} frames (${frames(nFrames)})`);
+            const used = c.used.has(t.sm64_seed_hash);
+            if (used) {
+              say(`practice run: ${nFrames} frames; not submitted (this template's run is already sent). Start a new template (▶| new) for the next block.`);
+            } else {
+              setRuns((rs) => [...rs, { t: Date.now() / 1000 - t.sm64_parent_timestamp, frames: nFrames }]);
+              // When does a run this long become valid? (The limit grows with time; never before the chain's launch.)
+              let validAt = 0;
+              try {
+                const q = await daemon('get_block_template', templateParams(t.paysTo, t.minerKey, { sm64_frames: nFrames }));
+                validAt = q.sm64_valid_at || 0;
+              } catch (e) { say(`could not ask when the run is valid: ${e}`); }
+              if (stopped) break;
+              validAt = effectiveValidAt(validAt, c.launch);
+              const p = c.pending && c.pending.t.prev_hash === t.prev_hash ? c.pending : null;
+              const d = decideAfterWin({ now: Date.now() / 1000, validAt, frames: nFrames, used: c.used.has(t.sm64_seed_hash), pending: p });
+              const run = { t, done: { pads: [...done.pads], poked: [...done.poked] }, st, validAt, frames: nFrames }; // copies: the recorder rewinds its own arrays
+              if (d.action === 'keep-pending') {
+                say(`your pending run (${frames(p.frames)}) becomes valid sooner or as soon: this one (${frames(nFrames)}) is dropped. Play on for a shorter run.`);
+              } else if (d.action === 'hold') {
+                // Over the limit (or the chain is not open yet): keep it as the pending run, replacing a longer one (one run per
+                // template is signed, and signing happens when it is sent). Sent DEFAULT_LEAD s before it is valid, stamped with that time.
+                c.pending = run;
+                setPending({ validAt, frames: nFrames });
+                const early = c.launch && validAt <= c.launch;
+                say(early
+                  ? `found before the chain opens: kept (${nFrames} frames), sent automatically at ${new Date(validAt * 1000).toLocaleString()}. Play on for a shorter one.`
+                  : `over the time limit by ${nFrames - (c.tipTemplate ? c.tipTemplate.sm64_max_frames : 0)} frames: kept as your pending run${d.replaces ? ' (replacing the longer one)' : ''}, valid at ${new Date(validAt * 1000).toLocaleTimeString()} and sent automatically then. Play on: a shorter run becomes valid sooner.`);
+              } else if (d.action === 'send') {
+                if (c.pending) { c.pending = null; setPending(null); }
+                setPhase({ kind: 'submitting' });
+                await submitRun(run);
+              }
+            }
+            if (stopped || c.restart) break;
+            setPhase({ kind: 'play' });
+            r.rewindFromEnd(rewindRef.current);
+            done = await r.run(kill);
+          }
           rec.current = null;
           const result = done ? 'won' : r.skipped ? 'skipped' : c.restart ? 'interrupted' : 'out of frames';
-          setLast({ template: t, pads: [...r.pads], won: !!done, result });
+          setLast((l) => (c.used.has(t.sm64_seed_hash) && l && l.template === t ? { ...l, pads: [...r.pads] } : { template: t, pads: [...r.pads], won: !!done, result }));
           if (stopped) break;
-          if (!done) { if (!c.restart && !r.skipped) say('ran past the longest possible time limit: new attempt'); continue; }
-          const nFrames = done.pads.length;
-          say(`goal reached after ${nFrames} frames (${frames(nFrames)})`);
-          setRuns((rs) => [...rs, { t: Date.now() / 1000 - t.sm64_parent_timestamp, frames: nFrames }]);
-
-          // When does a run this long become valid? (The limit grows with time.)
-          let validAt = 0;
-          try {
-            const q = await daemon('get_block_template', templateParams(t.paysTo, t.minerKey, { sm64_frames: nFrames }));
-            validAt = q.sm64_valid_at || 0;
-          } catch (e) { say(`could not ask when the run is valid: ${e}`); }
-          if (stopped) break;
-          if (validAt > Date.now() / 1000) {
-            // Over the current limit: the auction. Keep it as the pending run (the one that becomes
-            // valid soonest) and play on for a shorter one; it is sent, stamped with its valid
-            // time, once that is within the nodes' future-timestamp window (they hold it until then).
-            const p = c.pending;
-            if (p && p.t.prev_hash === t.prev_hash && p.validAt <= validAt) {
-              say(`over the limit, and your pending run (${frames(p.frames)}) becomes valid sooner: this one is dropped. Play on for a shorter run.`);
-            } else {
-              c.pending = { t, done, st, validAt, frames: nFrames };
-              setPending({ validAt, frames: nFrames });
-              say(`over the time limit by ${nFrames - (c.tipTemplate ? c.tipTemplate.sm64_max_frames : 0)} frames: kept as your pending run, valid at ${new Date(validAt * 1000).toLocaleTimeString()} and sent automatically then. Play on: a shorter run becomes valid sooner.`);
-            }
-            continue;
-          }
-          setPhase({ kind: 'submitting' });
-          await submitRun({ t, done, st, validAt, frames: nFrames });
+          if (!done && !c.restart && !r.skipped) say('ran past the longest possible time limit: new attempt');
         }
       } finally { engine.set_audio_enabled(0); release(); }
     })();
@@ -378,8 +474,20 @@ function Miner() {
       {play.phase !== 'playing' && <ToolBtn onClick={cancelPlay} title="Throw the segment away and go back to the cloud">Cancel</ToolBtn>}
     </>
   );
+  const nowS = Date.now() / 1000 + tick * 0;
+  const outcomeText = outcome && (outcome.kind === 'sent'
+    ? `Block ${outcome.height} sent (${frames(outcome.frames)}); waiting for the node to put it in the chain${outcome.at > nowS + 1 ? `, due ${new Date(outcome.at * 1000).toLocaleTimeString()}` : ''}…`
+    : outcome.kind === 'accepted' ? `Block ${outcome.height} accepted: it is in the chain (${frames(outcome.frames)}, ${coins(outcome.reward)} SM64).`
+    : `Block ${outcome.height} not accepted: ${outcome.reason}.${outcome.kind === 'refused' ? ' Still on this template: play on for a shorter run.' : ''}`);
   const manualNormal = (
     <>
+      {launchAt > nowS && (
+        <div className="notice" data-testid="prelaunch" role="status">
+          The chain opens at <b>{new Date(launchAt * 1000).toLocaleString()}</b> (in {mmss(launchAt - nowS)}). Runs found earlier are kept and sent then: play on for a shorter one.
+        </div>
+      )}
+      {outcome && <div className={`notice${outcome.kind === 'accepted' || outcome.kind === 'sent' ? '' : ' warn'}`} data-testid="outcome" role="status">{outcomeText}</div>}
+      {practice && <div className="notice warn" data-testid="practice" role="status">Practice only: this template's run is already sent, so nothing played here can be submitted. The next block is a new attempt on a new template: press ▶| new (N).</div>}
       <div className="budget" title="Frames you have used of the current time limit. The limit grows from the last block's timestamp up to 20 minutes; you can play past it and wait for it to catch up.">
         <div className={`bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
         <span className="stat">{lim ? `${used} / ${lim} frames (${frames(used)} / ${frames(lim)})` : '—'}{over ? ` — ${used - lim} over: it becomes valid when the limit has grown to your run` : ''}</span>
@@ -401,6 +509,8 @@ function Miner() {
   const manualActions = (
     <>
       <NewTemplateBtn rec={rec} />
+      <ToolBtn title={`After a finished run that is not final (over the limit, or the chain not open yet) the game goes back ${rewindSec} s to try for a shorter one on the same template. Click to change.`}
+        onClick={() => setRewindSec(REWIND_CHOICES[(REWIND_CHOICES.indexOf(rewindSec) + 1) % REWIND_CHOICES.length])}>↺ {rewindSec}s</ToolBtn>
       {pendingRun && <ToolBtn onClick={() => { ctl.current.discardPending = true; }} title="Throw away the pending run (over the limit when it was finished)">Discard pending run</ToolBtn>}
       {fromStartBtn}
     </>
@@ -446,7 +556,7 @@ function Miner() {
             </Panel>
             {showAuto && (
               <React.Suspense fallback={loadingCard}>
-                <CloudView hub={hub} onPlay={reelPlay} onPlayFrom={playFrom} onGoal={(g) => miner.setGoal(g)} canPlayFrom={canPlayFrom} whyNot={hybridWhy} />
+                <CloudView hub={hub} onPlay={reelPlay} onPlayFrom={playFrom} onGoal={(g) => miner.setGoal(g)} goalShare={miner.goalShare} onGoalShare={(x) => miner.setGoalShare(x)} canPlayFrom={canPlayFrom} whyNot={hybridWhy} />
               </React.Suspense>
             )}
           </>
@@ -475,7 +585,7 @@ function Miner() {
                     <dl className="kv">
                       <dt>Block</dt><dd>{task.height}</dd>
                       <dt>Difficulty</dt><dd>{task.difficulty}</dd>
-                      <dt>Time limit now</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames)</dd>
+                      <dt>Accepting runs up to</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames){(limit ?? task.sm64_max_frames) >= MAX_RUN_FRAMES ? ': any run, the maximum' : `, loosens to ${frames(MAX_RUN_FRAMES)}`}</dd>
                       <dt>Pokes</dt><dd>{task.sm64_random_amount} × {task.sm64_burst_length} frames per {task.sm64_window_length}</dd>
                       <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
                       <dt>Paying</dt><dd>{isAddress(paying || '') ? <span className="mono" title={paying}>{short(paying)}</span> : <em>no address</em>}</dd>
@@ -666,7 +776,11 @@ function Help() {
         restart because the difficulty changed. You can keep playing past the limit (the bar turns red): if you reach the goal over budget, the run
         isn't lost, it just has to <b>wait</b> until the limit has grown to its length, shown as "valid in mm:ss", and
         is submitted automatically then, unless another block lands first (a run is for one parent block; then you
-        start the next block from that one). Ties go to the shorter run: of several runs waiting, the shortest
+        start the next block from that one). When you finish a run that can't be sent yet, the game goes back a few seconds
+        (↺, 3 s by default) on the same template so you can try for a shorter one; a shorter run replaces the waiting one,
+        and your save states stay. Before the chain opens (mainnet: 2026-11-26 00:00 UTC) a finished run is kept and sent at
+        the opening. Once a run is sent the template is used up (one run per template): you can practise on, but the next
+        block is a new attempt (▶| new). "Block mined" shows only once the block is seen in the chain. Ties go to the shorter run: of several runs waiting, the shortest
         becomes valid first.</p>
       <p><b>If the chain stalls</b> (no block for 4 hours, e.g. nobody can get past a hard spot), a block may start over
         from power-on instead: the "Reset cycle" button here turns on (it counts down until then). The Grand Star also ends the

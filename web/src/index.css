@@ -192,3 +192,25 @@ html { -webkit-text-size-adjust: 100%; }
   .replay-host .panel { width: 100%; max-width: 100%; max-height: none; }
   .replay-host .stage { min-height: 260px; }
 }
+
+/* Block page: runs on the envelope graph (lib/LimitChart.jsx with groups) and the replay picker. */
+.limitchart .sw.win { background: none; border: 2px solid var(--fg); height: 8px; width: 8px; border-radius: 50%; box-sizing: border-box; }
+.limitchart .dotg .hit { fill: transparent; }
+.limitchart .dotg .ring { fill: none; stroke: var(--fg); stroke-width: 1.5; }
+.limitchart .dotg.click { cursor: pointer; outline: none; }
+.limitchart .dotg.click:hover .dot, .limitchart .dotg.click:focus-visible .dot, .limitchart .dotg.sel .dot { stroke: var(--fg); }
+.run-picker { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+.run-picker h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.run-picker .rp-run + .rp-run { margin-top: 10px; }
+.run-picker .rp-who { font-size: 13px; margin-bottom: 4px; }
+.run-picker .rp-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.run-picker a.ui-btn { text-decoration: none; display: inline-block; }
+.run-picker .ui-btn[aria-disabled="true"] { opacity: 0.5; pointer-events: none; }
+.block-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; justify-content: space-between; margin-bottom: 10px; }
+.block-head h2 { margin: 0; }
+.block-head .ui-toolbar { margin: 0; }
+.run-chart .limitchart { max-width: 520px; }
+
+/* Info > Versions */
+.kv.vers { grid-template-columns: 6.5rem 1fr; gap: 8px 12px; }
+.kv.vers dd { word-break: break-word; overflow-wrap: anywhere; }

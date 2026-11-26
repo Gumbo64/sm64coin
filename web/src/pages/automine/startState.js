@@ -23,7 +23,7 @@ function getWorker() {
 }
 
 export function portableFromRaw(raw) {
-  const copy = raw instanceof ArrayBuffer ? raw.slice(0) : raw.slice().buffer; // a copy: it is transferred
+  const copy = raw instanceof ArrayBuffer ? raw.slice(0) : new Uint8Array(raw).slice().buffer; // a copy (the state may be a SharedArrayBuffer): it is transferred
   const id = nextId++;
   return new Promise((resolve, reject) => {
     jobs.set(id, { resolve, reject });

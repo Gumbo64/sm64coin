@@ -4,6 +4,7 @@
 // perturbation muted at full speed, and the game and the perturbation are exactly what the search had at the node.
 import { GamePad } from 'sm64-binds-frontend';
 import { encPads } from '../../lib/webminer/hybrid.js';
+import { checkPos } from './replayCheck.js';
 
 /** What `buildLocal` needs for node `sel` ({w, id, step}), or null when the page does not have it (use the mailbox). */
 export function localInputs(hub, sel) {
@@ -47,6 +48,9 @@ export async function buildLocal(engine, hub, sel, inp, onProgress = () => {}, k
       if (performance.now() - t0 > 40) { onProgress(i, total); if (kill()) return null; await yieldUi(); t0 = performance.now(); }
     }
   } finally { unmute(); }
+  // The rebuilt state must be where the search had the node (its cloud point): a mismatch is an error, not a wrong start.
+  const at = checkPos(engine.get_game_state().pos, sel.pos);
+  if (!at.ok) { pert.free(); throw new Error(`the rebuilt node is ${at.dist.toFixed(1)} units from where the search had it: not playing from a wrong state`); }
   const pertBytes = pert.toBytes();
   const start = { kind: 'node', state: captureState(engine, null, engine.powerOn), progress: readProgress(engine), pertBytes };
   pert.free();

@@ -1,3 +1,4 @@
+import { markOnce } from '../../lib/perf.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { CAP } from './hub.js';
 import { useHub, useVisible } from './useHub.js';
@@ -14,7 +15,7 @@ import { isTouchDevice } from '../../components/TouchPad.jsx';
 // and the view fitted.
 // Hybrid mining adds: "Play from here" on a selected node (a person plays on from its state, see HybridPlay.jsx; the
 // played segment becomes a manual node, drawn magenta, and the view highlights where it finished), and shift + left
-// click (without dragging) on the level geometry, which sets a position goal for the searches (Mario::PosTime to the point).
+// click (without dragging) on the level geometry, which sets a position goal for the searches (Mario::UserGoal to the point).
 // three.js is loaded when this view mounts, i.e. only with the visualisations on.
 
 const VIRIDIS = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
@@ -50,7 +51,7 @@ function surfaceColor(type, ny) {
 const CLOUD_KEY = 'sm64coin.cloudSettings';
 const loadCloud = () => { try { return { open: false, mode: 'stars', edges: true, ...(JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null') || {}) }; } catch { return { open: false, mode: 'stars', edges: true }; } };
 
-export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom = false, whyNot = '' }) {
+export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare = 0.35, onGoalShare, canPlayFrom = false, whyNot = '' }) {
   const v = useHub(hub);
   const box = useRef(null);
   const mount = useRef(null);
@@ -73,6 +74,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
   const cb = useRef({});
   const [goalArm, setGoalArm] = useState(false);
   const [goalNote, setGoalNote] = useState('');
+  const [share, setShare] = useState(goalShare);
   cb.current = { onGoal, armed: goalArm, disarm: () => setGoalArm(false), note: setGoalNote };
 
   // The zones with points, newest first.
@@ -278,6 +280,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
           }
           shown = k;
           geo.setDrawRange(0, k);
+          if (k > 0) markOnce('cloud-points-drawn');
           geo.attributes.position.needsUpdate = true;
           geo.attributes.color.needsUpdate = true;
           geo.boundingSphere = null;
@@ -581,6 +584,17 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
     if (active) { try { localStorage.setItem(GEOM_PREFS, JSON.stringify({ ...geomPrefs(), [active]: next })); } catch { /* not remembered */ } }
   };
   const goal = hub.goal;
+  // How near the tree has got: the closest sampled node in the goal's level and area.
+  let goalNear = null;
+  if (goal) {
+    const n = Math.min(hub.n, CAP);
+    for (let i = 0; i < n; i++) {
+      if (hub.level[i] !== goal.level || hub.area[i] !== goal.area) continue;
+      const dx = hub.pos[i * 3] - goal.pos[0], dy = hub.pos[i * 3 + 1] - goal.pos[1], dz = hub.pos[i * 3 + 2] - goal.pos[2];
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (goalNear === null || d < goalNear) goalNear = d;
+    }
+  }
   void v;
   const playHere = canPlayFrom && sel && sel.current;
   const why = !canPlayFrom ? whyNot : sel && !sel.current ? 'That node belongs to a search step that is over: pick a node of the current step.' : '';
@@ -598,6 +612,10 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
               {[...zones.entries()].map(([k, c]) => { const [l, a] = k.split(':'); return <option key={k} value={k}>{levelIcon(+l)} {levelName(+l)} · area {a} ({c})</option>; })}
             </select>
           </div>
+          <label htmlFor="cloud-goal">Goal strength</label>
+          <div className="ctl">
+            <input id="cloud-goal" type="range" min="0" max="100" step="5" value={Math.round(share * 100)} onChange={(e) => { const x = Number(e.target.value) / 100; setShare(x); onGoalShare && onGoalShare(x); }} title="The share of the searches' plans that start from the tree's state nearest the position goal and go for it (the rest search as usual)" /> <span className="muted">{Math.round(share * 100)}% of plans</span>
+          </div>
           <span className="lab">View</span>
           <div className="viz-btns">
             <button type="button" className={edges ? 'on' : ''} onClick={() => setEdges(!edges)} title="Each node's edge to its parent">Edges</button>
@@ -606,7 +624,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
             <button type="button" onClick={() => gl.current?.fit()}>Fit</button>
           </div>
           <span className="lab">Controls</span>
-          <span className="muted">left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms; left click selects a node; <b>shift + left click</b> on the level sets a position goal for the searches (a Mario::PosTime objective at that point). On a touch screen: <b>long-press the level</b> (or use the 🎯 Goal button, then tap it); drag pans, pinch zooms, tap selects.</span>
+          <span className="muted">left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms; left click selects a node; <b>shift + left click</b> on the level sets a position goal for the searches (a Mario::UserGoal objective at that point). On a touch screen: <b>long-press the level</b> (or use the 🎯 Goal button, then tap it); drag pans, pinch zooms, tap selects.</span>
         </form>
       )}>
       <div ref={mount} className="viz-gl" />
@@ -615,7 +633,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, canPlayFrom
         {sel ? (
           <span><b>{sel.manual ? 'Manual node' : 'Node'} {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame.toLocaleString()} ({clock(sel.frame)}){sel.progress ? ' · made progress' : ''}</span>
         ) : <span className="muted">{goalArm ? 'Tap the level where the goal should be.' : isTouchDevice() ? 'Tap a node to select it; long-press the level to set a goal.' : 'Click a node to select it; shift + click on the level sets a position goal.'}</span>}
-        {goal && <span className="muted small">{goalNote ? <b title="Which floor layer under the pointer the goal landed on (top = 1); the same spot again within 3 s picks the next one down">{goalNote} · </b> : null}Position goal ({goal.pos.join(', ')}) in {levelName(goal.level)}, area {goal.area}: the searches draw Mario::PosTime objectives to it.</span>}
+        {goal && <span className="muted small">{goalNote ? <b title="Which floor layer under the pointer the goal landed on (top = 1); the same spot again within 3 s picks the next one down">{goalNote} · </b> : null}Position goal active ({goal.pos.join(', ')}) in {levelName(goal.level)}, area {goal.area}: {Math.round(share * 100)}% of the searches' plans go for it · {goalNear === null ? 'no tree node in that area yet' : goalNear <= 150 ? 'reached' : `nearest node ${Math.round(goalNear).toLocaleString()} units away`}.</span>}
         {hub.manual && <span className="muted small">Last played segment: {hub.manual.nid != null ? `node ${hub.manual.nid} of worker ${hub.manual.w + 1}` : 'not in the tree'}, {hub.manual.frames} frames, finished at ({hub.manual.pos.map((x) => Math.round(x)).join(', ')}){hub.manual.note ? ` · ${hub.manual.note}` : ''}</span>}
       </div>
       <Toolbar label="Node actions">

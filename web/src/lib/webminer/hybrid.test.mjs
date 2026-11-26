@@ -19,6 +19,11 @@ const p0 = makeHybridPoll(b0), p1 = makeHybridPoll(b1);
 const poll = { tag: 'T', vkey: 'v0' };
 assert.deepEqual(JSON.parse(p0(JSON.stringify(poll))), { goal: { level: 5, area: 2, pos: [10, 20, 30] }, cmds: [] });
 
+// The goal's strength (share of plans) rides in the goal object to the worker.
+h.setGoal({ level: 5, area: 2, pos: [10, 20, 30], share: 0.5 });
+assert.equal(JSON.parse(p0(JSON.stringify(poll))).goal.share, 0.5);
+h.setGoal({ level: 5, area: 2, pos: [10, 20, 30] });
+
 // A state request reaches only the slot and step it names, once.
 const st = h.requestState(1, 7, 'v1', 1000);
 st.catch(() => {});

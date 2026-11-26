@@ -5,6 +5,7 @@
 // directly from the browser, which needs the node's CORS option
 // (--rpc-access-control-origins, see scripts/public-node.sh).
 // Wallet RPC always goes through the proxy.
+import { probeChain, chainNote } from './nodechain.js';
 const KEY = 'sm64coin.node';
 
 // A build for a static host (GitHub Pages) has no proxy: VITE_DEFAULT_NODE (e.g. the
@@ -17,6 +18,8 @@ let publicNode = '';
 let fallback = false; // this visit uses the public node
 export const getPublicNode = () => publicNode;
 export const usingPublicFallback = () => fallback;
+let note = ''; // visible warning about the node's chain (old v0.2 node), '' for none
+export const nodeNote = () => note;
 const chosen = () => { try { return (localStorage.getItem(KEY) || '').trim(); } catch { return ''; } };
 export const getNode = () => (chosen() || (fallback ? publicNode : DEFAULT_NODE)).replace(/\/+$/, '');
 
@@ -27,11 +30,20 @@ export async function resolveNode() {
     const r = await withTimeout(fetch(`${import.meta.env.BASE_URL}public-node.json`, { cache: 'no-cache' }), 3000);
     if (r.ok) publicNode = String((await r.json()).url || '').trim().replace(/\/+$/, '');
   } catch { /* no public node */ }
-  if (chosen() || !publicNode || !DEFAULT_NODE) return;
-  try {
-    await withTimeout(call(`${DEFAULT_NODE}/json_rpc`, 'get_info'), 2500);
-  } catch {
+  const pick = chosen();
+  if (pick) { // a node the user chose is respected, but warned about when it is on another chain
+    const probe = (await probeChain((m, p) => withTimeout(call(`${pick}/json_rpc`, m, p), 2500))).state;
+    note = chainNote({ chosen: true, node: pick, probe });
+    return;
+  }
+  if (!DEFAULT_NODE) return;
+  const probe = await probeChain((m, p) => withTimeout(call(`${DEFAULT_NODE}/json_rpc`, m, p), 2500));
+  if (probe.state === 'ok') return;
+  if (publicNode) {
     fallback = true;
+    note = chainNote({ fallbackFrom: probe.state, publicNode });
+  } else if (probe.state === 'wrong-chain') {
+    note = chainNote({ chosen: true, node: DEFAULT_NODE, probe: probe.state });
   }
 }
 export const setNode = (url) => {

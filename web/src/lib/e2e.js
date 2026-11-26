@@ -15,3 +15,6 @@ export function e2eHook(name, value) {
   if (e2e()) window[name] = value;
   return value;
 }
+
+import { allMarks } from './perf.js';
+if (e2e()) window.__sm64marks = allMarks;

@@ -19,25 +19,30 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
-### A new chain
+### 0.3.3: fixes (no consensus change)
 
-**0.3 starts a new chain on 2026-11-26 at 00:00 UTC (10:00 AEST). The 0.2 chain ends there.** 0.3 nodes only talk to 0.3 nodes.
+- **Miners:** `automine` no longer exits when a run's pokes pick "save and quit" in the star's save menu (about 1.5 % of
+  templates): the start settles through the title screen, and any failed attempt moves on to the next template.
+- **Nodes:** `get_info` and `get_version` report `sm64coin_version`, `sm64_game_build` and `sm64_rules`, also on the
+  restricted RPC, so wallets and the website can show which node version they talk to.
+- **Website** (also live on GitHub Pages): versions on the Info page with a short explainer of the auction; block pages
+  with the envelope graph and a replay picker; faster replays from saved block states; the auto-miner's position goal
+  as its own objective with a strength setting; new areas shared between workers within a second; faster start-up;
+  a check that the node is on this chain (old 0.2 nodes fall back to the public node).
 
-- **Node operators:** install 0.3 and start with a fresh data dir (move or delete `~/.sm64coin`, keep your wallet files). Ports are unchanged.
-- **Wallets:** the same keys and addresses work. The wallet app and the web wallet rescan the new chain on their own; with the CLI wallet, keep the `.keys` file, delete the cache file and restore from height 0.
-- **Miners and bots:** update. Blocks without a signed proof are invalid on 0.3 (see `BOTS.md`, "Signed proofs").
+### 0.3.2: a security fix (no consensus change)
 
-### Changes
+- **Fix:** a crafted run-length proof with a run length near 2^64 could wrap the decoder's limit check and
+  crash a node (or, on 32-bit/WebAssembly builds, be read as a different length). The length is now checked
+  before any addition or cast, in the node and in the web wallet. Every valid block is decoded exactly as
+  before. Found by the new formal checks (Kani). **Update your node.**
 
-- **Signed proofs:** every block's run is signed by a key the miner commits in its template, so nobody else can submit a variant of your run. Checked in about 0.1 ms, before any replay.
-- **One run per block:** a miner signs one run per template. Two different signed runs from one key are equivocation, and nodes build around the equivocator's block. Miners keep improving privately and submit their best run just before it is due.
-- **20-minute blocks** (were 5). One-thread and browser miners can now win blocks; rewards per day are unchanged.
-- **Fairer races:** within 30 s of the first valid block, a strictly shorter run from another miner takes its place (equal lengths: the same winner at every node), and nodes no longer relay stale-stamped blocks.
-- **Replay queue:** nodes check signatures on arrival, replay claims only when they are due and only if they could matter, shortest first, in parallel, outside the blockchain lock.
-- **Finality and locks:** nodes never reorganise more than 36 blocks (about 12 h; operators can override). Mined rewards unlock after 72 blocks (24 h); received coins are spendable after 3 blocks (1 h).
-- **Leaderboard:** joining sends the heights of your mined blocks, which nodes check instead of scanning the chain; the board updates live with each block. Operators can turn it off (`--sm64-no-leaderboard`).
-- **Hardening:** a security and DoS review of the node, RPC, leaderboard, wallet app and launcher (see `docs/DOS.md`). The wallet app's and launcher's local site only pass the website's own calls to the node.
-- The website's updates since 0.2.9 (save states, full-screen toolbars, touch goals, automatic worker sync), now in the wallet app's local site too.
+**0.3.1** (still in this release): smaller proofs from the miners' input normaliser, no reserved controller
+bits in miners' runs, clearer RPC refusals, a cache fix, and the leaderboard's test tools.
+Same chain, genesis, ports and data dir as 0.3.0: just replace the binaries.
+
+**Coming from 0.2?** 0.3 started a new chain on 2026-11-26 00:00 UTC: use a fresh data dir and let your wallet
+rescan (see the [0.3.0 notes](https://github.com/Gumbo64/sm64coin/releases/tag/v0.3.0)).
 
 Update: required
 

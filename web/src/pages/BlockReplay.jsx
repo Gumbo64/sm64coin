@@ -55,7 +55,8 @@ export default function BlockReplay({ block, cycle, panel }) {
     });
     const start = regions[regions.length - 1].from;
     const milestones = [...new Set([0, ...regions.flatMap((r) => [r.from, r.to])])].sort((a, b) => a - b);
-    return { pads: rawToPads(c.played_pads), regions, start, milestones, skipped: c.skipped, last: c.blocks[c.blocks.length - 1] };
+    const boundaries = regions.slice(0, -1).map((r) => ({ frame: r.to, hash: r.hash }));
+    return { pads: rawToPads(c.played_pads), regions, start, boundaries, milestones, skipped: c.skipped, last: c.blocks[c.blocks.length - 1] };
   }, [cycle]);
 
   // ?f=N: a frame of the cycle (0 = its first frame) to be at instead of the block's start.
@@ -74,11 +75,11 @@ export default function BlockReplay({ block, cycle, panel }) {
         replay={replay}
         initial={{ frame: first, speed: 1, playing: true }}
         onRewind={() => {}}
-        onClose={() => nav('/')}
-        backLabel="← Explorer"
+        onClose={() => nav(`/block/${h.hash}`)}
+        backLabel={`← Block ${h.height}`}
         milestones={run.milestones}
         /* window.__player: for the e2e scripts (?e2e only) */
-        makePlayer={(r, onChange) => e2eHook('__player', (player.current = new CyclePlayer(r.pads, onChange, { start: run.start, task, won })))}
+        makePlayer={(r, onChange) => e2eHook('__player', (player.current = new CyclePlayer(r.pads, onChange, { start: run.start, task, won, boundaries: run.boundaries })))}
         topbarExtra={() => (
           <span className="row tight small">
             <Link to={`/block/${h.height - 1}`} title="Previous block">‹ block {h.height - 1}</Link>

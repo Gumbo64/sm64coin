@@ -30,11 +30,10 @@ the Monero fork beyond `SM64COIN`-marked one-line hooks, and the wallet's key de
 2. **Per-IP budget refinements.** Peers behind one NAT share a budget, IPv6 addresses are cheap, and
    RPC behind a proxy sees one address. Group IPv6 by /64, trust a configured proxy's
    `X-Forwarded-For`, and test with the attack tool (`pow/tools/dos/attack.py`).
-3. **Leaderboard scaling.** The leaderboard rescans the whole chain per entry; fine now, slow at
-   ~10^5 blocks. Make it incremental (index by height), with a test that a rescan and the incremental
-   result agree.
-4. **`submit_block` honesty.** When the node's budget refuses a submission it can still answer OK.
-   Return a distinct status the miners understand (and update the miners to show it).
+3. **Leaderboard tests.** v0.3 replaced chain scans with claimed heights and live updates. Port the
+   functional checks and benches (scratch scripts `func.py`, `bench.py`) into the repo, add a real P2P
+   flood test (a Levin client), and per-peer limits that survive reconnects.
+4. **`submit_block` honesty** (done in v0.3: refusals are errors). Check every miner shows them.
 5. **Pi performance.** Replays on a Raspberry Pi–class aarch64 board are ~15× slower than x86.
    Profile the emulator on aarch64 (perf), and try build flags / LTO / PGO. *Done when:* measured
    frames/s on aarch64 improves with byte-identical verdicts.
@@ -59,11 +58,19 @@ the Monero fork beyond `SM64COIN`-marked one-line hooks, and the wallet's key de
 
 ## Proofs and codecs
 
-10. **Smaller proofs without a fork.** An encoder-side normaliser shrank proofs 10–13% with no
-    consensus change (branch `codec-research`). Turn it into a production encoder option with the
-    vectors still matching and every re-encoded chain block verifying.
-11. **More codec research.** Better state-aware models for codecs 4/5 (decoder changes are consensus,
-    so treat this as research: report size wins with a full chain re-encode, and propose).
+10. **Smaller proofs without a fork.** An encoder-side normaliser shrank proofs about 12% with no
+    consensus change (branches `codec-research`, `compressor-research`). Ship it in the miners
+    (`encode_best` over codecs 4/5), replay-checking every sealed run. Smaller proofs also win
+    equal-length ties from v0.3 on.
+11. **The compressor (ongoing).** Proofs are compressed per run; a better input model is both a smaller
+    proof and a better Mario model. Directions, each measured in bits per frame on the chain's runs,
+    published TAS movies and our own 120-star run, with decode speed on x86 and a Raspberry Pi:
+    outcome-equivalent canonicalisation (among pads that give a bit-identical game state, pick the one
+    the model finds most likely); per-channel modelling (button press/release durations, the stick in
+    polar and in Cartesian form, deltas and holds); decision lists/trees and genetic programs over
+    game state and frame index sent with the run (two-part codes); context mixing, CTW and PPM.
+    Decoders must be deterministic (integer arithmetic, no GPU). From v0.4 on encodings are meant to be
+    node-side and versioned (see V0.4-DESIGN.md once it exists); until then a new codec id is consensus.
 
 ## Save-state translator (sm64-binds)
 
@@ -86,7 +93,26 @@ the Monero fork beyond `SM64COIN`-marked one-line hooks, and the wallet's key de
 
 ## Research (simulations, no rule changes)
 
-17. **Auction simulator extensions.** `pow/tools/auction/headstart/` (branch `headstart-research`)
+17. **Auction simulator extensions (ongoing).** `pow/tools/auction/headstart/` (branch `headstart-research`)
     simulates the time-limit auction with many miners. Useful additions: measured run-length-vs-compute
     curves, network latency models, and private-chain attack depth under different fork-choice rules.
-    Results inform, but don't make, consensus decisions.
+    Results inform, but don't make, consensus decisions. Open questions: the near-the-floor world
+    (cheap searches, bunched run lengths, tie-break grinding), an adaptive slope retarget, proof
+    rewards, per-star block-time variance.
+
+## Data
+
+18. **Chain dataset export** (branch `chain-export`): per-cycle m64 movies from power-on (effective
+    inputs, pokes applied), per-block segments with start states and metadata, optional per-frame
+    state features. Publish periodic snapshots. Check that every export replays to the chain's states.
+19. **Branching sampler for world-model data.** From states on the chain, generate counterfactual
+    rollouts with the emulator. Record the sampler (uniform coverage vs objective-biased) in the
+    dataset's metadata; measure coverage rather than assume it.
+20. **Imitation cost** (branch `imitation-cost`): how cheaply a published winning run can be re-adapted
+    to another seed. It decides how much v0.4's included proofs measure compute.
+
+## Node and network: more
+
+21. **Same-length claim bursts.** On a Raspberry Pi, 100 equal-length fake claims from 40 addresses
+    still delay an honest block by about 18 s (docs/DOS.md). Try chunked, interleaved replays and a
+    stronger preference for sources that sent valid claims before, without changing any verdict.

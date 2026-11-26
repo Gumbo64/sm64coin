@@ -13,10 +13,13 @@ import { frames as fmtFrames } from '../format.js';
 import { boardSize, setVizFlag, patchMail } from './board.js';
 import { RESET_MODES, initialStart, afterFailure, restartAt } from '../resetPolicy.js';
 import { announceMined } from '../payout.js';
+import { confirmBlock } from '../mineflow.js';
 import { VizHub } from '../../pages/automine/hub.js';
 import { e2eHook } from '../e2e.js';
+import { mark, markOnce } from '../perf.js';
 import { offerRun, holdUntilValid, signedSeeds, clampLead, DEFAULT_LEAD, waitRecordsReady, offerAsProof, proofVerdict } from './bestRun.js';
 import { Hybrid } from './hybrid.js';
+import { parentState, forWorker } from './parentState.js';
 import { getPlayFromStart, setPlayFromStart, subscribePlayFromStart } from '../hybridSetting.js';
 
 /** Hybrid mining's channel to the workers (a person plays from a tree node, a position goal); see hybrid.js. */
@@ -25,25 +28,6 @@ export const hybrid = new Hybrid();
 export const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
 const now = () => Date.now() / 1000;
 
-// A save state is ~8 MiB; never inflate more than this (a gzip bomb from a hostile node).
-const MAX_STATE_BYTES = 32 << 20;
-// Reads a stream to an ArrayBuffer, failing as soon as it passes `max` bytes.
-async function readCapped(stream, max) {
-  const parts = [];
-  const r = stream.getReader();
-  let n = 0;
-  for (;;) {
-    const { done, value } = await r.read();
-    if (done) break;
-    if (n + value.length > max) { r.cancel().catch(() => {}); throw new Error(`state larger than ${max} bytes`); }
-    parts.push(value);
-    n += value.length;
-  }
-  const out = new Uint8Array(n);
-  let o = 0;
-  for (const p of parts) { out.set(p, o); o += p.length; }
-  return out.buffer;
-}
 // Workers can sync their searches (SharedArrayBuffer) only in a cross-origin-isolated page: the
 // service worker coi-sw.js sets the headers GitHub Pages can't (one reload after enabling it).
 export const isolated = typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
@@ -96,6 +80,7 @@ class MinerController {
     this.lead = clampLead(ls('sm64coin.submitLead', String(DEFAULT_LEAD)));
     this.signed = signedSeeds((() => { try { return localStorage; } catch { return null; } })());
     this.vizOn = ls('sm64coin.viz', '1') !== '0';
+    this.goalShare = Math.max(0, Math.min(1, Number(ls('sm64coin.goalShare', '0.35')) || 0));
     this.playFromStart = getPlayFromStart();
     hybrid.onLog = (slot, text) => this.say(`worker ${slot + 1}: ${text}`);
     subscribePlayFromStart((on) => { this.playFromStart = on; this.emit(true); });
@@ -192,10 +177,18 @@ class MinerController {
   setPlayFromStart(on) { setPlayFromStart(on); }
   /** A position goal for the searches ({level, area, pos} from the visualiser's shift + left click) or null. */
   setGoal(goal) {
+    if (goal) goal = { level: goal.level, area: goal.area, pos: goal.pos, share: this.goalShare };
     hybrid.setGoal(goal);
     this.hub.setGoal(goal);
-    if (goal) this.say(`position goal: ${goal.pos.map((x) => Math.round(x)).join(', ')} (level ${goal.level}, area ${goal.area}): the searches draw Mario::PosTime objectives to it`);
+    if (goal) this.say(`position goal: ${goal.pos.map((x) => Math.round(x)).join(', ')} (level ${goal.level}, area ${goal.area}): ${Math.round(goal.share * 100)}% of the searches' plans go for it (Mario::UserGoal objectives)`);
     else this.say('position goal cleared');
+  }
+  /** How strongly the position goal pulls: the share (0..1) of the searches' plans that start from the tree's state nearest the goal. */
+  setGoalShare(x) {
+    this.goalShare = Math.max(0, Math.min(1, Number(x) || 0));
+    lsSet('sm64coin.goalShare', String(this.goalShare));
+    if (this.hub.goal) this.setGoal(this.hub.goal);
+    else this.emit(true);
   }
   /** The Auto-mine page is on screen (the views redraw); off screen the data still collects. */
   setViewing(on) { this.hub.live = on; if (on) this.hub.notify(); }
@@ -244,6 +237,7 @@ class MinerController {
   start() {
     if (!isAddress(this.address)) { this.say('enter your SM64… address first'); return; }
     this.stop();
+    mark('start-pressed');
     this.noSubmit = false; // a mock session (?vizmock=1) earlier in this page must not keep real runs from being submitted
     const c ={ stopped: false, pool: [], attempt: 0, template: null, status: [], count: this.count };
     this.c = c;
@@ -311,6 +305,7 @@ class MinerController {
       }
       t.payout = payout;
       t.tip = tip || t.prev_hash;
+      mark('template');
       t.minerKey = key; // travels with the template, hence with every run held for it
     } catch (e) {
       say(`no template: ${e}; retrying in 10 s`);
@@ -328,14 +323,12 @@ class MinerController {
     const start = first.start;
     c.restartAt = restartAt(this.mode, t.sm64_start, t.sm64_power_on_at || 0);
     let parentPads = '';
-    let parentState = null; // the parent's end state from the node (it has it cached)
+    let parentState_ = null; // the parent's end state from the node (it has it cached): an ArrayBuffer / SharedArrayBuffer
     // Parent start state (also fetched for "either": a worker may fall back to power-on later,
     // and the parent search needs it first).
     if (start === 'parent') {
       try {
-        const s = await daemon('get_sm64_state', { hash: t.prev_hash });
-        const gz = new Blob([hexToBytes(s.state_gz)]).stream().pipeThrough(new DecompressionStream('gzip'));
-        parentState = await readCapped(gz, MAX_STATE_BYTES);
+        parentState_ = await parentState(t.prev_hash);
         say(`block ${t.height}: the parent's end state from the node (${t.sm64_parent_stars} stars, ${t.sm64_parent_keys} keys)`);
       } catch (e) {
         // An older node, or the state isn't cached: rebuild it from the cycle.
@@ -355,9 +348,10 @@ class MinerController {
     say(`block ${t.height}: ${count} worker${count === 1 ? '' : 's'} searching (start ${start}, limit ${fmtFrames(t.sm64_max_frames)} now)`);
     const status = Array.from({ length: count }, (_, i) => ({ salt: c.attempt * 1000 + i, line: 'loading the game…', runs: 0, fails: 0, start }));
     c.status = status;
+    mark('workers-launching');
     const show = () => { this.workers = status.map((s) => ({ ...s })); this.emit(); };
     show();
-    hub.newRound({ template: t, starts: status.map((s) => s.start), parentRaw: parentState });
+    hub.newRound({ template: t, starts: status.map((s) => s.start), parentRaw: parentState_ });
     // The block's first castle step is the same for every worker: the first to finish it shares
     // the outcome (and the files it left), the others drop their own castle search and go on from
     // it with their own salts. Per start (a power-on worker's castle differs from a parent one's).
@@ -398,8 +392,11 @@ class MinerController {
       w.onmessage = (e) => {
         const m = e.data;
         if (c.stopped || c.template !== t || c.pool[i] !== w) return;
+        if (m.type === 'mark') { mark(`w${i}:${m.name}`, m.at); return; }
+        markOnce(`w${i}:first-${m.type}`);
         if (this.phase === 'loading') this.setPhase('mining');
         if (m.type === 'log') {
+          if (/ready at frame/.test(m.line)) mark(`w${i}:boot-done`);
           status[i].line = m.line;
           hub.log(i, m.line);
           show();
@@ -465,17 +462,18 @@ class MinerController {
       };
       // A worker that never ran (its module failed to load) is a failed search too, not a dead slot.
       w.onerror = (ev) => { ev.preventDefault(); w.onmessage({ data: { type: 'error', message: ev.message || 'the worker failed to start' } }); };
+      const [stateBuf, stateXfer] = status[i].start === 'parent' && parentState_ ? forWorker(parentState_) : [null, []];
       w.postMessage({
         type: 'mine',
         request: { start: status[i].start, parent_pads: parentPads, seed_hash: t.sm64_seed_hash, miner_secret: t.minerKey.secret_hex, retarget_difficulty: t.sm64_retarget_difficulty, salt: status[i].salt, threads: 1,
           // The best run so far (same start): only a shorter one counts, biased by its objectives.
           ...(c.best && c.best.start === status[i].start ? { beat: c.best.frames, guide_keys: [...new Set(c.best.keys || [])] } : {}) },
-        parentState: status[i].start === 'parent' && parentState ? parentState.slice(0) : null,
+        parentState: stateBuf,
         viz: true, // the sampler is always on: with the feed off it only reports a frame count
         vizOn: this.vizOn,
         shared: sh,
         board: board && { sab: board, slot: i, slots: count },
-      });
+      }, stateXfer);
     };
     for (let i = 0; i < count; i++) launch(i);
   }
@@ -568,12 +566,22 @@ class MinerController {
       this.signed.record(t.sm64_seed_hash, r.proof, r.frames);
       const sig = await signRun(t.minerKey, t.sm64_seed_hash, proof);
       if (!this.noSubmit) await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
-      this.stats = { ...this.stats, accepted: this.stats.accepted + 1 };
-      hub.submission('accepted', { height: t.height, frames: r.frames });
-      announceMined(t.height, t.expected_reward);
-      this.flash = { kind: 'accepted', until: Date.now() + 8000 };
-      setTimeout(() => this.emit(true), 8100);
-      say(`★ BLOCK ${t.height} SUBMITTED: ${r.frames} frames, to ${this.address.slice(0, 12)}…`);
+      if (this.noSubmit) { this.blockMined(t, r, say); return; }
+      // The node took it (it may hold it until it is due): "mined" is announced only once the block is in the chain.
+      hub.submission('sent', { height: t.height, frames: r.frames });
+      say(`block ${t.height} SENT: ${r.frames} frames; waiting for the node to put it in the chain`);
+      confirmBlock({
+        blockAt: async (h) => { try { const b = await daemon('get_block', { height: h }); return { prev_hash: b.block_header.prev_hash, blob: b.blob }; } catch { return null; } },
+        now, sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+      }, t, t.minerKey.public_hex, ts).then((res) => {
+        if (res.status === 'accepted') this.blockMined(t, r, say);
+        else {
+          say(`block ${t.height} NOT accepted: ${res.why}`);
+          hub.submission('rejected', { height: t.height, frames: r.frames, note: res.why });
+          this.flash = { kind: 'rejected', until: Date.now() + 10000 };
+          setTimeout(() => this.emit(true), 10100);
+        }
+      });
     } catch (e) {
       say(`block rejected: ${e}`);
       hub.submission('rejected', { height: t.height, frames: r.frames, note: String(e) });
@@ -585,6 +593,15 @@ class MinerController {
     }
   }
 }
+
+MinerController.prototype.blockMined = function blockMined(t, r, say) {
+  this.stats = { ...this.stats, accepted: this.stats.accepted + 1 };
+  this.hub.submission('accepted', { height: t.height, frames: r.frames });
+  announceMined(t.height, t.expected_reward);
+  this.flash = { kind: 'accepted', until: Date.now() + 8000 };
+  setTimeout(() => this.emit(true), 8100);
+  say(`★ BLOCK ${t.height} ACCEPTED: ${r.frames} frames, to ${this.address.slice(0, 12)}…`);
+};
 
 export const miner = new MinerController();
 e2eHook('__sm64miner', miner); // for the e2e scripts (?e2e only)

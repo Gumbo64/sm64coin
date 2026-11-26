@@ -84,6 +84,7 @@ jobs:
         working-directory: web
         env:
           VITE_SM64COIN_VERSION: ${{ env.VERSION }}   # the site's "update available" check compares it with the latest release
+          VITE_GIT_SHA: ${{ github.sha }}
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist

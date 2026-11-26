@@ -7,7 +7,10 @@ import { SPEEDS } from './hub.js';
 import { Toolbar, ToolBtn } from '../../components/ui.jsx';
 import { acquireEngine } from '../../components/EngineSlot.jsx';
 import { loadStart, portableFor } from './startState.js';
+import { markOnce } from '../../lib/perf.js';
 import { frames as fmtFrames } from '../../lib/format.js';
+import { makePert, fastForwardPert, padAt } from './replay.js';
+import { checkPos } from './replayCheck.js';
 
 // The reel: the Mine page's game panel while the auto-miner runs and nobody plays: the shared visual engine (EngineSlot)
 // replaying
@@ -17,7 +20,6 @@ import { frames as fmtFrames } from '../../lib/format.js';
 // Rendering pauses when the canvas is off screen or the tab is hidden.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const padOf = (raw, i) => new GamePad(raw[i * 4] | (raw[i * 4 + 1] << 8), (raw[i * 4 + 2] << 24) >> 24, (raw[i * 4 + 3] << 24) >> 24);
 
 /** The reel's settings form (the game panel's ⚙ while the auto-miner shows the reel). */
 export function ReelSettings({ hub }) {
@@ -81,6 +83,47 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
   const gameId = hub.game.id;
   const kind = hub.game.kind;
 
+  // Until the first highlight there is nothing of the search to replay: the game shows the block's start instead, so the
+  // panel is alive from the first seconds. Power-on: the fixed boot (the logo, the title, the file select) played at 4x; the
+  // parent's start: the node's end state, translated once (startState.js, cached for the round's other views). Unperturbed and
+  // only decorative: the first clip restores its own start state.
+  useEffect(() => {
+    if (!ready || gameId) return undefined;
+    let dead = false;
+    (async () => {
+      const release = await acquireEngine();
+      try {
+        const e = eng.current;
+        const kind = hub.workers[0]?.start;
+        if (dead || !kind) return;
+        if (kind === 'power-on') {
+          const { restoreState } = await import('../../lib/savestate.js');
+          restoreState(e, null, e.powerOn);
+          const pad = new GamePad(0, 0, 0);
+          let i = 0, last = performance.now(), owed = 0;
+          while (!dead && i < 1680) {
+            const n = await new Promise((res) => requestAnimationFrame((now) => { owed += Math.min(now - last, 250) * 0.03 * 4; last = now; const k = Math.floor(owed); owed -= k; res(k); }));
+            if (!visRef.current) continue;
+            for (let k = 0; k < n && i < 1680; k++, i++) {
+              pad.button = i % 2 === 0 ? 0x8000 : (i >= 150 && i < 160) || (i >= 200 && i < 300) ? 0x1000 : 0;
+              e.step_game(pad);
+            }
+            setInfo({ text: 'starting the game (power-on); waiting for the first highlight of the search…', frame: i, total: 1680, star: false, verdict: '', prog: { frac: i / 1680 } });
+          }
+          if (!dead) setInfo({ text: 'waiting for the first highlight (a new place or a faster route)…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
+        } else {
+          while (!dead && !hub.parentRaw) await sleep(300);
+          if (dead) return;
+          setInfo({ text: 'loading the block\'s start state…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
+          await loadStart(e, hub, 'parent');
+          markOnce('start-shown');
+          if (!dead) setInfo({ text: 'the block\'s start (the parent\'s end state); waiting for the first highlight…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
+        }
+      } finally { release(); }
+    })().catch(() => {});
+    return () => { dead = true; };
+  }, [ready, gameId, hub.round]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (ready && !gameId) setInfo({ text: 'waiting for the first highlight (a new place or a faster route)…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
     if (!ready || !gameId) return undefined;
@@ -90,8 +133,8 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
       try { if (!dead) await drive(); } finally { release(); }
     };
     const drive = async () => {
-      const [{ restoreState }, { Perturbation, perturbReady, readProgress }, { withConfig }, { successFor }, { fastForward }] = await Promise.all([
-        import('../../lib/savestate.js'), import('../../lib/perturb.js'), import('../../lib/task.js'), import('../../lib/rules.js'), import('../../lib/cycle.js'),
+      const [{ restoreState }, { Perturbation, perturbReady, readProgress }, { withConfig }, { successFor }] = await Promise.all([
+        import('../../lib/savestate.js'), import('../../lib/perturb.js'), import('../../lib/task.js'), import('../../lib/rules.js'),
       ]);
       await perturbReady();
       const e = eng.current;
@@ -169,6 +212,9 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
           return;
         }
         if (!sk) { note('waiting for the worker to send the step\'s start state…', { prog: { frac: null } }); await sleep(700); if (dead || hub.game.id !== g1.id) return; continue; }
+        // The step's root perturbation travels with its start state; a step start without it can't be replayed faithfully.
+        if (p.rootRaw && !p.rootPert && g1.kind === 'clip') { if (!hub.reelAdvance()) { hub.game = { id: hub.game.id + 1 }; hub.notify(); } return; } // a clip is queued with what it needs, or never plays
+        if (p.rootRaw && !p.rootPert) { note('waiting for the worker to send the step\'s perturbation…', { prog: { frac: null } }); await sleep(700); if (dead || hub.game.id !== g1.id) return; continue; }
         let st = snaps.get(sk);
         if (!st) {
           try {
@@ -189,7 +235,21 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
           snaps.set(sk, st);
         }
         restoreState(e, null, st);
+        markOnce('reel-playing');
+        const pert = makePert(Perturbation, withConfig(hub.template), p.rootRaw ? p.rootPert : null);
+        try {
         const total = p.raw.length / 4;
+        // The start must be where the search had the step's root (its first cloud point): else show nothing rather than a wrong replay.
+        const stepN = g1.kind === 'clip' ? g1.clip.step : g1.step;
+        const rootCheck = g1.kind === 'best' || hub.mock ? { ok: true } : checkPos(frameAt().pos, hub.nodePos(g1.kind === 'clip' ? g1.clip.w : g1.w, stepN, 0));
+        if (!rootCheck.ok) {
+          hub.lastReplay = { id: g1.id, kind: g1.kind, w: g1.w, ok: false, stage: 'start', dist: rootCheck.dist, sk };
+          note(`replay not shown: its start state is ${rootCheck.dist.toFixed(0)} units from where the search's step starts`, { error: true });
+          await sleep(3000);
+          if (dead || hub.game.id !== g1.id) return;
+          if (!hub.reelAdvance()) { hub.game = { id: hub.game.id + 1 }; hub.notify(); }
+          return;
+        }
         let i = 0;
         const myGame = g1.id;
         const label = g1.kind === 'clip' ? g1.clip.label : g1.kind === 'node' && !said ? `worker ${g1.w + 1}'s node ${g1.nid}` : `worker ${g1.w + 1}'s best path`;
@@ -200,7 +260,7 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
         const skipTo = cs.start === 'step' ? 0 : Math.max(0, total - Math.round(cs.leadSec * 30));
         if (skipTo > 0) {
           setInfo((x) => ({ ...x, text: `${label} · skipping ahead…` }));
-          const ok = await fastForward(e, p.raw, 0, skipTo, (d) => { i = d; setInfo((x) => ({ ...x, frame: d, prog: { frac: d / total } })); }, () => dead || hub.game.id !== myGame);
+          const ok = await fastForwardPert(e, pert, p.raw, 0, skipTo, (d) => { i = d; setInfo((x) => ({ ...x, frame: d, prog: { frac: d / total } })); }, () => dead || hub.game.id !== myGame);
           if (!ok || dead || hub.game.id !== myGame) return;
           i = skipTo;
           setInfo((x) => ({ ...x, text: label }));
@@ -208,17 +268,22 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
         while (!dead && i < total && hub.game.id === myGame) {
           await waitVisible();
           let n = await pace();
-          while (n-- > 0 && i < total) { e.step_game(padOf(p.raw, i)); i++; }
+          while (n-- > 0 && i < total) { pert.step(e, padAt(p.raw, i)); i++; }
           setInfo((x) => ({ ...x, frame: i, prog: { frac: total ? i / total : 1 } }));
         }
         if (dead || hub.game.id !== myGame) return;
         const s = frameAt();
+        const want = g1.kind === 'best' ? p.best && p.best.pos : hub.nodePos(g1.kind === 'clip' ? g1.clip.w : g1.w, g1.kind === 'clip' ? g1.clip.step : g1.step, g1.kind === 'clip' ? g1.clip.id : g1.nid);
+        const end = hub.mock ? { ok: true, dist: 0, checked: false } : checkPos(s.pos, want);
+        hub.lastReplay = { id: myGame, kind: g1.kind, w: g1.w, ok: end.ok, stage: 'end', dist: end.dist, checked: end.checked, got: [...s.pos], want: want && [...want], sk, start: hub.workers[g1.w]?.start };
+        if (!end.ok) said = `the replay ends ${end.dist.toFixed(0)} units from where the search had this node: it is not a faithful replay`;
         const d = p.best && g1.kind === 'best' ? Math.hypot(s.pos[0] - p.best.pos[0], s.pos[1] - p.best.pos[1], s.pos[2] - p.best.pos[2]) : 0;
         setInfo((x) => ({ ...x, prog: null, verdict: said || (hub.mock ? 'simulated path' : g1.kind === 'node' || g1.kind === 'clip' ? 'reached the node' : d < 1 ? 'ends exactly where the search says' : `ends ${d.toFixed(0)} units from the search's position`) }));
         await sleep(1200);
         if (dead || hub.game.id !== myGame) return;
         // The reel moves on to the next queued clip once this one has played to its end (never mid-play).
         if (hub.reelAdvance()) return;
+        } finally { pert.free(); }
       }
     };
     run().catch((x) => { if (!dead) setInfo({ text: `game view: ${x.message || x}`, frame: 0, total: 0, star: false, verdict: '' }); });

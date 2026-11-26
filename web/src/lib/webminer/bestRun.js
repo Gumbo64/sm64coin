@@ -90,6 +90,12 @@ export function signedSeeds(storage, key = 'sm64coin.signedSeeds', keep = 64) {
       const old = map[seed];
       return old && old.print !== runPrint(proofHex) ? old.frames : null;
     },
+    /** Forget a seed whose submission the node answered with a refusal (it stored nothing, so a shorter run may still be signed). */
+    forget(seed) {
+      if (!(seed in map)) return;
+      delete map[seed];
+      try { storage?.setItem(key, JSON.stringify(map)); } catch { /* private window: in memory */ }
+    },
     /** Remember it BEFORE signing. */
     record(seed, proofHex, frames) {
       map[seed] = { print: runPrint(proofHex), frames, at: Date.now() };

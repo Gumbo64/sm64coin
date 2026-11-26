@@ -6,6 +6,7 @@ import { parseViz, parseLog, flatToRaw, proofInputs } from '../../lib/webminer/v
 import { TreeMirror } from '../../lib/webminer/treeMirror.js';
 import { levelName } from './levels.js';
 import { Coverage } from './coverage.js';
+import { markOnce } from '../../lib/perf.js';
 
 /** The point cloud keeps the newest CAP sampled search nodes (a ring buffer). */
 export const CAP = 50000;
@@ -168,6 +169,7 @@ export class VizHub {
 
   /** A viz line of worker `i` (about once a second per running search tree). */
   ingest(i, line) {
+    markOnce('first-viz-line');
     if (!this.enabled) return;
     const w = this.workers[i];
     const m = parseViz(line);
@@ -194,7 +196,9 @@ export class VizHub {
     for (const n of m.nodes) {
       this.add(i, c.n, n[0], n[1], w.played + n[2], [n[3], n[4], n[5]], n[6], n[7], n[8], n[9]);
     }
-    if (m.best) {
+    // The sampler's "best" node is the most progress, then the fewest frames: until the step gains a star or key every node ties
+    // and the best is its first node (a path of ~15 frames). That isn't a route anyone found: there is no best path yet.
+    if (m.best && m.best.stars + m.best.keys > w.starsBase + w.keysBase) {
       const prev = w.best;
       w.best = { ...m.best, frameAbs: w.played + m.best.frame };
       c.best = w.best;
@@ -267,7 +271,7 @@ export class VizHub {
     const label = c.kind === 'place'
       ? `worker ${i + 1} reached a new place · frame ${fr.toLocaleString()} · ${where}`
       : `worker ${i + 1}: faster route, −${c.gain} frames · frame ${fr.toLocaleString()} · ${where}`;
-    const clip = { w: i, step: w.cur.n, key: m.key, id: c.id, kind: c.kind, gain: c.gain, frame: fr, played: w.played, raw, rootRaw: w.root && w.root.key === m.key ? w.root.raw : null, label, at: Date.now() };
+    const clip = { w: i, step: w.cur.n, key: m.key, id: c.id, kind: c.kind, gain: c.gain, frame: fr, played: w.played, raw, rootRaw: w.root && w.root.key === m.key ? w.root.raw : null, rootPert: w.rootPert && w.rootPert.key === m.key ? w.rootPert : null, label, at: Date.now() };
     if (!this.wanted(c.kind, c.gain)) return;
     this.reel.clips++;
     if (this.reel.follow != null && this.reel.follow !== i) return;
@@ -318,7 +322,13 @@ export class VizHub {
 
   /** What the game view needs to play clip `c` (same shape as nodePlay's answer). */
   clipPlay(c) {
-    return { key: c.key, played: c.played, best: null, rootRaw: c.rootRaw, raw: c.raw };
+    return { key: c.key, played: c.played, best: null, rootRaw: c.rootRaw, rootPert: c.rootPert, raw: c.raw };
+  }
+
+  /** The recorded position [x, y, z] of a node (its cloud point), or null when it isn't in the cloud. */
+  nodePos(w, step, id) {
+    const s = this.slotOf(w, step, id);
+    return s < 0 ? null : [this.pos[s * 3], this.pos[s * 3 + 1], this.pos[s * 3 + 2]];
   }
 
   /** The cloud slot of a node (or -1). */
@@ -427,7 +437,7 @@ export class VizHub {
     if (!wk || !wk.cur) return { wait: 'waiting for the search…' };
     if ((stepN & 4095) !== (wk.cur.n & 4095)) return { error: 'that node belongs to a search step that is over: its start state is gone. Pick a node of the current step (or play the best path).' };
     const key = wk.cur.key;
-    const base = { key, played: wk.played, best: wk.best, rootRaw: wk.root && wk.root.key === key ? wk.root.raw : null };
+    const base = { key, played: wk.played, best: wk.best, rootRaw: wk.root && wk.root.key === key ? wk.root.raw : null, rootPert: wk.rootPert && wk.rootPert.key === key ? wk.rootPert : null };
     if (wk.best && wk.best.id === nid && wk.bestPads) return { ...base, raw: flatToRaw(wk.bestPads) };
     const mir = this.nodePath(w, key, nid);
     if (mir) return { ...base, raw: mir };

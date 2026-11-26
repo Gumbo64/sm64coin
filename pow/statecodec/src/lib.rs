@@ -23,6 +23,10 @@ pub mod range;
 pub mod statectx;
 pub mod mix2;
 pub mod statemix;
+/// The miner-side normaliser's guide model (v0.3.x `mix2.rs` lab fork, renamed: `mix2` is v0.4's
+/// frozen codecs 6-7). Not consensus: no codec id uses it.
+#[cfg(any(feature = "normalise", feature = "experimental"))]
+pub mod mix2lab;
 mod trig;
 
 pub use codec::*;

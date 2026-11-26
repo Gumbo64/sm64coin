@@ -1234,6 +1234,20 @@ pub extern "C" fn sm64pow_reseed_frames(difficulty: u64) -> u32 {
     params(difficulty).reseed_frames
 }
 
+/// SM64COIN: the sm64-binds game build id consensus runs (NUL terminated), for the RPC.
+#[unsafe(no_mangle)]
+pub extern "C" fn sm64pow_game_build(buf: *mut c_char, cap: usize) {
+    let s = crate::emulator::GAME_BUILD;
+    if buf.is_null() || cap == 0 {
+        return;
+    }
+    let n = s.len().min(cap - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
+        *buf.add(n) = 0;
+    }
+}
+
 /// Copies the active rules' name and goal (NUL terminated) for the RPC.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm64pow_rules_info(name: *mut c_char, name_cap: usize, goal: *mut c_char, goal_cap: usize) {

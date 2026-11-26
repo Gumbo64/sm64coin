@@ -22,7 +22,7 @@ const tx = (db, mode, f) => new Promise((resolve, reject) => {
 });
 
 /** A cheap fingerprint of the power-on memory: which game build the tips belong to. */
-function buildId(powerOn) {
+export function buildId(powerOn) {
   let h = powerOn.mem.top >>> 0;
   const pages = powerOn.mem.pages;
   for (let i = 0; i < pages.length; i += 61) {
