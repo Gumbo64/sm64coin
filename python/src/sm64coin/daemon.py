@@ -35,6 +35,8 @@ class Template:
     parent_stars: int = 0
     parent_keys: int = 0
     cycle_start_height: int = 0
+    records_ready_at: int = 0       # v0.4: unix second from which the template includes the height's proofs (0: now)
+    payout_address: str = ""        # the payout address this template committed (sm64_payout_address), "" = wallet_address
     valid_at: int = 0               # only when asked with `frames`: when a run of that many frames is valid
     key: Keypair = None             # the miner key the template was requested with
     tip: str = ""                   # the chain's tip when the template was made: usually prev_hash, not when the node
@@ -63,6 +65,30 @@ class Cycle:
 
 
 MAX_RESPONSE = 64 << 20
+# The longest a template request waits for the height's proofs to be collected (v0.4 `sm64_records_ready_at`):
+# a node whose clock is far off must not stall the miner (the Rust miner's MAX_RECORDS_WAIT).
+MAX_RECORDS_WAIT = 120
+
+
+def wait_records_ready(fetch, r, stop=None, max_wait=MAX_RECORDS_WAIT, log=None, now=None, sleep=None):
+    """`r` is a `get_block_template` answer; while its `sm64_records_ready_at` is still ahead, sleeps until
+    then (at most `max_wait` s in all, or until `stop()`) and asks again with `fetch()`. Returns the answer
+    to build the template from."""
+    now, sleep = now or time.time, sleep or time.sleep
+    deadline = now() + max_wait
+    said = False
+    while True:
+        ready, t = int(r.get("sm64_records_ready_at", 0) or 0), now()
+        until = min(ready, deadline)
+        if ready <= t or t >= deadline or (stop and stop()):
+            return r
+        if log and not said:
+            log(f"  waiting {until - t:.0f} s for the height's proofs (sm64_records_ready_at) before taking a template")
+            said = True
+        sleep(min(until - t, 1.0) if stop else until - t)
+        if now() < until and not (stop and stop()):
+            continue  # (a slice of the wait)
+        r = fetch()
 
 
 class Daemon:
@@ -92,19 +118,28 @@ class Daemon:
             raise RuntimeError(f"{method}: {resp['error'].get('message', 'error')}")
         return resp["result"]
 
-    def get_template(self, address, key: Keypair, frames=None) -> Template:
+    def get_template(self, address, key: Keypair, frames=None, payout=None, wait_ready=False, stop=None,
+                     max_wait=MAX_RECORDS_WAIT, log=None) -> Template:
         """The block template for the miner key `key` (v0.3: its `extra_nonce()` goes into the coinbase,
         so the seed covers the key; use the same key for every template call of one run). With
         `frames`, `valid_at` says when a run of that many frames becomes valid (use only that
-        field: a fresh template may carry another seed)."""
+        field: a fresh template may carry another seed).
+        v0.4: `payout` is the address the template commits for its proof payouts (`sm64_payout_address`: a
+        subaddress from `payout.Payouts.next()`); `wait_ready` waits (at most `max_wait` s, or until `stop()`)
+        for the node's `sm64_records_ready_at` (tip eligible time + window + grace), then asks again, so the
+        template includes the previous height's proofs."""
         p = {"wallet_address": address, "extra_nonce": key.extra_nonce().hex()}
         if frames is not None:
             p["sm64_frames"] = int(frames)
+        if payout:
+            p["sm64_payout_address"] = payout
         try:
             tip = self.top_hash()
         except (OSError, RuntimeError):
             tip = ""
         r = self.call("get_block_template", p)
+        if wait_ready:
+            r = wait_records_ready(lambda: self.call("get_block_template", p), r, stop=stop, max_wait=max_wait, log=log)
         return Template(
             blocktemplate_blob=r["blocktemplate_blob"], difficulty=r["difficulty"], height=r["height"],
             prev_hash=r["prev_hash"], expected_reward=r["expected_reward"], seed_hash=r["sm64_seed_hash"],
@@ -116,6 +151,7 @@ class Daemon:
             start=r.get("sm64_start", "parent"), power_on_at=r.get("sm64_power_on_at", 0), restart_delay=r.get("sm64_restart_delay", 0),
             parent_timestamp=r.get("sm64_parent_timestamp", 0), parent_stars=r.get("sm64_parent_stars", 0),
             parent_keys=r.get("sm64_parent_keys", 0), cycle_start_height=r.get("sm64_cycle_start_height", 0),
+            records_ready_at=r.get("sm64_records_ready_at", 0), payout_address=payout or "",
             valid_at=r.get("sm64_valid_at", 0), key=key, tip=tip or r["prev_hash"])
 
     def valid_at(self, address, key, frames) -> int:
@@ -136,12 +172,13 @@ class Daemon:
             stars=r.get("stars", 0), keys=r.get("keys", 0), grand_star=bool(r.get("grand_star", False)),
             ends_cycle=bool(r.get("ends_cycle", False)))
 
-    def get_task(self, address, key: Keypair = None, start=None, play_frames=None):
+    def get_task(self, address, key: Keypair = None, start=None, play_frames=None, payout=None, wait_ready=False,
+                 stop=None, log=None):
         """(Task, Template) for the next block, requested for the miner `key` (default: a fresh
         `Keypair.generate()`; the template keeps it as `template.key`). The task starts from the
         parent's end state (rebuilt from `cycle`) or power-on, as the template allows (`start` forces one)."""
         from .env import Task
-        t = self.get_template(address, key or Keypair.generate())
+        t = self.get_template(address, key or Keypair.generate(), payout=payout, wait_ready=wait_ready, stop=stop, log=log)
         s = start or ("parent" if t.start in ("parent", "either") else "power-on")
         cycle = self.cycle(t.prev_hash) if s == "parent" else None
         return Task.from_template(t, cycle, s, play_frames), t
@@ -157,6 +194,23 @@ class Daemon:
 
     def submit(self, block_hex: str):
         self.call("submit_block", [block_hex])
+
+    def submit_proof(self, block_hex: str):
+        """v0.4: offers a sealed run (same hex as `submit_block`) as a proof record for its height
+        (`submit_sm64_proof`). Returns (result, reason): 1 pooled, 0 ignored (known, not the tip's height,
+        outside the archive window, pool full), -1 invalid, -2 no parent state, -3 bad encoding."""
+        r = self.call("submit_sm64_proof", {"blob": block_hex})
+        return int(r.get("result", -1)), r.get("reason", "") or ""
+
+    def winner_frames(self, height):
+        """Frames of the chain's block at `height` in the current cycle, or None (unknown)."""
+        try:
+            for b in self.cycle().blocks:
+                if b.height == height:
+                    return b.frames
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return None
 
 
 def seal(template_hex: str, proof: bytes, sig: bytes, timestamp=None) -> str:

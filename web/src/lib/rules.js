@@ -66,3 +66,22 @@ export function maxFrames(d, elapsed) {
   frames = (frames * (100n * t - (100n - SHRINK_PERCENT) * frac)) / (100n * t);
   return Number(frames > min ? frames : min);
 }
+
+// v0.4 proof archive window (docs/V0.4-DESIGN.md decision 3): a run is archivable as a proof for a height if it would
+// have become valid at most ARCHIVE_SECONDS of auction time after the winner's due time (records::window_frames).
+export const ARCHIVE_SECONDS = 60;
+/** The first second after the parent a run of `frames` fits the limit at retarget difficulty `d` (null: never). */
+export function dueElapsed(d, frames) {
+  if (maxFrames(d, 2 ** 40) < frames) return null;
+  let lo = 0, hi = 2 ** 40;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (maxFrames(d, mid) >= frames) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+/** The longest run within `seconds` of auction time after a winner of `winnerFrames` at retarget difficulty `d`. */
+export function windowFrames(d, winnerFrames, seconds = ARCHIVE_SECONDS) {
+  const due = dueElapsed(d, winnerFrames);
+  return due === null ? winnerFrames : Math.max(maxFrames(d, due + seconds), winnerFrames);
+}

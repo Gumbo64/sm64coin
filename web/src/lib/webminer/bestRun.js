@@ -4,6 +4,8 @@
 // same seed (a second different signed run is equivocation: honest nodes avoid the block). Pure logic, no browser
 // APIs (bestRun.test.mjs drives it with a fake clock).
 
+import { windowFrames } from '../rules.js';
+
 /** Default seconds before a run is valid at which it is submitted (stamped with the second it becomes valid). */
 export const DEFAULT_LEAD = 5;
 /** The most a run may be sent ahead: restricted RPC refuses a run due more than 30 s after it arrives (rules.rs RPC_SUBMIT_AHEAD_SECONDS); ahead gains nothing. */
@@ -97,3 +99,63 @@ export function signedSeeds(storage, key = 'sm64coin.signedSeeds', keep = 64) {
     },
   };
 }
+
+/** The longest a template waits for the height's proofs (v0.4 sm64_records_ready_at); a node whose clock is far off must not stall the miner. */
+export const MAX_RECORDS_WAIT = 120;
+
+/**
+ * v0.4: build the template for a new tip only after the node's `sm64_records_ready_at` (the tip's eligible time + window
+ * + grace), so the block includes the previous height's proofs. `t` is a get_block_template answer; while its
+ * ready time is ahead, sleeps until then (at most `max` s in all, in slices of 1 s so `current()` can end it) and asks
+ * `fetch()` again. Returns the answer to use, or null if `current()` turned false.
+ *   fetch()  async: the template again (same key and payout address)
+ *   now() (s), sleep(ms), current(), onWait(seconds) (once)
+ */
+export async function waitRecordsReady(t, d) {
+  const max = d.max ?? MAX_RECORDS_WAIT;
+  const deadline = d.now() + max;
+  let said = false;
+  for (;;) {
+    if (!d.current()) return null;
+    const ready = Number(t.sm64_records_ready_at) || 0, n = d.now();
+    const until = Math.min(ready, deadline);
+    if (ready <= n || n >= deadline) return t;
+    if (!said) { said = true; d.onWait?.(Math.ceil(until - n)); }
+    await d.sleep(Math.min(until - n, 1) * 1000);
+    if (d.now() >= until) t = await d.fetch();
+  }
+}
+
+/**
+ * v0.4 stage B: a run that lost its height (another block became the tip first, it was displaced, or it was refused) is
+ * still a proof for that height: signed with the template's key and offered with submit_sm64_proof. ONE RUN PER KEY still
+ * applies (a different run already signed for the seed is never signed), and it must be within the archive window
+ * (windowFrames; the node has the last word). `d`:
+ *   template, run   the template ({height, sm64_seed_hash, sm64_retarget_difficulty, blocktemplate_blob, minerKey}) and the run ({proof hex, frames})
+ *   signed          signedSeeds() store
+ *   winnerFrames(height)  async: frames of the chain's block at that height (null: unknown, the node decides)
+ *   sign(proofBytes) async -> sig; seal(proofBytes, sig) -> submit hex; submit(hex) async -> {result, reason}
+ * Returns {kind: 'sent', result, reason} | 'outside' (outside the window) | 'second' (another run signed) | 'error'.
+ */
+export async function offerAsProof(d) {
+  const { template: t, run: r } = d;
+  const other = d.signed.signedOther(t.sm64_seed_hash, r.proof);
+  if (other !== null) return { kind: 'second', frames: other };
+  let w = null;
+  try { w = await d.winnerFrames(t.height); } catch { /* unknown: the node decides */ }
+  if (w) {
+    const limit = windowFrames(Number(t.sm64_retarget_difficulty || t.difficulty), w);
+    if (r.frames > limit) return { kind: 'outside', winner: w, limit };
+  }
+  d.signed.record(t.sm64_seed_hash, r.proof, r.frames);
+  try {
+    const bytes = d.proofBytes(r.proof);
+    const res = await d.submit(d.seal(bytes, await d.sign(bytes)));
+    return { kind: 'sent', result: Number(res?.result ?? -1), reason: res?.reason || '' };
+  } catch (e) {
+    return { kind: 'error', error: String(e) };
+  }
+}
+
+/** The node's verdict on a proof (submit_sm64_proof's result). */
+export const proofVerdict = (v) => ({ 1: 'in the pool', 0: "ignored (known, not for the node's tip height, outside the window, or pool full)", '-2': 'the node lacks the parent state', '-3': 'bad encoding' }[v] || 'refused');

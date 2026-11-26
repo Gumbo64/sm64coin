@@ -111,6 +111,19 @@ def valid_after(difficulty: int, frames: int):
     return lo
 
 
+ARCHIVE_SECONDS = 60  # the proof archive window: auction seconds after the winner's due time (V0.4-DESIGN.md decision 3)
+
+
+def window_frames(difficulty: int, winner_frames: int, seconds: int = ARCHIVE_SECONDS) -> int:
+    """The longest run within `seconds` of auction time after a winner of `winner_frames` at retarget
+    `difficulty`: the limit `seconds` after the winner's due time (mirror of `records::window_frames`).
+    A run of at most this many frames is archivable as a proof for the winner's height."""
+    due = valid_after(difficulty, winner_frames)
+    if due is None:
+        return winner_frames
+    return max(max_frames(difficulty, due + seconds), winner_frames)
+
+
 def is_success(start: Progress, now: Progress) -> bool:
     """Whether `now` (the state after a frame) completes a block that started at `start`."""
     return now.points() > start.points()
