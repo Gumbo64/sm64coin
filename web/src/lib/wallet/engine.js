@@ -19,7 +19,10 @@ export function chainId() {
 }
 
 const BASE = import.meta.env.BASE_URL;
-export const UNLOCK_WINDOW = 72; // SM64COIN: CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW (Monero 60; v0.2: 4; v0.3: 72 = 24 h of 20-minute blocks)
+// SM64COIN: the coinbase unlock window is height-dependent (v0.3-v0.4.1: 72 blocks; v0.4.2: 6 from SM64COIN_UNLOCK6_HEIGHT).
+// Only a fallback: snapshot() reads the real unlock height from the transaction's own unlock_time.
+export const UNLOCK_WINDOW = 72;
+const MAX_BLOCK_NUMBER = 500000000; // CRYPTONOTE_MAX_BLOCK_NUMBER: an unlock_time below it is a height, not a time
 export const SPENDABLE_AGE = 3; // CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE (v0.3: 3 = 1 h; Monero 10): wallet2 also waits this long for any output
 export const ATOMIC = 1000000000000n; // 12 decimals, like Monero
 
@@ -176,6 +179,14 @@ export const parseAmount = (s) => {
   return m ? BigInt(m[1]) * ATOMIC + BigInt((m[2] || '').padEnd(12, '0') || '0') : null;
 };
 
+/** The height a transaction unlocks at: its unlock_time when that is a height, else (a coinbase without it) block + UNLOCK_WINDOW. */
+function unlockHeight(t, h) {
+  let u;
+  try { u = Number(t.getUnlockTime()); } catch { u = NaN; }
+  if (Number.isFinite(u) && u > 0 && u < MAX_BLOCK_NUMBER) return u;
+  return t.getIsMinerTx() ? h + UNLOCK_WINDOW : 0;
+}
+
 /** Everything the page shows, from the open wallet. */
 export async function snapshot(w) {
   const [balance, unlocked, height, daemon, txs] = await Promise.all([
@@ -194,9 +205,9 @@ export async function snapshot(w) {
       locked: !!t.getIsLocked(),
       incoming: inc, outgoing: out, fee: t.getFee(),
       timestamp: t.getBlock && t.getBlock() ? t.getBlock().getTimestamp() : undefined,
-      // blocks until it can be spent: wallet2 (is_transfer_unlocked) needs the output's block + UNLOCK_WINDOW
-      // for a coinbase and also block + SPENDABLE_AGE for every output
-      unlockIn: h ? Math.max(0, h + (t.getIsMinerTx() ? Math.max(UNLOCK_WINDOW, SPENDABLE_AGE) : SPENDABLE_AGE) - daemon) : 0,
+      // blocks until it can be spent: wallet2 (is_transfer_unlocked) needs the tx's own unlock_time (a coinbase
+      // carries block height + the window in force at that height) and also block + SPENDABLE_AGE for every output
+      unlockIn: h ? Math.max(0, h + SPENDABLE_AGE - daemon, unlockHeight(t, h) - daemon) : 0,
     };
   }).sort((a, b) => (b.height ?? 1e12) - (a.height ?? 1e12));
   return { balance, unlocked, height, daemon, rows };
