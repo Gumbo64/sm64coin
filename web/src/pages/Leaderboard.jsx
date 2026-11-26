@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Link } from 'react-router';
 import { daemon } from '../lib/rpc.js';
 
 // The board every node keeps and shares with its peers over p2p (the node's
 // sm64_board RPC): the top 50 addresses by blocks mined, each counted by the
 // node itself with the entry's view key.
+const BoardJoin = React.lazy(() => import('./BoardJoin.jsx'));
 const fmt = (a) => (a / 1e12).toLocaleString(undefined, { maximumFractionDigits: 6 });
 const short = (a) => a.slice(0, 8) + '…' + a.slice(-6);
 
@@ -50,16 +50,7 @@ export default function Leaderboard() {
         )}
       </div>
 
-      <div className="card">
-        <h2>Join the leaderboard</h2>
-        <p>
-          Joining is opt-in, once your address has mined a block: open your wallet (the <Link to="/wallet">Wallet</Link> page
-          here, or the SM64Coin wallet app) and use its Leaderboard card. The wallet signs your name with its spend key and
-          sends it, with the address and private view key, to the node, which shares it with the network. Everyone can then
-          see all of your incoming payments (a view key can't spend), so use a dedicated mining address. An entry can be
-          renamed but not removed.
-        </p>
-      </div>
+      <React.Suspense fallback={null}><BoardJoin onJoined={load} /></React.Suspense>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { getNode, isChosenNode } from '../lib/rpc.js';
+import { getNode } from '../lib/rpc.js';
 import { loadStored, saveStored, forgetStored } from '../lib/wallet/store.js';
 import * as eng from '../lib/wallet/engine.js';
 import { BLOCK_TARGET_SECONDS } from '../lib/rules.js';
@@ -356,7 +356,7 @@ function Open({ w, passkey, address, viewOnly, snap, progress, seed, setSeed, sy
       </ShowKeys>
       {!DEDICATED && <Migrate w={w} run={run} passkey={passkey} address={address} />}
       {viewOnly && <p className="muted">View-only: spends made by the full wallet are not visible here, so this balance can be higher than the real one (change from a payment shows up as received).</p>}
-      {!viewOnly && <Board w={w} run={run} />}
+      {!viewOnly && <p className="muted">To show this wallet's blocks under a name, join on the <Link to="/leaderboard">Leaderboard</Link> page.</p>}
       <Txs snap={snap} />
       {!viewOnly && <Send w={w} snap={snap} run={run} refresh={refresh} />}
     </>
@@ -472,46 +472,6 @@ function Send({ w, snap, run, refresh }) {
         </div>
       )}
       {sent && <p>Sent: <span className="mono break">{sent}</span></p>}
-    </div>
-  );
-}
-
-const NAME_KEY = 'sm64coin.boardName';
-function Board({ w, run }) {
-  const [name, setName] = useState(() => { try { return localStorage.getItem(NAME_KEY) || ''; } catch { return ''; } });
-  const [msg, setMsg] = useState('');
-  const [confirm, setConfirm] = useState(false);
-  const node = eng.daemonUri();
-  const join = () => run('Signing and submitting', async () => {
-    setConfirm(false);
-    const n = name.trim();
-    try { localStorage.setItem(NAME_KEY, n); } catch { /* storage unavailable */ }
-    await eng.boardJoin(w, n);
-    setMsg(`On the board as "${n}". Your node shares it with its peers.`);
-  });
-  return (
-    <div className="card">
-      <h3>Leaderboard</h3>
-      <p className="walleterr">Joining sends this wallet's private view key to the node <span className="mono" data-testid="board-node">{node}</span>. The view key lets the node see every incoming payment to this wallet; it cannot spend.</p>
-      <p className="muted">
-        Opt in to show your blocks on the <Link to="/leaderboard">Leaderboard</Link>. The entry is signed here with your
-        spend key (only you can name this address); to count your blocks, nodes are given your address and secret view key,
-        so anyone can then see all incoming payments to this wallet (not spend). Use a dedicated mining wallet. An entry
-        cannot be removed once shared, only renamed.
-      </p>
-      {isChosenNode() && <p className="walleterr">That node was set by hand (Network page), not the site's default. Only continue if you run it or trust its operator.</p>}
-      <input placeholder="display name" value={name} maxLength={32} onChange={(e) => { setName(e.target.value); setConfirm(false); }} />{' '}
-      {!confirm && <button disabled={!name.trim()} onClick={() => setConfirm(true)}>Join / rename…</button>}
-      {confirm && (
-        <div className="notice" data-testid="board-confirm">
-          Join as <b>{name.trim()}</b>: this sends the wallet's <b>private view key</b> to the node <b className="mono">{node}</b>, with the address and the
-          signed name. With the view key the node, and every node it shares the entry with, can see all incoming payments
-          to this wallet; it cannot spend them. This cannot be undone.<br />
-          <button onClick={join}>Send the view key and join</button>{' '}
-          <button onClick={() => setConfirm(false)}>Cancel</button>
-        </div>
-      )}
-      {msg && <p>{msg}</p>}
     </div>
   );
 }
