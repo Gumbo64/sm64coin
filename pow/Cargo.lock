@@ -2300,6 +2300,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm64coin-export"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sm64-binds",
+ "sm64pow",
+ "tar",
+ "ureq",
+]
+
+[[package]]
 name = "sm64coin-leaderboard"
 version = "0.1.0"
 dependencies = [
