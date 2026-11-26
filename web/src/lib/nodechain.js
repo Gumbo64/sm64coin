@@ -1,7 +1,7 @@
-// Is a node on this chain? SM64Coin v0.4 (like v0.3) is a new chain (new genesis), so a node still running v0.2 answers
+// Is a node on this chain? SM64Coin v0.5 (like v0.3 and v0.4) is a new chain (new genesis), so a node still running v0.2 answers
 // every call happily but shows the old chain. The genesis block's hash tells them apart.
 // VITE_GENESIS overrides it for other networks (testnet builds); set it to 'any' to skip the check.
-const MAINNET_GENESIS = 'bfac3d149afbdf2299ec19e2401d63f7675530064c0164f0cddc0f39eb9eeb0b'; // v0.4 mainnet (v0.3: cbd56c9b...)
+const MAINNET_GENESIS = '6b7164fc12bd735bfe29caf87615ec62ca318f78539afae11a13a244eb080482'; // v0.5 mainnet (v0.4: bfac3d14..., v0.3: cbd56c9b...)
 export const GENESIS = (import.meta.env?.VITE_GENESIS || MAINNET_GENESIS).trim().toLowerCase();
 
 /**

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { probeChain, chainNote, GENESIS } from './nodechain.js';
 
-const G = 'bfac3d149afbdf2299ec19e2401d63f7675530064c0164f0cddc0f39eb9eeb0b';
+const G = '6b7164fc12bd735bfe29caf87615ec62ca318f78539afae11a13a244eb080482';
 assert.equal(GENESIS, G);
 const node = (hash) => async (m, p) => {
   assert.equal(m, 'get_block_header_by_height');
