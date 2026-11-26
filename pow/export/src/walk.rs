@@ -79,7 +79,7 @@ pub fn walk(dir: &Path, only_cycle: Option<u32>, log: &mut dyn FnMut(&str), f: &
         let m = read_json(&dir.join(rf.as_str().context("record file")?))?;
         records.entry(m["height"].as_u64().context("record height")?).or_default().push(m);
     }
-    let mut bad = |rep: &mut Report, log: &mut dyn FnMut(&str), msg: String| {
+    let bad = |rep: &mut Report, log: &mut dyn FnMut(&str), msg: String| {
         log(&format!("DIVERGENCE {msg}"));
         rep.divergences.push(msg);
     };

@@ -3,7 +3,7 @@
 use anyhow::{Result, anyhow, bail};
 use sm64coin_export::export::{Format, Options, States, export};
 use sm64coin_export::m64::Rom;
-use sm64coin_export::{snapshot, source, verify};
+use sm64coin_export::{sampler, snapshot, source, verify};
 use std::path::PathBuf;
 
 const USAGE: &str = "usage:
@@ -13,6 +13,8 @@ const USAGE: &str = "usage:
                   [--format v0.4|legacy] [--record-m64]
   sm64coin-export snapshot --out DIR [--tar FILE.tar.gz] (same source and options as export; states default to portable)
   sm64coin-export verify-snapshot DIR|FILE.tar.gz [--no-replay] [--mupen auto|WORKDIR] [--mupen-records N] [--mupen-tools DIR] [--report FILE]
+  sm64coin-export sample EXPORT_DIR --out DIR [--samplers uniform,objective,random,jitter] [--states N] [--branches K]
+                  [--horizon H] [--stride S] [--seed X] [--from-height H] [--to-height H] [--eps E] [--keep-cutscenes]   (docs/SAMPLER.md)
   sm64coin-export verify DIR [--cycle N] [--rom PATH]
   sm64coin-export fetch --rpc URL --out FILE.jsonl [--from H] [--to H]
 The ROM defaults to $SM64COIN_ROM, ./baserom.us.z64 or ~/.sm64coin/baserom.us.z64.";
@@ -133,6 +135,30 @@ fn main() -> Result<()> {
             }
             if !r.ok() {
                 std::process::exit(2);
+            }
+        }
+        "sample" => {
+            // sample EXPORT_DIR --out DIR [...]: counterfactual rollouts from states on the chain (docs/SAMPLER.md).
+            let dir = PathBuf::from(args.get(1).ok_or_else(|| anyhow!("{USAGE}"))?);
+            sm64pow::init(std::fs::read(rom_path?)?)?;
+            let d = sampler::Options::default();
+            let num = |n: &str, dflt: usize| -> Result<usize> { Ok(val(n).map(|x| x.parse()).transpose()?.unwrap_or(dflt)) };
+            let o = sampler::Options {
+                out: PathBuf::from(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?),
+                samplers: match val("--samplers") { Some(l) => l.split(',').map(sampler::Kind::parse).collect::<Result<Vec<_>>>()?, None => d.samplers },
+                states: num("--states", d.states)?,
+                branches: num("--branches", d.branches)?,
+                horizon: num("--horizon", d.horizon)?,
+                stride: num("--stride", d.stride)?,
+                seed: val("--seed").map(|x| x.parse()).transpose()?.unwrap_or(d.seed),
+                heights: match (val("--from-height"), val("--to-height")) { (None, None) => None, (a, b) => Some((a.map(|x| x.parse()).transpose()?.unwrap_or(0), b.map(|x| x.parse()).transpose()?.unwrap_or(u64::MAX))) },
+                eps: val("--eps").map(|x| x.parse()).transpose()?.unwrap_or(d.eps),
+                skip_cutscenes: !flag("--keep-cutscenes"),
+            };
+            let s = sampler::sample(&dir, &o, &mut log)?;
+            println!("{} candidate start states, {} cells on the chain", s.candidates, s.chain_cells);
+            for (k, t, f, c) in &s.samplers {
+                println!("{:<10} {t} trajectories, {f} frames, {c} cells", k.name());
             }
         }
         "lead-poll" => {

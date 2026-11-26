@@ -9,3 +9,4 @@ pub mod source;
 pub mod verify;
 pub mod walk;
 pub mod snapshot;
+pub mod sampler;

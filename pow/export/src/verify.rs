@@ -5,7 +5,7 @@
 //! slice of its cycle's m64.
 
 use crate::m64;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::Path;
 

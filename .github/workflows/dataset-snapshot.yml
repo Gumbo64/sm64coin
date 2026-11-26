@@ -1,0 +1,134 @@
+name: Dataset snapshot
+
+# Takes a snapshot of the chain as a training dataset (docs/EXPORT.md, docs/SAMPLER.md): effective
+# inputs per cycle as m64, per-block segments and metadata, every height's archived proofs (v0.4),
+# a manifest with checksums, then re-verifies it by replay and uploads it as a workflow artifact.
+#
+#  * Manual: Actions -> Dataset snapshot -> Run workflow (give a node's RPC URL).
+#  * Scheduled (off by default): set the repository variables SNAPSHOT_SCHEDULE=on and SNAPSHOT_NODE_URL
+#    and it runs weekly.
+#  * Needs the US ROM like the other ROM tests: the repository secret ROM_URL points at a
+#    baserom.us.z64 in private storage (never in the repository).
+#  * Publishing the artifact somewhere public (a GitHub release asset, Hugging Face, ...) is the
+#    maintainer's choice: docs/EXPORT.md, "Publishing a snapshot".
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_url:
+        description: "Node RPC URL (read-only get_info / get_block), e.g. http://host:16481. Empty: the SNAPSHOT_NODE_URL variable"
+        required: false
+        default: ""
+      from_height:
+        description: "First height (a block that starts from power-on; default 1)"
+        required: false
+        default: "1"
+      to_height:
+        description: "Last height (empty: the node's tip)"
+        required: false
+        default: ""
+      features:
+        description: "Per-frame state features (about 108 bytes per frame)"
+        type: boolean
+        default: false
+      record_m64:
+        description: "One movie per archived proof (large: each repeats its cycle prefix)"
+        type: boolean
+        default: false
+      mupen:
+        description: "Also run the three-way check against stock Mupen64Plus (installs it)"
+        type: boolean
+        default: false
+      sample:
+        description: "Also run the branching sampler on the snapshot (small default settings)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 5 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  snapshot:
+    name: Snapshot and verify
+    # A scheduled run only happens when the repository opted in.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.SNAPSHOT_SCHEDULE == 'on' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    env:
+      NODE_URL: ${{ inputs.node_url || vars.SNAPSHOT_NODE_URL }}
+      FROM_HEIGHT: ${{ inputs.from_height || '1' }}
+      TO_HEIGHT: ${{ inputs.to_height }}
+      FEATURES: ${{ inputs.features && '--features' || '' }}
+      RECORD_M64: ${{ inputs.record_m64 && '--record-m64' || '' }}
+    steps:
+      - name: Check the inputs
+        run: |
+          [ -n "$NODE_URL" ] || { echo "::error::no node URL: pass node_url or set the SNAPSHOT_NODE_URL variable"; exit 1; }
+          [ -n "${{ secrets.ROM_URL }}" ] || { echo "::error::the ROM_URL secret is not set (a US baserom.us.z64 in private storage)"; exit 1; }
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow
+      - name: Prepare the workspace
+        run: scripts/ci-prepare.sh
+      - name: Fetch the ROM
+        run: curl -fsSL --proto '=https' --tlsv1.2 "$ROM_URL" -o baserom.us.z64
+        env:
+          ROM_URL: ${{ secrets.ROM_URL }}
+      - name: Build the exporter
+        run: cargo build --release -p sm64coin-export
+        working-directory: pow
+      - name: Mupen64Plus (for the three-way check)
+        if: ${{ inputs.mupen }}
+        run: sudo apt-get update && sudo apt-get install -y libmupen64plus2 libmupen64plus-dev mupen64plus-rsp-hle gcc
+      - name: Take the snapshot
+        id: snap
+        working-directory: pow
+        env:
+          SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
+        run: |
+          set -euo pipefail
+          TO=""; [ -n "$TO_HEIGHT" ] && TO="--to $TO_HEIGHT"
+          mkdir -p ../out
+          # the name carries the network and the last height, which the snapshot itself reports
+          target/release/sm64coin-export snapshot --rpc "$NODE_URL" --from "$FROM_HEIGHT" $TO $FEATURES $RECORD_M64 \
+            --states portable --out ../out/snapshot --tar ../out/snapshot.tar.gz
+          NAME="sm64coin-snapshot-$(jq -r '.chain.network' ../out/snapshot/snapshot.json)-h$(jq -r '.chain.last_height' ../out/snapshot/snapshot.json)-$(date -u +%Y%m%d)"
+          mv ../out/snapshot.tar.gz "../out/$NAME.tar.gz"
+          cp ../out/snapshot/snapshot.json "../out/$NAME.snapshot.json"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          { echo "### Snapshot $NAME"; echo; echo '```json'; jq '{chain, game, counts, sums_sha256, created_utc}' ../out/snapshot/snapshot.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify the archive (checksums, structure, replay from power-on, optional three-way)
+        working-directory: pow
+        env:
+          SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
+        run: |
+          set -euo pipefail
+          MUPEN=""; [ "${{ inputs.mupen }}" = true ] && MUPEN="--mupen auto --mupen-records 2"
+          target/release/sm64coin-export verify-snapshot "../out/${{ steps.snap.outputs.name }}.tar.gz" --work ../verify $MUPEN --report ../out/verify-report.json | tee ../verify.txt
+          { echo; echo '```'; tail -n 3 ../verify.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Sample counterfactual rollouts (optional)
+        if: ${{ inputs.sample }}
+        working-directory: pow
+        env:
+          SM64COIN_ROM: ${{ github.workspace }}/baserom.us.z64
+        run: |
+          set -euo pipefail
+          target/release/sm64coin-export sample ../out/snapshot --out ../out/sample --states 100 --branches 4 --horizon 90 --stride 240
+          tar -C ../out -czf "../out/${{ steps.snap.outputs.name }}.sample.tar.gz" sample
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.snap.outputs.name }}
+          path: |
+            out/${{ steps.snap.outputs.name }}.tar.gz
+            out/${{ steps.snap.outputs.name }}.snapshot.json
+            out/${{ steps.snap.outputs.name }}.sample.tar.gz
+            out/verify-report.json
+          if-no-files-found: warn
+          retention-days: 30
