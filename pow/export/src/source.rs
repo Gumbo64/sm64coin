@@ -18,6 +18,31 @@ pub struct BlockRec {
     pub miner_key: Option<[u8; 32]>,
     pub sig: Option<[u8; 64]>,
     pub difficulty: Option<u64>,
+    /// v0.4: the block's trailing `sm64_proofs` field (`varint(n) || records`): the other valid runs
+    /// of the PARENT's height. Empty: none (or a pre-v0.4 block).
+    pub records: Vec<u8>,
+    /// v0.4: the payout address the block's template commits (coinbase extra nonce TLV 1).
+    pub payout: Option<Payout>,
+    /// v0.4: the included-proofs root the block's coinbase commits (TLV 2).
+    pub proofs_root: Option<[u8; 32]>,
+}
+
+pub use sm64pow::records::Payout;
+
+/// `flag || spend key || view key` (65 bytes; flag 1 = subaddress), the wire form of a [`Payout`].
+pub fn payout_bytes(p: &Payout) -> [u8; 65] {
+    let mut b = [0u8; 65];
+    b[0] = p.subaddress as u8;
+    b[1..33].copy_from_slice(&p.spend);
+    b[33..].copy_from_slice(&p.view);
+    b
+}
+
+pub fn payout_from_bytes(b: &[u8]) -> Result<Payout> {
+    if b.len() != 65 || b[0] > 1 {
+        bail!("a payout address is 65 bytes: flag || spend || view");
+    }
+    Ok(Payout { subaddress: b[0] == 1, spend: b[1..33].try_into().unwrap(), view: b[33..].try_into().unwrap() })
 }
 
 fn h32(s: &str) -> Result<[u8; 32]> {
@@ -69,6 +94,9 @@ pub fn parse_line(l: &str) -> Result<BlockRec> {
         miner_key: j["miner_key"].as_str().map(h32).transpose()?,
         sig: j["sig"].as_str().map(|x| hex::decode(x)?.try_into().map_err(|_| anyhow!("sig is not 64 bytes"))).transpose()?,
         difficulty: j["difficulty"].as_u64(),
+        records: j["records"].as_str().map(hex::decode).transpose()?.unwrap_or_default(),
+        payout: j["payout"].as_str().map(|x| payout_from_bytes(&hex::decode(x)?)).transpose()?,
+        proofs_root: j["proofs_root"].as_str().map(h32).transpose()?,
     })
 }
 
@@ -88,6 +116,9 @@ pub fn to_line(b: &BlockRec) -> String {
     if let Some(d) = b.difficulty { j["difficulty"] = d.into(); }
     if let Some(k) = b.miner_key { j["miner_key"] = hex::encode(k).into(); }
     if let Some(s) = b.sig { j["sig"] = hex::encode(s).into(); }
+    if !b.records.is_empty() { j["records"] = hex::encode(&b.records).into(); }
+    if let Some(p) = &b.payout { j["payout"] = hex::encode(payout_bytes(p)).into(); }
+    if let Some(r) = b.proofs_root { j["proofs_root"] = hex::encode(r).into(); }
     j.to_string()
 }
 
@@ -108,6 +139,17 @@ impl Rpc {
             bail!("{method}: {}", e.get("message").and_then(|m| m.as_str()).unwrap_or("error"));
         }
         resp.get("result").cloned().ok_or_else(|| anyhow!("{method}: no result"))
+    }
+
+    /// `get_info`.
+    pub fn info(&self) -> Result<Value> {
+        self.call("get_info", json!({}))
+    }
+
+    /// The hash of the block at `height` (0: the genesis block).
+    pub fn block_hash(&self, height: u64) -> Result<[u8; 32]> {
+        let r = self.call("get_block_header_by_height", json!({"height": height}))?;
+        h32(r["block_header"]["hash"].as_str().ok_or_else(|| anyhow!("no hash"))?)
     }
 
     /// The chain's height (the next block's height).
@@ -134,18 +176,33 @@ pub fn parse_block(r: &Value) -> Result<BlockRec> {
         Some(s) => Some(s.try_into().map_err(|_| anyhow!("sm64_sig is not 64 bytes"))?),
         None => None,
     };
+    // v0.4: `sm64_proof`, `sm64_sig` and `sm64_proofs` are in the block's JSON; else the blob ends
+    // proof || sig [|| varint(len) || records] and is taken apart like the node does.
+    let sealed = blob.as_ref().and_then(|b| sm64pow::template::split_sealed(b).ok());
     let proof = match hexf(&body["sm64_proof"])? {
         Some(p) => p,
-        None => {
-            // The block blob ends proof || sig (docs/V0.3-NEW-CHAIN.md).
-            let (b, n) = (blob.as_ref().ok_or_else(|| anyhow!("no blob"))?, proof_len.ok_or_else(|| anyhow!("no sm64_proof_bytes"))?);
-            let end = b.len().checked_sub(64).ok_or_else(|| anyhow!("blob too short"))?;
-            b[end - n..end].to_vec()
-        }
+        None => match &sealed {
+            Some(s) if proof_len.is_none_or(|n| n == s.proof.len()) => s.proof.clone(),
+            _ => {
+                // The v0.3 blob ends proof || sig (docs/V0.3-NEW-CHAIN.md).
+                let (b, n) = (blob.as_ref().ok_or_else(|| anyhow!("no blob"))?, proof_len.ok_or_else(|| anyhow!("no sm64_proof_bytes"))?);
+                let end = b.len().checked_sub(64).ok_or_else(|| anyhow!("blob too short"))?;
+                b[end - n..end].to_vec()
+            }
+        },
     };
-    let sig = sig.or_else(|| blob.as_ref().filter(|_| body["sm64_proof"].is_null()).map(|b| b[b.len() - 64..].try_into().unwrap()));
+    let sig = sig.or_else(|| match &sealed {
+        Some(s) if body["sm64_proof"].is_null() => Some(s.sig),
+        _ => blob.as_ref().filter(|_| body["sm64_proof"].is_null()).map(|b| b[b.len() - 64..].try_into().unwrap()),
+    });
+    let records = match hexf(&body["sm64_proofs"])? {
+        Some(r) => r,
+        None => sealed.as_ref().map(|s| s.field.clone()).unwrap_or_default(),
+    };
     let extra: Vec<u8> = body["miner_tx"]["extra"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as u8)).collect()).unwrap_or_default();
-    let miner_key = extra_nonce(&extra).and_then(|n| sm64pow::sign::miner_key(&n));
+    let nonce = extra_nonce(&extra);
+    let miner_key = nonce.as_deref().and_then(sm64pow::sign::miner_key);
+    let fields = nonce.as_deref().and_then(sm64pow::records::nonce_fields);
     Ok(BlockRec {
         height: hd["height"].as_u64().ok_or_else(|| anyhow!("no height"))?,
         id: h32(hd["hash"].as_str().ok_or_else(|| anyhow!("no hash"))?)?,
@@ -156,6 +213,9 @@ pub fn parse_block(r: &Value) -> Result<BlockRec> {
         miner_key,
         sig,
         difficulty: hd["difficulty"].as_u64(),
+        records,
+        payout: fields.and_then(|f| f.payout),
+        proofs_root: fields.and_then(|f| f.root),
     })
 }
 

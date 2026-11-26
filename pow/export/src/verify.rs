@@ -4,7 +4,6 @@
 //! export recorded). Also checks that each block's `.pads` file is the right
 //! slice of its cycle's m64.
 
-use crate::export::{fresh_game, hash};
 use crate::m64;
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
@@ -14,43 +13,23 @@ use std::path::Path;
 pub struct Report {
     pub cycles: usize,
     pub blocks: usize,
+    /// v0.4 archived proofs replayed (each from its height's start, no pokes).
+    pub records: usize,
     pub frames: u64,
     pub divergences: Vec<String>,
 }
 
 pub fn verify(dir: &Path, only_cycle: Option<u32>, log: &mut dyn FnMut(&str)) -> Result<Report> {
     let manifest: Value = serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?)?;
-    let mut rep = Report::default();
+    let w = crate::walk::walk(dir, only_cycle, log, &mut |_| Ok(()))?;
+    let mut rep = Report { cycles: w.cycles, blocks: w.blocks, records: w.records, frames: w.frames, divergences: w.divergences };
     let mut cycle_pads = std::collections::HashMap::new();
     for c in manifest["cycles"].as_array().context("manifest.cycles")? {
         let n = c["cycle"].as_u64().unwrap() as u32;
         if only_cycle.is_some_and(|o| o != n) {
             continue;
         }
-        let (h, pads) = m64::read(&std::fs::read(dir.join(c["m64"].as_str().unwrap()))?)?;
-        ensure!(h.start_type == 2, "cycle {n}: not a power-on movie");
-        ensure!(pads.len() as u64 == c["frames"].as_u64().unwrap(), "cycle {n}: frame count");
-        let mut g = fresh_game()?;
-        let mut at = 0usize;
-        for b in c["blocks"].as_array().unwrap() {
-            let end = b["end_frame"].as_u64().unwrap() as usize;
-            for p in &pads[at..end] {
-                g.step_game(*p)?;
-            }
-            at = end;
-            let got = hash(&g.save_state());
-            let height = b["height"].as_u64().unwrap();
-            if got != b["end_state_hash"].as_str().unwrap() {
-                let msg = format!("cycle {n} block {height} (frame {end}): state differs from the chain replay");
-                log(&format!("DIVERGENCE {msg}"));
-                rep.divergences.push(msg);
-            }
-            rep.blocks += 1;
-        }
-        log(&format!("cycle {n}: {} frames, {} blocks replayed from power-on without pokes", pads.len(), c["blocks"].as_array().unwrap().len()));
-        rep.frames += pads.len() as u64;
-        rep.cycles += 1;
-        cycle_pads.insert(n, pads);
+        cycle_pads.insert(n, m64::read(&std::fs::read(dir.join(c["m64"].as_str().unwrap()))?)?.1);
     }
     for e in std::fs::read_dir(dir.join("blocks"))? {
         let p = e?.path();
@@ -63,7 +42,8 @@ pub fn verify(dir: &Path, only_cycle: Option<u32>, log: &mut dyn FnMut(&str)) ->
         let off = m["cycle_frame_offset"].as_u64().unwrap() as usize;
         let frames = m["frames"].as_u64().unwrap() as usize;
         let seg = m64::frames_from_bytes(&std::fs::read(dir.join(m["files"]["pads"].as_str().unwrap()))?)?;
-        if seg != pads[off..off + frames] {
+        // The movie may have the reserved button bits cleared (`--clear-reserved-bits`), the .pads file never does.
+        if seg != pads[off..off + frames] && m64::clear_reserved_bits(&seg) != pads[off..off + frames] {
             let msg = format!("block {}: its .pads file is not the cycle's slice", m["height"]);
             log(&format!("DIVERGENCE {msg}"));
             rep.divergences.push(msg);

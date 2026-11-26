@@ -27,7 +27,7 @@ fn dir(name: &str) -> PathBuf {
 }
 
 fn opts(out: PathBuf, rom: Rom) -> Options {
-    Options { out, rom, features: true, states: States::Portable, mupen64plus: true, clear_reserved_bits: false, author: "test".into() }
+    Options { out, rom, features: true, states: States::Portable, mupen64plus: true, clear_reserved_bits: false, format: sm64coin_export::export::Format::Legacy, record_m64: false, author: "test".into() }
 }
 
 #[test]

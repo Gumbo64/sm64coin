@@ -1,18 +1,62 @@
 //! `sm64coin-export`: chain -> m64 / segments / features. Usage in docs/EXPORT.md.
 
 use anyhow::{Result, anyhow, bail};
-use sm64coin_export::export::{Options, States, export};
+use sm64coin_export::export::{Format, Options, States, export};
 use sm64coin_export::m64::Rom;
-use sm64coin_export::{source, verify};
+use sm64coin_export::{snapshot, source, verify};
 use std::path::PathBuf;
 
 const USAGE: &str = "usage:
   sm64coin-export compare-mupen-dump CYCLE.m64 DUMP.bin [pool]   (a Mupen64Plus per-poll RAM dump, tools/mupen64plus/threeway.sh)
   sm64coin-export export --out DIR (--jsonl FILE | --rpc URL [--from H] [--to H]) [--rom PATH]
                   [--features] [--states none|portable|raw|both] [--mupen64plus] [--clear-reserved-bits] [--max-blocks N]
+                  [--format v0.4|legacy] [--record-m64]
+  sm64coin-export snapshot --out DIR [--tar FILE.tar.gz] (same source and options as export; states default to portable)
+  sm64coin-export verify-snapshot DIR|FILE.tar.gz [--no-replay] [--mupen auto|WORKDIR] [--mupen-records N] [--mupen-tools DIR] [--report FILE]
   sm64coin-export verify DIR [--cycle N] [--rom PATH]
   sm64coin-export fetch --rpc URL --out FILE.jsonl [--from H] [--to H]
 The ROM defaults to $SM64COIN_ROM, ./baserom.us.z64 or ~/.sm64coin/baserom.us.z64.";
+
+fn format(v: Option<&str>) -> Result<Format> {
+    match v {
+        None | Some("v0.4") | Some("v04") => Ok(Format::V04),
+        Some("legacy") | Some("v0.3") | Some("v0.2") => Ok(Format::Legacy),
+        Some(x) => bail!("--format {x}? (v0.4 or legacy)"),
+    }
+}
+
+/// The blocks the command works on (`--jsonl FILE` or `--rpc URL`, `--from`, `--to`, `--max-blocks`) and what
+/// is known about the chain they came from.
+fn load_blocks(args: &[String]) -> Result<(Vec<source::BlockRec>, snapshot::ChainInfo)> {
+    let val = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
+    let mut chain = snapshot::ChainInfo { network: "unknown".into(), ..Default::default() };
+    let mut blocks = if let Some(f) = val("--jsonl") {
+        let mut v = source::read_jsonl(&std::fs::read_to_string(f)?)?;
+        let from = val("--from").map(|x| x.parse::<u64>()).transpose()?.unwrap_or(0);
+        let to = val("--to").map(|x| x.parse::<u64>()).transpose()?.unwrap_or(u64::MAX);
+        v.retain(|b| b.height >= from && b.height <= to);
+        v
+    } else {
+        let url = val("--rpc").ok_or_else(|| anyhow!("{USAGE}"))?;
+        let rpc = source::Rpc::new(&url);
+        let info = rpc.info()?;
+        chain.node = Some(url);
+        chain.network = info["nettype"].as_str().unwrap_or("unknown").to_string();
+        chain.node_height = info["height"].as_u64();
+        chain.node_top_block = info["top_block_hash"].as_str().map(String::from);
+        chain.genesis_id = rpc.block_hash(0).ok().map(hex::encode);
+        let from = val("--from").map(|x| x.parse::<u64>()).transpose()?.unwrap_or(1);
+        let to = match val("--to") { Some(t) => t.parse::<u64>()?, None => rpc.height()?.saturating_sub(1) };
+        (from..=to).map(|h| rpc.block(h)).collect::<Result<Vec<_>>>()?
+    };
+    if let Some(n) = val("--max-blocks") {
+        blocks.truncate(n.parse()?);
+    }
+    if chain.genesis_id.is_none() {
+        chain.genesis_id = blocks.first().filter(|b| b.height == 1).map(|b| hex::encode(b.prev));
+    }
+    Ok((blocks, chain))
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -22,23 +66,8 @@ fn main() -> Result<()> {
     let rom_path = val("--rom").or_else(sm64pow::default_rom_path).ok_or_else(|| anyhow!("no ROM: pass --rom or set SM64COIN_ROM"));
     let mut log = |s: &str| eprintln!("{s}");
     match cmd.as_str() {
-        "fetch" | "export" => {
-            let blocks = if let Some(f) = val("--jsonl") {
-                let mut v = source::read_jsonl(&std::fs::read_to_string(f)?)?;
-                let from = val("--from").map(|x| x.parse::<u64>()).transpose()?.unwrap_or(0);
-                let to = val("--to").map(|x| x.parse::<u64>()).transpose()?.unwrap_or(u64::MAX);
-                v.retain(|b| b.height >= from && b.height <= to);
-                v
-            } else {
-                let rpc = source::Rpc::new(&val("--rpc").ok_or_else(|| anyhow!("{USAGE}"))?);
-                let from = val("--from").map(|x| x.parse::<u64>()).transpose()?.unwrap_or(1);
-                let to = match val("--to") { Some(t) => t.parse::<u64>()?, None => rpc.height()?.saturating_sub(1) };
-                (from..=to).map(|h| rpc.block(h)).collect::<Result<Vec<_>>>()?
-            };
-            let mut blocks = blocks;
-            if let Some(n) = val("--max-blocks") {
-                blocks.truncate(n.parse()?);
-            }
+        "fetch" | "export" | "snapshot" => {
+            let (blocks, chain) = load_blocks(&args)?;
             if cmd == "fetch" {
                 let text: String = blocks.iter().map(|b| source::to_line(b) + "\n").collect();
                 std::fs::write(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?, text)?;
@@ -48,18 +77,74 @@ fn main() -> Result<()> {
             let info = Rom::from_z64(&rom)?;
             sm64pow::init(rom)?;
             let states = match val("--states").as_deref() {
-                None | Some("none") => States::None,
+                None => if cmd == "snapshot" { States::Portable } else { States::None },
+                Some("none") => States::None,
                 Some("portable") => States::Portable,
                 Some("raw") => States::Raw,
                 Some("both") => States::Both,
                 Some(x) => bail!("--states {x}?"),
             };
-            let o = Options { out: PathBuf::from(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?), rom: info, features: flag("--features"), states, mupen64plus: flag("--mupen64plus"), clear_reserved_bits: flag("--clear-reserved-bits"), author: "sm64coin-export".into() };
+            let out = PathBuf::from(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?);
+            let snapshot = cmd == "snapshot";
+            let o = Options { out: out.clone(), rom: info, features: flag("--features"), states, mupen64plus: flag("--mupen64plus"), clear_reserved_bits: flag("--clear-reserved-bits"), format: format(val("--format").as_deref())?, record_m64: flag("--record-m64"), author: "sm64coin-export".into() };
             let s = export(&blocks, &o, &mut log)?;
-            println!("{} blocks, {} cycles, {} frames ({} poked); plain-replay mismatches {:?}, portable mismatches {:?}", s.blocks, s.cycles, s.frames, s.poked, s.plain_replay_mismatches, s.portable_mismatches);
+            println!("{} blocks, {} cycles, {} frames ({} poked); {} archived proofs ({} frames, {} counted for weight); plain-replay mismatches {:?}, portable mismatches {:?}", s.blocks, s.cycles, s.frames, s.poked, s.records, s.record_frames, s.records_counted, s.plain_replay_mismatches, s.portable_mismatches);
+            if snapshot {
+                let created = std::env::var("SOURCE_DATE_EPOCH").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+                let snap = snapshot::finish(&out, &chain, created)?;
+                println!("snapshot {}: {} files, {} bytes, sums {}", out.display(), snap["counts"]["files"], snap["counts"]["bytes"], snap["sums_sha256"]);
+                if let Some(t) = val("--tar") {
+                    let top = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "snapshot".into());
+                    snapshot::tar_gz(&out, std::path::Path::new(&t), &top)?;
+                    println!("archive {t}: {} bytes", std::fs::metadata(&t)?.len());
+                }
+            }
             if !s.plain_replay_mismatches.is_empty() || !s.portable_mismatches.is_empty() {
                 std::process::exit(2);
             }
+        }
+        "verify-snapshot" => {
+            let target = PathBuf::from(args.get(1).ok_or_else(|| anyhow!("{USAGE}"))?);
+            let tmp;
+            let dir = if target.is_dir() {
+                target
+            } else {
+                tmp = val("--work").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join(format!("sm64coin-verify-{}", std::process::id()))).join("unpacked");
+                snapshot::untar(&target, &tmp)?
+            };
+            let norep = flag("--no-replay");
+            if !norep {
+                sm64pow::init(std::fs::read(rom_path.as_ref().map_err(|e| anyhow!("{e}"))?)?)?;
+            }
+            let vo = snapshot::VerifyOptions {
+                replay: !norep,
+                mupen_work: match val("--mupen").as_deref() { None | Some("off") => None, Some("auto") => Some(std::env::temp_dir().join(format!("sm64coin-mupen-{}", std::process::id()))), Some(d) => Some(PathBuf::from(d)) },
+                mupen_records: val("--mupen-records").map(|n| n.parse()).transpose()?.unwrap_or(0),
+                mupen_tools: val("--mupen-tools").map(PathBuf::from),
+                rom: val("--rom").map(PathBuf::from),
+            };
+            let r = snapshot::verify(&dir, &vo, &mut log)?;
+            println!("snapshot {}: {} files, {} blocks, {} archived proofs, {} frames replayed; three-way: {}", if r.ok() { "OK" } else { "FAILED" }, r.files, r.blocks, r.records, r.frames, if r.mupen.is_empty() { "not requested".to_string() } else { r.mupen.join(" | ") });
+            for p in &r.problems {
+                println!("PROBLEM {p}");
+            }
+            if let Some(f) = val("--report") {
+                std::fs::write(f, serde_json::to_string_pretty(&serde_json::json!({"ok": r.ok(), "files": r.files, "blocks": r.blocks, "records": r.records, "frames": r.frames, "problems": r.problems, "three_way": r.mupen}))?)?;
+            }
+            if !r.ok() {
+                std::process::exit(2);
+            }
+        }
+        "lead-poll" => {
+            // lead-poll IN.m64 OUT.m64: the movie with one leading zero poll (what Mupen64Plus needs).
+            let (h, pads) = sm64coin_export::m64::read(&std::fs::read(args.get(1).ok_or_else(|| anyhow!("{USAGE}"))?)?)?;
+            let mut p = vec![sm64_binds::GamePad::default()];
+            p.extend(pads);
+            std::fs::write(args.get(2).ok_or_else(|| anyhow!("{USAGE}"))?, sm64coin_export::m64::write(&h, &p))?;
+        }
+        "m64-frames" => {
+            let (_, pads) = sm64coin_export::m64::read(&std::fs::read(args.get(1).ok_or_else(|| anyhow!("{USAGE}"))?)?)?;
+            println!("{}", pads.len());
         }
         "compare-mupen-dump" => {
             // compare-mupen-dump CYCLE.m64 DUMP.bin [pool]: every poll of a Mupen64Plus RDRAM dump against the port.
@@ -119,7 +204,7 @@ fn main() -> Result<()> {
             sm64pow::init(std::fs::read(rom_path?)?)?;
             let dir = args.get(1).ok_or_else(|| anyhow!("{USAGE}"))?;
             let r = verify::verify(std::path::Path::new(dir), val("--cycle").map(|c| c.parse()).transpose()?, &mut log)?;
-            println!("verified {} cycles, {} blocks, {} frames: {} divergences", r.cycles, r.blocks, r.frames, r.divergences.len());
+            println!("verified {} cycles, {} blocks, {} archived proofs, {} frames: {} divergences", r.cycles, r.blocks, r.records, r.frames, r.divergences.len());
             if !r.divergences.is_empty() {
                 std::process::exit(2);
             }

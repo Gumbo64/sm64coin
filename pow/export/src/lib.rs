@@ -7,3 +7,5 @@ pub mod m64;
 pub mod mupen;
 pub mod source;
 pub mod verify;
+pub mod walk;
+pub mod snapshot;
