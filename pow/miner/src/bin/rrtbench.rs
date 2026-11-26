@@ -102,6 +102,19 @@ fn main() -> Result<()> {
                 Attempt::Found(m) => {
                     let t_plain = std::time::Instant::now();
                     let blob = sm64pow::seal_proof_at(start, state.as_ref(), &seed, &params, &m.pads)?;
+                    let parent_kind = match parent {
+                        None => chain::Parent::Genesis,
+                        Some(pid) => chain::Parent::Block { id: pid, gap_seconds: 0 },
+                    };
+                    // v0.4 proofs are committed blobs: the node's check is verify_any.
+                    let verdict = |b: &[u8]| -> Result<chain::BlockVerdict> {
+                        let mut id = sm64pow::proof_id(b);
+                        id[0] ^= 0xff;
+                        Ok(match chain::verify_any(&id, parent_kind, &seed, a.difficulty, b)? {
+                            chain::CommittedVerdict::Run(v) => v,
+                            v => chain::BlockVerdict::Invalid(format!("{v:?}")),
+                        })
+                    };
                     if a.compare_normalisers {
                         let plain_secs = t_plain.elapsed().as_secs_f64();
                         use sm64pow::normalise::{Method, StickPick, seal_proof_exact_report, seal_proof_normalised_report};
@@ -115,13 +128,11 @@ fn main() -> Result<()> {
                             m.pads.len(), blob.len(), ex.0.len(), 100.0 * ex.0.len() as f64 / blob.len() as f64, ex.1.exact_secs, ex.1.stats.sticks_changed, ex.1.stats.button_bits_cleared,
                             rp.0.len(), 100.0 * rp.0.len() as f64 / blob.len() as f64, t2.elapsed().as_secs_f64()
                         );
+                        let (vp, ve, vr) = (verdict(&blob)?, verdict(&ex.0)?, verdict(&rp.0)?);
+                        println!("{label}: NORMALISERS verifier (verify_any): plain {vp:?}; exact same verdict: {}; replay-guided same verdict: {}", ve == vp, vr == vp);
                     }
                     let id = sm64pow::proof_id(&blob);
-                    let p = match parent {
-                        None => chain::Parent::Genesis,
-                        Some(pid) => chain::Parent::Block { id: pid, gap_seconds: 0 },
-                    };
-                    let v = chain::verify_block(&id, p, &seed, a.difficulty, &blob)?;
+                    let v = verdict(&blob)?;
                     let ev = match &v {
                         chain::BlockVerdict::Valid { progress, .. } => sm64pow::game::event(&before, progress).map(|e| e.name()),
                         _ => None,
