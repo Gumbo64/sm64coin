@@ -2188,6 +2188,7 @@ checksum = "826167069c09b99d56f31e9ae5c99049e932a98c9dc2dac47645b08dbbf76ba7"
 [[package]]
 name = "sm64-binds"
 version = "2.1.2"
+source = "git+https://github.com/Gumbo64/sm64-binds?rev=b361467a24dc73613903554fd3f7ee2649cfab43#b361467a24dc73613903554fd3f7ee2649cfab43"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2279,6 +2280,7 @@ dependencies = [
  "flate2",
  "getrandom 0.2.17",
  "serde",
+ "sha2",
  "sha3",
  "sm64-binds",
  "sm64coin-perturb",
