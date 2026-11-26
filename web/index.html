@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Content-Security-Policy: the host (GitHub Pages) cannot send headers, so this is the meta form (no frame-ancestors, report-uri or
+         sandbox there; see docs/WEB-SECURITY.md). Scripts only from this site (+ WebAssembly); no <object>/<base>/<form> targets;
+         connect-src: the node is any https:// URL the user picks, or a local http:// node. Dedicated workers are not covered by the
+         document's policy (their own response carries none). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <title>SM64Coin</title>
   </head>
   <body>
