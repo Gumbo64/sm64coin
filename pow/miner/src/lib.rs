@@ -1,6 +1,8 @@
 pub mod m64;
 pub mod tracker;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod payout;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod rpc;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod update;

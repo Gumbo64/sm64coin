@@ -149,6 +149,12 @@ struct Args {
     /// Search on for a shorter run while a found run waits for the limit (rrt only).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     anytime: bool,
+    /// The wallet's secret view key (hex) for --address: with it each template commits a fresh payout
+    /// subaddress (0, k) (k from a counter kept next to --signed-file) so a proof record does not link
+    /// your runs to one address; the block reward itself still goes to --address. Without it the
+    /// template's payout is --address.
+    #[arg(long)]
+    payout_view_secret: Option<String>,
     /// Which seeds this miner already signed a run for (seed -> proof id), kept across
     /// restarts so a restart never signs a second run for the same seed.
     #[arg(long, default_value = "run/automine-signed.json")]
@@ -235,7 +241,11 @@ fn main() -> Result<()> {
         eprintln!("note: {} is not a mainnet SM64Coin address; the daemon checks it for its network", a.address);
     }
     sm64pow::init(std::fs::read(&a.rom)?)?;
-    let daemon = rpc::Daemon::new(&a.daemon);
+    let mut daemon = rpc::Daemon::new(&a.daemon);
+    if let Some(v) = &a.payout_view_secret {
+        daemon = daemon.with_payouts(sm64coin_miner::payout::Payouts::new(&a.address, v, &a.signed_file)?);
+        println!("payout: a fresh subaddress (0, k) per template (counter {}.payout)", a.signed_file);
+    }
     if let Some(f) = &a.pick_difficulty {
         let b: SavedBlock = serde_json::from_str(&std::fs::read_to_string(f)?)?;
         let r = sm64pow::rules();

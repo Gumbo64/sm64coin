@@ -7,7 +7,13 @@ use serde_json::{Value, json};
 pub struct Daemon {
     url: String,
     agent: ureq::Agent,
+    /// v0.4: a fresh payout subaddress per template (payout.rs); None: the template pays `wallet_address`.
+    payouts: Option<crate::payout::Payouts>,
 }
+
+/// The longest a template request waits for the height's proofs to be collected (v0.4
+/// `sm64_records_ready_at`); a node whose clock is far off must not stall the miner.
+const MAX_RECORDS_WAIT: u64 = 120;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Template {
@@ -39,6 +45,10 @@ pub struct Template {
     /// A restart's limit is the limit this many seconds earlier (0: none).
     #[serde(default)]
     pub sm64_restart_delay: u64,
+    /// v0.4: unix second from which the template includes the height's collected proofs (the
+    /// displacement window and the collection grace after the tip); 0 or absent: now.
+    #[serde(default)]
+    pub sm64_records_ready_at: u64,
     #[serde(default)]
     pub sm64_parent_timestamp: u64,
     #[serde(default)]
@@ -83,10 +93,20 @@ pub struct CycleBlock {
     pub power_on: bool,
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 impl Daemon {
     pub fn new(url: &str) -> Daemon {
         let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(60)).build();
-        Daemon { url: url.trim_end_matches('/').to_string(), agent }
+        Daemon { url: url.trim_end_matches('/').to_string(), agent, payouts: None }
+    }
+
+    /// A fresh payout subaddress per template (see [`crate::payout`]).
+    pub fn with_payouts(mut self, p: crate::payout::Payouts) -> Daemon {
+        self.payouts = Some(p);
+        self
     }
 
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
@@ -109,7 +129,23 @@ impl Daemon {
     /// shares with its group, or the key of a saved block).
     pub fn template_for(&self, address: &str, key: sm64pow::sign::Keypair) -> Result<Template> {
         let tip = self.top_hash().unwrap_or_default();
-        let r = self.call("get_block_template", json!({"wallet_address": address, "extra_nonce": hex::encode(key.extra_nonce())}))?;
+        let mut params = json!({"wallet_address": address, "extra_nonce": hex::encode(key.extra_nonce())});
+        if let Some(p) = &self.payouts {
+            params["sm64_payout_address"] = json!(p.next()?);
+        }
+        // v0.4: wait until the tip's proofs have been collected, so the template includes them
+        // (and the next one is built on them): the node says when.
+        let deadline = now_secs() + MAX_RECORDS_WAIT;
+        let mut r = self.call("get_block_template", params.clone())?;
+        loop {
+            let ready = r.get("sm64_records_ready_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let now = now_secs();
+            if ready <= now || now >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs((ready - now).min(deadline - now)));
+            r = self.call("get_block_template", params.clone())?;
+        }
         let mut t: Template = serde_json::from_value(r)?;
         t.key = Some(key);
         t.tip = if tip.is_empty() { t.prev_hash.clone() } else { tip };
