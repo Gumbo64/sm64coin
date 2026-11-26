@@ -51,14 +51,13 @@ export default function BoardJoin({ onJoined = () => {} }) {
     <div className="card">
       <h3>Join the leaderboard</h3>
       {!rec && <p className="muted">Create or load a wallet on the <Link to="/wallet">Wallet</Link> page and mine a block to it first; then join here.</p>}
-      {rec && rec.viewOnly && <p className="muted">This browser's wallet is view-only: joining needs the spend key to sign the entry.</p>}
+      {rec && rec.viewOnly && <p className="muted">This browser's wallet is view-only, so it can't join the leaderboard.</p>}
       {rec && !rec.viewOnly && (
         <>
           <p className="muted">
             Show the blocks of this browser's wallet (<span className="mono">{rec.address ? `${rec.address.slice(0, 8)}…${rec.address.slice(-6)}` : 'saved wallet'}</span>) under
-            a name. The entry is signed with your spend key (only you can name this address); to count your blocks, nodes are given
-            your address and view key, so anyone can then see all incoming payments to this wallet (not spend). Use a
-            dedicated mining wallet. An entry cannot be removed once shared, only renamed.
+            a name. Nodes count your blocks with the wallet's view key, so once you join anyone can see all incoming payments to
+            this wallet (but not spend them). Use a dedicated mining wallet. An entry cannot be removed once shared, only renamed.
           </p>
           {isChosenNode() && <p className="walleterr">That node was set by hand (Network page), not the site's default. Only continue if you run it or trust its operator.</p>}
           <input placeholder="display name" value={name} maxLength={32} disabled={!!busy} onChange={(e) => { setName(e.target.value); setConfirm(false); }} />{' '}
@@ -66,7 +65,7 @@ export default function BoardJoin({ onJoined = () => {} }) {
           {confirm && (
             <div className="notice" data-testid="board-confirm">
               Join as <b>{name.trim()}</b>: this sends the wallet's <b>view key</b> to the node <b className="mono" data-testid="board-node">{node}</b>, with the address and the
-              signed name. With the view key the node, and every node it shares the entry with, can see all incoming payments
+              name. With the view key the node, and every node it shares the entry with, can see all incoming payments
               to this wallet; it cannot spend them. This cannot be undone.<br />
               {!rec.passkey && <><input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && pw && join()} />{' '}</>}
               <button disabled={!rec.passkey && !pw} onClick={join}>{rec.passkey ? 'Use the passkey, send the view key and join' : 'Send the view key and join'}</button>{' '}
