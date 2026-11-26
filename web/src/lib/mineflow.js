@@ -5,8 +5,8 @@
 // "pending" (kept, sent shortly before it is valid; signing happens at send time, so an unsent pending run may be replaced
 // by a shorter one). The chain refuses blocks stamped before its launch (mainnet only).
 
-/** Mainnet's launch (rules.rs launch_timestamp: the v0.4.1 release moment, 2026-11-26 10:22:52 UTC): no block may be stamped before it. */
-export const LAUNCH_TIMESTAMP = 1795688572;
+/** Mainnet's launch (rules.rs launch_timestamp: the v0.5.0 release moment, 2026-11-26 20:53:56 UTC): no block may be stamped before it. */
+export const LAUNCH_TIMESTAMP = 1795726436;
 /** Seconds the player is put back after a run that is not final (adjustable on the page). */
 export const REWIND_DEFAULT = 3;
 export const REWIND_CHOICES = [1, 2, 3, 5, 10];
