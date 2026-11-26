@@ -63,7 +63,9 @@ async function call(url, method, params = {}) {
   try {
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // text/plain keeps the POST a CORS "simple request": no OPTIONS preflight before every call to another origin's node
+      // (monerod reads the JSON body whatever the content type).
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 0, method, params }),
       signal: ctl.signal,
     });
@@ -80,4 +82,19 @@ async function call(url, method, params = {}) {
 
 // Same as daemon() but against an explicit node URL ('' = same-origin proxy).
 export const daemonAt = (node, method, params) => call(`${node || ''}/json_rpc`, method, params);
-export const daemon = (method, params) => daemonAt(getNode(), method, params);
+// get_info is polled by several parts of a page at once (the chain watch, the miner, the cycle timeline): calls within
+// INFO_TTL ms of each other (and concurrent ones) share one request.
+const INFO_TTL = 1500;
+let infoShared = null; // {node, at, p}
+const sharedInfo = (node) => {
+  const now = Date.now();
+  if (infoShared && infoShared.node === node && now - infoShared.at < INFO_TTL) return infoShared.p;
+  const p = daemonAt(node, 'get_info');
+  infoShared = { node, at: now, p };
+  p.catch(() => { if (infoShared && infoShared.p === p) infoShared = null; });
+  return p;
+};
+export const daemon = (method, params) => {
+  const node = getNode();
+  return method === 'get_info' && (params === undefined || (params && Object.keys(params).length === 0)) ? sharedInfo(node) : daemonAt(node, method, params);
+};
