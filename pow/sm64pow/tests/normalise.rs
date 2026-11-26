@@ -57,8 +57,9 @@ fn normalised_blocks_replay_identically_and_are_smaller() {
         assert_eq!(again.frames, frames);
         let mut other = id;
         other[0] ^= 0xff; // another block id: the same template, the normalised run
-        match verify_block(&other, parent, &seed, difficulty, &sealed).unwrap() {
-            BlockVerdict::Valid { frames: f, .. } => assert_eq!(f, frames),
+        // v0.4: the sealed proof is a committed blob (the fixture blocks are v0.2/v0.3 layout).
+        match sm64pow::chain::verify_any(&other, parent, &seed, difficulty, &sealed).unwrap() {
+            sm64pow::chain::CommittedVerdict::Run(BlockVerdict::Valid { frames: f, .. }) => assert_eq!(f, frames),
             v => panic!("block {}: the normalised proof is not a valid block: {v:?}", j["height"]),
         }
         for s in [&CONSERVATIVE, &AGGRESSIVE] {
