@@ -4,7 +4,7 @@ The app now has two builds (see `docs/WEB-SECURITY.md`):
 
 | | legacy | dedicated |
 |---|---|---|
-| URL | `https://gumbo64.github.io/sm64coin/` (GitHub Pages, `pages.yml`) | `https://app.eboy.au/` (Cloudflare Pages, `cloudflare-pages.yml`) |
+| URL | `https://gumbo64.github.io/sm64coin/` (GitHub Pages, `pages.yml`) | `https://sm64coin.eboy.au/` (Cloudflare Pages, `cloudflare-pages.yml`) |
 | build | `SM64COIN_BASE=/sm64coin/ npm run build` | `npm run build:app` (base `/`, `VITE_DEDICATED=1`, output `web/dist-app`) |
 | headers | none (meta CSP, frame-buster, `coi-sw.js`) | `web/deploy/cloudflare/_headers`: CSP with `frame-ancestors 'none'`, HSTS, COOP/COEP `require-corp`, Permissions-Policy, nosniff, no-referrer, X-Frame-Options |
 | extras | "moved" banner, "Move to the new site" panel on the Wallet page | no service worker, import help for the miner state |
@@ -14,12 +14,12 @@ The legacy site stays forever (wallets and passkeys of existing users live there
 ## 1. One-time steps for the maintainer
 
 1. **Cloudflare Pages project (Direct Upload).** Dashboard, Workers & Pages, Create, Pages, "Upload assets" (Direct Upload), project name `sm64coin`, upload any small file (e.g. an empty `index.html`) to create it. (Or: `npx wrangler pages project create sm64coin --production-branch main`.) If you pick another name, set the repository variable `CF_PAGES_PROJECT` to it.
-2. **Custom domain.** In that project: Custom domains, Set up a custom domain, `app.eboy.au`. `eboy.au` is on Cloudflare, so the CNAME `app` to `sm64coin.pages.dev` (proxied) is created for you; confirm in DNS that it exists and is orange (proxied). Wait until the domain shows "Active".
+2. **Custom domain.** In that project: Custom domains, Set up a custom domain, `sm64coin.eboy.au`. `eboy.au` is on Cloudflare, so the CNAME `app` to `sm64coin.pages.dev` (proxied) is created for you; confirm in DNS that it exists and is orange (proxied). Wait until the domain shows "Active".
 3. **API token.** My Profile, API Tokens, Create Token, Custom token: Permissions `Account` / `Cloudflare Pages` / `Edit`, Account Resources: your account. Copy the token.
 4. **Account ID.** Dashboard, any zone or Workers & Pages overview, right sidebar "Account ID".
 5. **GitHub secrets.** Repository Settings, Secrets and variables, Actions: new repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (and the existing `SM64_AI_BINDS_TOKEN`). Optional variable `CF_PAGES_PROJECT`. Without the two secrets `cloudflare-pages.yml` finishes green after its first job, doing nothing.
 6. **First deploy.** Actions, "Cloudflare Pages", Run workflow (branch `main`). Afterwards every push to `main` that touches the site deploys.
-7. **Check.** `curl -sI https://app.eboy.au/ | grep -i "content-security\|strict-transport\|cross-origin"` shows the headers; open the site: DevTools Console must show no CSP violations; `crossOriginIsolated` is `true` (the Auto-mine card says worker sync is on, no reload).
+7. **Check.** `curl -sI https://sm64coin.eboy.au/ | grep -i "content-security\|strict-transport\|cross-origin"` shows the headers; open the site: DevTools Console must show no CSP violations; `crossOriginIsolated` is `true` (the Auto-mine card says worker sync is on, no reload).
 8. **The Pi's CORS list** (section 2) must be changed first, or the new site cannot call the node.
 9. **Cloudflare zone settings for `eboy.au`** (section 3).
 10. Optional: Pages project, Settings, "Production" / "Preview" : turn off preview deployments if you do not use them. The `*.pages.dev` address serves the same app on another origin (its wallets are separate); the gateway CORS does not allow it.
@@ -33,11 +33,11 @@ sudo systemctl edit sm64coin-node
 ```
 ```
 [Service]
-Environment=ORIGINS=https://gumbo64.github.io,https://app.eboy.au
+Environment=ORIGINS=https://gumbo64.github.io,https://sm64coin.eboy.au
 ```
 ```
 sudo systemctl restart sm64coin-node
-curl -si -X OPTIONS https://eboy.au/json_rpc -H 'Origin: https://app.eboy.au' -H 'Access-Control-Request-Method: POST' | grep -i access-control-allow-origin
+curl -si -X OPTIONS https://eboy.au/json_rpc -H 'Origin: https://sm64coin.eboy.au' -H 'Access-Control-Request-Method: POST' | grep -i access-control-allow-origin
 curl -si -X OPTIONS https://eboy.au/json_rpc -H 'Origin: https://gumbo64.github.io' -H 'Access-Control-Request-Method: POST' | grep -i access-control-allow-origin
 curl -si -X OPTIONS https://eboy.au/json_rpc -H 'Origin: https://evil.example' -H 'Access-Control-Request-Method: POST' | grep -ci access-control-allow-origin   # 0
 ```

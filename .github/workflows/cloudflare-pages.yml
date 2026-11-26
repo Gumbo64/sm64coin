@@ -1,4 +1,4 @@
-# The website on its own origin (Cloudflare Pages, e.g. https://app.eboy.au): same app as pages.yml, built for base '/' with
+# The website on its own origin (Cloudflare Pages, e.g. https://sm64coin.eboy.au): same app as pages.yml, built for base '/' with
 # VITE_DEDICATED=1 and the response headers of web/deploy/cloudflare/_headers (CSP with frame-ancestors, HSTS, COOP/COEP,
 # Permissions-Policy ...). See docs/CLOUDFLARE-PAGES.md for the one-time Cloudflare setup.
 #

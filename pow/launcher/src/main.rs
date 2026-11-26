@@ -109,7 +109,7 @@ struct Opts {
 
 /// The website's origin (GitHub Pages), allowed to call the local node's RPC.
 // Both site origins (comma separated, as monerod takes the list): the legacy GitHub Pages site and the dedicated one (docs/CLOUDFLARE-PAGES.md).
-const SITE_ORIGIN: &str = "https://gumbo64.github.io,https://app.eboy.au";
+const SITE_ORIGIN: &str = "https://gumbo64.github.io,https://sm64coin.eboy.au";
 
 fn main() {
     let code = match run(Opts::parse()) {
