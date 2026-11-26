@@ -812,6 +812,7 @@ dependencies = [
  "ctrlc",
  "libc",
  "mainline",
+ "serde",
  "serde_json",
  "sha1",
  "tiny_http",

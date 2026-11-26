@@ -5,6 +5,10 @@ edition = "2024"
 description = "sm64coin: one command that finds the ROM, runs the node, serves the website and opens the wallet"
 license = "BSD-3-Clause"
 
+[lib]
+name = "sm64coin_launcher"
+path = "src/lib.rs"
+
 [[bin]]
 name = "sm64coin"
 path = "src/main.rs"
@@ -17,6 +21,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 sha1 = "0.10"
 mainline = "8"
 tiny_http = "0.12"
