@@ -121,6 +121,11 @@ pub struct MineRequest {
     /// (`MineResult::sig`). The seed already covers the key (it is in the coinbase).
     #[serde(default)]
     pub miner_secret: String,
+    /// Play the fixed boot / settle schedules of v0.4.0 instead of the state-reactive macros
+    /// (`sm64coin_miner::macros`, the default: from power-on the first controllable frame, 36+ frames
+    /// sooner). Either is just inputs in the proof.
+    #[serde(default)]
+    pub legacy_macros: bool,
 }
 fn guide_weight_default() -> f64 {
     20.0
@@ -220,6 +225,7 @@ pub fn sign_proof(secret_hex: &str, seed_hex: &str, proof: &[u8]) -> Result<Stri
 #[wasm_bindgen]
 pub fn mine(request: &str, parent_state: Option<Vec<u8>>) -> Result<String, JsError> {
     let r: MineRequest = serde_json::from_str(request).map_err(err)?;
+    sm64coin_miner::rh::set_legacy_macros(r.legacy_macros);
     let start = if r.start == "power-on" { Start::PowerOn } else { Start::Parent };
     let params = sm64pow::params(r.retarget_difficulty.max(1));
     let seed = sm64pow::Seed::from_hex(&r.seed_hash).map_err(err)?;
