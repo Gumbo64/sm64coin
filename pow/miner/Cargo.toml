@@ -12,10 +12,10 @@ sm64-binds = { workspace = true }
 # local checkout instead, add to a .cargo/config.toml above this repo:
 #   [patch."https://github.com/Gumbo64/sm64-AI-binds"]
 #   obrrt-core = { path = ".../sm64-AI-binds/objective-rrt-v2/core" }   (and -search, -spec, -objectives)
-obrrt-core = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "755f15dd90a7593b913e54da01263199f27570d0" }
-obrrt-search = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "755f15dd90a7593b913e54da01263199f27570d0", features = ["hooked"] }
-obrrt-spec = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "755f15dd90a7593b913e54da01263199f27570d0" }
-obrrt-objectives = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "755f15dd90a7593b913e54da01263199f27570d0" }
+obrrt-core = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "2fa8687df3c30fd1485bf903a331307ecfe3d108" }
+obrrt-search = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "2fa8687df3c30fd1485bf903a331307ecfe3d108", features = ["hooked"] }
+obrrt-spec = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "2fa8687df3c30fd1485bf903a331307ecfe3d108" }
+obrrt-objectives = { git = "https://github.com/Gumbo64/sm64-AI-binds", rev = "2fa8687df3c30fd1485bf903a331307ecfe3d108" }
 rayon = "1"
 anyhow = { workspace = true }
 serde = { version = "1", features = ["derive"] }
