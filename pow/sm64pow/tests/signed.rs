@@ -1,4 +1,4 @@
-//! Signed proofs (sign.rs) on real chain blocks: the v0.2 mainnet's blocks 1-34
+//! Signed proofs (sign.rs) on real chain blocks: the v0.2 mainnet's blocks 1-16 (block 17 no longer replays under the v0.4 game build; see PLAYABLE_BLOCKS)
 //! (fixtures/mainnet_v02.jsonl), re-committed as v0.4 blobs (commit.rs) and each treated as if
 //! its template had committed a miner key and its miner had signed the run. A variant of the run
 //! (another committed input hash or length: on v0.2 the last byte flipped or dropped gave valid
@@ -81,10 +81,15 @@ fn header_variants(p: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
+/// The fixture's blocks that replay under the v0.4 game build. Block 17 hit the N64-divergent splash
+/// spawn (object pool full, frame 58,532 of the v0.2 cycle 0) that the v0.4 build fixes, so it no
+/// longer reaches its star, and the blocks after it start from its end state.
+const PLAYABLE_BLOCKS: usize = 16;
+
 fn chain_v02() -> Vec<B> {
     let mut ts = std::collections::HashMap::new();
     let mut out = Vec::new();
-    for l in include_str!("fixtures/mainnet_v02.jsonl").lines() {
+    for l in include_str!("fixtures/mainnet_v02.jsonl").lines().take(PLAYABLE_BLOCKS) {
         let j: serde_json::Value = serde_json::from_str(l).unwrap();
         let id: [u8; 32] = hex(j["id"].as_str().unwrap()).try_into().unwrap();
         let prev: [u8; 32] = hex(j["prev"].as_str().unwrap()).try_into().unwrap();
@@ -127,7 +132,7 @@ fn every_mainnet_variant_is_rejected_by_the_signature_without_a_replay() {
         return;
     }
     let c = chain();
-    assert_eq!(c.len(), 34);
+    assert_eq!(c.len(), PLAYABLE_BLOCKS);
     let (mut variants_valid_unsigned, mut variants_tried, mut blocks_with_a_variant) = (0, 0, 0);
     let mut sig_checks = std::time::Duration::ZERO;
     let attacker = Keypair::from_entropy(&[0xa7; 32]).unwrap();
@@ -181,10 +186,10 @@ fn every_mainnet_variant_is_rejected_by_the_signature_without_a_replay() {
         }
     }
     eprintln!(
-        "{variants_tried} header variants of 34 blocks rejected signed without a replay ({:.1} us per signature check); {variants_valid_unsigned} v0.2 byte variants are valid runs ({blocks_with_a_variant} blocks have one)",
+        "{variants_tried} header variants of {PLAYABLE_BLOCKS} blocks rejected signed without a replay ({:.1} us per signature check); {variants_valid_unsigned} v0.2 byte variants are valid runs ({blocks_with_a_variant} blocks have one)",
         sig_checks.as_secs_f64() * 1e6 / (2 * variants_tried) as f64
     );
-    assert!(blocks_with_a_variant >= 30, "the fixture still shows the malleability");
+    assert!(blocks_with_a_variant as usize >= PLAYABLE_BLOCKS * 30 / 34, "the fixture still shows the malleability");
 }
 
 #[test]

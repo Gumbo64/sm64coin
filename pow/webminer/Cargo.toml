@@ -30,5 +30,5 @@ hex = "0.4"
 # obrrt-*: Gumbo64/sm64-AI-binds branch `v029` (pinned above by rev).
 [patch.crates-io]
 rayon = { path = "rayon-seq" }
-# sm64-binds 2.1.1 with the JS-backend memory fix: Gumbo64/sm64-binds branch `wasm-js-memory-2.1.1`.
-sm64-binds = { git = "https://github.com/Gumbo64/sm64-binds", rev = "14037c51dc841034265e294311508eeb6d42ca3e" }
+# sm64-binds 2.1.2 (the v0.4 game build) with the JS-backend memory fix: Gumbo64/sm64-binds branch `wasm-js-memory-2.1.2`.
+sm64-binds = { git = "https://github.com/Gumbo64/sm64-binds", rev = "f1c4a74afb3e1cc6f30e067d19ac2f178c5be1d8" }

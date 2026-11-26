@@ -2268,9 +2268,8 @@ checksum = "826167069c09b99d56f31e9ae5c99049e932a98c9dc2dac47645b08dbbf76ba7"
 
 [[package]]
 name = "sm64-binds"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "515dc6490cce3941cd447ff95923f8859e43b71d8e3b3fcef5162bf95f78b2cc"
 dependencies = [
  "anyhow",
  "flate2",
