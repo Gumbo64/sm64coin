@@ -399,7 +399,9 @@ function Miner() {
     if (res.discard || res.frames < 1) { hub.toast('segment discarded', 'info'); hub.notify(); return; }
     const info = { w: sel.w, step: sel.step, nid: null, parentSlot: sel.slot, pos: res.pos, level: msg.level, area: msg.area, stars: msg.stars, frame: sel.frame + res.frames, trail: res.trail, frames: res.frames, note: 'adding it to the search tree…' };
     hub.playedSegment(info);
-    hub.toast(`played ${res.frames} frames (${(res.frames / 30).toFixed(1)} s) from node ${sel.id}: adding it to the search trees`, 'info');
+    hub.toast(res.won
+      ? `goal reached: you got the next star or key after ${res.frames} frames (${(res.frames / 30).toFixed(1)} s) from node ${sel.id}. Adding it to the search trees; the auto-miner sends it as its best run`
+      : `played ${res.frames} frames (${(res.frames / 30).toFixed(1)} s) from node ${sel.id}: adding it to the search trees`, res.won ? 'found' : 'info');
     let first = true, added = 0;
     const onReply = (slot, m) => {
       if (!m.ok) return;

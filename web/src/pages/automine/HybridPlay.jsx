@@ -2,12 +2,13 @@ import { useEffect } from 'react';
 import { acquireEngine } from '../../components/EngineSlot.jsx';
 import { e2eHook } from '../../lib/e2e.js';
 import { checkPos } from './replayCheck.js';
+import { successFor } from '../../lib/rules.js';
 
 // Hybrid mining: play by hand from a node of the search tree. The node's save state (the headless game's memory and the
 // block's perturbation as the search had them there, from the worker's search: rrt::child::hybrid) is loaded into the shared
 // visual game and played with the manual miner's own code (lib/recorder.js: the pokes of the block's perturbation, rewinds,
-// speeds, the same keys and toolbars, the touch controls). The attempt never "wins": a hotkey (Enter, or Esc) ends the
-// segment, and its inputs go back to the page (pages/Mine.jsx), which adds them to the search's trees as a manual node and
+// speeds, the same keys and toolbars, the touch controls). The segment ends when the block's goal is reached (the next star or
+// key, the block's rules: lib/rules.js) or when a hotkey (Enter, or Esc) ends it, and its inputs go back to the page (pages/Mine.jsx), which adds them to the search's trees as a manual node and
 // returns to the visualiser. This component renders nothing: it drives the game panel's canvas while mounted.
 //
 // `rec` (a ref) is the panel's recorder handle, `stop` (a ref) is set to 'finish' / 'discard' by the hotkey and the buttons.
@@ -50,7 +51,8 @@ export default function HybridDriver({ hub, engine, req, rec, stop, setClock, se
         }
 
         // The manual miner's recorder, starting from the node: its perturbation is the node's (not a fresh block start), the
-        // attempt never wins, and the positions along the way are kept for the trail drawn in the visualiser.
+        // attempt ends when the block's rules are met (the next star or key from the node), and the positions along the
+        // way are kept for the trail drawn in the visualiser.
         class NodeRecorder extends Recorder {
           constructor(...a) { super(...a); this.trail = []; }
           reset() {
@@ -68,18 +70,19 @@ export default function HybridDriver({ hub, engine, req, rec, stop, setClock, se
             return r;
           }
         }
-        const r = new NodeRecorder(engine, task, start, () => false, setClock);
+        const won = successFor(task.sm64_rules) || (() => false);
+        const r = new NodeRecorder(engine, task, start, won, setClock);
         r.setLimit(Number.MAX_SAFE_INTEGER);
         rec.current = r;
         setStatus('playing');
         engine.canvas?.focus?.();
-        await r.run(async () => !!stop.current || dead);
+        const hit = await r.run(async () => !!stop.current || dead);
         rec.current = null;
         if (dead) return;
         const p = engine.get_game_state().pos;
         const k = Math.floor(r.pads.length / 3) + 1;
         const trail = [[req.msg.pos[0], req.msg.pos[1], req.msg.pos[2]], ...r.trail.slice(1, k).filter(Boolean), [p[0], p[1], p[2]]].flat();
-        onDone({ discard: stop.current === 'discard', pads: r.pads.map((x) => ({ button: x.button, stick_x: x.stick_x, stick_y: x.stick_y })), frames: r.pads.length, pos: [p[0], p[1], p[2]], trail, task });
+        onDone({ won: !!hit && !stop.current, discard: stop.current === 'discard', pads: r.pads.map((x) => ({ button: x.button, stick_x: x.stick_x, stick_y: x.stick_y })), frames: r.pads.length, pos: [p[0], p[1], p[2]], trail, task });
       } catch (e) { if (!dead) onError(String(e.message || e)); } finally { if (release) release(); }
     })();
     return () => { dead = true; };
