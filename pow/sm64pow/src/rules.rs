@@ -311,9 +311,9 @@ pub const STAR_CYCLE: StarCycle = StarCycle {
     // it could claim decades it never spent (every gap at the limit's cap) and be pre-mined offline
     // from the published genesis, then win at launch (docs/V0.4-DESIGN.md decision 12). The daemon
     // refuses mainnet and stagenet blocks stamped before it (testnet: none, test tooling replays
-    // older chains). The v0.4 release moment: 2026-11-26 07:17 UTC (set just before tagging).
+    // older chains). The v0.4.1 release moment: 2026-11-26 10:22 UTC (set just before tagging; v0.4.0, never launched, had 07:17 UTC).
     // v0.3 had 1_795_651_200.
-    launch_timestamp: 1_795_677_420,
+    launch_timestamp: 1_795_688_572,
 };
 
 /// Publish-on-find (v0.3, relay policy; FAIRNESS.md sections 6-7, 9): a run
