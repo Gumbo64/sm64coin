@@ -12,10 +12,13 @@ import { getFile } from 'sm64-binds-src/scripts/fileUpload.js';
 import wasmUrl from '../../wasm/webminer/sm64coin_webminer_bg.wasm?url';
 import glue from '../../wasm/webminer/sm64coin_webminer.js?raw';
 
+const mk = (name) => self.postMessage({ type: 'mark', name, at: performance.timeOrigin + performance.now() });
 self.onmessage = async (e) => {
   if (e.data?.type !== 'mine') return;
   try {
+    mk('worker-msg');
     const [module, rom] = await Promise.all([WebAssembly.compileStreaming(fetch(wasmUrl)), getFile('ROM')]);
+    mk('wasm-rom-ready');
     const m = makeMiner({ module, glue, rom: new Uint8Array(rom), log: (line) => self.postMessage({ type: 'log', line }),
       shared: e.data.shared || null,
       onViz: e.data.viz ? (line) => (line.startsWith('{"progress"') ? self.postMessage({ type: 'progress', sim: JSON.parse(line).sim_frames }) : self.postMessage({ type: 'viz', line })) : null,
@@ -28,6 +31,7 @@ self.onmessage = async (e) => {
       onHybrid: (msg, state) => { delete msg.state; self.postMessage({ type: 'hybrid', msg, state }, state ? [state.buffer] : []); },
       onShare: (s) => self.postMessage({ type: 'share', ...s }, s.files.map(([, b]) => b.buffer)),
     });
+    mk('wasm-init-done');
     const result = m.mine({ ...e.data.request, viz: !!e.data.viz }, e.data.parentState ? new Uint8Array(e.data.parentState) : null);
     self.postMessage({ type: 'result', result, steps: m.steps() });
   } catch (err) {

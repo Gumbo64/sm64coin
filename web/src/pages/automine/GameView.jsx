@@ -7,6 +7,7 @@ import { SPEEDS } from './hub.js';
 import { Toolbar, ToolBtn } from '../../components/ui.jsx';
 import { acquireEngine } from '../../components/EngineSlot.jsx';
 import { loadStart, portableFor } from './startState.js';
+import { markOnce } from '../../lib/perf.js';
 import { frames as fmtFrames } from '../../lib/format.js';
 import { makePert, fastForwardPert, padAt } from './replay.js';
 import { checkPos } from './replayCheck.js';
@@ -81,6 +82,47 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
   const [info, setInfo] = useState({ text: 'loading the game…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
   const gameId = hub.game.id;
   const kind = hub.game.kind;
+
+  // Until the first highlight there is nothing of the search to replay: the game shows the block's start instead, so the
+  // panel is alive from the first seconds. Power-on: the fixed boot (the logo, the title, the file select) played at 4x; the
+  // parent's start: the node's end state, translated once (startState.js, cached for the round's other views). Unperturbed and
+  // only decorative: the first clip restores its own start state.
+  useEffect(() => {
+    if (!ready || gameId) return undefined;
+    let dead = false;
+    (async () => {
+      const release = await acquireEngine();
+      try {
+        const e = eng.current;
+        const kind = hub.workers[0]?.start;
+        if (dead || !kind) return;
+        if (kind === 'power-on') {
+          const { restoreState } = await import('../../lib/savestate.js');
+          restoreState(e, null, e.powerOn);
+          const pad = new GamePad(0, 0, 0);
+          let i = 0, last = performance.now(), owed = 0;
+          while (!dead && i < 1680) {
+            const n = await new Promise((res) => requestAnimationFrame((now) => { owed += Math.min(now - last, 250) * 0.03 * 4; last = now; const k = Math.floor(owed); owed -= k; res(k); }));
+            if (!visRef.current) continue;
+            for (let k = 0; k < n && i < 1680; k++, i++) {
+              pad.button = i % 2 === 0 ? 0x8000 : (i >= 150 && i < 160) || (i >= 200 && i < 300) ? 0x1000 : 0;
+              e.step_game(pad);
+            }
+            setInfo({ text: 'starting the game (power-on); waiting for the first highlight of the search…', frame: i, total: 1680, star: false, verdict: '', prog: { frac: i / 1680 } });
+          }
+          if (!dead) setInfo({ text: 'waiting for the first highlight (a new place or a faster route)…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
+        } else {
+          while (!dead && !hub.parentRaw) await sleep(300);
+          if (dead) return;
+          setInfo({ text: 'loading the block\'s start state…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
+          await loadStart(e, hub, 'parent');
+          markOnce('start-shown');
+          if (!dead) setInfo({ text: 'the block\'s start (the parent\'s end state); waiting for the first highlight…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
+        }
+      } finally { release(); }
+    })().catch(() => {});
+    return () => { dead = true; };
+  }, [ready, gameId, hub.round]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (ready && !gameId) setInfo({ text: 'waiting for the first highlight (a new place or a faster route)…', frame: 0, total: 0, star: false, verdict: '', prog: { frac: null } });
@@ -193,6 +235,7 @@ export default function ReelView({ hub, engine, visible, toolbar }) {
           snaps.set(sk, st);
         }
         restoreState(e, null, st);
+        markOnce('reel-playing');
         const pert = makePert(Perturbation, withConfig(hub.template), p.rootRaw ? p.rootPert : null);
         try {
         const total = p.raw.length / 4;

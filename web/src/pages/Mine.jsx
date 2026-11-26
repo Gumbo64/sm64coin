@@ -8,6 +8,8 @@ import { daemon } from '../lib/rpc.js';
 import { newMinerKey, templateParams, signRun } from '../lib/minerkey.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { prepareStart } from '../lib/cycle.js';
+import { readProgress } from '../lib/perturb.js';
+import { loadStart } from './automine/startState.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
@@ -263,7 +265,16 @@ function Miner() {
           setPhase({ kind: 'ff', done: 0, total: 0 });
           let st;
           try {
-            st = await prepareStart(engine, t, power, (done, total) => setPhase({ kind: 'ff', done, total }), () => stopped);
+            // The auto-miner already holds this parent's end state (the node's headless state): translated once into the
+            // visual game (the reel's path) instead of replaying the whole cycle in the drawing engine.
+            const h = miner.hub;
+            if (!power && t.sm64_start !== 'power-on' && miner.running && h.parentRaw && h.roster?.template?.prev_hash === t.prev_hash) {
+              try {
+                const state = await loadStart(engine, h, 'parent');
+                st = { kind: 'parent', state, progress: readProgress(engine), cycle: null };
+              } catch { st = undefined; }
+            }
+            if (!st) st = await prepareStart(engine, t, power, (done, total) => setPhase({ kind: 'ff', done, total }), () => stopped);
           } catch (e) { say(`could not reach the start: ${e}`); await sleep(3000); continue; }
           if (!st) break;
           setStart(st);

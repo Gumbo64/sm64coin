@@ -6,6 +6,7 @@ import { parseViz, parseLog, flatToRaw, proofInputs } from '../../lib/webminer/v
 import { TreeMirror } from '../../lib/webminer/treeMirror.js';
 import { levelName } from './levels.js';
 import { Coverage } from './coverage.js';
+import { markOnce } from '../../lib/perf.js';
 
 /** The point cloud keeps the newest CAP sampled search nodes (a ring buffer). */
 export const CAP = 50000;
@@ -168,6 +169,7 @@ export class VizHub {
 
   /** A viz line of worker `i` (about once a second per running search tree). */
   ingest(i, line) {
+    markOnce('first-viz-line');
     if (!this.enabled) return;
     const w = this.workers[i];
     const m = parseViz(line);
