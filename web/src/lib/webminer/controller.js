@@ -22,7 +22,7 @@ import { Hybrid } from './hybrid.js';
 import { parentState, forWorker } from './parentState.js';
 import { getPlayFromStart, setPlayFromStart, subscribePlayFromStart } from '../hybridSetting.js';
 
-/** Hybrid mining's channel to the workers (a person plays from a tree node, a position goal); see hybrid.js. */
+/** Hybrid mining's channel to the workers (a person plays from a tree node, a sampling bubble); see hybrid.js. */
 export const hybrid = new Hybrid();
 
 export const isAddress = (a) => a.startsWith('SM6') && a.length > 90;
@@ -192,15 +192,16 @@ class MinerController {
   }
   /** "Play from the start": hybrid mining off, classic manual mining from the block's beginning (remembered). */
   setPlayFromStart(on) { setPlayFromStart(on); }
-  /** A position goal for the searches ({level, area, pos} from the visualiser's shift + left click) or null. */
+  /** The sampling bubble ({level, area, pos, radius} from the visualiser: hold left click, scroll) or null: this.goalShare of the searches'
+   *  plans draw their base state only from the tree's nodes inside it (when it holds any). */
   setGoal(goal) {
-    if (goal) goal = { level: goal.level, area: goal.area, pos: goal.pos, share: this.goalShare };
+    if (goal) goal = { level: goal.level, area: goal.area, pos: goal.pos, radius: Math.max(50, Math.min(20000, Number(goal.radius) || 300)), share: this.goalShare };
     hybrid.setGoal(goal);
     this.hub.setGoal(goal);
-    if (goal) this.say(`position goal: ${goal.pos.map((x) => Math.round(x)).join(', ')} (level ${goal.level}, area ${goal.area}): ${Math.round(goal.share * 100)}% of the searches' plans go for it (Mario::UserGoal objectives)`);
-    else this.say('position goal cleared');
+    if (goal) this.say(`sampling bubble: ${goal.pos.map((x) => Math.round(x)).join(', ')} radius ${Math.round(goal.radius)} (level ${goal.level}, area ${goal.area}): ${Math.round(goal.share * 100)}% of the searches' plans start from a tree node inside it`);
+    else this.say('sampling bubble cleared');
   }
-  /** How strongly the position goal pulls: the share (0..1) of the searches' plans that start from the tree's state nearest the goal. */
+  /** The bubble sampling proportion: the share (0..1) of the searches' plans whose base state is drawn from inside the bubble. */
   setGoalShare(x) {
     this.goalShare = Math.max(0, Math.min(1, Number(x) || 0));
     lsSet('sm64coin.goalShare', String(this.goalShare));

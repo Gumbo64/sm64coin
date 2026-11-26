@@ -1197,9 +1197,15 @@ pub mod hybrid {
         level: u16,
         area: u8,
         pos: [f32; 3],
-        /// The goal's strength (the page's setting): the share of plans that go for it (0..1).
+        /// The bubble's radius (game units; the engine clamps it).
+        #[serde(default = "default_radius")]
+        radius: f32,
+        /// The bubble sampling proportion (the page's setting): the share of plans whose base state is drawn from inside it (0..1).
         #[serde(default = "default_share")]
         share: f64,
+    }
+    fn default_radius() -> f32 {
+        300.0
     }
     fn default_share() -> f64 {
         0.35
@@ -1234,9 +1240,8 @@ pub mod hybrid {
         let poll = serde_json::json!({ "tag": tag, "vkey": vkey }).to_string();
         let mut last = Instant::now();
         let mut first = true;
-        let mut goal: Option<([u16; 2], [f32; 3], f64)> = None;
-        let (mut said, mut said_at) = ((0usize, 0u64, 0u64), Instant::now());
-        Box::new(move |e: &mut Engine| {
+        let mut goal: Option<([u16; 2], [f32; 3], f32, f64)> = None;
+                Box::new(move |e: &mut Engine| {
             if !first && last.elapsed().as_secs_f64() < 0.5 {
                 return;
             }
@@ -1244,25 +1249,12 @@ pub mod hybrid {
             last = Instant::now();
             let Some(reply) = ex("hybrid", &poll) else { return };
             let Ok(r) = serde_json::from_str::<Reply>(&reply) else { return };
-            let g = r.goal.map(|g| ([g.level, g.area as u16], g.pos, g.share.clamp(0.0, 1.0)));
+            let g = r.goal.map(|g| ([g.level, g.area as u16], g.pos, g.radius, g.share.clamp(0.0, 1.0)));
             if g != goal {
                 goal = g;
-                e.set_pos_goal(g.map(|(z, p, _)| ((z[0], z[1] as u8), p)));
-                // The goal's own pool weight grows with its share of plans (a regular objective weighs 1).
-                e.set_pos_goal_strength(4.0 + 40.0 * g.map_or(0.0, |g| g.2), g.map_or(0.0, |g| g.2));
-                println!("position goal: {g:?}");
-                said = (0, 0, 0);
-            }
-            // What the goal's PosTime objectives have done so far (the page logs it), every 15 s, with how near the tree has got.
-            if goal.is_some() && said_at.elapsed().as_secs_f64() > 15.0 {
-                let st = e.pos_goal_stats();
-                if st != said || st.0 > 0 {
-                    said = st;
-                    said_at = Instant::now();
-                    let near = e.pos_goal_nearest().map_or(String::new(), |(d, id)| format!("; nearest tree state {} units away (node {id})", d.round()));
-                    let text = format!("position goal: {} Mario::UserGoal objectives drawn to it, {} attempts, {} succeeded (a faster arrival){near}", st.0, st.1, st.2);
-                    ex("hybrid_out", &serde_json::json!({ "kind": "log", "text": text }).to_string());
-                }
+                e.set_pos_goal(g.map(|(z, p, r, _)| ((z[0], z[1] as u8), p, r)));
+                e.set_pos_goal_strength(0.0, g.map_or(0.0, |g| g.3));
+                println!("sampling bubble: {g:?}");
             }
             for c in r.cmds {
                 let out = match c {

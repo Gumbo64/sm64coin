@@ -15,7 +15,7 @@ import { isTouchDevice } from '../../components/TouchPad.jsx';
 // and the view fitted.
 // Hybrid mining adds: "Play from here" on a selected node (a person plays on from its state, see HybridPlay.jsx; the
 // played segment becomes a manual node, drawn magenta, and the view highlights where it finished), and shift + left
-// click (without dragging) on the level geometry, which sets a position goal for the searches (Mario::UserGoal to the point).
+// click (without dragging) on the level geometry, which places a sampling bubble for the searches (see the help line).
 // three.js is loaded when this view mounts, i.e. only with the visualisations on.
 
 const VIRIDIS = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
@@ -165,16 +165,19 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
         chainLine.visible = false;
         chainLine.frustumCulled = false;
         world.add(chainLine);
-        // The position goal: a ring of the objective's radius (150) and a pole.
-        const goalG = new THREE.Group();
-        goalG.add(new THREE.Mesh(new THREE.SphereGeometry(150, 16, 10), new THREE.MeshBasicMaterial({ color: 0xff8a00, wireframe: true, transparent: true, opacity: 0.7 })));
-        goalG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 700, 0)]), new THREE.LineBasicMaterial({ color: 0xff8a00 })));
-        const flag = new THREE.Mesh(new THREE.ConeGeometry(60, 160, 4), new THREE.MeshBasicMaterial({ color: 0xff8a00 }));
-        flag.position.set(0, 700, 0);
-        flag.rotation.x = Math.PI;
-        goalG.add(flag);
-        goalG.visible = false;
-        world.add(goalG);
+        // The sampling bubble: a unit sphere scaled to the radius (translucent fill + wireframe); the placed one is orange, the
+        // preview while holding (left click + wheel, or a long press + a second finger) is cyan.
+        const bubbleMesh = (color) => {
+          const g = new THREE.Group();
+          g.add(new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, depthWrite: false })));
+          g.add(new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.5 })));
+          g.visible = false;
+          g.frustumCulled = false;
+          world.add(g);
+          return g;
+        };
+        const goalG = bubbleMesh(0xff8a00);
+        const prevG = bubbleMesh(0x2ad4ff);
         // Where the last human-played segment finished: a ring that pulses, and the trail it took.
         const finishG = new THREE.Group();
         const fringA = new THREE.Mesh(new THREE.SphereGeometry(90, 16, 10), new THREE.MeshBasicMaterial({ color: 0xff3df2, wireframe: true }));
@@ -349,7 +352,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
           const zk = fitted;
           drawnGoal = g;
           goalG.visible = !!g && zk === `${g.level}:${g.area}`;
-          if (g) goalG.position.set(g.pos[0], g.pos[1], g.pos[2]);
+          if (g) { goalG.position.set(g.pos[0], g.pos[1], g.pos[2]); goalG.scale.setScalar(g.radius || 300); }
         }
 
         function drawManual() {
@@ -411,13 +414,15 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
         // the floors below it); the floor where the search has been (nearest to a shown node, within 300 units) wins, else
         // the first one. The same spot again within 3 s (shift + click again, or another long press) takes the next floor down.
         let lastGoal = null; // {x, y, t, layers: [{p, d}], i}
-        const onGoal = (ev) => {
-          if (!geomMesh || !fitted) return;
+        // pointAt(ev, cycle): {level, area, pos, note} of the level geometry under the pointer, or null (no geometry there, no level
+        // shown yet). cycle = a repeat at the same spot takes the next floor down (and remembers this pick); a preview does not.
+        const pointAt = (ev, cycle) => {
+          if (!geomMesh || !fitted) return null;
           setRay(ev);
           world.updateMatrixWorld(true);
           const hits = ray.intersectObject(geomMesh, true);
           const now = performance.now();
-          const again = lastGoal && now - lastGoal.t < 3000 && Math.hypot(ev.clientX - lastGoal.x, ev.clientY - lastGoal.y) < 14;
+          const again = cycle && lastGoal && now - lastGoal.t < 3000 && Math.hypot(ev.clientX - lastGoal.x, ev.clientY - lastGoal.y) < 14;
           let layers, i;
           if (again) {
             layers = lastGoal.layers; i = (lastGoal.i + 1) % layers.length;
@@ -432,18 +437,68 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
               floors.push({ p, d: dmin });
             }
             if (!floors.length && hits[0]) floors.push({ p: world.worldToLocal(hits[0].point.clone()), d: Infinity });
-            if (!floors.length) return;
+            if (!floors.length) return null;
             layers = floors.sort((a, b) => b.p.y - a.p.y); // top to bottom
             let near = -1;
             layers.forEach((f, k) => { if (f.d <= 300 && (near < 0 || f.d < layers[near].d)) near = k; });
             i = near >= 0 ? near : 0;
           }
-          lastGoal = { x: ev.clientX, y: ev.clientY, t: now, layers, i };
+          if (cycle) lastGoal = { x: ev.clientX, y: ev.clientY, t: now, layers, i };
           const p = layers[i].p;
           const [level, area] = fitted.split(':').map(Number);
-          cb.current.onGoal?.({ level, area, pos: [Math.round(p.x), Math.round(p.y), Math.round(p.z)] });
-          cb.current.note?.(`Floor ${i + 1}/${layers.length}`);
+          return { level, area, pos: [Math.round(p.x), Math.round(p.y), Math.round(p.z)], note: `Floor ${i + 1}/${layers.length}` };
         };
+        // Places the bubble (a click with shift, the Goal button's tap): at the radius last used.
+        const onGoal = (ev) => {
+          const pt = pointAt(ev, true);
+          if (!pt) return;
+          cb.current.onGoal?.({ level: pt.level, area: pt.area, pos: pt.pos, radius: curRadius });
+          cb.current.note?.(pt.note);
+        };
+        // The bubble being placed (hold + scroll, or long press + second finger): {pt, radius} or null. The radius is kept
+        // between placements (default 300, the placed bubble's radius when there is one).
+        const clampR = (r) => Math.max(50, Math.min(20000, r));
+        let curRadius = clampR(hub.goal?.radius || 300);
+        let bub = null; // {x, y, pt, radius}
+        const showPrev = () => {
+          if (!bub || !bub.pt) { prevG.visible = false; return; }
+          prevG.visible = fitted === `${bub.pt.level}:${bub.pt.area}`;
+          prevG.position.set(bub.pt.pos[0], bub.pt.pos[1], bub.pt.pos[2]);
+          prevG.scale.setScalar(bub.radius);
+          cb.current.note?.(`Bubble radius ${Math.round(bub.radius)} (release to place)`);
+        };
+        const bubCancel = () => { bub = null; prevG.visible = false; };
+        const bubPlace = () => {
+          const b = bub;
+          bubCancel();
+          if (!b || !b.pt) return;
+          curRadius = b.radius;
+          cb.current.onGoal?.({ level: b.pt.level, area: b.pt.area, pos: b.pt.pos, radius: b.radius });
+          cb.current.note?.(`Bubble radius ${Math.round(b.radius)}`);
+        };
+        let held = null; // a mouse left press: {x, y} until it is released
+        // Mouse: with the left button held, the first wheel notch over level geometry starts a bubble (the wheel then changes its
+        // radius instead of zooming; a capture listener on the wrapper runs before the orbit controls' own). No geometry under
+        // the pointer, or the wheel without the button held: the wheel zooms as before.
+        const onWheel = (e) => {
+          if (!(held && (e.buttons & 1))) return;
+          if (!bub) {
+            const pt = pointAt({ clientX: e.clientX, clientY: e.clientY }, false);
+            if (!pt) return;
+            bub = { x: e.clientX, y: e.clientY, pt, radius: curRadius };
+            controls.enabled = false;
+          }
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          bub.radius = clampR(bub.radius * Math.exp(-Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 200) * 0.002));
+          const pt = pointAt({ clientX: e.clientX, clientY: e.clientY }, false);
+          if (pt) bub.pt = pt;
+          showPrev();
+        };
+        el.addEventListener('wheel', onWheel, { capture: true, passive: false });
+        dom.addEventListener('pointermove', (e) => {
+          if (bub && e.pointerType !== 'touch' && (e.buttons & 1)) { const pt = pointAt(e, false); if (pt) { bub.pt = pt; showPrev(); } }
+        });
         let downAt = null;
         // Touch: no shift key, so a long press (~500 ms, one finger, moved < 8 px) on the level sets the goal, and the
         // "Goal" toggle makes the next tap do it. A ring over the press fills while it counts; moving or a second finger
@@ -469,7 +524,8 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
             controls.enabled = false;
             l.fired = true;
             try { navigator.vibrate?.(40); } catch { /* not supported */ }
-            onGoal({ clientX: l.x, clientY: l.y });
+            const pt = pointAt({ clientX: l.x, clientY: l.y }, false);
+            if (pt) { bub = { x: l.x, y: l.y, pt, radius: curRadius, id: l.id, second: null }; showPrev(); } else cb.current.note?.('No level geometry there');
             ring.style.display = 'none'; lpRaf = 0;
             return;
           }
@@ -477,8 +533,10 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
         };
         dom.addEventListener('pointerdown', (e) => {
           downAt = [e.clientX, e.clientY, e.button];
-          if (e.pointerType !== 'touch') return;
+          if (e.pointerType !== 'touch') { if (e.button === 0 && !e.shiftKey) held = { x: e.clientX, y: e.clientY }; return; }
           touches.add(e.pointerId);
+          // A second finger while a long press has started a bubble: its vertical swipe is the radius (up = bigger).
+          if (bub && bub.id !== undefined && !bub.second && e.pointerId !== bub.id) { bub.second = { id: e.pointerId, y0: e.clientY, r0: bub.radius }; return; }
           if (touches.size > 1) { lpEnd(); return; }
           const r = el.getBoundingClientRect();
           lp = { id: e.pointerId, x: e.clientX, y: e.clientY, t0: performance.now(), cam: camera.position.clone(), tgt: controls.target.clone(), fired: false };
@@ -488,16 +546,24 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
         });
         dom.addEventListener('pointermove', (e) => {
           if (lp && !lp.fired && e.pointerId === lp.id && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > SLOP) lpEnd();
+          if (bub && bub.second && e.pointerId === bub.second.id) { bub.radius = clampR(bub.second.r0 * Math.exp((bub.second.y0 - e.clientY) * 0.006)); showPrev(); }
         });
         const lpUp = (e) => {
           if (e.pointerType !== 'touch') return;
           touches.delete(e.pointerId);
+          if (bub && bub.second && e.pointerId === bub.second.id) { bub.second = null; downAt = null; return; }
+          if (bub && bub.id === e.pointerId) { if (e.type === 'pointerup') bubPlace(); else bubCancel(); }
           if (!touches.size) controls.enabled = true;
           if (lp && e.pointerId === lp.id) { const fired = lp.fired; lpEnd(); if (fired) { downAt = null; suppress = true; } }
         };
         dom.addEventListener('pointercancel', lpUp);
+        dom.addEventListener('pointercancel', (e) => { if (e.pointerType !== 'touch') { held = null; if (bub) { bubCancel(); controls.enabled = true; } } });
         dom.addEventListener('pointerup', lpUp);
         dom.addEventListener('pointerup', (e) => {
+          if (e.pointerType !== 'touch' && e.button === 0) {
+            held = null;
+            if (bub) { bubPlace(); controls.enabled = true; downAt = null; return; }
+          }
           if (suppress) { suppress = false; downAt = null; return; }
           if (downAt && downAt[2] === e.button && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 4) {
             if (e.button === 0 && (e.shiftKey || cb.current.armed)) { onGoal(e); if (cb.current.armed) cb.current.disarm?.(); }
@@ -533,7 +599,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
           if ((hub.cloudChanged || cf !== builtCfg) && now - lastBuild > 400) {
             hub.cloudChanged = false; builtCfg = cf; lastBuild = now; rebuild();
           } else if ((hub.manual ? hub.manual.at : 0) !== drawnMan) drawManual();
-          else if (hub.goal !== drawnGoal) drawGoal();
+          else if (hub.goal !== drawnGoal) { drawGoal(); if (hub.goal?.radius) curRadius = hub.goal.radius; }
           // The node of the highlight clip being played is marked like a clicked one.
           if (hub.hl !== lastHl) {
             lastHl = hub.hl;
@@ -585,7 +651,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
   };
   const goal = hub.goal;
   // How near the tree has got: the closest sampled node in the goal's level and area.
-  let goalNear = null;
+  let goalNear = null, inBubble = 0;
   if (goal) {
     const n = Math.min(hub.n, CAP);
     for (let i = 0; i < n; i++) {
@@ -593,6 +659,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
       const dx = hub.pos[i * 3] - goal.pos[0], dy = hub.pos[i * 3 + 1] - goal.pos[1], dz = hub.pos[i * 3 + 2] - goal.pos[2];
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (goalNear === null || d < goalNear) goalNear = d;
+      if (d <= (goal.radius || 300)) inBubble++;
     }
   }
   void v;
@@ -612,9 +679,9 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
               {[...zones.entries()].map(([k, c]) => { const [l, a] = k.split(':'); return <option key={k} value={k}>{levelIcon(+l)} {levelName(+l)} · area {a} ({c})</option>; })}
             </select>
           </div>
-          <label htmlFor="cloud-goal">Goal strength</label>
+          <label htmlFor="cloud-goal">Bubble sampling proportion</label>
           <div className="ctl">
-            <input id="cloud-goal" type="range" min="0" max="100" step="5" value={Math.round(share * 100)} onChange={(e) => { const x = Number(e.target.value) / 100; setShare(x); onGoalShare && onGoalShare(x); }} title="The share of the searches' plans that start from the tree's state nearest the position goal and go for it (the rest search as usual)" /> <span className="muted">{Math.round(share * 100)}% of plans</span>
+            <input id="cloud-goal" type="range" min="0" max="100" step="5" value={Math.round(share * 100)} onChange={(e) => { const x = Number(e.target.value) / 100; setShare(x); onGoalShare && onGoalShare(x); }} title="The share of the searches' plans whose base state is drawn only from the tree's nodes inside the sampling bubble (the rest draw from the whole tree as usual; with no node inside, all do)" /> <span className="muted">{Math.round(share * 100)}% of plans</span>
           </div>
           <span className="lab">View</span>
           <div className="viz-btns">
@@ -624,7 +691,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
             <button type="button" onClick={() => gl.current?.fit()}>Fit</button>
           </div>
           <span className="lab">Controls</span>
-          <span className="muted">left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms; left click selects a node; <b>shift + left click</b> on the level sets a position goal for the searches (a Mario::UserGoal objective at that point). On a touch screen: <b>long-press the level</b> (or use the 🎯 Goal button, then tap it); drag pans, pinch zooms, tap selects.</span>
+          <span className="muted">left drag pans, middle drag pans on the ground, right drag orbits, wheel zooms; left click selects a node; <b>hold left click on the level and scroll</b> to size a sampling bubble (a sphere the searches draw their base states from; the wheel does not zoom meanwhile), release to place it (shift + left click places one at the last radius). On a touch screen: <b>long-press the level</b>, then swipe a <b>second finger</b> up or down to change the radius, lift to place (or use the 🎯 Bubble button, then tap); drag pans, pinch zooms, tap selects.</span>
         </form>
       )}>
       <div ref={mount} className="viz-gl" />
@@ -632,16 +699,17 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
       <div className="viz-status">
         {sel ? (
           <span><b>{sel.manual ? 'Manual node' : 'Node'} {sel.id}</b> of worker {sel.w + 1} · {levelIcon(sel.level)} {levelName(sel.level)} (area {sel.area}) · {sel.stars} ★ · frame {sel.frame.toLocaleString()} ({clock(sel.frame)}){sel.progress ? ' · made progress' : ''}</span>
-        ) : <span className="muted">{goalArm ? 'Tap the level where the goal should be.' : isTouchDevice() ? 'Tap a node to select it; long-press the level to set a goal.' : 'Click a node to select it; shift + click on the level sets a position goal.'}</span>}
-        {goal && <span className="muted small">{goalNote ? <b title="Which floor layer under the pointer the goal landed on (top = 1); the same spot again within 3 s picks the next one down">{goalNote} · </b> : null}Position goal active ({goal.pos.join(', ')}) in {levelName(goal.level)}, area {goal.area}: {Math.round(share * 100)}% of the searches' plans go for it · {goalNear === null ? 'no tree node in that area yet' : goalNear <= 150 ? 'reached' : `nearest node ${Math.round(goalNear).toLocaleString()} units away`}.</span>}
+        ) : <span className="muted">{goalArm ? 'Tap the level where the bubble should be.' : isTouchDevice() ? 'Tap a node to select it; long-press the level, then swipe a second finger to size a sampling bubble.' : 'Click a node to select it; hold left click on the level and scroll to size a sampling bubble.'}</span>}
+        {goalNote ? <span className="muted small"><b title="The bubble being sized, or which floor layer under the pointer it landed on (top = 1); shift + click on the same spot again within 3 s picks the next one down">{goalNote}</b></span> : null}
+        {goal && <span className="muted small">Sampling bubble active ({goal.pos.join(', ')}, radius {Math.round(goal.radius || 300)}) in {levelName(goal.level)}, area {goal.area}: {Math.round(share * 100)}% of the searches' plans start from a node inside it · {inBubble > 0 ? `${inBubble.toLocaleString()} sampled node${inBubble === 1 ? '' : 's'} inside` : goalNear === null ? 'no tree node in that area yet' : `no node inside yet (nearest ${Math.round(goalNear).toLocaleString()} units away), so plans sample as usual`}.</span>}
         {hub.manual && <span className="muted small">Last played segment: {hub.manual.nid != null ? `node ${hub.manual.nid} of worker ${hub.manual.w + 1}` : 'not in the tree'}, {hub.manual.frames} frames, finished at ({hub.manual.pos.map((x) => Math.round(x)).join(', ')}){hub.manual.note ? ` · ${hub.manual.note}` : ''}</span>}
       </div>
       <Toolbar label="Node actions">
         <ToolBtn on={!!playHere} disabled={!playHere} onClick={() => onPlayFrom && onPlayFrom(sel)} title={playHere ? 'Load this node\'s save state and play on by hand; the played segment becomes a high-weight node of the search tree' : (sel ? why || 'Only a node of a worker\'s current search step can be played from' : 'Select a node first')}>🎮 Play from here</ToolBtn>
         <ToolBtn disabled={!sel} onClick={() => onPlay && onPlay(sel.w, { step: sel.step, id: sel.id })} title="Replay the path to this node in the game panel">▶ {isBest ? 'This path' : 'This node'}</ToolBtn>
         <ToolBtn disabled={bestW < 0} onClick={() => bestW >= 0 && onPlay && onPlay(bestW)} title="Replay the best route so far in the game panel">▶ Best path</ToolBtn>
-        <ToolBtn on={goalArm} onClick={() => setGoalArm(!goalArm)} title="Then tap the level to set the position goal there (long-press does it too; shift + click on a computer)">🎯 Goal</ToolBtn>
-        {goal && <ToolBtn onClick={() => onGoal && onGoal(null)} title="Clear the position goal">✕ Goal</ToolBtn>}
+        <ToolBtn on={goalArm} onClick={() => setGoalArm(!goalArm)} title="Then tap the level to place the sampling bubble there at the last radius (long-press + a second finger sizes it; hold left click + scroll on a computer)">🎯 Bubble</ToolBtn>
+        {goal && <ToolBtn onClick={() => onGoal && onGoal(null)} title="Clear the sampling bubble">✕ Bubble</ToolBtn>}
       </Toolbar>
       {sel && !playHere && why && <p className="muted small" style={{ margin: '6px 0 0' }}>{why}</p>}
     </Panel>

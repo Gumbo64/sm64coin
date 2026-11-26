@@ -1516,7 +1516,7 @@ dependencies = [
 [[package]]
 name = "objective-scattershot"
 version = "0.1.0"
-source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=1eca2f9cc56912d8046d5f44df2fa6f384461788#1eca2f9cc56912d8046d5f44df2fa6f384461788"
 dependencies = [
  "anyhow",
  "lz4_flex",
@@ -1533,7 +1533,7 @@ dependencies = [
 [[package]]
 name = "obrrt-core"
 version = "0.1.0"
-source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=1eca2f9cc56912d8046d5f44df2fa6f384461788#1eca2f9cc56912d8046d5f44df2fa6f384461788"
 dependencies = [
  "anyhow",
  "rand",
@@ -1545,7 +1545,7 @@ dependencies = [
 [[package]]
 name = "obrrt-objectives"
 version = "0.1.0"
-source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=1eca2f9cc56912d8046d5f44df2fa6f384461788#1eca2f9cc56912d8046d5f44df2fa6f384461788"
 dependencies = [
  "obrrt-core",
  "rand",
@@ -1555,7 +1555,7 @@ dependencies = [
 [[package]]
 name = "obrrt-search"
 version = "0.1.0"
-source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=1eca2f9cc56912d8046d5f44df2fa6f384461788#1eca2f9cc56912d8046d5f44df2fa6f384461788"
 dependencies = [
  "anyhow",
  "lz4_flex",
@@ -1572,7 +1572,7 @@ dependencies = [
 [[package]]
 name = "obrrt-spec"
 version = "0.1.0"
-source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=1eca2f9cc56912d8046d5f44df2fa6f384461788#1eca2f9cc56912d8046d5f44df2fa6f384461788"
 dependencies = [
  "anyhow",
  "objective-scattershot",
@@ -2291,7 +2291,7 @@ dependencies = [
 [[package]]
 name = "sm64_ai"
 version = "0.1.0"
-source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=2fa8687df3c30fd1485bf903a331307ecfe3d108#2fa8687df3c30fd1485bf903a331307ecfe3d108"
+source = "git+https://github.com/Gumbo64/sm64-AI-binds?rev=1eca2f9cc56912d8046d5f44df2fa6f384461788#1eca2f9cc56912d8046d5f44df2fa6f384461788"
 dependencies = [
  "anyhow",
  "byteorder",

@@ -9,7 +9,7 @@ const dec = new TextDecoder();
 // After the slots: Int32 control words shared by the page and every worker: [0] = the viz feed is on, [1] = how many
 // times the page switched it off (a worker that sees it change knows the page dropped the feed so far, see vizOn).
 const CTL = 64;
-// After the control words: the page's mailbox to the workers (hybrid mining: position goal, state requests, human-played
+// After the control words: the page's mailbox to the workers (hybrid mining: sampling bubble, state requests, human-played
 // segments), one JSON text the page rewrites as a whole, under the same seqlock as the slots: [Int32 seq, Int32 length, bytes].
 const MAIL = 2 << 20;
 export const boardSize = (slots, slotBytes = 1 << 20) => slots * slotBytes + CTL + MAIL;
@@ -217,7 +217,7 @@ export function makeNodeRequests(board) {
 
 /**
  * The workers' side of hybrid mining ("hybrid" in rrt::child::hybrid): `payload` is {tag, vkey} (the step's sync tag and
- * the page's name of its tree). The reply is the mailbox's position goal and the commands for this step that this worker has
+ * the page's name of its tree). The reply is the mailbox's sampling bubble and the commands for this step that this worker has
  * not been given yet: "state" commands addressed to this slot and step, "insert" commands for this step's tag. A command stays in
  * the mailbox until the page drops it (a step that comes later with that tag still gets it), and is given once.
  */

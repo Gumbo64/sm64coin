@@ -42,7 +42,7 @@ function logInto(w, line, ev) {
 
 export class VizHub {
   constructor() {
-    this.goal = null; // the position goal {level, area, pos} (hybrid mining), kept across rounds
+    this.goal = null; // the sampling bubble {level, area, pos, radius} (hybrid mining), kept across rounds
     this.enabled = false; // collecting (the visualisations are switched on)
     this.live = false; // the Auto-mine page is on screen: views are woken
     this.subs = new Set();

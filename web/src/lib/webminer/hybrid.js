@@ -1,4 +1,4 @@
-// Hybrid mining, the page's side: the board's mailbox to the workers (a position goal, state requests, human-played
+// Hybrid mining, the page's side: the board's mailbox to the workers (a sampling bubble, state requests, human-played
 // segments) and their answers. The workers' searches run synchronously inside WebAssembly, so a request only reaches
 // one through the shared board (see board.js postMail / makeHybridPoll) and is answered between two rounds of its search
 // (rrt::child::hybrid); the answers come back as {type: 'hybrid'} worker messages (controller.js -> onMessage).
@@ -14,7 +14,7 @@ export class Hybrid {
     this.cmds = [];
     this.goal = null; // {level, area, pos}
     this.nextId = 1;
-    this.onLog = null; // (slot, text): a search's own note (the position goal's objectives)
+    this.onLog = null; // (slot, text): a search's own note (the sampling bubble's objectives)
     this.waiting = new Map(); // command id -> {resolve, reject, timer, onReply}
   }
 
@@ -43,7 +43,7 @@ export class Hybrid {
     return patchMail(this.board, this.slots, { goal: this.goal, cmds: this.cmds });
   }
 
-  /** The position goal for the search's generator ({level, area, pos: [x,y,z]} or null). */
+  /** The sampling bubble for the search's generator ({level, area, pos: [x,y,z]} or null). */
   setGoal(goal) {
     this.goal = goal;
     return this.post();
