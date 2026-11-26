@@ -97,6 +97,7 @@ class MinerController {
     this.lead = clampLead(ls('sm64coin.submitLead', String(DEFAULT_LEAD)));
     this.signed = signedSeeds((() => { try { return localStorage; } catch { return null; } })());
     this.vizOn = ls('sm64coin.viz', '1') !== '0';
+    this.goalShare = Math.max(0, Math.min(1, Number(ls('sm64coin.goalShare', '0.35')) || 0));
     this.playFromStart = getPlayFromStart();
     hybrid.onLog = (slot, text) => this.say(`worker ${slot + 1}: ${text}`);
     subscribePlayFromStart((on) => { this.playFromStart = on; this.emit(true); });
@@ -187,10 +188,18 @@ class MinerController {
   setPlayFromStart(on) { setPlayFromStart(on); }
   /** A position goal for the searches ({level, area, pos} from the visualiser's shift + left click) or null. */
   setGoal(goal) {
+    if (goal) goal = { level: goal.level, area: goal.area, pos: goal.pos, share: this.goalShare };
     hybrid.setGoal(goal);
     this.hub.setGoal(goal);
-    if (goal) this.say(`position goal: ${goal.pos.map((x) => Math.round(x)).join(', ')} (level ${goal.level}, area ${goal.area}): the searches draw Mario::PosTime objectives to it`);
+    if (goal) this.say(`position goal: ${goal.pos.map((x) => Math.round(x)).join(', ')} (level ${goal.level}, area ${goal.area}): ${Math.round(goal.share * 100)}% of the searches' plans go for it (Mario::UserGoal objectives)`);
     else this.say('position goal cleared');
+  }
+  /** How strongly the position goal pulls: the share (0..1) of the searches' plans that start from the tree's state nearest the goal. */
+  setGoalShare(x) {
+    this.goalShare = Math.max(0, Math.min(1, Number(x) || 0));
+    lsSet('sm64coin.goalShare', String(this.goalShare));
+    if (this.hub.goal) this.setGoal(this.hub.goal);
+    else this.emit(true);
   }
   /** The Auto-mine page is on screen (the views redraw); off screen the data still collects. */
   setViewing(on) { this.hub.live = on; if (on) this.hub.notify(); }

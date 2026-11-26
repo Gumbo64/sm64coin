@@ -1160,6 +1160,12 @@ pub mod hybrid {
         level: u16,
         area: u8,
         pos: [f32; 3],
+        /// The goal's strength (the page's setting): the share of plans that go for it (0..1).
+        #[serde(default = "default_share")]
+        share: f64,
+    }
+    fn default_share() -> f64 {
+        0.35
     }
 
     #[derive(Deserialize)]
@@ -1191,7 +1197,7 @@ pub mod hybrid {
         let poll = serde_json::json!({ "tag": tag, "vkey": vkey }).to_string();
         let mut last = Instant::now();
         let mut first = true;
-        let mut goal: Option<([u16; 2], [f32; 3])> = None;
+        let mut goal: Option<([u16; 2], [f32; 3], f64)> = None;
         let (mut said, mut said_at) = ((0usize, 0u64, 0u64), Instant::now());
         Box::new(move |e: &mut Engine| {
             if !first && last.elapsed().as_secs_f64() < 0.5 {
@@ -1201,20 +1207,23 @@ pub mod hybrid {
             last = Instant::now();
             let Some(reply) = ex("hybrid", &poll) else { return };
             let Ok(r) = serde_json::from_str::<Reply>(&reply) else { return };
-            let g = r.goal.map(|g| ([g.level, g.area as u16], g.pos));
+            let g = r.goal.map(|g| ([g.level, g.area as u16], g.pos, g.share.clamp(0.0, 1.0)));
             if g != goal {
                 goal = g;
-                e.set_pos_goal(g.map(|(z, p)| ((z[0], z[1] as u8), p)));
+                e.set_pos_goal(g.map(|(z, p, _)| ((z[0], z[1] as u8), p)));
+                // The goal's own pool weight grows with its share of plans (a regular objective weighs 1).
+                e.set_pos_goal_strength(4.0 + 40.0 * g.map_or(0.0, |g| g.2), g.map_or(0.0, |g| g.2));
                 println!("position goal: {g:?}");
                 said = (0, 0, 0);
             }
-            // What the goal's PosTime objectives have done so far (the page logs it), every few seconds when it changed.
-            if goal.is_some() && said_at.elapsed().as_secs_f64() > 5.0 {
+            // What the goal's PosTime objectives have done so far (the page logs it), every 15 s, with how near the tree has got.
+            if goal.is_some() && said_at.elapsed().as_secs_f64() > 15.0 {
                 let st = e.pos_goal_stats();
-                if st != said {
+                if st != said || st.0 > 0 {
                     said = st;
                     said_at = Instant::now();
-                    let text = format!("position goal: {} Mario::PosTime objectives drawn to it, {} attempts, {} succeeded (a faster arrival)", st.0, st.1, st.2);
+                    let near = e.pos_goal_nearest().map_or(String::new(), |(d, id)| format!("; nearest tree state {} units away (node {id})", d.round()));
+                    let text = format!("position goal: {} Mario::UserGoal objectives drawn to it, {} attempts, {} succeeded (a faster arrival){near}", st.0, st.1, st.2);
                     ex("hybrid_out", &serde_json::json!({ "kind": "log", "text": text }).to_string());
                 }
             }
