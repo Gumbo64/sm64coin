@@ -33,7 +33,7 @@ target/release/sm64coin-export verify out/             # replay every cycle m64 
 
 Options: `--from H --to H` (RPC or JSONL range), `--max-blocks N`,
 `--features` (per-frame state features), `--states none|portable|raw|both`
-(per-block start states), `--mupen64plus` (also write a variant for stock
+(per-block start states), `--clear-reserved-bits` (clear the reserved button bits 0x00C0 in the cycle `.m64` files: the game ignores them, Mupen64Plus resets on a sample with both set), `--mupen64plus` (also write a variant for stock
 Mupen64Plus, see below).
 
 The input must be one chain in height order. It may start at any block whose

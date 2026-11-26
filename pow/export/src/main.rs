@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 const USAGE: &str = "usage:
   sm64coin-export export --out DIR (--jsonl FILE | --rpc URL [--from H] [--to H]) [--rom PATH]
-                  [--features] [--states none|portable|raw|both] [--mupen64plus] [--max-blocks N]
+                  [--features] [--states none|portable|raw|both] [--mupen64plus] [--clear-reserved-bits] [--max-blocks N]
   sm64coin-export verify DIR [--cycle N] [--rom PATH]
   sm64coin-export fetch --rpc URL --out FILE.jsonl [--from H] [--to H]
 The ROM defaults to $SM64COIN_ROM, ./baserom.us.z64 or ~/.sm64coin/baserom.us.z64.";
@@ -53,7 +53,7 @@ fn main() -> Result<()> {
                 Some("both") => States::Both,
                 Some(x) => bail!("--states {x}?"),
             };
-            let o = Options { out: PathBuf::from(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?), rom: info, features: flag("--features"), states, mupen64plus: flag("--mupen64plus"), author: "sm64coin-export".into() };
+            let o = Options { out: PathBuf::from(val("--out").ok_or_else(|| anyhow!("{USAGE}"))?), rom: info, features: flag("--features"), states, mupen64plus: flag("--mupen64plus"), clear_reserved_bits: flag("--clear-reserved-bits"), author: "sm64coin-export".into() };
             let s = export(&blocks, &o, &mut log)?;
             println!("{} blocks, {} cycles, {} frames ({} poked); plain-replay mismatches {:?}, portable mismatches {:?}", s.blocks, s.cycles, s.frames, s.poked, s.plain_replay_mismatches, s.portable_mismatches);
             if !s.plain_replay_mismatches.is_empty() || !s.portable_mismatches.is_empty() {

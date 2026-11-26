@@ -163,6 +163,17 @@ pub fn frames_from_bytes(b: &[u8]) -> Result<Vec<GamePad>> {
     Ok(b.chunks_exact(4).map(|c| pad_from_bytes(c.try_into().unwrap())).collect())
 }
 
+/// The N64 controller's two reserved button bits (0x0080, 0x0040). The game never reads them
+/// (sm64pow tests/reserved_bits.rs), but Mupen64Plus reads a sample with both set as a console
+/// reset, so a movie containing one doesn't play back. The poke pads only use A, B and Z, and the
+/// miners no longer seal such pads; old chains may still have them.
+pub const RESERVED_BITS: u16 = 0x00C0;
+
+/// `pads` with the reserved bits cleared on every pad that has both set.
+pub fn clear_reserved_bits(pads: &[GamePad]) -> Vec<GamePad> {
+    pads.iter().map(|p| if p.button & RESERVED_BITS == RESERVED_BITS { GamePad::new(p.button & !RESERVED_BITS, p.stick_x, p.stick_y) } else { *p }).collect()
+}
+
 /// A whole movie: header, then the frames.
 pub fn write(header: &Header, pads: &[GamePad]) -> Vec<u8> {
     let mut h = header.clone();
@@ -216,5 +227,18 @@ mod tests {
         let mut again = h.clone();
         again.author = "x".into();
         assert_eq!(Header::parse(&again.to_bytes()).unwrap().rom, h.rom);
+    }
+}
+
+#[cfg(test)]
+mod reserved_tests {
+    use super::*;
+
+    #[test]
+    fn only_pads_with_both_reserved_bits_change() {
+        let pads = [GamePad::new(0x8000 | RESERVED_BITS, 1, 2), GamePad::new(0x0080, 3, 4), GamePad::new(0x0040, 5, 6), GamePad::new(0x8000, 7, 8)];
+        let c = clear_reserved_bits(&pads);
+        assert_eq!(c[0], GamePad::new(0x8000, 1, 2));
+        assert_eq!(&c[1..], &pads[1..]);
     }
 }

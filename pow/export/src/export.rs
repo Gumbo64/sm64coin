@@ -40,6 +40,9 @@ pub struct Options {
     pub states: States,
     /// Also write `cycle_N.mupen64plus.m64` with one leading zero poll (Mupen64Plus polls once more at boot).
     pub mupen64plus: bool,
+    /// Clear the reserved button bits (both set: Mupen64Plus resets the console) in the `.m64` movies;
+    /// the raw `.pads` files stay as played.
+    pub clear_reserved_bits: bool,
     pub author: String,
 }
 
@@ -384,11 +387,12 @@ fn write_cycle(o: &Options, c: Cycle, end: &str) -> Result<CycleMeta> {
     let desc = format!("SM64Coin cycle {} (blocks {}-{}): effective inputs, pokes applied", c.n, c.blocks[0].height, c.blocks.last().unwrap().height);
     let h = Header::power_on(0, c.first_ts as u32, o.rom.clone(), &o.author, &desc);
     let f = format!("cycles/cycle_{:04}.m64", c.n);
-    write(&o.out.join(&f), &m64::write(&h, &c.pads))?;
+    let movie = if o.clear_reserved_bits { m64::clear_reserved_bits(&c.pads) } else { c.pads.clone() };
+    write(&o.out.join(&f), &m64::write(&h, &movie))?;
     let mp = if o.mupen64plus {
         let f = format!("cycles/cycle_{:04}.mupen64plus.m64", c.n);
         let mut pads = vec![GamePad::default()];
-        pads.extend_from_slice(&c.pads);
+        pads.extend_from_slice(&movie);
         write(&o.out.join(&f), &m64::write(&h, &pads))?;
         Some(f)
     } else {
