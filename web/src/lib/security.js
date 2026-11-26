@@ -5,7 +5,7 @@ const env = (typeof import.meta !== 'undefined' && import.meta.env) || {};
 
 export const DEDICATED = env.VITE_DEDICATED === '1';
 /** Where the app lives now (the legacy site links there). */
-export const NEW_SITE_URL = (env.VITE_NEW_SITE_URL || 'https://sm64coin.eboy.au').replace(/\/+$/, '');
+export const NEW_SITE_URL = (env.VITE_NEW_SITE_URL || 'https://sm64coin.pages.dev').replace(/\/+$/, '');
 
 /** True when this page is inside a frame (clickjacking: Send and the passkey prompt must not sit under a decoy). */
 export function framed(win = typeof window !== 'undefined' ? window : null) {

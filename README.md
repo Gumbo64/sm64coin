@@ -182,7 +182,7 @@ Sync verifies every block by replay (about 0.1 to 1 s per block). Notes from tes
 `https://gumbo64.github.io/sm64coin/` (one-time setup: Settings -> Pages -> Source: GitHub Actions). The pages are
 static and call a node's RPC from the visitor's browser, by default the visitor's own node at
 `http://127.0.0.1:16481`, so nothing goes through GitHub and the RPC stays bound to localhost. Nodes started by the
-`sm64coin-node` or `scripts/start-node.sh` allow that origin (`--rpc-access-control-origins https://gumbo64.github.io,https://sm64coin.eboy.au`, a comma separated list;
+`sm64coin-node` or `scripts/start-node.sh` allow that origin (`--rpc-access-control-origins https://gumbo64.github.io,https://sm64coin.pages.dev`, a comma separated list;
 `SITE_ORIGIN` overrides it) and answer Chrome's private-network preflight. Chrome and Firefox let an https page call
 `http://127.0.0.1`; newer Chrome asks first ("access devices on your local network": allow). Safari may refuse.
 Another node: the site's Network page.

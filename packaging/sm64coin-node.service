@@ -9,7 +9,7 @@
 #   [Service]
 #   Environment=PUBLIC_RPC=1          # restricted RPC on 0.0.0.0:16489 for a public node
 #   Environment=SOLO=1                # first node of a brand-new network only
-#   Environment=ORIGINS=https://gumbo64.github.io,https://sm64coin.eboy.au   # CORS origins of the RPC (comma separated; the default)
+#   Environment=ORIGINS=https://gumbo64.github.io,https://sm64coin.pages.dev   # CORS origins of the RPC (comma separated; the default)
 [Unit]
 Description=SM64Coin node
 Wants=network-online.target
