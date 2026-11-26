@@ -232,7 +232,7 @@ function Onboard({ run, adopt, busy }) {
             ? <p className="muted">A view-only wallet sees incoming payments (mined rewards too) but cannot spend. It cannot see outgoing payments either, so its balance also counts coins the full wallet has already spent.</p>
             : <p className="muted">The address and both private keys (as the desktop wallet's <code>viewkey</code> and <code>spendkey</code> commands print them). They must belong together.</p>}
           <p><input className="wide mono" placeholder="SM64… primary address" value={addr} onChange={(e) => setAddr(e.target.value)} /></p>
-          <p><input className="wide mono" placeholder="private view key (64 hex)" value={vk} onChange={(e) => setVk(e.target.value)} /></p>
+          <p><input className="wide mono" placeholder="view key (64 hex)" value={vk} onChange={(e) => setVk(e.target.value)} /></p>
           {mode === 'keys' && <p><input className="wide mono" type="password" placeholder="private spend key (64 hex)" value={sk} onChange={(e) => setSk(e.target.value)} /></p>}
         </>
       )}
@@ -397,7 +397,7 @@ function ShowKeys({ w, run, onShown, passkey, children }) {
           {row('Seed words (25)' + (k.seedLanguage ? `, ${k.seedLanguage}` : ''), k.seed, true)}
           {!k.seed && <p className="muted">This wallet has no seed words (it was made from keys that are not derived from a seed, or is view-only).</p>}
           {row('Private spend key', k.spendKey, true)}
-          {row('Private view key', k.viewKey, true)}
+          {row('View key', k.viewKey, true)}
           {row('Public spend key', k.publicSpendKey)}
           {row('Public view key', k.publicViewKey)}
           {row('Address', k.address)}

@@ -205,7 +205,7 @@ export async function snapshot(w) {
 /**
  * Join / rename on the leaderboard, as the desktop wallet does (gui/pages/Leaderboard.qml): the node
  * checks a signature by the wallet's spend key over "sm64coin-board:<ts>:<name>" (a later timestamp
- * renames) and, to count the address's blocks itself, is given the wallet's secret view key.
+ * renames) and, to count the address's blocks itself, is given the wallet's view key.
  */
 export async function boardJoin(w, name) {
   const timestamp = Math.floor(Date.now() / 1000);
