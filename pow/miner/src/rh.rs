@@ -144,6 +144,28 @@ impl Default for RhOptions {
 
 pub use crate::tracker::Mined;
 
+/// When the start has settled: Mario is controllable and has either stood
+/// still for [`Calm::STILL`] frames or, because the perturbation pokes the pad
+/// (so he may keep twitching), has stayed controllable for
+/// [`Calm::CONTROLLABLE`] frames. Deterministic.
+#[derive(Default)]
+pub struct Calm {
+    still: u32,
+    controllable: u32,
+}
+
+impl Calm {
+    pub const STILL: u32 = 10;
+    pub const CONTROLLABLE: u32 = 60;
+    pub fn step(&mut self, st: &St, before: [f32; 3]) {
+        self.still = if st.pos == before { self.still + 1 } else { 0 };
+        self.controllable = if st.controllable() { self.controllable + 1 } else { 0 };
+    }
+    pub fn ready(&self, st: &St) -> bool {
+        st.controllable() && (self.still >= Self::STILL || self.controllable >= Self::CONTROLLABLE)
+    }
+}
+
 /// obrrt2's fixed boot: A on alternate frames, Start at 150-160 and 200-300,
 /// 1680 frames; then idle until Mario is controllable and has stood still for
 /// 10 frames. Played through the perturbation like everything else.
@@ -159,12 +181,12 @@ pub fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: us
         played.push(game.step(GamePad::new(b, 0, 0))?.0);
     }
     let mut st = read_state(game, played.len() as u32, false);
-    let mut still = 0;
-    while still < 10 || !st.controllable() {
+    let mut calm = Calm::default();
+    while !calm.ready(&st) {
         let before = st.pos;
         played.push(game.step(GamePad::default())?.0);
         st = read_state(game, played.len() as u32, false);
-        still = if st.pos == before { still + 1 } else { 0 };
+        calm.step(&st, before);
         if played.len() >= max_frames {
             bail!("boot: Mario didn't stand still");
         }
@@ -179,13 +201,23 @@ pub fn boot(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: us
 /// stood still for 10 frames, and read the state with its objects.
 pub fn settle(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max_frames: usize) -> Result<St> {
     let mut st = read_state(game, played.len() as u32, false);
-    let mut still = 0;
-    while still < 10 || !st.controllable() {
+    let mut calm = Calm::default();
+    // Frames in a row stuck in a level change with no menu (see below).
+    let mut warp_wait = 0u32;
+    while !calm.ready(&st) {
         let before = st.pos;
-        let a = if !st.controllable() && played.len() % 2 == 0 { A_BUTTON } else { 0 };
+        // A confirms the menus and dialogs. The perturbation can move the save
+        // menu's cursor so that A picks "save and quit": the game then waits
+        // in a level change (play mode 4) on the title screen for Start.
+        warp_wait = if st.play_mode != 0 && !st.modal() && !st.controllable() { warp_wait + 1 } else { 0 };
+        let a = match (st.controllable(), played.len() % 2 == 0) {
+            (true, _) | (_, false) => 0,
+            _ if warp_wait >= 30 => START_BUTTON,
+            _ => A_BUTTON,
+        };
         played.push(game.step(GamePad::new(a, 0, 0))?.0);
         st = read_state(game, played.len() as u32, false);
-        still = if st.pos == before { still + 1 } else { 0 };
+        calm.step(&st, before);
         if played.len() >= max_frames {
             bail!("settle: Mario never stood still after the parent's end state");
         }

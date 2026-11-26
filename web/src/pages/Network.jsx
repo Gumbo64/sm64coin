@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { daemonAt, getNode, getPublicNode, setNode, usingPublicFallback } from '../lib/rpc.js';
+import { daemonAt, getNode, getPublicNode, nodeNote, setNode, usingPublicFallback } from '../lib/rpc.js';
 import useInterval from '../lib/useInterval.js';
 
 const clean = (u) => (u || '').trim().replace(/\/+$/, '');
@@ -42,8 +42,9 @@ export default function Network() {
       <button onClick={save} disabled={!clean(draft)}>Save</button>
       <p>Current: <b>{node || '(this site\'s proxy)'}</b>{status && <span className="muted"> | {status}</span>}</p>
       {usingPublicFallback() && node === getPublicNode() && (
-        <p className="muted">Your own node ({import.meta.env.VITE_DEFAULT_NODE}) didn't answer, so this visit uses the public node. Start yours and reload to use it.</p>
+        <p className="muted">{nodeNote() || `Your own node (${import.meta.env.VITE_DEFAULT_NODE}) didn't answer, so this visit uses the public node. Start yours and reload to use it.`}</p>
       )}
+      {nodeNote() && !(usingPublicFallback() && node === getPublicNode()) && <p className="muted">{nodeNote()}</p>}
       {getPublicNode() && node !== getPublicNode() && (
         <p className="muted">Public node: <code>{getPublicNode()}</code> <button onClick={() => use(getPublicNode())}>Use it</button></p>
       )}
