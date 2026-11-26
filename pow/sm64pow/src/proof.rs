@@ -235,10 +235,16 @@ impl Codec for RunLength {
         let mut i = 0;
         let mut last: Option<GamePad> = None;
         while i < body.len() {
-            let n = get_varint(body, &mut i)? as usize;
+            let n = get_varint(body, &mut i)?;
             if n == 0 {
                 bail!("zero-length run");
             }
+            // Checked before any cast or addition: a run length near u64::MAX must not wrap the
+            // limit check (a crash on 64-bit, a truncated length on 32-bit/wasm32).
+            if n > max_frames.saturating_sub(pads.len()) as u64 {
+                bail!("proof expands past {max_frames} frames");
+            }
+            let n = n as usize;
             let c = body.get(i..i + 4).ok_or_else(|| anyhow!("truncated run"))?;
             i += 4;
             let p = pad_from(c);
@@ -377,6 +383,33 @@ mod tests {
         sha3::Digest::update(&mut h, &bad);
         let bad_id: [u8; 32] = sha3::Digest::finalize(h).into();
         assert_eq!(crate::proof_id::proof_id(&bad), bad_id, "the sm64bad id");
+    }
+
+    #[test]
+    fn rle_huge_run_length_is_refused_not_wrapped() {
+        // A run of 1 pad, then a run whose varint length is near u64::MAX (formal-checks finding):
+        // it must be refused by the limit check, never wrap it or truncate on 32-bit targets.
+        let mut body = vec![0x01, 0, 0, 0, 0];
+        body.extend([0xff; 9]);
+        body.push(0x01);
+        body.extend([1, 0, 0, 0]);
+        let e = RunLength.decode(&body, 36_000).unwrap_err().to_string();
+        assert!(e.contains("expands past"), "{e}");
+        // 2^32 + 1 (truncates to 1 on wasm32) is refused too.
+        let mut b2 = vec![0x01, 0, 0, 0, 0];
+        let mut v: u64 = (1u64 << 32) + 1;
+        while v >= 0x80 { b2.push((v as u8 & 0x7f) | 0x80); v >>= 7; }
+        b2.push(v as u8);
+        b2.extend([1, 0, 0, 0]);
+        assert!(RunLength.decode(&b2, 36_000).is_err());
+        // The limit itself still decodes.
+        let mut b3 = vec![0x01, 0, 0, 0, 0];
+        let mut v: u64 = 35_999;
+        while v >= 0x80 { b3.push((v as u8 & 0x7f) | 0x80); v >>= 7; }
+        b3.push(v as u8);
+        b3.extend([1, 0, 0, 0]);
+        assert_eq!(RunLength.decode(&b3, 36_000).unwrap().len(), 36_000);
+        assert!(RunLength.decode(&b3, 35_999).is_err());
     }
 
     #[test]

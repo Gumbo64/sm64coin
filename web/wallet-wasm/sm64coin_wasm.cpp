@@ -87,8 +87,8 @@ namespace sm64coin
         j += 4;
         if (pad == last) return bad(proof);
         last = pad;
+        if (n > frames - total) return bad(proof); // checked before adding: a length near 2^64 must not wrap (total <= frames here)
         total += n;
-        if (total > frames) return bad(proof);
         for (uint64_t k = 0; k < n; ++k) raw += pad;
       }
     }

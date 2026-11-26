@@ -19,30 +19,19 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
-### 0.3.1: a point release of the 0.3 chain (no consensus change)
+### 0.3.2: a security fix (no consensus change)
 
-Every block that is valid on 0.3.0 is valid on 0.3.1 and every invalid block stays invalid (the consensus
-tests and the 234 proof-id vectors pass unchanged). The chain, the genesis block, the ports and the data
-dir are the same: **just replace the binaries; no resync.**
+- **Fix:** a crafted run-length proof with a run length near 2^64 could wrap the decoder's limit check and
+  crash a node (or, on 32-bit/WebAssembly builds, be read as a different length). The length is now checked
+  before any addition or cast, in the node and in the web wallet. Every valid block is decoded exactly as
+  before. Found by the new formal checks (Kani). **Update your node.**
+
+**0.3.1** (still in this release): smaller proofs from the miners' input normaliser, no reserved controller
+bits in miners' runs, clearer RPC refusals, a cache fix, and the leaderboard's test tools.
+Same chain, genesis, ports and data dir as 0.3.0: just replace the binaries.
 
 **Coming from 0.2?** 0.3 started a new chain on 2026-11-26 00:00 UTC: use a fresh data dir and let your wallet
-rescan (see the [0.3.0 notes](https://github.com/Gumbo64/sm64coin/releases/tag/v0.3.0)). 0.2 nodes no longer reach the network.
-
-- **Smaller proofs (miners).** The miners (`automine`, the Rust SDK, the web miner on request) run an
-  input normaliser before sealing: pads that do not change what the game does (the stick in the air and in
-  cutscenes, buttons that nothing reads) are replaced by cheaper ones, then the proof is coded with the
-  existing codecs. Every candidate is replayed first; if the end state, the perturbation state, the frame
-  count or the success frame differ at all, the run as played is sealed. Seconds per block, on the
-  encoder only; `automine --no-normalise` skips it. On the 34 v0.2 mainnet blocks (143,505 frames) the proofs shrink from 60,639 to 47,651 bytes (-21.4 %); a fresh testnet block went 1,814 to 1,577 bytes (-13 %). Costs about 2-3 ms per frame (10-60 s for a 3,000-9,000 frame run).
-- **No reserved controller bits.** Mupen64Plus treats a pad with both reserved bits (0x00C0) as a console
-  reset. The game never reads them (tests/reserved_bits.rs) and the poke pads never use them; miners now
-  clear them before sealing. Consensus still accepts them. The chain export tool gets a
-  `--clear-reserved-bits` flag for `.m64` output.
-- **RPC:** `get_block_template`'s `sm64_valid_at` is never earlier than the chain's launch (before launch it announced blocks the node then refused); `submit_block` refuses a block stamped before the launch at once, and every refusal comes back as an error with a readable reason.
-- **Fix (tests/nodes):** a state the node verified long ago is no longer evicted from its cache while it
-  is the tip's parent (this was a flaky `NeedParent` in the test suite).
-- **Tools:** `pow/tools/board/` has the leaderboard's functional checks and benches, runnable against a
-  throwaway build.
+rescan (see the [0.3.0 notes](https://github.com/Gumbo64/sm64coin/releases/tag/v0.3.0)).
 
 Update: required
 
