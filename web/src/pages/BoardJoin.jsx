@@ -60,13 +60,12 @@ export default function BoardJoin({ onJoined = () => {} }) {
             your address and view key, so anyone can then see all incoming payments to this wallet (not spend). Use a
             dedicated mining wallet. An entry cannot be removed once shared, only renamed.
           </p>
-          <p className="walleterr">Joining sends this wallet's view key to the node <span className="mono" data-testid="board-node">{node}</span>. The view key lets the node see every incoming payment to this wallet; it cannot spend.</p>
           {isChosenNode() && <p className="walleterr">That node was set by hand (Network page), not the site's default. Only continue if you run it or trust its operator.</p>}
           <input placeholder="display name" value={name} maxLength={32} disabled={!!busy} onChange={(e) => { setName(e.target.value); setConfirm(false); }} />{' '}
           {!confirm && !busy && <button disabled={!name.trim()} onClick={() => setConfirm(true)}>Join / rename…</button>}
           {confirm && (
             <div className="notice" data-testid="board-confirm">
-              Join as <b>{name.trim()}</b>: this sends the wallet's <b>view key</b> to the node <b className="mono">{node}</b>, with the address and the
+              Join as <b>{name.trim()}</b>: this sends the wallet's <b>view key</b> to the node <b className="mono" data-testid="board-node">{node}</b>, with the address and the
               signed name. With the view key the node, and every node it shares the entry with, can see all incoming payments
               to this wallet; it cannot spend them. This cannot be undone.<br />
               {!rec.passkey && <><input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && pw && join()} />{' '}</>}
