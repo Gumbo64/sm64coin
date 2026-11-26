@@ -447,7 +447,7 @@ function Miner() {
             </Panel>
             {showAuto && (
               <React.Suspense fallback={loadingCard}>
-                <CloudView hub={hub} onPlay={reelPlay} onPlayFrom={playFrom} onGoal={(g) => miner.setGoal(g)} canPlayFrom={canPlayFrom} whyNot={hybridWhy} />
+                <CloudView hub={hub} onPlay={reelPlay} onPlayFrom={playFrom} onGoal={(g) => miner.setGoal(g)} goalShare={miner.goalShare} onGoalShare={(x) => miner.setGoalShare(x)} canPlayFrom={canPlayFrom} whyNot={hybridWhy} />
               </React.Suspense>
             )}
           </>
