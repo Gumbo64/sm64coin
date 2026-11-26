@@ -4,7 +4,7 @@
 
 A Monero fork (v0.18.5.4, git branch `sm64coin`) whose proof of work is **playing Super Mario 64**. A block is sealed by a controller input sequence that, replayed on an emulated N64 from the previous block's end state, makes the game's next progress point (a star, a Bowser key, the Grand Star). Every node verifies a block by replaying the proof in an emulator.
 
-Addresses start with `SM64`. Everything else (RingCT, Dandelion++, wallet) is stock Monero.
+Addresses start with `SM64`. The cryptography (keys, RingCT, ring signatures, seed words) is Monero's, unchanged: **[docs/MONERO-FORK.md](docs/MONERO-FORK.md)** lists what is Monero and what is new, with a link to [every changed line against Monero v0.18.5.4](https://github.com/Gumbo64/sm64coin-monero/compare/v0.18.5.4...sm64coin).
 
 **Reading the code: start at [docs/CORE.md](docs/CORE.md)**: how a block is mined and verified end to end, the core files in reading order, every `SM64COIN` change in the Monero fork, and what is safe to skip.
 

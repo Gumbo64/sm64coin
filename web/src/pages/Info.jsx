@@ -98,6 +98,16 @@ export default function Info() {
         researchers kick their walking robots.
       </p>
 
+      <h3>How much of this is Monero?</h3>
+      <p>
+        All of the cryptography. SM64Coin is a fork of Monero v0.18.5.4: keys, signatures, ring signatures, hidden amounts
+        and seed words are Monero's own code, unchanged, and the wallet on this site is Monero's wallet compiled to
+        WebAssembly. What is new is how a block is won (playing Mario) and this website. See exactly what is which in{' '}
+        <a href={`${REPO}/blob/main/docs/MONERO-FORK.md`} target="_blank" rel="noreferrer">MONERO-FORK.md</a>, or{' '}
+        <a href="https://github.com/Gumbo64/sm64coin-monero/compare/v0.18.5.4...sm64coin" target="_blank" rel="noreferrer">every
+        changed line against Monero</a>.
+      </p>
+
       <h3>How do I run a node?</h3>
       <p>
         Download the bundle for your computer from the <a href={`${REPO}/releases/latest`} target="_blank" rel="noreferrer">latest
