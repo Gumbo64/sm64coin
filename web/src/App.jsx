@@ -27,7 +27,7 @@ function SiteFooter() {
   return (
     <footer className="site-footer">
       <span>
-        Wallet and protocol code forked from <a href="https://github.com/monero-project/monero" target="_blank" rel="noreferrer">Monero</a>{' '}
+        Wallet and all non-proof-of-work code forked from <a href="https://github.com/monero-project/monero" target="_blank" rel="noreferrer">Monero</a>{' '}
         (<a href={`${REPO}/blob/main/docs/MONERO-FORK.md`} target="_blank" rel="noreferrer">what changed</a>)
       </span>
       <span><a href={REPO} target="_blank" rel="noreferrer">Source</a></span>
