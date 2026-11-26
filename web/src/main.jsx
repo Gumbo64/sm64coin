@@ -15,9 +15,13 @@ import './index.css';
 const editable = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 // The game's listeners also outlive the mining page (it is a single-page app),
 // and it blocks shortcuts such as Ctrl+C; so keys only reach the game on the
-// mining page, and never with Ctrl/Alt/Meta held (the game doesn't use them).
-const keysForGame = (e) =>
-  location.pathname.startsWith(`${import.meta.env.BASE_URL.replace(/\/+$/, '')}/mine`) && !editable(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey;
+// mining page and the block replay, and never with Ctrl/Alt/Meta held (the game doesn't use them).
+// The replay viewer (a block's page with ?replay) has its own hotkeys on window (play, seek, speed, stars), so keys
+// reach it there too.
+const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
+const gamePage = () => location.pathname.startsWith(`${BASE}/mine`)
+  || (location.pathname.startsWith(`${BASE}/block/`) && new URLSearchParams(location.search).has('replay'));
+const keysForGame = (e) => gamePage() && !editable(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey;
 for (const type of ['keydown', 'keyup', 'keypress']) {
   window.addEventListener(type, (e) => { if (!keysForGame(e)) e.stopPropagation(); }, true);
 }
