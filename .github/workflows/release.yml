@@ -624,6 +624,36 @@ jobs:
         env:
           NO_STRIP: "true"   # linuxdeploy (AppImage) cannot strip newer ELF sections
         run: tauri build --target ${{ matrix.triple }} --config bundle/${{ matrix.config }}.json --bundles ${{ matrix.bundles }}
+      # Windows portable: the same app without an installer. One folder with SM64Coin.exe, the sidecars (named as the installer
+      # names them), their DLLs, seeds.txt and routes/, and the `portable` marker: the app then keeps all its data (chain,
+      # wallets, ROM copy, settings, remote-node.txt, the webview's storage) in data/ beside it (desktop.rs `data_dir`).
+      # Needs the WebView2 runtime (part of Windows 10 21H2+ / 11; the installer would fetch it).
+      - name: Windows portable zip
+        if: runner.os == 'Windows'
+        run: |
+          v="${VERSION#v}"
+          name="SM64Coin-$v-windows-x86_64-portable"
+          rel="desktop/src-tauri/target/${{ matrix.triple }}/release"
+          stage="desktop/src-tauri/stage"
+          out="$rel/bundle/portable"
+          rm -rf "$out" && mkdir -p "$out/$name/routes"
+          # The CLI may already have renamed the cargo binary to the product name.
+          exe="$rel/SM64Coin.exe"; [ -f "$exe" ] || exe="$rel/sm64coin-desktop.exe"
+          cp "$exe" "$out/$name/SM64Coin.exe"
+          for n in sm64coind sm64coin-wallet-rpc sm64coin-automine rrtrun; do cp "$stage/binaries/$n-${{ matrix.triple }}.exe" "$out/$name/$n.exe"; done
+          cp "$stage"/dll/*.dll "$out/$name/" 2>/dev/null || true
+          cp "$stage/res/seeds.txt" "$out/$name/"
+          cp "$stage"/res/routes/* "$out/$name/routes/"
+          : > "$out/$name/portable"
+          printf '%s\r\n' "SM64Coin $v, portable" "" \
+            "Run SM64Coin.exe. Everything the app keeps (chain, wallets, ROM copy, settings) goes in the data folder next to it," \
+            "because of the file named 'portable' here; delete that file to use your user profile instead." \
+            "Needs the Microsoft Edge WebView2 runtime (built into Windows 11 and current Windows 10)." > "$out/$name/README.txt"
+          for f in SM64Coin.exe sm64coind.exe sm64coin-wallet-rpc.exe sm64coin-automine.exe rrtrun.exe seeds.txt portable; do
+            [ -f "$out/$name/$f" ] || { echo "portable: $f is missing" >&2; exit 1; }
+          done
+          (cd "$out" && 7z a -tzip -mx=9 "$name.zip" "$name" >/dev/null)
+          ls -la "$out"
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.platform }}
@@ -631,6 +661,7 @@ jobs:
             desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/deb/*.deb
             desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/appimage/*.AppImage
             desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/portable/*.zip
             desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
@@ -660,7 +691,7 @@ jobs:
           path: assets
           merge-multiple: true
       - name: Checksums
-        run: cd assets && sha256sum $(ls sm64coin-* SM64Coin_* 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
+        run: cd assets && sha256sum $(ls sm64coin-* SM64Coin_* SM64Coin-* 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
       - name: Release notes
         env:
           MISSING: ${{ needs.build-windows.result != 'success' && 'Windows ' || '' }}${{ needs.build-macos.result != 'success' && 'macOS ' || '' }}${{ needs.desktop.result != 'success' && '(some) desktop app installers' || '' }}
