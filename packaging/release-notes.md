@@ -19,9 +19,9 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
-### 0.5.6: instant blocks from public nodes again, PIN unlock and an address book
+### 0.5.6: the final release (instant blocks from public nodes again, PIN unlock and an address book)
 
-Same chain as 0.5.0 to 0.5.5: no reset, upgrade in place.
+This is the last planned release of SM64Coin. Same chain as 0.5.0 to 0.5.5: no reset, upgrade in place.
 
 - **Tip stream over HTTPS on its own port**: `sm64coin-lc serve --tls-cert FILE --tls-key FILE` serves the tip stream
   (`GET /lc/tip`) as HTTPS straight to the public (default `[::]:16490`), so a node without a reverse proxy (a Raspberry
@@ -33,9 +33,9 @@ Same chain as 0.5.0 to 0.5.5: no reset, upgrade in place.
   address means polling, never a strike against the node.
 - **Wallet: optional PIN / fingerprint unlock** (off unless you turn it on from the wallet page: "Set up PIN", on Android "Set up
   PIN / fingerprint"; nothing asks for it when a wallet is created or restored, and the one-click wallet is unchanged).
-  - **Android**: the phone's fingerprint (or its screen lock PIN/pattern, Android 11+) unlocks the wallet. A hardware-backed
-    Android Keystore key that needs your authentication for every use seals the wallet password; it stops working when
-    fingerprints or the screen lock change (the password then opens the wallet).
+  - **Android** (a preview: not yet tried on real phones): the phone's fingerprint (or its screen lock PIN/pattern, Android
+    11+) unlocks the wallet. A hardware-backed Android Keystore key that needs your authentication for every use seals the
+    wallet password; it stops working when fingerprints or the screen lock change (the password then opens the wallet).
   - **Website and desktop**: a 4 to 8 digit PIN seals the wallet password (PBKDF2, 600 000 rounds). 5 wrong PINs wipe it and the
     password is needed again. A PIN is a convenience lock: someone with this device's files could guess it; use a password for
     strong protection. On the desktop the sealed password lives in the app's data folder (mode 0600) and never reaches the page.
