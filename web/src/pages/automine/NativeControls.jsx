@@ -117,6 +117,11 @@ export default function NativeControls() {
           {!isAddress(address || '') && <p className="muted small">Paste your address (in the SM64Coin wallet: Receive).</p>}
         </div>
       )}
+      {running && (
+        <Toolbar label="Auto-mine actions">
+          <ToolBtn disabled={busy} onClick={() => run(async () => { await p.nativeMiner.stop(); setLines([]); await p.nativeMiner.start({ address, threads: th, viz: miner.vizOn }); })} title="Start the search over: a fresh template and fresh search trees (the cloud clears)">Restart</ToolBtn>
+        </Toolbar>
+      )}
       {p.node && node && ((!node.running && !node.starting && romOk) || (node.running && !running)) && (
         <Toolbar label="Local node">
           {!node.running && !node.starting && romOk && <ToolBtn disabled={busy} onClick={() => run(() => p.node.start())}>Start node</ToolBtn>}

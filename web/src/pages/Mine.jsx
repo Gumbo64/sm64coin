@@ -610,7 +610,11 @@ function Miner() {
                 )}
                 {task && start ? <SideCard title="Cycle"><CyclePanel task={task} start={start} /></SideCard> : null}
                 {start && startMode !== 'power-on' && <ResetCycle start={start} startMode={startMode} powerOnAt={powerOnAt} task={task} tick={tick}
-                  onReset={() => { ctl.current.forcePower = true; ctl.current.restart = true; say('reset cycle: starting over from power-on'); }}
+                  onReset={() => {
+                    ctl.current.forcePower = true; ctl.current.restart = true; say('reset cycle: starting over from power-on');
+                    // the running auto-miner follows: the policy that starts over from power-on, and a fresh start now
+                    if (miner.running) { const was = miner.mode; miner.setMode('always-when-allowed'); if (was === 'always-when-allowed') miner.restart('reset cycle: starting over from power-on'); }
+                  }}
                   onParent={() => { ctl.current.forcePower = false; ctl.current.restart = true; say('back to continuing from the parent\'s end state'); }} />}
                 <SideCard title="Block">
                   {task ? (

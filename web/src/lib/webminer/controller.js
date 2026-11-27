@@ -207,7 +207,7 @@ class MinerController {
   restart(why = 'restarting on a fresh template') {
     const c = this.c;
     if (!c || c.stopped || c.mockStop) return;
-    this.say(why);
+    this.say(why === 'user' ? 'restarting on your request: fresh template and search trees' : why);
     this.round(c);
   }
   setVizOn(on) {

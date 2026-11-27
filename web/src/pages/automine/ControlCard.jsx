@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { miner, isAddress, isolated, fmtRate } from '../../lib/webminer/controller.js';
 import { syncStatus, enableSync, disableSync, takeReloadNote } from '../../lib/webminer/sync.js';
 import { AddrLabel } from '../../lib/AddrLabel.jsx';
-import { SideCard, GearBtn, useStored } from '../../components/ui.jsx';
+import { SideCard, GearBtn, Toolbar, ToolBtn, useStored } from '../../components/ui.jsx';
 import { getPlatform } from '../../platform/index.js';
 import NativeControls from './NativeControls.jsx';
 
@@ -73,6 +73,11 @@ function WebControls({ s }) {
       </div>
       {running ? <button className="ui-big" onClick={() => (s.native ? miner.stopNative() : miner.stop())}>Stop auto-mining</button>
         : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start auto-mining</button>}
+      {running && (
+        <Toolbar label="Auto-mine actions">
+          <ToolBtn onClick={() => miner.restart('user')} title="Start the search over: a fresh template and fresh search trees (the cloud clears)">Restart</ToolBtn>
+        </Toolbar>
+      )}
       <div className="ui-stat">
         <span><b>{running && fps > 0 ? `${fmtRate(fps)} frames/s` : '—'}</b></span>
         <span>{n} worker{n === 1 ? '' : 's'} · {stats.found} run{stats.found === 1 ? '' : 's'} found · {stats.accepted} block{stats.accepted === 1 ? '' : 's'}{stats.proofs ? ` · ${stats.proofs} proof${stats.proofs === 1 ? '' : 's'} published (${stats.proofsPooled} pooled)` : ''}</span>
