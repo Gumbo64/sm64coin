@@ -569,7 +569,10 @@ function Miner() {
         side={(
           <>
             {getPlatform().nativeMiner && <NativeMiner />}
-            <ControlCard s={s} />
+            {getPlatform().mobile ? (
+              // The Android app: the web auto-miner (many WASM workers) is not offered there; native mining on Android comes next.
+              <SideCard className="first" title="Auto-mine"><p className="muted small" data-testid="automine-mobile">Auto-mining is not in the Android app yet: native mining on Android comes next. Play to mine here, or auto-mine with the desktop app or the website on a computer.</p></SideCard>
+            ) : <ControlCard s={s} />}
             {showAuto ? (
               <React.Suspense fallback={null}><VizTop hub={hub} mode={s.mode} /></React.Suspense>
             ) : (

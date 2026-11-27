@@ -166,7 +166,10 @@ function WebWallet() {
 
 function Onboard({ run, adopt, busy }) {
   const [pkOk, setPkOk] = useState(false);
-  useEffect(() => { pk.supported().then(setPkOk); }, []);
+  // The Android app's webview has no usable WebAuthn (and its origin, tauri.localhost, would make a different wallet than the
+  // website's passkey anyway): no passkey wallet there, the seed words restore any wallet.
+  const mobile = !!getPlatform().mobile;
+  useEffect(() => { if (!mobile) pk.supported().then(setPkOk); }, [mobile]);
   const pkCreate = () => run('Creating the passkey wallet', async () => {
     const k = await pk.createPasskey();
     await adopt(await eng.restoreFromSpendKey(k.spendKey, k.password, k.height), true, true);
@@ -275,6 +278,7 @@ function Onboard({ run, adopt, busy }) {
           <button disabled={busy} onClick={pkOpen}>Open with passkey</button>
         </div>
       )}
+      {mobile && <p className="muted small" data-testid="passkey-mobile">Passkey wallets are not available in the Android app. A passkey wallet made on the website opens here from its seed words (website: Wallet, Show keys), restored above.</p>}
       <p className="muted">Your keys stay in this browser. The password encrypts the wallet here only; it can't be recovered, but the seed words or a backup file always can.</p>
     </div>
   );
