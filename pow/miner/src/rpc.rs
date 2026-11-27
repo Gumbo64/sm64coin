@@ -99,7 +99,8 @@ fn now_secs() -> u64 {
 
 impl Daemon {
     pub fn new(url: &str) -> Daemon {
-        let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(60)).build();
+        // No redirects: the daemon URL is one the caller allowed (the Android app: the public node), never another host.
+        let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(60)).redirects(0).build();
         Daemon { url: url.trim_end_matches('/').to_string(), agent, payouts: None }
     }
 
