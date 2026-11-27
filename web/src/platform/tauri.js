@@ -2,6 +2,7 @@
 // Every Rust command answers `{code, message}` on failure; here that becomes an Error with `.code`.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { makeBook } from '../lib/wallet/addrbook.js';
 
 async function cmd(name, args) {
   try {
@@ -152,8 +153,17 @@ const wallet = {
   state: () => cmd('wallet_state'),
   /** Report that the user is here (restarts the idle auto-lock timer). */
   activity: () => cmd('wallet_activity').catch(() => {}),
-  /** {auto_lock_minutes, password_on_send, hide_balance}; weakening a protection needs `password`. */
-  settings: (s, password) => cmd('wallet_settings', { settings: s, password }),
+  /** {auto_lock_minutes, password_on_send, hide_balance}; weakening a protection needs `password` (or the wallet's `pin`). */
+  settings: (s, password, pin) => cmd('wallet_settings', { settings: s, password, pin }),
+  // Quick-unlock (optional; walletpin.rs): a 4-8 digit PIN seals the wallet password in the app's data folder (mode 0600), 5 wrong
+  // tries wipe it. The password never comes back to the page. `state().pins` = [{name, left, generated}].
+  /** Turns the PIN on for the open wallet. `password` is the current one ('' or absent for a wallet without one: it then gets a random
+   *  password, and the answer says `generated`). */
+  pinEnable: (pin, password) => cmd('wallet_pin_enable', { pin, password }),
+  /** Opens wallet `name` with its PIN (rejects with code wrong_pin / pin_wiped). */
+  async pinOpen(name, pin) { await cmd('wallet_pin_open', { name, pin }); return { address: (await wcall('get_address', { account_index: 0 })).address }; },
+  /** Turns the PIN off (`password` or `pin` proves it is the user). For a wallet whose password the PIN made, `newPassword` ('' = none) replaces it. */
+  pinDisable: ({ password, pin, newPassword } = {}) => cmd('wallet_pin_disable', { password, pin, newPassword }),
   /** A new wallet: resolves {address, seed} (the seed is shown once, here). kdfRounds: wallet2's password hashing rounds (default 1). */
   async create({ name, password, kdfRounds = 1, language = 'English' }) {
     await wcall('create_wallet', { filename: name, password, language, _kdf_rounds: kdfRounds });
@@ -180,21 +190,29 @@ const wallet = {
     return rows.sort((a, b) => (b.height || 1e12) - (a.height || 1e12) || (b.timestamp || 0) - (a.timestamp || 0));
   },
   /** Builds a transaction without sending it: {fee, amount, metadata}. Asks for the password when the setting is on. */
-  async draft({ address, amount, password }) {
-    const r = await wcall('transfer', { destinations: [{ address, amount: String(amount) }], account_index: 0, priority: 0, _password: password });
+  async draft({ address, amount, password, pin }) {
+    const r = await wcall('transfer', { destinations: [{ address, amount: String(amount) }], account_index: 0, priority: 0, _password: password, _pin: pin });
     return { fee: r.fee, amount: r.amount, metadata: r.tx_metadata, txid: r.tx_hash };
   },
   /** Sends what `draft` built. */
   async relay(metadata) { return (await wcall('relay_tx', { hex: metadata })).tx_hash; },
   /** The seed words (and keys when asked): always needs the wallet password. */
-  async seed(password) { return (await wcall('query_key', { key_type: 'mnemonic', _password: password })).key; },
-  async keys(password) {
-    const [spend, view] = [await wcall('query_key', { key_type: 'spend_key', _password: password }), await wcall('query_key', { key_type: 'view_key', _password: password })];
+  async seed(password, pin) { return (await wcall('query_key', { key_type: 'mnemonic', _password: password, _pin: pin })).key; },
+  async keys(password, pin) {
+    const [spend, view] = [await wcall('query_key', { key_type: 'spend_key', _password: password, _pin: pin }), await wcall('query_key', { key_type: 'view_key', _password: password, _pin: pin })];
     return { spendKey: spend.key, viewKey: view.key };
   },
   refresh: () => wcall('refresh'),
   /** Point the wallet at this app's node (`127.0.0.1:port`) or an https node (the public one). */
   setNode: (address) => wcall('set_daemon', { address }),
+  /** The address book (wallet2's own, inside the wallet file): list/add/edit/remove with the shared rules of lib/wallet/addrbook.js. */
+  book: makeBook({
+    validate: async (a) => { const r = await wcall('validate_address', { address: a, any_net_type: false }); if (!r.valid) throw new Error('invalid'); },
+    list: async () => ((await wcall('get_address_book', { entries: [] })).entries || []).map((e) => ({ index: e.index, address: e.address, label: e.description })),
+    add: async (address, label) => (await wcall('add_address_book', { address, description: label })).index,
+    edit: async (index, { address, label }) => { await wcall('edit_address_book', { index, set_address: address !== undefined, address: address || '', set_description: label !== undefined, description: label || '' }); },
+    remove: async (index) => { await wcall('delete_address_book', { index }); },
+  }),
   onLocked(fn) {
     let off = null, dead = false;
     listen('wallet-locked', (e) => fn(e.payload)).then((u) => { if (dead) u(); else off = u; });
@@ -236,6 +254,7 @@ const desktop = {
   nativeMiner,
   rom,
   wallet,
+  biometric: null,
   link,
   host: () => cmd('host_info'),
 };
@@ -254,6 +273,18 @@ const mobile = {
   rom: null,
   remoteNode: { get: desktop.remoteNode.get, set: null }, // the public node only (no native confirmation dialog there)
   wallet: null, // the browser's WASM wallet engine (Wallet page) serves there
+  // Quick-unlock with the phone's fingerprint / screen lock (src/quick.rs + QuickUnlockPlugin.kt): a hardware Keystore key that needs the
+  // user's authentication for every use seals the wallet password; the page keeps only the sealed blob. Rejects with codes
+  // cancelled / lockout / invalidated / unavailable.
+  biometric: {
+    /** {available, reason?} */
+    status: () => cmd('quick_status'),
+    /** Asks the user to authenticate, resolves the sealed blob (base64) of `secret`. */
+    wrap: async (secret) => (await cmd('quick_wrap', { secret })).blob,
+    /** Asks the user to authenticate, resolves the secret of a blob. */
+    unwrap: async (blob) => (await cmd('quick_unwrap', { blob })).secret,
+    forget: () => cmd('quick_forget'),
+  },
   // The passkey hand-off works there too: `take(address)` returns {seed, height, address} for the page's WASM wallet.
   link: { ...link, take: (address) => cmd('link_take', { address }), finish: null },
 };

@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { getNode } from '../lib/rpc.js';
 import { getPlatform } from '../platform/index.js';
 import WalletDesktop from './WalletDesktop.jsx';
-import { loadStored, saveStored, forgetStored } from '../lib/wallet/store.js';
+import { loadStored, saveStored, forgetStored, loadQuick, saveQuick } from '../lib/wallet/store.js';
 import * as eng from '../lib/wallet/engine.js';
 import { BLOCK_TARGET_SECONDS } from '../lib/rules.js';
 import * as pk from '../lib/wallet/passkey.js';
@@ -11,6 +11,9 @@ import { DEDICATED, NEW_SITE_URL } from '../lib/security.js';
 import { reencryptForMove } from '../lib/migrate.js';
 import { newPassword, NO_PASSWORD_WARNING } from '../lib/wallet/pwRule.js';
 import Identicon from '../components/Identicon.jsx';
+import { AddressBookCard, BookPicker, RecipientNote, SaveToBook, useBook } from '../components/AddressBook.jsx';
+import { wrapSecret, validPin, randomPassword, tryPin, pinFailure, triesLeft, PIN_NOTE } from '../lib/wallet/pin.js';
+import { secretFrom, bioMessage, dropQuick, generatedHint, setGeneratedHint } from '../lib/wallet/quickunlock.js';
 import { miner } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
 
@@ -64,7 +67,11 @@ function WebWallet() {
   const [passkey, setPasskey] = useState(false);
   const syncing = useRef(false);
   const [engineErr, setEngineErr] = useState('');
+  const [quick, setQuickState] = useState(null); // optional quick-unlock record (PIN or phone fingerprint); null = off (the default)
+  // persists the record first (a PIN try is counted before it is checked), then shows it
+  const setQuick = useCallback(async (r) => { await saveQuick(r); setQuickState(r || null); }, []);
 
+  useEffect(() => { loadQuick().then((q) => setQuickState(q || null)).catch(() => {}); }, []);
   useEffect(() => { eng.loadLib().catch((e) => setEngineErr(e.message || String(e))); }, []);
 
   useEffect(() => {
@@ -129,7 +136,7 @@ function WebWallet() {
     try { await fn(); } catch (e) { setErr(e.message || String(e)); } finally { setBusy(''); }
   };
 
-  const passwordSet = async (wallet) => { nopwRef.current = false; setNopw(false); await persist(wallet, address, viewOnly); };
+  const passwordSet = async (wallet, none = false) => { nopwRef.current = none; setNopw(none); await persist(wallet, address, viewOnly); };
 
   const lock = async () => {
     const x = wRef.current;
@@ -143,7 +150,10 @@ function WebWallet() {
     const x = wRef.current;
     wRef.current = null; setW(null); setSnap(null); setSeed('');
     if (x) { try { await x.close(false); } catch { /* closing */ } }
+    const q = quick;
     await forgetStored();
+    if (q && q.kind === 'android') { try { await getPlatform().biometric.forget(); } catch { /* gone already */ } }
+    setQuickState(null);
     miner.forgetWallet(rec?.address || address);
     setRec(null); setStage('none');
   };
@@ -164,9 +174,9 @@ function WebWallet() {
         {busy && <p className="muted">{busy}…</p>}
       </div>
       {stage === 'none' && <Onboard run={run} adopt={adopt} busy={!!busy} />}
-      {stage === 'locked' && <Unlock rec={rec} run={run} adopt={adopt} forget={forget} busy={!!busy} />}
+      {stage === 'locked' && <Unlock rec={rec} quick={quick} setQuick={setQuick} run={run} adopt={adopt} forget={forget} busy={!!busy} />}
       {stage === 'open' && (
-        <Open w={w} passkey={passkey} nopw={nopw} passwordSet={() => passwordSet(w)} address={address} viewOnly={viewOnly} snap={snap} progress={progress} seed={seed} setSeed={setSeed}
+        <Open w={w} passkey={passkey} nopw={nopw} quick={quick} setQuick={setQuick} save={() => persist(w, address, viewOnly)} passwordSet={(none) => passwordSet(w, none)} address={address} viewOnly={viewOnly} snap={snap} progress={progress} seed={seed} setSeed={setSeed}
               sync={sync} lock={lock} forget={forget} run={run} refresh={() => refresh(wRef.current)} />
       )}
     </div>
@@ -365,7 +375,7 @@ function MobileHandoff({ run, adopt, busy, close }) {
   );
 }
 
-function Unlock({ rec, run, adopt, forget, busy }) {
+function Unlock({ rec, quick, setQuick, run, adopt, forget, busy }) {
   const pkUnlock = () => run('Opening with the passkey', async () => {
     const k = await pk.openPasskey();
     let wallet;
@@ -373,26 +383,60 @@ function Unlock({ rec, run, adopt, forget, busy }) {
     await adopt(wallet, false, true);
   });
   const [pw, setPw] = useState('');
+  const [pin, setPin] = useState('');
+  const [viaPw, setViaPw] = useState(false); // quick-unlock is set but the password is asked for
+  const bio = getPlatform().biometric;
+  const quickOn = !!quick && !rec?.passkey && !viaPw && (quick.kind === 'pin' || (quick.kind === 'android' && !!bio));
   const go = () => run('Unlocking', async () => {
     try { await adopt(await eng.openStored(rec, pw), false, false, !pw && !!rec?.nopw); }
     catch (e) { throw new Error(/password/i.test(e.message || '') ? 'Wrong password.' : e.message); }
   });
+  const goQuick = (input) => run('Unlocking', async () => {
+    let secret;
+    try {
+      if (quick.kind === 'pin') {
+        const r = await tryPin(quick, input, setQuick);
+        if (!r.ok) throw new Error(pinFailure(r));
+        secret = r.secret;
+      } else secret = await secretFrom({ quick, setQuick, bio, check: async () => {} }); // the phone's prompt; the wallet's own open checks it
+    } catch (e) { setPin(''); if (e.cancelled) return; throw e; }
+    setPin('');
+    let wallet;
+    try { wallet = await eng.openStored(rec, secret); } catch { throw new Error('Quick unlock no longer opens this wallet: use the password.'); }
+    await adopt(wallet, false, false, false);
+  });
   // a wallet made without a password opens by itself
   useEffect(() => { if (rec?.nopw && !rec?.passkey) go(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // a phone fingerprint prompt comes up by itself, once
+  useEffect(() => { if (quick && quick.kind === 'android' && bio && !rec?.nopw) goQuick(''); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const gone = !quick && !rec?.nopw && generatedHint(rec?.address);
   return (
     <div className="card">
       <h3>Unlock</h3>
       <p className="mono break">{rec ? <><Identicon address={rec.address} size={20} /> {short(rec.address)}</> : ''}{rec?.viewOnly ? ' (view-only)' : ''}</p>
       {rec?.passkey && <p><button disabled={busy} onClick={pkUnlock}>Open with passkey</button> <span className="muted">this wallet has no password: it is opened by its passkey</span></p>}
-      {!rec?.passkey && <input type="password" autoFocus placeholder="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()} />}{' '}
-      {!rec?.passkey && <button disabled={busy} onClick={go}>Unlock</button>}{' '}
+      {quickOn && quick.kind === 'pin' && (
+        <form onSubmit={(e) => { e.preventDefault(); if (!busy && validPin(pin)) goQuick(pin); }}>
+          <input type="password" inputMode="numeric" autoComplete="off" autoFocus maxLength={8} size={10} placeholder="PIN" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} data-testid="unlock-pin" />{' '}
+          <button type="submit" disabled={busy || !validPin(pin)}>Unlock</button>{' '}
+          <span className="muted small">{triesLeft(quick)} {triesLeft(quick) === 1 ? 'try' : 'tries'} left</span>
+        </form>
+      )}
+      {quickOn && quick.kind === 'android' && <p><button disabled={busy} onClick={() => goQuick('')}>Unlock with fingerprint / screen lock</button></p>}
+      {quickOn && <p className="small"><button className="linkish" onClick={() => setViaPw(true)}>use the password instead</button></p>}
+      {gone && <p className="notice small">The password of this wallet was made by quick unlock and is gone with it. Open the wallet from your seed words: forget it below, then Restore.</p>}
+      {!rec?.passkey && !quickOn && <input type="password" autoFocus placeholder="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()} />}{' '}
+      {!rec?.passkey && !quickOn && <button disabled={busy} onClick={go}>Unlock</button>}{' '}
       <button className="linkish" onClick={forget}>forget this wallet</button>
     </div>
   );
 }
 
-function Open({ w, passkey, nopw, passwordSet, address, viewOnly, snap, progress, seed, setSeed, sync, lock, forget, run, refresh }) {
+function Open({ w, passkey, nopw, quick, setQuick, save, passwordSet, address, viewOnly, snap, progress, seed, setSeed, sync, lock, forget, run, refresh }) {
   const [backed, setBacked] = useState(() => isBackedUp(address));
+  const [book, setBook] = useState(null); // the address book (wallet2's own, inside the wallet)
+  useEffect(() => { let on = true; eng.addressBook(w, save).then((b) => { if (on) setBook(b); }).catch(() => {}); return () => { on = false; }; }, [w]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { entries, reload } = useBook(book);
   const [later, setLater] = useState(false);
   const done = () => { markBackedUp(address); setBacked(true); };
   const downloadBackup = () => run('Preparing the backup', async () => {
@@ -442,25 +486,27 @@ function Open({ w, passkey, nopw, passwordSet, address, viewOnly, snap, progress
         <div className="stat"><div className="label">Scanned to</div><div className="value">{snap ? `${snap.height} / ${snap.daemon}` : '…'}</div></div>
         <div className="stat"><div className="label">Sync</div><div className="value">{progress != null ? `${Math.round(progress * 100)}%` : 'idle'}</div></div>
       </div>
-      <ShowKeys w={w} run={run} onShown={done} passkey={passkey} nopw={nopw}>
+      <ShowKeys w={w} run={run} onShown={done} passkey={passkey} nopw={nopw} quick={quick} setQuick={setQuick}>
         <button onClick={sync}>Sync now</button>
         <button onClick={downloadBackup}>Download backup</button>
         <button onClick={downloadKeys} title="the raw wallet2 .keys file, as the desktop wallet reads it">Download .keys</button>
         <button onClick={lock}>Lock</button>
         <button onClick={forget}>Forget</button>
       </ShowKeys>
-      {!passkey && !viewOnly && <SetPassword w={w} nopw={nopw} run={run} done={passwordSet} />}
+      {!passkey && !viewOnly && <SetPassword w={w} nopw={nopw} quick={quick} run={run} done={passwordSet} />}
+      {!passkey && <QuickCard w={w} nopw={nopw} quick={quick} setQuick={setQuick} address={address} run={run} passwordSet={passwordSet} />}
+      <AddressBookCard book={book} entries={entries} reload={reload} />
       {!DEDICATED && <Migrate w={w} run={run} passkey={passkey} address={address} />}
       {viewOnly && <p className="muted">View-only: spends made by the full wallet are not visible here, so this balance can be higher than the real one (change from a payment shows up as received).</p>}
       {!viewOnly && <p className="muted">To show this wallet's blocks under a name, join on the <Link to="/leaderboard">Leaderboard</Link> page.</p>}
       <Txs snap={snap} />
-      {!viewOnly && <Send w={w} snap={snap} run={run} refresh={refresh} />}
+      {!viewOnly && <Send w={w} snap={snap} run={run} refresh={refresh} book={book} entries={entries} reload={reload} />}
     </>
   );
 }
 
 /** Set (or change) the wallet's password, later: nothing asks for one while the visitor plays or explores. */
-function SetPassword({ w, nopw, run, done }) {
+function SetPassword({ w, nopw, quick, run, done }) {
   const [open, setOpen] = useState(false);
   const [cur, setCur] = useState('');
   const [pw, setPw] = useState('');
@@ -469,9 +515,10 @@ function SetPassword({ w, nopw, run, done }) {
   const ok = np.ok && !!pw;
   const save = () => run('Setting the password', async () => {
     try { await eng.setPassword(w, nopw ? '' : cur, pw); } catch (e) { throw new Error(/password/i.test(e.message || '') ? 'Wrong current password.' : e.message); }
-    await done();
+    await done(false);
     setOpen(false); setCur(''); setPw(''); setPw2('');
   });
+  if (quick) return <div className="card"><p className="muted small">Quick unlock is on: turn it off (below) before changing the password.</p></div>;
   return (
     <div className="card">
       <button className="linkish" onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} {nopw ? 'Set a password' : 'Change password'}</button>
@@ -489,16 +536,122 @@ function SetPassword({ w, nopw, run, done }) {
   );
 }
 
+/**
+ * Optional quick unlock (off unless the user opens this and turns it on; nothing offers it elsewhere): a PIN (4-8 digits, any
+ * browser) or, in the Android app, the phone's fingerprint / screen lock. Either seals the wallet password; a wallet that had no
+ * password is given a random one first (so its stored data becomes encrypted), which turning quick unlock off replaces with the
+ * user's choice. Not for passkey wallets (they have their own unlock).
+ */
+function QuickCard({ w, nopw, quick, setQuick, address, run, passwordSet }) {
+  const bio = getPlatform().biometric;
+  const [open, setOpen] = useState(false);
+  const [bioOk, setBioOk] = useState(false);
+  const [kind, setKind] = useState('pin');
+  const [cur, setCur] = useState('');
+  const [pin, setPin] = useState('');
+  const [pin2, setPin2] = useState('');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const np = newPassword(pw, pw2);
+  useEffect(() => { if (bio) bio.status().then((s) => { setBioOk(!!s.available); if (s.available) setKind('bio'); }).catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const title = bio ? 'PIN / fingerprint' : 'PIN';
+  const reset = () => { setCur(''); setPin(''); setPin2(''); setPw(''); setPw2(''); };
+  const enable = () => run('Setting up quick unlock', async () => {
+    let secret; let generated = false;
+    if (nopw) {
+      if (!isBackedUp(address)) throw new Error('Back up your seed words first (Show keys): quick unlock gives this wallet a password that only quick unlock knows.');
+      secret = randomPassword(); generated = true;
+    } else {
+      try { await eng.checkPassword(w, cur); } catch { throw new Error('Wrong password.'); }
+      secret = cur;
+    }
+    let rec;
+    if (kind === 'pin') {
+      if (!validPin(pin)) throw new Error('A PIN is 4 to 8 digits.');
+      if (pin !== pin2) throw new Error('The two PINs differ.');
+      rec = { kind: 'pin', ...(await wrapSecret(secret, pin, { generated })) };
+    } else {
+      let blob;
+      try { blob = await bio.wrap(secret); } catch (e) { const m = bioMessage(e); try { await bio.forget(); } catch { /* none yet */ } throw new Error(m || 'Cancelled.'); }
+      rec = { kind: 'android', blob, generated };
+    }
+    await setQuick(rec); // saved first: the wallet is only re-encrypted once the sealed password is kept
+    if (generated) {
+      try { await eng.setPassword(w, '', secret); } catch (e) { await dropQuick(rec, setQuick, bio); throw e; }
+      setGeneratedHint(address, true);
+      await passwordSet(false);
+    }
+    reset(); setOpen(false);
+  });
+  const disable = () => run('Turning quick unlock off', async () => {
+    if (quick.generated) {
+      // the password is the one quick unlock made: get it back (PIN / fingerprint) and replace it with the user's choice
+      if (!np.ok) throw new Error(np.error);
+      const secret = await secretFrom({ input: pin, quick, setQuick, bio, check: (x) => eng.checkPassword(w, x) }).catch((e) => { setPin(''); throw e; });
+      try { await eng.setPassword(w, secret, pw); } catch (e) { throw new Error(/password/i.test(e.message || '') ? 'Wrong password.' : e.message); }
+      setGeneratedHint(address, false);
+      await passwordSet(!pw);
+    }
+    await dropQuick(quick, setQuick, bio);
+    reset(); setOpen(false);
+  });
+  return (
+    <div className="card" data-testid="quick-card">
+      <button className="linkish" onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} {quick ? `${title}: on` : `Set up ${title}`}</button>
+      {open && !quick && (
+        <>
+          <p className="muted small">Unlock this wallet with {bio ? 'your fingerprint or screen lock, or ' : ''}a short PIN instead of typing the password. Optional; off unless you turn it on.</p>
+          {bio && bioOk && (
+            <div className="controls">
+              <button className={kind === 'bio' ? 'on' : ''} onClick={() => setKind('bio')}>Fingerprint / screen lock</button>
+              <button className={kind === 'pin' ? 'on' : ''} onClick={() => setKind('pin')}>PIN</button>
+            </div>
+          )}
+          {kind === 'bio' && <p className="muted small">The phone's secure hardware keeps the key and asks you every time; it stops working if fingerprints or the screen lock change (then the password opens the wallet).</p>}
+          {kind === 'pin' && <p className="muted small" data-testid="pin-note">{PIN_NOTE}</p>}
+          {nopw && <p className="muted small">This wallet has no password. Quick unlock will give it a long random one that only quick unlock knows, so what is stored here becomes encrypted. Your seed words stay the real backup; if the PIN is wiped (5 wrong tries) you open the wallet from them.</p>}
+          {!nopw && <p><input type="password" placeholder="current wallet password" value={cur} onChange={(e) => setCur(e.target.value)} /></p>}
+          {kind === 'pin' && (
+            <p>
+              <input type="password" inputMode="numeric" autoComplete="off" maxLength={8} size={10} placeholder="PIN (4-8 digits)" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} />{' '}
+              <input type="password" inputMode="numeric" autoComplete="off" maxLength={8} size={10} placeholder="repeat it" value={pin2} onChange={(e) => setPin2(e.target.value.replace(/\D/g, ''))} />
+            </p>
+          )}
+          <button disabled={(kind === 'pin' && (!validPin(pin) || pin !== pin2)) || (!nopw && !cur)} onClick={enable}>Turn on</button>
+        </>
+      )}
+      {open && quick && (
+        <>
+          <p className="muted small">{quick.kind === 'pin' ? `A PIN opens this wallet (${triesLeft(quick)} wrong ${triesLeft(quick) === 1 ? 'try' : 'tries'} left before it is wiped). ${PIN_NOTE}` : "The phone's fingerprint or screen lock opens this wallet."}</p>
+          {quick.generated && (
+            <>
+              <p className="muted small">Its password was made by quick unlock. Choose one now (or none) and confirm with {quick.kind === 'pin' ? 'your PIN' : 'your fingerprint'}.</p>
+              {quick.kind === 'pin' && <p><input type="password" inputMode="numeric" autoComplete="off" maxLength={8} size={10} placeholder="your PIN" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} /></p>}
+              <p><input type="password" placeholder="new password (8+ characters, optional)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+                <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} /></p>
+              {np.error ? <p className="walleterr">{np.error}</p> : np.warn ? <p className="muted small">{np.warn}</p> : null}
+            </>
+          )}
+          <button disabled={quick.generated && (!np.ok || (quick.kind === 'pin' && !validPin(pin)))} onClick={disable}>Turn off</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** The wallet's actions (`children`: sync, backups, lock, forget) and the keys, shown after a confirmation. */
-function ShowKeys({ w, run, onShown, passkey, nopw, children }) {
+function ShowKeys({ w, run, onShown, passkey, nopw, quick, setQuick, children }) {
   const [step, setStep] = useState(0); // 0 closed, 1 confirm + password, 2 shown
   const [pw, setPw] = useState('');
   const [k, setK] = useState(null);
   const close = () => { setStep(0); setPw(''); setK(null); };
   const reveal = () => run('Checking the password', async () => {
-    if (passkey) { const k = await pk.openPasskey(); await eng.checkPassword(w, k.password); } else await eng.checkPassword(w, pw);
+    if (passkey) { const k = await pk.openPasskey(); await eng.checkPassword(w, k.password); } else if (nopw) await eng.checkPassword(w, pw); else await gate(pw);
     setK(await eng.allKeys(w)); setPw(''); setStep(2); onShown();
   });
+  // the password, or the PIN / fingerprint when quick unlock is on
+  const bio = getPlatform().biometric;
+  const gate = (input) => secretFrom({ input, quick, setQuick, bio, check: (x) => eng.checkPassword(w, x) }).catch((e) => { setPw(''); if (e.cancelled) throw new Error('Cancelled.'); throw e; });
   const row = (label, v, secret) => v ? (
     <p><span className="label">{label}</span><br /><span className={`mono break${secret ? ' seedbox' : ''}`}>{v}</span>{' '}
       <button onClick={() => copy(v)}>Copy</button></p>
@@ -512,7 +665,7 @@ function ShowKeys({ w, run, onShown, passkey, nopw, children }) {
       {step === 1 && (
         <>
           <p className="walleterr">Anyone who sees the spend key or the seed words can spend all of this wallet's coins. Show them only where nobody can look over your shoulder, and never paste them into a website or send them to anyone.</p>
-          {!passkey && !nopw && <><input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && reveal()} />{' '}</>}
+          {!passkey && !nopw && <><input type="password" autoFocus placeholder={quick ? (quick.kind === 'pin' ? 'wallet password or PIN' : 'password (empty: fingerprint)') : 'wallet password'} value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && reveal()} />{' '}</>}
           <button onClick={reveal}>I understand, show the keys</button>{' '}
           <button className="linkish" onClick={close}>cancel</button>
         </>
@@ -562,8 +715,9 @@ function Txs({ snap }) {
   );
 }
 
-function Send({ w, snap, run, refresh }) {
+function Send({ w, snap, run, refresh, book, entries, reload }) {
   const [to, setTo] = useState('');
+  const [sentTo, setSentTo] = useState(''); // the recipient of the send just made: offered for the address book
   const [amt, setAmt] = useState('');
   const [draft, setDraft] = useState(null);
   const [sent, setSent] = useState('');
@@ -571,21 +725,22 @@ function Send({ w, snap, run, refresh }) {
   const ok = isAddress(to) && atomic && atomic > 0n;
 
   const prepare = () => run('Building the transaction', async () => {
-    setSent('');
+    setSent(''); setSentTo('');
     const tx = await w.createTx({ accountIndex: 0, address: to.trim(), amount: atomic, relay: false });
     setDraft({ tx, fee: tx.getFee(), amount: atomic, to: to.trim() });
   });
   const relay = () => run('Sending', async () => {
     const hash = await w.relayTx(draft.tx);
-    setSent(hash); setDraft(null); setTo(''); setAmt('');
+    setSent(hash); setSentTo(draft.to); setDraft(null); setTo(''); setAmt('');
     await refresh();
   });
 
   return (
     <div className="card">
       <h3>Send</h3>
-      <p><input className="wide mono" placeholder="SM64… recipient address" value={to} onChange={(e) => { setTo(e.target.value); setDraft(null); }} /></p>
-      {isAddress(to) && <p className="muted small" data-testid="to-preview"><Identicon address={to.trim()} size={24} /> {to.trim().slice(0, 8)}…{to.trim().slice(-6)}: check it is the right one.</p>}
+      <p><input className="wide mono" placeholder="SM64… recipient address" value={to} onChange={(e) => { setTo(e.target.value); setDraft(null); }} />{' '}
+        <BookPicker entries={entries} onPick={(a) => { setTo(a); setDraft(null); }} /></p>
+      {isAddress(to) && <RecipientNote entries={entries} to={to} />}
 
       <p>
         <input placeholder="amount" value={amt} size={16} onChange={(e) => { setAmt(e.target.value); setDraft(null); }} />{' '}
@@ -600,6 +755,7 @@ function Send({ w, snap, run, refresh }) {
         </div>
       )}
       {sent && <p>Sent: <span className="mono break">{sent}</span></p>}
+      {sent && <SaveToBook book={book} entries={entries} reload={reload} address={sentTo} onDone={() => setSentTo('')} />}
     </div>
   );
 }
