@@ -221,6 +221,18 @@ Upload `web/dist` to any static host (GitHub Pages, Netlify, S3, nginx). Serve i
 - The leaderboard service and the project's own web hosting are single servers; they do not affect consensus.
 - Blocks are only as unpredictable as the play: a strong player or bot with a fast search can mine most blocks (see Caveats).
 
+## Troubleshooting connections
+
+**The app or site can't reach the node.** Usually a VPN, a firewall or NAT in between. Try another network or another
+VPN server (some VPN servers block unusual hosts and ports), or pick another node on the Network page.
+
+**Your own node has no incoming peers** (it still syncs and mines through outgoing ones, but other nodes can't connect to it):
+- **NAT / router:** forward TCP **16480** to the computer running the node.
+- **VPN:** if you run the node behind a VPN, use the VPN's port forwarding for 16480 (not every VPN offers it).
+- **Firewall:** allow incoming TCP 16480 (Windows Defender Firewall, `ufw allow 16480/tcp`, macOS asks on first run).
+- **CGNAT:** if your router's WAN address differs from your public IP (e.g. https://ifconfig.me), port forwarding can't
+  work; outgoing connections still do.
+
 ## Running a public node (Raspberry Pi)
 
 See [docs/raspberry-pi.md](docs/raspberry-pi.md): packages, `git clone --recursive`, `make build-monero JOBS=2`, `scripts/public-node.sh`, a systemd unit, and adding the node to `seeds.txt`.

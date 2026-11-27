@@ -149,4 +149,4 @@ export const daemon = (method, params) => {
 };
 
 /** Shown wherever the node cannot be reached (a VPN, firewall or network filter often blocks the public node). */
-export const NODE_HINT = "Can't reach the node — a VPN, firewall or network filter may be blocking it; try another network or pick a node on the Network page.";
+export const NODE_HINT = "Can't reach the node: usually a VPN, firewall or NAT. Try another network or VPN server, or pick a node on the Network page.";

@@ -18,7 +18,11 @@ export default function Network() {
   const check = async (u) => {
     try {
       const i = await daemonAt(u, 'get_info');
-      return `height ${i.height}, ${i.synchronized ? 'synced' : 'syncing'}, ${i.outgoing_connections_count + i.incoming_connections_count} peers`;
+      const base = `height ${i.height}, ${i.synchronized ? 'synced' : 'syncing'}, ${i.outgoing_connections_count + i.incoming_connections_count} peers`;
+      // Your own node with no incoming peers: other nodes can't reach it (it still syncs and mines through its outgoing ones).
+      return nodeInUse().kind === 'local' && i.incoming_connections_count === 0 && i.outgoing_connections_count > 0
+        ? `${base}. No incoming peers: forward TCP 16480 on your router (NAT) or VPN, and allow it in your firewall.`
+        : base;
     } catch (e) {
       return `unreachable: ${e.message}. ${NODE_HINT}`;
     }
