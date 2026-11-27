@@ -28,6 +28,11 @@ const parse = (s) => Object.fromEntries(s.split(';').map((d) => d.trim()).filter
 const m = parse(meta), h = parse(csp(rule('/*')));
 for (const k of Object.keys(m)) assert.equal(h[k], m[k], `directive ${k} differs between index.html and _headers`);
 assert.equal(h['frame-ancestors'], "'none'");
+// the light-client network: iroh reaches a node's home relay over WSS (relay hosts come from public-node.json and node announcements,
+// so they are not listable; https: is already open to any host, wss: only adds the scheme) and its WASM needs wasm-unsafe-eval
+assert.ok(/\bwss:/.test(m['connect-src']) && /\bwss:/.test(h['connect-src']), 'connect-src allows wss: for the iroh relays');
+assert.ok(/'wasm-unsafe-eval'/.test(m['script-src']), 'the lc WASM compiles under wasm-unsafe-eval');
+assert.ok(!/ws:/.test(m['connect-src'].replace(/wss:/g, '')), 'no plain ws:');
 assert.ok(!/'unsafe-eval'/.test(csp(rule('/*'))), 'the document policy has no unsafe-eval');
 assert.ok(/'unsafe-eval'/.test(csp(rule('/workers/*'))), 'workers may use new Function');
 assert.ok(/^\s+! Content-Security-Policy$/m.test(rule('/workers/*')), 'the worker rule detaches the strict policy');
