@@ -80,3 +80,52 @@ console.log('hub ok');
   assert.equal(of(1, 2), null);
   assert.equal(of(0, 0), null);
 }
+
+// A worker's campaign restarts (a reset cycle to power-on, a relaunch to beat a found run, a template refreshed for the same
+// tip): its old tree leaves the cloud; the other workers' nodes stay, with their parents, in order.
+{
+  const { CAP } = await import('./hub.js');
+  const h = new VizHub();
+  h.setEnabled(true);
+  h.newRound({ template: { height: 7 }, starts: ['parent', 'parent'], parentRaw: null });
+  const line = (seed, nodes) => JSON.stringify({ step: { frame0: 0, seed, goal: 'Stars', level: 16, area: 1, pos: [0, 0, 0] }, t: 1, nodes_total: nodes.length, sim_frames: 10, nodes });
+  // node: [id, parent, frame, x, y, z, stars, level, area, flags]
+  h.ingest(0, line(1, [[1, 0, 5, 10, 0, 0, 0, 16, 1, 0], [2, 1, 9, 20, 0, 0, 0, 16, 1, 0]]));
+  h.ingest(1, line(2, [[1, 0, 5, 30, 0, 0, 0, 16, 1, 0], [2, 1, 9, 40, 0, 0, 0, 16, 1, 0]]));
+  assert.equal(h.count(), 6); // two roots + four nodes
+  const w1 = h.slotOf(1, h.workers[1].cur.n, 2);
+  h.selected = { slot: w1 };
+  h.restartWorker(0, 'power-on');
+  assert.equal(h.count(), 3);
+  for (let s = 0; s < h.count(); s++) assert.equal(h.worker[s], 1);
+  const n1 = h.workers[1].cur.n;
+  const s2 = h.slotOf(1, n1, 2), s1 = h.slotOf(1, n1, 1), s0 = h.slotOf(1, n1, 0);
+  assert.deepEqual([s0, s1, s2], [0, 1, 2]);
+  assert.equal(h.parentSlot[s2], s1);
+  assert.equal(h.parentSlot[s1], s0);
+  assert.equal(h.pos[s2 * 3], 40);
+  assert.equal(h.selected.slot, s2);
+  assert.equal(h.workers[0].start, 'power-on');
+  assert.equal(h.workers[0].cur, null);
+  // The restarted worker's new tree goes in after them; a node selected on the dropped tree is unselected.
+  h.ingest(0, line(3, [[1, 0, 4, 50, 0, 0, 0, 16, 1, 0]]));
+  assert.equal(h.count(), 5);
+  const s3 = h.slotOf(0, h.workers[0].cur.n, 1);
+  assert.equal(s3, 4);
+  assert.equal(h.parentSlot[s3], 3);
+  h.selected = { slot: s3 };
+  h.restartWorker(0, 'parent');
+  assert.equal(h.selected, null);
+  assert.equal(h.count(), 3);
+  // A wrapped ring (more nodes than CAP): the newest CAP minus the dropped worker's, oldest first.
+  const r = new VizHub();
+  r.setEnabled(true);
+  r.newRound({ template: { height: 8 }, starts: ['parent', 'parent'], parentRaw: null });
+  for (let k = 0; k < CAP + 10; k++) r.add(k % 2, 1, k + 1, -1, k, [k, 0, 0], 0, 16, 1, 0);
+  r.restartWorker(1, 'parent');
+  assert.equal(r.count(), CAP / 2);
+  assert.equal(r.frame[0], 10); // the oldest kept: node 11 (frame 10), worker 0
+  assert.equal(r.frame[r.count() - 1], CAP + 8);
+  assert.equal(r.slotOf(0, 1, CAP + 9), r.count() - 1);
+  assert.equal(r.slotOf(0, 1, 1), -1); // overwritten long ago
+}

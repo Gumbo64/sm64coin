@@ -6,7 +6,7 @@ import { daemon } from '../rpc.js';
 import { tipStore } from '../tip.js';
 import { newMinerKey, templateParams } from '../minerkey.js';
 import { hybrid } from './controller.js';
-import { dispatchFrame, unindent } from './nativeFrames.js';
+import { dispatchFrame, unindent, campaignStart } from './nativeFrames.js';
 
 export class NativeFeed {
   constructor(miner, nm) {
@@ -92,9 +92,10 @@ export class NativeFeed {
     }
     const line = unindent(raw);
     this.line = line.trim();
-    // A new campaign (a new attempt on the template): its first step starts over in the strips.
-    const w = this.hub.workers[0];
-    if (/^step 1:/.test(line) && w && w.stepNo > 1) this.hub.restartWorker(0, 'parent');
+    // A new search (a reset-cycle fallback to power-on, the anytime search for a shorter run, a template refreshed without a new
+    // tip): a new tree from the block's start, maybe another start. The worker's old tree leaves the views, its start is the new one.
+    const start = campaignStart(line);
+    if (start) this.hub.restartWorker(0, start);
     this.hub.log(0, line);
     this.miner.nativeLine(this.line);
   }

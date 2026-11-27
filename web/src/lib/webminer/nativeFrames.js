@@ -4,8 +4,10 @@
 const atobBytes = (s) => { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
 export const b64decode = atobBytes;
 const hexToBytes = (h) => { const b = new Uint8Array(h.length / 2); for (let i = 0; i < b.length; i++) b[i] = parseInt(h.substr(i * 2, 2), 16); return b; };
-/** A campaign line as the hub expects it: the native miner indents rrt::mine's log by two spaces. */
-export const unindent = (line) => (/^ {2}step \d+:/.test(line) ? line.slice(2) : line);
+/** A campaign line as the hub expects it: the native miner indents rrt::mine's log (two spaces, four in the anytime search). */
+export const unindent = (line) => (/^ +step \d+:/.test(line) ? line.trimStart() : line);
+/** The start of a new rrt::mine search (every campaign attempt logs it first, the anytime searches too): 'power-on' | 'parent', else null. */
+export const campaignStart = (line) => { const m = /^\s*start (PowerOn|Parent) at /.exec(line); return m ? (m[1] === 'PowerOn' ? 'power-on' : 'parent') : null; };
 
 /** Dispatches one native frame like controller.js's worker.onmessage does. `hub`: the VizHub. */
 export function dispatchFrame(hub, f, hyb) {
