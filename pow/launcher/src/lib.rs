@@ -4,6 +4,8 @@
 
 #[cfg(feature = "desktop")]
 pub mod dht;
+#[cfg(feature = "lc")]
+pub mod lcserve;
 #[cfg(feature = "desktop")]
 pub mod node;
 #[cfg(feature = "desktop")]

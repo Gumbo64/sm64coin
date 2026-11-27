@@ -91,9 +91,31 @@ struct Opts {
     /// Also run the automated miner (sm64coin-automine), mining to this address
     #[arg(long, value_name = "SM64...")]
     mine: Option<String>,
+    /// Run the light-client service beside the node (iroh endpoint + relay on demand: phones, apps and browsers read the chain
+    /// through it). `auto` (default) = on with --public. Needs the `lc` build feature.
+    #[cfg(feature = "lc")]
+    #[arg(long, value_enum, default_value = "auto", num_args = 0..=1, default_missing_value = "on", value_name = "on|off|auto")]
+    lc: LcMode,
+    /// Where the light-client relay listens (used when it turns on)
+    #[cfg(feature = "lc")]
+    #[arg(long, default_value = "0.0.0.0:443", value_name = "ADDR")]
+    lc_relay_bind: std::net::SocketAddr,
+    /// Known light-client servers to learn peers from (iroh:<id>[@relay] or https URL), repeatable
+    #[cfg(feature = "lc")]
+    #[arg(long = "lc-bootstrap", value_name = "SPEC")]
+    lc_bootstrap: Vec<String>,
     /// Extra argument for sm64coind, repeatable
     #[arg(long = "daemon-arg", value_name = "ARG", allow_hyphen_values = true)]
     daemon_args: Vec<String>,
+}
+
+#[cfg(feature = "lc")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum LcMode {
+    On,
+    Off,
+    /// On when the website is served publicly (`--public`).
+    Auto,
 }
 
 /// The website's origin (GitHub Pages), allowed to call the local node's RPC.
@@ -431,6 +453,26 @@ fn run(o: Opts) -> Result<(), String> {
             started_node = true;
         }
         let rpc_url = format!("http://127.0.0.1:{}", o.rpc_port);
+
+        // --- light-client service (iroh) ---
+        #[cfg(feature = "lc")]
+        let _lc = if o.lc == LcMode::On || (o.lc == LcMode::Auto && o.public) {
+            let mut c = sm64coin_launcher::lcserve::LcConfig::new(o.rpc_port, data_dir.join("lc"));
+            c.relay_bind = o.lc_relay_bind;
+            c.bootstrap = o.lc_bootstrap.clone();
+            if o.no_dht {
+                c.discovery = sm64coin_lc::endpoint::Discovery::N0;
+            }
+            match sm64coin_launcher::lcserve::start(c) {
+                Ok(h) => Some(h),
+                Err(e) => {
+                    println!("(light-client service not started: {e})");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // --- leaderboard ---
         // Runs by default: it shares the top 50 with other leaderboard servers (pulling works behind NAT;

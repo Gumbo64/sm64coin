@@ -6,20 +6,14 @@ use std::time::Duration;
 /// Largest answer relayed.
 pub const MAX_RESPONSE: u64 = 64 << 20;
 
-/// The daemon calls the website needs. The node's RPC is unrestricted (stop_daemon, set_bans,
-/// prune_blockchain ...), so the proxy only passes these.
-pub const RPC_ALLOWED: &[&str] = &[
-    "get_info", "get_block_count", "get_block", "get_block_header_by_hash", "get_block_header_by_height",
-    "get_block_headers_range", "get_block_template", "submit_block",
-    // proof-of-play (the miner's parent state and cycle) and the node's leaderboard
-    "get_sm64_cycle", "get_sm64_state", "sm64_board", "sm64_board_join",
-    // read-only calls a wallet makes (restricted-RPC safe)
-    "get_version", "get_fee_estimate", "get_last_block_header", "get_output_distribution", "hard_fork_info",
-];
+/// The daemon calls the website needs: the light-client crate's allowlist (`sm64coin_lc::allowlist`), the one list the
+/// service, the launcher and the apps share. The node's RPC is unrestricted (stop_daemon, set_bans, prune_blockchain ...),
+/// so the proxy only passes these.
+pub use sm64coin_lc::allowlist::{RPC_ALLOWED, path_allowed};
 
 /// May `method` be called through the website / the app? The node's RPC is unrestricted.
 pub fn allowed(method: &str) -> bool {
-    RPC_ALLOWED.contains(&method)
+    sm64coin_lc::allowlist::rpc_allowed(method)
 }
 
 /// The method of a JSON-RPC request body (one object, no batches).

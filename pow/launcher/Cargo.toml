@@ -20,10 +20,12 @@ required-features = ["desktop"]
 
 # `tls`: https for rpc::call_url (the desktop app talks to the public node).
 [features]
-default = ["desktop"]
+default = ["desktop", "lc"]
 # `desktop`: everything that needs a desktop OS (ROM search, node/child processes, DHT seeds) and the CLI. Without it only
 # `rpc` (and `util`) are built: the Android app uses just the whitelisted remote RPC.
 desktop = ["dep:clap", "dep:ctrlc", "dep:sha1", "dep:mainline", "dep:tiny_http"]
+# `lc`: the light-client service (sm64coin-lc: iroh endpoint, relay, DHT) run next to the node (`--lc`).
+lc = ["desktop", "dep:tokio", "dep:iroh", "sm64coin-lc/relay", "sm64coin-lc/dht", "sm64coin-lc/tls"]
 tls = ["ureq/tls"]
 
 [dependencies]
@@ -35,6 +37,10 @@ sha1 = { version = "0.10", optional = true }
 mainline = { version = "8", optional = true }
 tiny_http = { version = "0.12", optional = true }
 ureq = { version = "2", default-features = false }
+# The RPC allowlist lives in the light-client crate (one list for the launcher, the service and the apps).
+sm64coin-lc = { path = "../lc", default-features = false }
+iroh = { version = "=1.5.0", default-features = false, features = ["tls-ring"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "signal", "time"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_System_IO", "Win32_System_Threading"] }
