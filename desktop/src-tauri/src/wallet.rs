@@ -22,6 +22,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -346,8 +347,23 @@ fn call(app: &App, method: &str, params: Value, timeout: Duration) -> Res<Value>
         }
         (s.port, s.user.clone(), s.pass.clone())
     };
-    let body = json!({"jsonrpc": "2.0", "id": "0", "method": method, "params": params}).to_string();
+    let mut params = params;
+    let body = Zeroizing::new(json!({"jsonrpc": "2.0", "id": "0", "method": method, "params": &params}).to_string());
+    scrub(&mut params);
     digest_post(port, &user, &pass, &body, timeout).map_err(|e| AppError::new("wallet_rpc", e))
+}
+
+/// Wipes the secrets of a request (seed words, passwords) once it is serialized.
+fn scrub(v: &mut Value) {
+    if let Some(o) = v.as_object_mut() {
+        for (k, x) in o.iter_mut() {
+            if matches!(k.as_str(), "seed" | "password" | "old_password" | "new_password" | "seed_offset") {
+                if let Value::String(s) = x {
+                    s.zeroize();
+                }
+            }
+        }
+    }
 }
 
 /// Methods the page may call. Everything else (export_*, sweep, set_attribute, make_integrated_address, ...) is refused.
@@ -390,7 +406,7 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
             if !valid_name(&name) {
                 return Err(AppError::new("bad_name", "a wallet name is letters, digits, - and _ (up to 40)"));
             }
-            let pw = str_param(&p, "password").unwrap_or("").to_string();
+            let pw = Zeroizing::new(str_param(&p, "password").unwrap_or("").to_string());
             if method != "open_wallet" && pw.len() < 8 {
                 return Err(AppError::new("weak_password", "use a password of at least 8 characters"));
             }
@@ -486,11 +502,28 @@ fn amounts_from_strings(p: &mut Value) {
     }
 }
 
-/// Restores a wallet from seed words (also what "Use my website passkey" ends in).
-pub fn restore_from_seed(app: &AppHandle, name: &str, password: &str, seed: &str, height: u64, kdf_rounds: Option<u32>) -> Res<Value> {
+/// Restores a wallet from seed words (also what "Use my website passkey" ends in). With `expect`, the restored wallet must have
+/// that primary address; otherwise it is closed and its new files are removed (code `address_mismatch`).
+pub fn restore_from_seed(app: &AppHandle, name: &str, password: &str, seed: &str, height: u64, kdf_rounds: Option<u32>, expect: Option<&str>) -> Res<Value> {
     let r = wallet_call(app, "restore_deterministic_wallet", json!({"filename": name, "password": password, "seed": seed, "restore_height": height, "seed_offset": "", "_kdf_rounds": kdf_rounds.unwrap_or(1)}))?;
     if let Some(e) = r.get("error") {
         return Err(AppError::new("wallet_rpc", e.get("message").and_then(|m| m.as_str()).unwrap_or("restore failed")));
+    }
+    if let Some(want) = expect {
+        let got = r.get("result").and_then(|x| x.get("address")).and_then(|a| a.as_str()).unwrap_or("");
+        if got != want {
+            let st = app.state::<App>();
+            {
+                let _gate = st.wallet.gate.lock().unwrap();
+                lock_wallet(&st);
+            }
+            if let Ok(dir) = wallets_dir(&st.dirs) {
+                let _ = std::fs::remove_file(dir.join(name));
+                let _ = std::fs::remove_file(dir.join(format!("{name}.keys")));
+                let _ = std::fs::remove_file(dir.join(format!("{name}.address.txt")));
+            }
+            return Err(AppError::new("address_mismatch", "the received seed words do not belong to the address that was shown; nothing was imported"));
+        }
     }
     Ok(r)
 }

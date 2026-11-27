@@ -3606,6 +3606,7 @@ dependencies = [
  "tiny_http",
  "ureq",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

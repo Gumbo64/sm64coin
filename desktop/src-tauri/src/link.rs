@@ -10,9 +10,16 @@
 //!   3. the app checks the secret (constant time), the Origin (the website; `http://localhost:5173` only in debug builds) and the
 //!      Host (127.0.0.1:<port>, against DNS rebinding), decrypts, keeps the seed in memory, and closes the listener. The page
 //!      answers Chrome's Private Network Access preflight (`Access-Control-Allow-Private-Network: true`).
-//!   4. the UI then calls `link_finish` with the wallet name and a password chosen in the app: the seed is restored through
-//!      wallet-rpc (like "restore from seed") and dropped.
-//! Not in any log: the secret, the seed. The listener lives at most 5 minutes, takes one good POST, and gives up after 10 bad ones.
+//!   4. the UI shows the address that arrived and asks the user to compare it with the one the browser page shows; only then it
+//!      calls `link_finish` with the wallet name and a password chosen in the app: the seed is restored through wallet-rpc (like
+//!      "restore from seed") and wiped. The restored wallet's address must be the one that was shown, else it is not kept.
+//! Not in any log: the secret, the seed. The listener lives at most 5 minutes, takes one good POST, and gives up after 10 bad ones;
+//! a received seed is kept (zeroized on drop) for at most 10 minutes.
+//!
+//! Why the address check: the URL (with the secret) is an argument of the browser process (xdg-open/open/rundll32), which other
+//! local processes can read, and a local process can send any Origin. Such a process could win the race with a seed of its own
+//! (it cannot read the real one: that is encrypted to the app's key). It cannot make the app show the user's own address for it:
+//! the address is checked against the restored seed.
 use crate::desktop::App;
 use crate::{AppError, Res};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -27,12 +34,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State as TState};
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::{Zeroize, Zeroizing};
 
 pub const SITE: &str = "https://sm64coin.pages.dev";
 const INFO: &[u8] = b"sm64coin desktop-link v1";
 const LIFETIME: Duration = Duration::from_secs(300);
 const MAX_BAD: u32 = 10;
 const MAX_BODY: usize = 16 * 1024;
+/// How long a received seed waits for `link_finish`.
+const RECEIVED_TTL: Duration = Duration::from_secs(600);
 
 /// Origins the page may POST from. The dev server is allowed in debug builds only.
 fn origin_ok(o: &str) -> bool {
@@ -51,9 +61,10 @@ pub enum LinkState {
 }
 
 pub struct Received {
-    pub seed: String,
+    pub seed: Zeroizing<String>,
     pub height: u64,
     pub address: String,
+    at: Instant,
 }
 
 #[derive(Default)]
@@ -138,8 +149,17 @@ struct Payload_ {
     seed: String,
     #[serde(default)]
     height: u64,
-    #[serde(default)]
     address: String,
+}
+impl Drop for Payload_ {
+    fn drop(&mut self) {
+        self.seed.zeroize();
+    }
+}
+
+/// A primary address: base58, about 95 characters (the restore checks it against the seed).
+fn plausible_address(a: &str) -> bool {
+    (90..=110).contains(&a.len()) && a.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 /// Validates a request and, for a good POST, returns what the page sent. Err(status, text) for a refusal.
@@ -150,13 +170,23 @@ fn handle_post(body: &[u8], secret: &str, app_secret: &StaticSecret) -> Result<R
     }
     let dec = |s: &str| B64.decode(s).map_err(|_| (400u16, "bad encoding"));
     let pk: [u8; 32] = dec(&p.pk)?.try_into().map_err(|_| (400, "bad key"))?;
-    let plain = open_box(app_secret, &pk, &dec(&p.iv)?, &dec(&p.ct)?).map_err(|_| (400, "could not decrypt"))?;
+    let plain = Zeroizing::new(open_box(app_secret, &pk, &dec(&p.iv)?, &dec(&p.ct)?).map_err(|_| (400, "could not decrypt"))?);
     let v: Payload_ = serde_json::from_slice(&plain).map_err(|_| (400, "bad payload"))?;
     let words = v.seed.split_whitespace().count();
     if words != 25 {
         return Err((400, "not a 25-word seed"));
     }
-    Ok(Received { seed: v.seed.split_whitespace().collect::<Vec<_>>().join(" "), height: v.height, address: v.address })
+    if !plausible_address(&v.address) {
+        return Err((400, "no wallet address"));
+    }
+    let mut seed = Zeroizing::new(String::with_capacity(v.seed.len()));
+    for (i, w) in v.seed.split_whitespace().enumerate() {
+        if i > 0 {
+            seed.push(' ');
+        }
+        seed.push_str(w);
+    }
+    Ok(Received { seed, height: v.height, address: v.address.clone(), at: Instant::now() })
 }
 
 fn cors(req_origin: &str) -> Vec<tiny_http::Header> {
@@ -218,10 +248,11 @@ fn serve(inner: Arc<Mutex<Inner>>, epoch: u64, server: tiny_http::Server, port: 
                 match handle_post(&body, &secret, &app_secret) {
                     Ok(got) => {
                         reply(req, 200, "{\"ok\":true}", Some(&origin));
-                        set(&|g| {
-                            g.got = Some(Received { seed: got.seed.clone(), height: got.height, address: got.address.clone() });
+                        let mut g = inner.lock().unwrap();
+                        if g.epoch == epoch && !g.stop {
+                            g.got = Some(got);
                             g.state = LinkState::Received;
-                        });
+                        }
                         return; // one good POST, then the listener is gone
                     }
                     Err((c, t)) => {
@@ -253,12 +284,21 @@ pub struct LinkInfo {
     error: Option<String>,
 }
 
+/// Drops a received seed nobody finished in time.
+fn expire(g: &mut Inner) {
+    if g.got.as_ref().is_some_and(|r| r.at.elapsed() > RECEIVED_TTL) {
+        g.got = None;
+        g.state = LinkState::Expired;
+    }
+}
+
 fn info(l: &Link, url: Option<String>) -> LinkInfo {
-    let g = l.inner.lock().unwrap();
+    let mut g = l.inner.lock().unwrap();
+    expire(&mut g);
     LinkInfo { state: g.state, url, address: g.got.as_ref().map(|r| r.address.clone()).filter(|a| !a.is_empty()), error: g.error.clone() }
 }
 
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let mut c = if cfg!(target_os = "macos") {
         let mut c = Command::new("open");
@@ -329,14 +369,34 @@ pub fn link_cancel(app: TState<'_, App>) -> Res<LinkInfo> {
 }
 
 /// Imports the received wallet under `name` with the password the user chose in the app (seed restore through wallet-rpc).
+/// `address`: the address the user confirmed (the one `link_status` showed); the restored wallet must have it.
 #[tauri::command]
-pub async fn link_finish(app: AppHandle, name: String, password: String, kdf_rounds: Option<u32>) -> Res<Value> {
+pub async fn link_finish(app: AppHandle, name: String, password: String, address: String, kdf_rounds: Option<u32>) -> Res<Value> {
+    let password = Zeroizing::new(password);
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<App>();
-        let got = st.link.inner.lock().unwrap().got.take().ok_or_else(|| AppError::new("link_nothing", "no passkey wallet was received"))?;
-        st.link.inner.lock().unwrap().state = LinkState::Idle;
-        let r = crate::wallet::restore_from_seed(&app, &name, &password, &got.seed, got.height, kdf_rounds)?;
-        Ok(r)
+        let got = {
+            let mut g = st.link.inner.lock().unwrap();
+            expire(&mut g);
+            if !g.got.as_ref().is_some_and(|r| r.address == address) {
+                return Err(AppError::new("link_nothing", "no passkey wallet with that address was received"));
+            }
+            g.state = LinkState::Idle;
+            g.got.take().unwrap()
+        };
+        let r = crate::wallet::restore_from_seed(&app, &name, &password, &got.seed, got.height, kdf_rounds, Some(&got.address));
+        if let Err(e) = &r {
+            // Not imported (a bad name, a weak password, the sidecar): keep the seed for another try, but not a seed that does
+            // not belong to the address the user confirmed.
+            if e.code != "address_mismatch" {
+                let mut g = st.link.inner.lock().unwrap();
+                if g.got.is_none() && g.state == LinkState::Idle {
+                    g.got = Some(got);
+                    g.state = LinkState::Received;
+                }
+            }
+        }
+        r
     })
     .await
     .map_err(|e| AppError::new("internal", e.to_string()))?
@@ -353,9 +413,15 @@ mod tests {
         let app_pk = *PublicKey::from(&app).as_bytes();
         let page_pk = *PublicKey::from(&page).as_bytes();
         let iv = [3u8; 12];
-        let plain = br#"{"seed":"a b c d e f g h i j k l m n o p q r s t u v w x y","height":42,"address":"SM64x"}"#;
+        const ADDR: &str = "SM64xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let plain = format!(r#"{{"seed":"a b c d e f g h i j k l m n o p q r s t u v w x y","height":42,"address":"{ADDR}"}}"#);
+        let plain = plain.as_bytes();
         let ct = seal_box(&app_pk, &page, &iv, plain);
         assert_eq!(open_box(&app, &page_pk, &iv, &ct).unwrap(), plain);
+        // a payload without an address is refused (the user compares it, the restore checks it)
+        let ct3 = seal_box(&app_pk, &page, &iv, br#"{"seed":"a b c d e f g h i j k l m n o p q r s t u v w x y"}"#);
+        let body3 = serde_json::json!({"secret": "s3cret", "pk": B64.encode(page_pk), "iv": B64.encode(iv), "ct": B64.encode(&ct3)}).to_string();
+        assert_eq!(handle_post(body3.as_bytes(), "s3cret", &app).err().map(|e| e.0), Some(400));
         // a flipped bit, another key, another iv: all refused
         let mut bad = ct.clone();
         bad[0] ^= 1;
@@ -365,7 +431,7 @@ mod tests {
         // the whole POST: secret, base64url fields, 25 words
         let body = serde_json::json!({"secret": "s3cret", "pk": B64.encode(page_pk), "iv": B64.encode(iv), "ct": B64.encode(&ct)}).to_string();
         let got = handle_post(body.as_bytes(), "s3cret", &app).unwrap();
-        assert_eq!((got.height, got.address.as_str(), got.seed.split(' ').count()), (42, "SM64x", 25));
+        assert_eq!((got.height, got.address.as_str(), got.seed.split(' ').count()), (42, ADDR, 25));
         assert_eq!(handle_post(body.as_bytes(), "other", &app).err().map(|e| e.0), Some(403));
         // a 24-word payload is not a seed
         let ct2 = seal_box(&app_pk, &page, &iv, br#"{"seed":"a b c"}"#);

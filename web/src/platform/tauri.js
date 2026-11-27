@@ -130,8 +130,9 @@ const link = {
   /** {state: idle | waiting | received | expired | cancelled | failed, address?, error?} */
   status: () => cmd('link_status'),
   cancel: () => cmd('link_cancel'),
-  /** Imports the received wallet under `name` with a password chosen in the app. */
-  async finish({ name, password, kdfRounds = 1 }) { const r = await cmd('link_finish', { name, password, kdfRounds }); if (r && r.error) throw new Error(r.error.message); return r.result || r; },
+  /** Imports the received wallet under `name` with a password chosen in the app. `address`: the received address the user
+   *  compared with the browser page (Rust also checks the restored wallet has it). */
+  async finish({ name, password, address, kdfRounds = 1 }) { const r = await cmd('link_finish', { name, password, address, kdfRounds }); if (r && r.error) throw new Error(r.error.message); return r.result || r; },
 };
 
 /** The desktop app: local node, native miner, ROM kept by the app. */

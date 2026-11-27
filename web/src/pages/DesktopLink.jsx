@@ -54,8 +54,8 @@ export default function DesktopLink() {
       )}
       {state === 'done' && (
         <>
-          <p>Sent. Go back to the app to finish: choose a name and a password for the wallet there.</p>
-          <p className="mono break">{address}</p>
+          <p>Sent. Go back to the app: it shows the address it received. Import it there only if it is this one:</p>
+          <p className="mono break"><b>{address}</b></p>
         </>
       )}
     </div>

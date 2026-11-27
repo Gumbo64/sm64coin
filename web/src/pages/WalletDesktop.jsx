@@ -353,6 +353,7 @@ function Passkey({ st, run, adopt, busy, back }) {
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [link, setLink] = useState(null); // {state, url}
+  const [got, setGot] = useState(''); // the address that arrived: the user compares it with the browser page before importing
   const nameOk = /^[A-Za-z0-9_-]{1,40}$/.test(name) && !st.wallets.includes(name);
   const ok = nameOk && pw.length >= 8 && pw === pw2;
   const waiting = link && link.state === 'waiting';
@@ -365,19 +366,32 @@ function Passkey({ st, run, adopt, busy, back }) {
       if (s.state === 'received') {
         clearInterval(t);
         setLink(null);
-        run('Restoring the passkey wallet (this scans the chain)', async () => { await p.link.finish({ name, password: pw }); setPw(''); setPw2(''); adopt(''); });
+        setGot(s.address || '');
       } else if (s.state !== 'waiting') { clearInterval(t); setLink({ state: s.state, error: s.error }); }
     }, 1500);
     return () => clearInterval(t);
   }, [waiting]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const start = () => run('Opening your browser', async () => setLink(await p.link.start(true)));
-  const cancel = async () => { await p.link.cancel().catch(() => {}); setLink(null); };
+  const cancel = async () => { await p.link.cancel().catch(() => {}); setLink(null); setGot(''); };
+  const finish = () => run('Restoring the passkey wallet (this scans the chain)', async () => {
+    await p.link.finish({ name, password: pw, address: got });
+    setPw(''); setPw2(''); setGot(''); adopt('');
+  });
   return (
     <div className="card">
       <h2>Use my website passkey</h2>
       <p className="muted">Your browser opens the SM64Coin site, where you use your passkey; the wallet is then handed to this app (encrypted, over 127.0.0.1) and kept here under the password you choose now. Needs the passkey you made on the website.</p>
-      {!waiting && (
+      {got && (
+        <>
+          <p>The app received this wallet:</p>
+          <p className="mono break"><b>{got}</b></p>
+          <p>Is it the address your browser page shows? Import it only if it is the same. If it is not, or the page said sending failed, press Cancel: something else on this computer answered first.</p>
+          <button disabled={busy} onClick={finish}>Same address: import it</button>{' '}
+          <button className="linkish" onClick={cancel}>Cancel</button>
+        </>
+      )}
+      {!waiting && !got && (
         <>
           <p><input placeholder="wallet name" value={name} onChange={(e) => setName(e.target.value)} /></p>
           <p><input type="password" placeholder="password for this app (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
