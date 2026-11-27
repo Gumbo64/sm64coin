@@ -12,6 +12,7 @@
 // The store is plain JS with injected dependencies (tip.test.mjs drives it with fakes); `tip` is the page's instance, wired to
 // rpc.js / lightnet.js / the platform lazily on first use.
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { e2eHook } from './e2e.js';
 
 export const POLL_MS = 30_000;
 /** Polls closer together than this are one (focus + visibility fire together). */
@@ -280,6 +281,7 @@ export function tipStore() {
       },
     ],
   });
+  e2eHook('__tip', page); // test hook, ?e2e only
   rpc().then((m) => m.onNodeChange && m.onNodeChange(() => page.reset())).catch(() => {});
   return page;
 }

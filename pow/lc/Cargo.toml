@@ -76,6 +76,10 @@ name = "client"
 required-features = ["relay"]
 
 [[example]]
+name = "tipsrv"
+required-features = ["relay"]
+
+[[example]]
 name = "checkpoint"
 required-features = ["http", "tls", "consensus"]
 
