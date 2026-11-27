@@ -36,7 +36,7 @@ Options (each also settable through the environment variable in brackets):
                        without --public-rpc binds it to 127.0.0.1 only (e.g. behind a tunnel/proxy)
   --rpc-bind-ip IP     bind the main RPC to this IP (with --confirm-external-bind; only if you know
                        what you are doing, the full RPC is not for the internet)    [RPC_BIND_IP]
-  --origins LIST       CORS origins for the RPC           [ORIGINS]   default https://gumbo64.github.io,https://sm64coin.pages.dev
+  --origins LIST       CORS origins for the RPC           [ORIGINS]   default https://gumbo64.github.io,https://sm64coin.pages.dev,http://tauri.localhost
   --log-file FILE      log file                           [LOG_FILE]  default <data dir>/sm64coind.log
   --solo               first node of a brand-new network: counts as synchronized without peers [SOLO=1]
   --no-leaderboard     turn the mining leaderboard off (no board messages handled, relayed or shared) [NO_LEADERBOARD=1]
@@ -59,7 +59,7 @@ ZMQ_PORT="${ZMQ_PORT:-16482}"
 PUBLIC_RPC="${PUBLIC_RPC:-0}"
 RESTRICTED_PORT="${RESTRICTED_PORT:-}"
 RPC_BIND_IP="${RPC_BIND_IP:-}"
-ORIGINS="${ORIGINS:-https://gumbo64.github.io,https://sm64coin.pages.dev}"
+ORIGINS="${ORIGINS:-https://gumbo64.github.io,https://sm64coin.pages.dev,http://tauri.localhost}"
 LOG_FILE="${LOG_FILE:-}"
 SOLO="${SOLO:-0}"
 NO_LEADERBOARD="${NO_LEADERBOARD:-0}"

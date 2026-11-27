@@ -33,7 +33,7 @@ sudo systemctl edit sm64coin-node
 ```
 ```
 [Service]
-Environment=ORIGINS=https://gumbo64.github.io,https://sm64coin.pages.dev
+Environment=ORIGINS=https://gumbo64.github.io,https://sm64coin.pages.dev,http://tauri.localhost
 ```
 ```
 sudo systemctl restart sm64coin-node
@@ -41,6 +41,8 @@ curl -si -X OPTIONS https://eboy.au/json_rpc -H 'Origin: https://sm64coin.pages.
 curl -si -X OPTIONS https://eboy.au/json_rpc -H 'Origin: https://gumbo64.github.io' -H 'Access-Control-Request-Method: POST' | grep -i access-control-allow-origin
 curl -si -X OPTIONS https://eboy.au/json_rpc -H 'Origin: https://evil.example' -H 'Access-Control-Request-Method: POST' | grep -ci access-control-allow-origin   # 0
 ```
+`http://tauri.localhost` is the Android app's webview (from v0.5.3): its wallet engine (WASM, in the webview) syncs from the public node directly, so without it in the list the app's Wallet page cannot reach the node (the app's other RPC goes through Rust and needs no CORS). Check it like the line above with `-H 'Origin: http://tauri.localhost'`.
+
 If the Pi uses a hand-written unit with `--rpc-access-control-origins` (`docs/raspberry-pi.md` shows `*`; the gateway must not use `*`), put the same list there. Never use `*` on the public gateway. When wallet traffic from the old origin is negligible (the Move panel needs no gateway), remove `https://gumbo64.github.io` from the list.
 
 ## 3. Cloudflare settings for the gateway zone (`eboy.au`)
