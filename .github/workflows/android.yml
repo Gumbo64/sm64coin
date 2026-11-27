@@ -10,6 +10,8 @@ on:
       version:
         type: string
         default: '0.0.0-test'
+  push:
+    branches: ['android']   # a push to the branch `android` builds the APK too (how it was tested before it was on main)
   workflow_dispatch:
     inputs:
       version:
@@ -21,7 +23,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  VERSION: ${{ inputs.version }}
+  VERSION: ${{ inputs.version || '0.5.1' }}
 
 jobs:
   wallet-engine:
