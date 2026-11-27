@@ -154,9 +154,11 @@ mod tests {
                 assert!(sm64coin_lc::nodes::parse_tip_spec(t.as_str().unwrap()).is_some(), "bad tip in bootstrap entry {n}");
             }
         }
-        // an entry's tip URL reaches the node list
+        // an entry's tip URL reaches the node list (an object entry, or the tips map the shipped file uses)
         let t = bootstrap_from(r#"{"nodes":[{"url":"https://eboy.au","tip":"https://eboy.au:16490/lc/tip"},"https://b.example"]}"#);
         assert_eq!((t[0].tip_url(), t[1].tip_url()), (Some("https://eboy.au:16490/lc/tip"), None));
+        assert!(raw["nodes"].as_array().unwrap().iter().all(|n| n.is_string()), "releases before 0.5.6 read nodes as strings only");
+        assert!(c.iter().any(|a| a.tip_url().is_some()), "the shipped tips map reaches the list");
     }
 
     #[test]

@@ -25,8 +25,9 @@ Non-goals
 ## Current state
 
 - `web/public/public-node.json` = `{"url": ..., "nodes": ["https://eboy.au", ...]}` (the old `url` key is still read; entries that are
-  not http(s) URLs are skipped). An entry may also be an object `{"url": "https://eboy.au", "tip": "https://eboy.au:16490/lc/tip"}`:
-  `tip` is where that node serves its tip stream when that is not `<url>/lc/tip` (see "Tip push"). The apps compile the same file in (`desktop/src-tauri/src/remote.rs`); the page cannot widen it.
+  not http(s) URLs are skipped). `"tips": {"https://eboy.au": "https://eboy.au:16490/lc/tip"}` says where a node serves its tip stream
+  when that is not `<url>/lc/tip` (see "Tip push"). 0.5.6+ also read an entry as an object `{"url": ..., "tip": ...}`, but the shipped
+  file keeps `nodes` plain strings: releases before 0.5.6 drop the whole list on an object entry. The apps compile the same file in (`desktop/src-tauri/src/remote.rs`); the page cannot widen it.
 - `pow/lc` (crate `sm64coin-lc`, its own workspace; the core builds for wasm32): `proto.rs` (requests, answers, limits), `nodes.rs` (the
   scored list), `exec.rs` (request -> the node's JSON-RPC / `.bin` call), `allowlist.rs`, `client.rs` (`Transport`, failover `Client`),
   `http.rs` (ureq `Upstream`, https with the `tls` feature), `block.rs` / `verify.rs` / `checkpoints.rs` / `consensus.rs` / `replay.rs`

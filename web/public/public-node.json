@@ -1,10 +1,8 @@
 {
   "url": "https://eboy.au",
-  "nodes": [
-    {
-      "url": "https://eboy.au",
-      "tip": "https://eboy.au:16490/lc/tip"
-    }
-  ],
-  "comment": "nodes: entries are https://host or {\"url\": \"https://host\", \"tip\": \"https://host:16490/lc/tip\"} (light-client nodes the site may use; the browser takes https only; tip = where the node serves its tip stream when that is not <url>/lc/tip: sm64coin-lc serve --tls-cert on its own HTTPS port). url is for clients older than the nodes list. The apps also learn more nodes from Monero's get_public_nodes."
+  "nodes": ["https://eboy.au"],
+  "tips": {
+    "https://eboy.au": "https://eboy.au:16490/lc/tip"
+  },
+  "comment": "nodes: https://host entries (light-client nodes the site may use; the browser takes https only). tips: node -> where it serves its tip stream when that is not <node>/lc/tip (sm64coin-lc serve --tls-cert on its own HTTPS port); 0.5.6+ also read {\"url\", \"tip\"} objects in nodes, but older releases need nodes to be strings. url is for clients older than the nodes list. The apps also learn more nodes from Monero's get_public_nodes."
 }

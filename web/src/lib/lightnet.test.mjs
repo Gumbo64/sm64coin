@@ -18,6 +18,19 @@ assert.equal(bootstrapTip(withTip, 'https://eboy.au'), 'https://eboy.au:16490/lc
 assert.equal(bootstrapTip(withTip, 'https://eboy.au/'), 'https://eboy.au:16490/lc/tip');
 for (const n of ['https://b.example', 'https://c.example', 'https://d.example', 'https://other.example', '']) assert.equal(bootstrapTip(withTip, n), '', n);
 assert.equal(bootstrapTip(null, 'https://eboy.au'), '');
+// the tips map (what the shipped file uses), and the shipped file itself: nodes stay strings, because releases before 0.5.6 read
+// only strings there (their WASM dropped the whole list on an object entry)
+const withMap = { nodes: ['https://eboy.au', 'https://b.example'], tips: { 'https://eboy.au/': 'https://eboy.au:16490/lc/tip', 'https://b.example': 'javascript:x' } };
+assert.equal(bootstrapTip(withMap, 'https://eboy.au'), 'https://eboy.au:16490/lc/tip');
+assert.equal(bootstrapTip(withMap, 'https://b.example'), '');
+assert.equal(bootstrapTip({ tips: 'nope' }, 'https://eboy.au'), '');
+{
+  const { readFileSync } = await import('node:fs');
+  const shipped = JSON.parse(readFileSync(new URL('../../public/public-node.json', import.meta.url), 'utf8'));
+  assert.ok(Array.isArray(shipped.nodes) && shipped.nodes.length > 0 && shipped.nodes.every((n) => typeof n === 'string'), 'shipped nodes are strings');
+  assert.equal(typeof shipped.url, 'string');
+  assert.equal(bootstrapTip(shipped, firstHttpNode(shipped)), 'https://eboy.au:16490/lc/tip');
+}
 
 // --- a fake wasm module
 function fakeModule({ rpc, submit, allow = (m) => m !== 'stop_daemon', createFails = false } = {}) {

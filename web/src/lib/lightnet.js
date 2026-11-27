@@ -28,14 +28,22 @@ const rawEntries = (json) => {
 export function bootstrapEntries(json) {
   return rawEntries(json).map((e) => String(e && typeof e === 'object' ? e.url || '' : e || '').trim()).filter((s) => NODE_RE.test(s));
 }
-/** Where a node serves its tip stream when that is not `<node>/lc/tip`: the `tip` of its public-node.json entry ('' for none). */
+/** Where a node serves its tip stream when that is not `<node>/lc/tip` ('' for none): the `tip` of its public-node.json entry, or
+ *  its URL in the `tips` map (`{"tips": {"https://host": "https://host:16490/lc/tip"}}`, what the shipped file uses: releases
+ *  before 0.5.6 read `nodes` as strings only). */
 export function bootstrapTip(json, node) {
   const want = String(node || '').replace(/\/+$/, '');
+  if (!NODE_RE.test(want)) return '';
   for (const e of rawEntries(json)) {
     if (!e || typeof e !== 'object') continue;
     const url = String(e.url || '').trim().replace(/\/+$/, '');
     const tip = String(e.tip || '').trim();
-    if (url === want && NODE_RE.test(url) && NODE_RE.test(tip)) return tip;
+    if (url === want && NODE_RE.test(tip)) return tip;
+  }
+  const tips = json && typeof json === 'object' && json.tips && typeof json.tips === 'object' ? json.tips : {};
+  for (const [k, v] of Object.entries(tips)) {
+    const tip = String(v || '').trim();
+    if (String(k).trim().replace(/\/+$/, '') === want && NODE_RE.test(tip)) return tip;
   }
   return '';
 }

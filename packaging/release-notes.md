@@ -27,9 +27,10 @@ Same chain as 0.5.0 to 0.5.5: no reset, upgrade in place.
   (`GET /lc/tip`) as HTTPS straight to the public (default `[::]:16490`), so a node without a reverse proxy (a Raspberry
   Pi behind a router forward) pushes new blocks to browsers and apps again. The certificate files (certbot's) are reloaded
   when they change (and on SIGHUP): a renewal needs no restart. Per-IP caps count the real client address.
-- **`tip` in the bootstrap list**: an entry of `public-node.json` may be `{"url": "https://eboy.au", "tip":
-  "https://eboy.au:16490/lc/tip"}`. The website and the apps open the stream there; a node without `tip` keeps the
-  `<node>/lc/tip` attempt behind its reverse proxy. An unreachable tip address means polling, never a strike against the node.
+- **`tips` in the bootstrap list**: `public-node.json` may say where a node's stream is, `"tips": {"https://eboy.au":
+  "https://eboy.au:16490/lc/tip"}` (its `nodes` stay plain strings, which older releases need). The website and the apps
+  open the stream there; a node without one keeps the `<node>/lc/tip` attempt behind its reverse proxy. An unreachable tip
+  address means polling, never a strike against the node.
 - **Wallet: optional PIN / fingerprint unlock** (off unless you turn it on from the wallet page: "Set up PIN", on Android "Set up
   PIN / fingerprint"; nothing asks for it when a wallet is created or restored, and the one-click wallet is unchanged).
   - **Android**: the phone's fingerprint (or its screen lock PIN/pattern, Android 11+) unlocks the wallet. A hardware-backed

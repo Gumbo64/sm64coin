@@ -14,13 +14,14 @@
 # TLS directly, no proxy (a node whose router forwards TCP 16490 to it): the service reads a PEM certificate and key, listens on
 # [::]:16490 (dual stack; add --sse-bind ADDR to choose) and reloads the files when they change (checked every 5 min and on
 # SIGHUP), so a certbot renewal needs no restart. Use the copy the node's certbot deploy hook keeps for the node's own RPC TLS
-# (owned by sm64coin, mode 600: the service user reads it), and advertise the address in public-node.json (`"tip"`):
+# (owned by sm64coin, mode 600: the service user reads it), and advertise the address in public-node.json (`"tips"`):
 #   sudo systemctl edit sm64coin-lc   ->
 #     [Service]
 #     ExecStart=
 #     ExecStart=/opt/sm64coin/sm64coin-lc serve --node-rpc http://127.0.0.1:16489 --tls-cert /var/lib/sm64coin/tls/fullchain.pem --tls-key /var/lib/sm64coin/tls/privkey.pem
 #   (ProtectSystem=full leaves /var/lib/sm64coin readable; --tls-check-secs N changes the file check interval.)
-#   {"url": "https://node.example.org", "tip": "https://node.example.org:16490/lc/tip"}
+#   "tips": {"https://node.example.org": "https://node.example.org:16490/lc/tip"}   (keep "nodes" entries plain strings: releases
+#   before 0.5.6 read nothing else)
 # Logs: journalctl -u sm64coin-lc -f
 # Settings: `sudo systemctl edit sm64coin-lc` and override ExecStart= (an empty ExecStart= line first); `--sse-bind ADDR` moves the
 # listener, `--sse-trust-forwarded` reads the client IP from X-Forwarded-For (a loopback bind does that already).

@@ -294,13 +294,18 @@ impl NodeList {
 /// The bootstrap list shipped with a release: `{"nodes": [..]}` or the old `{"url": ".."}`. An entry is a URL string or an
 /// object `{"url": "https://host", "tip": "https://host:16490/lc/tip"}` (`tip`: where the node serves its tip stream, optional);
 /// entries that are not https/http URLs (such as an old `iroh:` entry) are skipped, and so is a `tip` that is not one.
+/// `{"tips": {"https://host": "https://host:16490/lc/tip"}}` gives the same per node URL; it is what the shipped file uses,
+/// because releases before 0.5.6 read `nodes` as strings only (an object entry made them drop the whole list).
 pub fn parse_bootstrap(json: &str) -> Result<Vec<NodeAddr>, serde_json::Error> {
     #[derive(Deserialize)]
     struct B {
         nodes: Option<Vec<serde_json::Value>>,
         url: Option<serde_json::Value>,
+        tips: Option<serde_json::Map<String, serde_json::Value>>,
     }
     let b: B = serde_json::from_str(json)?;
+    let tips = b.tips.unwrap_or_default();
+    let tip_of = |url: &str| tips.iter().find(|(k, _)| k.trim().trim_end_matches('/') == url).and_then(|(_, t)| t.as_str()).and_then(parse_tip_spec);
     let mut v = b.nodes.unwrap_or_default();
     v.extend(b.url);
     Ok(v.into_iter()
@@ -313,6 +318,13 @@ pub fn parse_bootstrap(json: &str) -> Result<Vec<NodeAddr>, serde_json::Error> {
                 Some(a)
             }
             _ => None,
+        })
+        .map(|mut a| {
+            let NodeAddr::Http { url, tip } = &mut a;
+            if tip.is_none() {
+                *tip = tip_of(url);
+            }
+            a
         })
         .collect())
 }
@@ -508,6 +520,18 @@ mod tests {
                 ("http:https://eboy.au".to_string(), None),
             ]
         );
+        // the `tips` map (what the shipped file uses: older releases read `nodes` as strings only)
+        let m = parse_bootstrap(r#"{"url":"https://eboy.au","nodes":["https://eboy.au","https://b.example"],"tips":{"https://eboy.au/":"https://eboy.au:16490/lc/tip","https://b.example":"ftp://no"}}"#).unwrap();
+        assert_eq!(m.iter().map(|a| a.tip_url()).collect::<Vec<_>>(), [Some("https://eboy.au:16490/lc/tip"), None, Some("https://eboy.au:16490/lc/tip")]);
+        // what a release before 0.5.6 parses the shipped file with: `nodes` as strings (it must keep working there)
+        #[derive(Deserialize)]
+        struct Old {
+            nodes: Option<Vec<String>>,
+            url: Option<String>,
+        }
+        let shipped = include_str!("../../../web/public/public-node.json");
+        let old: Old = serde_json::from_str(shipped).expect("the shipped public-node.json parses for releases before 0.5.6");
+        assert!(old.nodes.is_some_and(|n| !n.is_empty()) && old.url.is_some());
         // a record saved before the field existed loads, and the tip survives a save
         let old = r#"{"records":[{"addr":{"Http":{"url":"https://a.example"}},"source":"Bootstrap","first_seen":1,"last_ok":0,"ewma_latency_ms":0.0,"ok_rate":0.5,"height":0,"strikes":0,"banned_until":0,"tls":null}]}"#;
         assert_eq!(NodeList::from_json(old).unwrap().len(), 1);
