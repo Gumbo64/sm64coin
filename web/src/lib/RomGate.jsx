@@ -39,7 +39,7 @@ function DesktopRom({ rom, quiet, onReady }) {
       if (r && r.found) feed();
     } catch (e) { setState({ phase: 'need', error: e.message }); }
   };
-  if (state.phase === 'need' && quiet && !state.error) return null; // the fallback (Native miner card) already asks for the ROM
+  if (state.phase === 'need' && quiet && !state.error) return null; // the fallback (Auto-mine card) already asks for the ROM
   if (state.phase !== 'need') return <div className="card romgate"><p>{state.phase === 'loading' ? 'Loading the game...' : 'Looking for your ROM...'}</p></div>;
   return (
     <div className="card romgate">

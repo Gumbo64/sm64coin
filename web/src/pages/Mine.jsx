@@ -19,7 +19,7 @@ import { Toolbar, ToolBtn, Cols, Row, SideCard, Panel, InfoPop, useStored } from
 import RomGate from '../lib/RomGate.jsx';
 import MineGate from '../lib/MineGate.jsx';
 import { AddrLabel, NoWallet } from '../lib/AddrLabel.jsx';
-import NativeMiner from './automine/NativeMiner.jsx';
+import NativeControls from './automine/NativeControls.jsx';
 import { getPlatform } from '../platform/index.js';
 import { miner, hybrid, isAddress } from '../lib/webminer/controller.js';
 import { useMiner } from '../lib/webminer/useMiner.js';
@@ -47,8 +47,8 @@ import { e2e, e2eHook } from '../lib/e2e.js';
 // the reward address comes from the wallet app's "Play to mine" link
 // (?address=), or is pasted (and remembered).
 export default function Mine() {
-  // Desktop app: the native miner needs no browser copy of the ROM, so its card shows above the ROM prompt.
-  return <MineGate><RomGate fallback={getPlatform().nativeMiner && getPlatform().rom ? <><NoWalletNow /><NativeMiner /></> : null}><Miner /></RomGate></MineGate>;
+  // Desktop app: the native miner needs no browser copy of the ROM, so the Auto-mine card shows in place of the ROM prompt.
+  return <MineGate><RomGate fallback={getPlatform().nativeMiner && getPlatform().rom ? <><NoWalletNow /><NativeControls /></> : null}><Miner /></RomGate></MineGate>;
 }
 
 // The auto-miner's views, loaded only when they are needed (three.js, the visual game's reel, the charts).
@@ -588,15 +588,11 @@ function Miner() {
                 <CloudView hub={hub} onPlay={reelPlay} onPlayFrom={playFrom} onGoal={(g) => miner.setGoal(g)} goalShare={miner.goalShare} onGoalShare={(x) => miner.setGoalShare(x)} canPlayFrom={canPlayFrom} whyNot={hybridWhy} />
               </React.Suspense>
             )}
+            <ControlCard s={s} />
           </>
         )}
         side={(
           <>
-            {getPlatform().nativeMiner && <NativeMiner />}
-            {getPlatform().mobile ? (
-              // The Android app: the web auto-miner (many WASM workers) is not offered there; the Native miner card above is its auto-miner.
-              <SideCard className="first" title="Auto-mine"><p className="muted small" data-testid="automine-mobile">The web auto-miner is not in the Android app: use the Native miner above (preview), or play to mine here.</p></SideCard>
-            ) : <ControlCard s={s} />}
             {showAuto ? (
               <React.Suspense fallback={null}><VizTop hub={hub} mode={s.mode} /></React.Suspense>
             ) : (

@@ -151,7 +151,7 @@ class MinerController {
     const fps = this.fps();
     const rate = fps > 0 ? `, ${fmtRate(fps)} fr/s` : '';
     if (this.flash && this.flash.until > t) return this.flash.kind === 'accepted' ? { kind: 'accepted', label: '★ block!', title: 'Block accepted' } : { kind: 'error', label: 'rejected', title: 'The block was rejected' };
-    if (this.native && !this.running) return { kind: 'mining', label: this.native.fps > 0 ? `${fmtRate(this.native.fps)} fr/s` : 'native', title: 'Native miner mining' };
+    if (this.native && !this.running) return { kind: 'mining', label: this.native.fps > 0 ? `${fmtRate(this.native.fps)} fr/s` : 'mining', title: 'Auto-mining on this device' };
     if (!this.running) return { kind: 'idle', label: 'off', title: 'Auto-miner off (click to open the Auto-mine page)' };
     if (this.error && this.error.until > t) return { kind: 'error', label: 'error', title: `Auto-miner error: ${this.error.text}` };
     if (this.phase === 'found') return { kind: 'found', label: 'run found', title: 'A run was found: sealing it' };
@@ -284,15 +284,15 @@ class MinerController {
       const { NativeFeed } = await import('./nativeFeed.js');
       const f = new NativeFeed(this, nm);
       this.native = f;
-      this.workers = [{ salt: 0, line: 'native miner', runs: 0, fails: 0, start: 'parent' }];
+      this.workers = [{ salt: 0, line: 'running natively', runs: 0, fails: 0, start: 'parent' }];
       this.phase = 'mining';
       this.hub.setEnabled(this.vizOn);
       f.start();
       this.emit(true);
     } finally { this.nativeBusy = false; }
   }
-  /** The Stop button while the native miner drives the views. */
-  stopNative() { if (this.native) this.native.nm.stop().catch((e) => this.say(`stopping the native miner failed: ${e.message || e}`)); }
+  /** The Stop button while the app's miner drives the views. */
+  stopNative() { if (this.native) this.native.nm.stop().catch((e) => this.say(`stopping the miner failed: ${e.message || e}`)); }
   nativeStopped(f) {
     if (this.native !== f) return;
     this.native = null;
@@ -302,11 +302,11 @@ class MinerController {
     this.emit(true);
   }
   /** A new template of the native miner's round (the stats and the worker row). */
-  nativeRound(t) { this.stats = { ...this.stats, rounds: this.stats.rounds + 1 }; this.say(`native miner: block ${t.height}`); }
+  nativeRound(t) { this.stats = { ...this.stats, rounds: this.stats.rounds + 1 }; this.say(`block ${t.height}`); }
   nativeLine(line) { if (this.workers[0]) { this.workers = [{ ...this.workers[0], line }]; this.emit(); } }
 
   start() {
-    if (this.native) { this.say('the native miner is running: stop it first'); return; }
+    if (this.native) { this.say('auto-mining is running: stop it first'); return; }
     if (!isAddress(this.address)) { this.say('enter your SM64… address first'); return; }
     this.stop();
     mark('start-pressed');

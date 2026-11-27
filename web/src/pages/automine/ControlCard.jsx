@@ -3,11 +3,14 @@ import { miner, isAddress, isolated, fmtRate } from '../../lib/webminer/controll
 import { syncStatus, enableSync, disableSync, takeReloadNote } from '../../lib/webminer/sync.js';
 import { AddrLabel } from '../../lib/AddrLabel.jsx';
 import { SideCard, GearBtn, useStored } from '../../components/ui.jsx';
+import { getPlatform } from '../../platform/index.js';
+import NativeControls from './NativeControls.jsx';
 
 
-// The Auto-mine card of the sidebar (like the Mine page's reset-cycle card): the big Start/Stop, the speed, the
-// counts, the reward address, and under the ⚙ the worker count, the reset policy, worker sync and the master
-// switch of the visualisations.
+// The Auto-mine card, under the search cloud: the big Start/Stop, the speed, the counts, the reward address, and under the ⚙
+// the worker count, the reset policy, worker sync and the master switch of the visualisations. One card on every platform: in
+// the apps (platform.nativeMiner) it drives the native miner (NativeControls.jsx, same controls and wording), in the browser
+// the web-worker miner (below).
 // Worker sync's state and why, re-read when it may have changed; after a reload that came from the switch, the scroll position comes back.
 function useSync() {
   const [st, setSt] = useState({ on: isolated, state: isolated ? 'on' : 'off', why: '' });
@@ -25,13 +28,18 @@ function useSync() {
 }
 
 export default function ControlCard({ s }) {
+  return getPlatform().nativeMiner ? <NativeControls /> : <WebControls s={s} />;
+}
+
+function WebControls({ s }) {
   const { address, walletAddress, count, running, workers, stats, mode, vizOn, fps } = s;
   const [open, setOpen] = useStored('sm64coin.autoCardOpen', false);
   const [editing, setEditing] = useState(false);
   const n = workers.length || count;
   const [sync, recheck] = useSync();
   return (
-    <SideCard className="first" title="Auto-mine" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
+    <SideCard title="Auto-mine" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
+      <p className="muted small" data-testid="automine-where">Runs in your browser (web workers)</p>
       {open && (
         <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
           <label htmlFor="am-workers">Workers</label>

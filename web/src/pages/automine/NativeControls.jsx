@@ -5,9 +5,10 @@ import { useMiner } from '../../lib/webminer/useMiner.js';
 import { AddrLabel } from '../../lib/AddrLabel.jsx';
 import { SideCard, GearBtn, Toolbar, ToolBtn, Row, useStored } from '../../components/ui.jsx';
 
-// Apps only (platform.nativeMiner): on desktop the native sm64coin-automine against the app's own node (also shows the local
-// node and, until the ROM is found, asks for its path); on Android (platform.mobile) the miner library inside the app, against
-// the public node, with the page's own ROM, and only while the app is in the foreground.
+// The Auto-mine card's body in the apps (platform.nativeMiner), the same card and wording as the browser's (ControlCard.jsx):
+// on desktop the native sm64coin-automine against the app's own node (also shows the local node and, until the ROM is found,
+// asks for its path); on Android (platform.mobile) the miner library inside the app, against the public node, with the page's
+// own ROM, and only while the app is in the foreground.
 const KEEP = 200;
 // What this webview supports (the WASM workers want SharedArrayBuffer, the game WebGL). Probed once, and the probe's context
 // is released at once: a context per render piled up until the browser dropped the oldest live one (the 3D cloud went black).
@@ -33,11 +34,11 @@ function usePolled(fn, ms) {
   return [v, refresh];
 }
 
-export default function NativeMiner() {
+export default function NativeControls() {
   const p = getPlatform();
-  const { address, walletAddress } = useMiner();
+  const { address, walletAddress, vizOn } = useMiner();
   const [editAddr, setEditAddr] = useState(false);
-  const [open, setOpen] = useStored('sm64coin.nativeCardOpen', false);
+  const [open, setOpen] = useStored('sm64coin.autoCardOpen', false);
   const mobile = !!p.mobile;
   // Desktop: 0 = all cores but one. Android: min(4, cores - 1) (a phone throttles and drains fast with more).
   const defThreads = mobile ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 0;
@@ -64,16 +65,21 @@ export default function NativeMiner() {
   const romOk = host && host.rom ? host.rom.found : true; // Android: the page's ROM gate has already passed
   const nodeUp = mobile ? true : !!(node && node.answering); // Android: the public node
   const th = Number(threads) || undefined;
-  // While the native miner runs, its search drives the page's visualisations (lib/webminer/nativeFeed.js).
+  // While it runs, its search drives the page's visualisations (lib/webminer/nativeFeed.js).
   useEffect(() => { if (running) miner.attachNative(p.nativeMiner); }, [running, p]);
   // Android: mining only while the app is in the foreground; platform/tauri.js stops it on hide, on any page.
 
   return (
-    <SideCard title={mobile ? 'Native miner (preview)' : 'Native miner'} tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
+    <SideCard title="Auto-mine" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
+      <p className="muted small" data-testid="automine-where">Runs natively on this device</p>
       {open && (
         <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
           <label htmlFor="nm-threads">Threads</label>
           <div className="ctl"><input id="nm-threads" type="number" min="0" max="256" value={threads} onChange={(e) => setThreads(e.target.value)} disabled={running} /> <span className="muted">{running ? 'stop to change' : mobile ? 'default: cores - 1, at most 4' : '0 = all cores but one'}</span></div>
+          <span className="lab">Visualisations</span>
+          <div className="ctl">
+            <label className="vizswitch" title="The live game, 3D search cloud and charts. Off: nothing is drawn (max speed)."><input type="checkbox" checked={vizOn} onChange={(e) => miner.setVizOn(e.target.checked)} /> on (off = maximum speed)</label>
+          </div>
           <span className="lab">Webview</span><div className="ctl"><span className="mono small" data-testid="webview-caps">{webviewCaps()}</span></div>
           {host && (<><span className="lab">Data</span><div className="ctl"><span className="mono small">{host.data_dir}</span></div></>)}
         </form>
@@ -86,10 +92,13 @@ export default function NativeMiner() {
           </Toolbar>
         </div>
       )}
-      {mobile && <p className="muted small" data-testid="native-battery">Uses a lot of battery and warms the phone: best while charging. It mines only while the app is open on screen, and stops when you leave it.</p>}
+      {mobile && <p className="muted small" data-testid="automine-battery">Uses a lot of battery and warms the phone: best while charging. Mines only while the app is open, and stops when you leave it.</p>}
+      {running
+        ? <button className="ui-big" disabled={busy} onClick={() => run(() => p.nativeMiner.stop())}>Stop auto-mining</button>
+        : <button className="ui-big" disabled={busy || !isAddress(address || '') || !nodeUp} title={nodeUp ? '' : 'the local node must be running'} onClick={() => run(async () => { setLines([]); await p.nativeMiner.start({ address, threads: th, viz: miner.vizOn }); })}>Start auto-mining</button>}
       <div className="ui-stat">
         <span><b>{running && m.fps > 0 ? `${fmtRate(m.fps)} frames/s` : '—'}</b></span>
-        <span>{running ? `${m.threads} thread${m.threads === 1 ? '' : 's'} · ${m.accepted} block${m.accepted === 1 ? '' : 's'}` : 'native miner stopped'}</span>
+        <span>{running ? `${m.threads} thread${m.threads === 1 ? '' : 's'} · ${m.accepted} block${m.accepted === 1 ? '' : 's'}` : 'stopped'}</span>
       </div>
       <dl className="kv">
         <dt>{mobile ? 'Node' : 'Local node'}</dt>
@@ -97,22 +106,26 @@ export default function NativeMiner() {
           {mobile ? 'the public node' : nodeUp ? `block ${node.height}${node.synchronized ? '' : ` of ${node.target_height || '?'}`} · ${node.peers} peer${node.peers === 1 ? '' : 's'}${node.synchronized ? '' : ' · syncing'}`
             : node && node.starting ? 'starting…' : node && node.running ? 'loading the chain…' : node && node.error ? <span className="error">{node.error.split('\n')[0]}</span> : 'not running'}
         </dd>
-        <dt>Paying</dt><dd><AddrLabel address={address} wallet={walletAddress} /></dd>
       </dl>
-      {!running && isAddress(address || '') && address === walletAddress && !editAddr && <button className="linkish" onClick={() => setEditAddr(true)}>✎ change address</button>}
-      {!running && (editAddr || !(isAddress(address || '') && address === walletAddress)) && (
-        <input className="mono wide" style={{ width: '100%' }} value={address || ''} onChange={(e) => miner.setAddress(e.target.value.trim())} placeholder="SM64… (paste your address)" title="Reward address" />
+      <div className="ui-addr">
+        Mining for <span className="paysto"><AddrLabel address={address} wallet={walletAddress} /></span>{' '}
+        <button className="linkish" title="Change the reward address" disabled={running} onClick={() => setEditAddr((e) => !e)}>✎ change</button>
+      </div>
+      {(editAddr || !isAddress(address || '')) && !running && (
+        <div className="addrpop">
+          <input className="mono wide" style={{ width: '100%' }} value={address || ''} onChange={(e) => miner.setAddress(e.target.value.trim())} placeholder="SM64… (paste your address)" />
+          {!isAddress(address || '') && <p className="muted small">Paste your address (in the SM64Coin wallet: Receive).</p>}
+        </div>
       )}
-      <Toolbar label="Native miner">
-        {running
-          ? <ToolBtn disabled={busy} onClick={() => run(() => p.nativeMiner.stop())}>Stop native miner</ToolBtn>
-          : <ToolBtn disabled={busy || !isAddress(address || '') || !nodeUp} title={nodeUp ? '' : 'the local node must be running'} onClick={() => run(async () => { setLines([]); await p.nativeMiner.start({ address, threads: th, viz: miner.vizOn }); })}>Start native miner</ToolBtn>}
-        {p.node && node && !node.running && !node.starting && romOk && <ToolBtn disabled={busy} onClick={() => run(() => p.node.start())}>Start node</ToolBtn>}
-        {p.node && node && node.running && !running && <ToolBtn disabled={busy} onClick={() => run(() => p.node.stop())}>Stop node</ToolBtn>}
-      </Toolbar>
+      {p.node && node && ((!node.running && !node.starting && romOk) || (node.running && !running)) && (
+        <Toolbar label="Local node">
+          {!node.running && !node.starting && romOk && <ToolBtn disabled={busy} onClick={() => run(() => p.node.start())}>Start node</ToolBtn>}
+          {node.running && !running && <ToolBtn disabled={busy} onClick={() => run(() => p.node.stop())}>Stop node</ToolBtn>}
+        </Toolbar>
+      )}
       {err && <p className="error small">{err}</p>}
       {m && m.exit_code != null && !running && <p className="muted small">The miner exited (code {m.exit_code}).</p>}
-      <Row title="Native log" storeKey="native-log"><pre className="log small" data-testid="native-log">{lines.join('\n') || 'Nothing yet.'}</pre></Row>
+      <Row title="Miner log" storeKey="native-log"><pre className="log small" data-testid="native-log">{lines.join('\n') || 'Nothing yet.'}</pre></Row>
     </SideCard>
   );
 }
