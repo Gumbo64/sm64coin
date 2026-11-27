@@ -634,6 +634,15 @@ jobs:
             desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
+  # The Android APK (arm64, signed with the release key; see android.yml). Optional like the desktop installers: publish
+  # takes it when it was built. The workflow can also be run by hand to test the APK without a release.
+  android:
+    name: Android APK
+    uses: ./.github/workflows/android.yml
+    secrets: inherit
+    with:
+      version: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version || '0.0.0-test' }}
+
   publish:
     name: Publish release
     # The draft is made whenever Linux built, with whatever bundles exist: one platform without
@@ -641,7 +650,7 @@ jobs:
     # The desktop installers are optional: publish waits for that job but runs whatever its result (always()), and its
     # download step below is continue-on-error, so the node/wallet bundles are published without them if it failed.
     if: ${{ always() && github.ref_type == 'tag' && needs.build-linux.result == 'success' }}
-    needs: [build-linux, build-windows, build-macos, desktop]
+    needs: [build-linux, build-windows, build-macos, desktop, android]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -654,6 +663,12 @@ jobs:
           pattern: desktop-*
           path: assets
           merge-multiple: true
+      - name: Android APK (if it was built)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: assets
       - uses: actions/download-artifact@v4
         with:
           pattern: bundle-*
@@ -663,7 +678,7 @@ jobs:
         run: cd assets && sha256sum $(ls sm64coin-* SM64Coin_* 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
       - name: Release notes
         env:
-          MISSING: ${{ needs.build-windows.result != 'success' && 'Windows ' || '' }}${{ needs.build-macos.result != 'success' && 'macOS ' || '' }}${{ needs.desktop.result != 'success' && '(some) desktop app installers' || '' }}
+          MISSING: ${{ needs.build-windows.result != 'success' && 'Windows ' || '' }}${{ needs.build-macos.result != 'success' && 'macOS ' || '' }}${{ needs.desktop.result != 'success' && '(some) desktop app installers ' || '' }}${{ needs.android.result != 'success' && 'Android APK' || '' }}
         run: |
           sed "s/@TAG@/${GITHUB_REF_NAME}/g; s/@VERSION@/${GITHUB_REF_NAME#v}/g" packaging/release-notes.md > notes.md
           if [ -n "$MISSING" ]; then printf '\n**Not built this time:** %s (no runner or a failed build; re-run the failed jobs to add it).\n' "$MISSING" >> notes.md; fi

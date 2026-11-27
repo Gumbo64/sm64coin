@@ -1,0 +1,122 @@
+# The Android APK (Tauri 2, desktop/src-tauri/gen/android): arm64-v8a, release, signed with the SM64Coin release key.
+# Called by release.yml (job `android`, which publishes the artifact `android-apk` with the release) and runnable by hand
+# ("Run workflow" on any branch) to test the build before a tag. Needs the repo secrets ANDROID_KEYSTORE_BASE64 (the .jks,
+# base64) and ANDROID_KEYSTORE_PASSWORD; the job fails if the signing certificate is not the expected one.
+name: Android APK
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: '0.0.0-test'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version of the app (x.y.z; versionCode = major*1000000 + minor*1000 + patch)'
+        default: '0.5.1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  wallet-engine:
+    uses: ./.github/workflows/wallet-engine.yml
+
+  apk:
+    name: APK (arm64-v8a)
+    needs: wallet-engine
+    if: ${{ !cancelled() }}   # the app is built even when the wallet engine failed to build (its Wallet page says so)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fetch the replay player and its dependencies (sibling checkouts)
+        run: scripts/ci-prepare.sh --web
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow/perturb-wasm
+            pow/webminer
+            desktop/src-tauri
+          key: android
+      - name: Toolchain for the web miner (clang, llvm, private repo access)
+        continue-on-error: true
+        env:
+          SM64_AI_BINDS_TOKEN: ${{ secrets.SM64_AI_BINDS_TOKEN }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm
+          if [ -n "$SM64_AI_BINDS_TOKEN" ]; then
+            git config --global url."https://x-access-token:${SM64_AI_BINDS_TOKEN}@github.com/Gumbo64/".insteadOf "https://github.com/Gumbo64/"
+          fi
+      - name: Browser WASM modules (perturbation, web miner)
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          REQUIRE_WEBMINER: "1"
+        run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - name: Wallet engine (wasm); the app's wallet is the website's
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wallet-engine
+          path: web/public/wallet
+      - run: npm ci
+        working-directory: web
+      - run: npx vite build --mode desktop
+        working-directory: web
+        env:
+          VITE_SM64COIN_VERSION: ${{ env.VERSION }}
+          VITE_GIT_SHA: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Android SDK pieces (platform, build tools, NDK)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;36.0.0" "ndk;27.0.12077973" >/dev/null
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+      - name: "App version (x.y.z)"
+        run: |
+          v="${VERSION#v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || v=0.0.1   # a dry run's label: any valid version
+          echo "APP_VERSION=$v" >> "$GITHUB_ENV"
+      - name: Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.6
+      - name: Build the release APK (unsigned)
+        working-directory: desktop/src-tauri
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false
+        run: tauri android build --apk --target aarch64 --ci --config "{\"version\":\"$APP_VERSION\"}"
+      - name: Sign, verify, check the certificate
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          [ -n "$ANDROID_KEYSTORE_BASE64" ] || { echo "secret ANDROID_KEYSTORE_BASE64 is not set" >&2; exit 1; }
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks"   # pasted from a phone: strip any whitespace
+          export ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
+          unsigned="$(ls desktop/src-tauri/gen/android/app/build/outputs/apk/*/release/*unsigned.apk | head -1)"
+          mkdir -p out
+          desktop/android-sign.sh "$unsigned" "out/sm64coin-${APP_VERSION}-android.apk"
+          rm -f "$RUNNER_TEMP/release.jks"
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: out/sm64coin-*-android.apk
+          if-no-files-found: error
