@@ -19,6 +19,19 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.4: native mining on Android (preview)
+
+Same chain as 0.5.0 to 0.5.3: no reset, upgrade in place.
+
+- **Android app: native mining** (preview). The Mine page has a **Native miner** card: the miner runs inside the app
+  (the same search the desktop miner uses), mines against the public node with the ROM you already loaded in the app,
+  and feeds the page's visualisations. It is off until you start it; threads default to cores - 1, at most 4. It uses a
+  lot of battery and warms the phone, so use it while charging. It mines only while the app is open on screen and stops
+  when you leave it (no background service yet). Not yet tested on real phones: please report how it runs.
+- **One mining loop on desktop**: the miner is now a library; `sm64coin-automine` is a thin command line over it and the
+  search steps run as threads of one process (`--process` keeps the old one-process-per-step mode).
+- **Removed**: the experimental route/beam controllers and the tracker (they were not used by the miner).
+
 ### 0.5.3: the SM64Coin Android app (preview)
 
 Same chain as 0.5.0 to 0.5.2: no reset, upgrade in place.

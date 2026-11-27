@@ -61,7 +61,7 @@ node directly (node CORS origins include `tauri://localhost`).
   `tauri.conf.json`: major*1000000 + minor*1000 + patch (0.5.1 = 5001), monotone while minor/patch stay below 1000. The release APK
   is unsigned from Tauri; `desktop/android-sign.sh` zipaligns, signs it with the release key and refuses any other certificate.
   CI: `.github/workflows/android.yml` (also runnable by hand), called by `release.yml`, which publishes `sm64coin-<version>-android.apk`.
-  The native miner is not on Android (no automine sidecar model); the website's WASM miner and wallet are what runs there.
+  The native miner on Android is the `sm64coin-miner` library in the app's process (below); the website's WASM wallet runs there too, the WASM auto-miner does not.
 - **Wallet** (`wallet.rs`, `pages/WalletDesktop.jsx`): the design above, as built. The sidecar gets its login through a 0600
   config file that is deleted once it answers (it is not in `ps`), speaks HTTP digest to Rust only, and the wallet dir is 0700.
   `wallet_rpc` whitelists methods; `_password` and `_kdf_rounds` are private params consumed in Rust. Password rules are
@@ -89,27 +89,29 @@ routes/); `src-tauri/bundle/<os>.json` is passed with `tauri build --config` (ke
 `Contents/Resources` (macOS); `Dirs::res` finds them. Unsigned. TODO: Windows signing, macOS Developer ID + notarization, updater
 plugin + keys, Linux aarch64/.rpm, Windows DLL placement (`stage/dll/*` -> `./`) is untested.
 
-## Native miner without a child process (for the Android app)
+## Native miner without a child process (the Android app, v0.5.4)
 
-Android cannot spawn sidecar binaries, so the miner is also a library that runs on threads of the app's own process:
-`sm64coin_miner::campaign` (pow/miner, see its README). Not wired into the app yet. How the Android shell will call it
-(the `tauri-mobile` platform; Rust side in `src-tauri/src/miner.rs`, mobile variant):
+Android cannot spawn sidecar binaries, so the miner is a library that runs on threads of the app's own process:
+`sm64coin_miner::campaign` (pow/miner, see its README). The app's Rust side is `src-tauri/src/mobile_miner.rs` (no Tauri types:
+events leave through an `Emit` closure, so the host can test it) with the commands in `lib.rs` (`mobile_cmds`):
 
-1. Depend on `sm64coin-miner` (path `../../pow/miner`) for the mobile target only. It needs the C compiler of the NDK for
-   `ring` (`CC_aarch64_linux_android` = the NDK's `aarch64-linux-android24-clang`); `cargo build --release --target aarch64-linux-android -p sm64coin-miner --lib --examples` builds and links (not run
-   on a device).
-2. A `miner_start` command: read the ROM bytes from the app's storage (the ROM the user picked; the same file the page
-   uploads into IndexedDB), build `CampaignConfig::new(daemon_url, address, rom, app_data_dir.join("miner"))`, set
-   `threads` (cores minus one, `viz` from the Mine page's setting) and call `Campaign::start`. The daemon URL is the
-   RPC of a node that serves block templates (the user's own node; whether the public node does is not checked here). Keep the returned `Campaign` in the app state.
-3. Forward `campaign.subscribe()` on a thread as Tauri events (`miner-log`, `miner-state`, `miner-viz`, `miner-block`,
-   `miner-stopped`): the same shapes the desktop's `miner.rs` emits from automine's stdout (`Event::Viz{kind,key,payload}`
-   is the `VIZ` line's `kind key payload`), so the Mine page's viz code works unchanged. `miner_stats` returns
-   `campaign.stats()` (`fps` is the hashrate; call it about every 2 s).
-4. The page's mailbox (`viz_on`, sampling bubble, node requests) goes to `campaign.mailbox(json)` unchanged, the way the
-   desktop forwards the page's lines to automine's stdin.
-5. `miner_stop` calls `campaign.stop()` (the search ends at its next round, usually within seconds); drop the `Campaign` on
-   app exit. Mind the phone: use a foreground service while mining, and few threads (the search is CPU bound).
+- `rom_put(bytes)`: the page sends its own ROM (read from its IndexedDB) once, as the raw request body, when `miner_start`
+  answers `rom_missing`; Rust checks size and SHA-1 and keeps it in the app's data dir (`rom.z64`).
+- `miner_start({address, threads, viz})`: `Campaign` against the public node only (`Remote::daemon_url`; the page cannot pass a
+  URL), data dir = the app's data dir + `miner/`, threads default min(4, cores - 1). `miner_stop`, `miner_status`, `miner_viz_on`,
+  `miner_viz_mail` (checked by `vizfeed::clean_mail`) as on the desktop; events `miner-log` (with the 2 s `progress` line),
+  `miner-state`, `miner-viz`, so the Native miner card and the visualisation adapter are the desktop's. Only in
+  `capabilities/mobile.json`.
+- Foreground only: the card stops the miner when the page goes hidden (`visibilitychange`). No wake lock, no foreground
+  service, no extra permission in this version (later work: a foreground service with a battery/charging policy).
+- Engine: sm64-binds runs the game through wasmer's `sys` backend with Cranelift (JIT; the ahead-of-time LLVM module is
+  x86-64 Linux only, and the userfaultfd dirty-page tracker is Linux-only, so on Android it compiles the WebAssembly at
+  start and copies whole memories). wasmer 6.1 has Android trap handling. Whether Android's policies allow it on a device is
+  untested (anonymous mmap+mprotect(PROT_EXEC) is allowed for apps, as other JITs rely on).
+- Host test: `cargo test --lib mobile_miner -- --nocapture` in `src-tauri` starts an isolated `sm64coind --offline
+  --sm64-solo` (fresh dir, loopback ports) and mines a block through the same core (needs `SM64COIND` and `SM64COIN_ROM`, or an
+  unpacked bundle in `~/apps`; it skips without them).
+- Build: `ring` needs the NDK's clang (`cargo tauri android build` sets it); release profile builds the engine crates at opt-level 3.
 
 `automine` is a thin command line over `Campaign` and runs the steps on threads of the miner by default (no `rrtrun`
 needed); `automine --process` is the opt-out that spawns one `rrtrun` per step (crash and memory isolation). Each campaign
@@ -117,6 +119,6 @@ owns its viz mailbox and frame counter, so the app and a campaign never share pr
 
 ## Not done
 
-- iroh group mining (same tree-sync records) in Rust; native miner on Android (the library API exists, see above; not wired into the app); Windows job object for the app's own children is
+- iroh group mining (same tree-sync records) in Rust; native miner on Android as a foreground service (the app mines only while on screen); Windows job object for the app's own children is
   in the launcher `proc` (children get CREATE_NO_WINDOW now), pdeathsig on Linux.
 - Wallet: sweep, subaddresses, address book, view-only wallets, leaderboard join from the app.
