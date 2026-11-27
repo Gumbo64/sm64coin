@@ -27,6 +27,6 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 "$BT/apksigner" sign --ks "$ANDROID_KEYSTORE" --ks-key-alias sm64coin --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
   --key-pass env:ANDROID_KEYSTORE_PASSWORD --out "$OUT" "$tmp/aligned.apk"
 "$BT/apksigner" verify --verbose --print-certs "$OUT"
-got="$("$BT/apksigner" verify --print-certs "$OUT" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1 | tr 'a-f' 'A-F' | sed 's/../&:/g; s/:$//')"
+got="$("$BT/apksigner" verify --print-certs "$OUT" | sed -n 's/^.*[Ss]igner[^:]*certificate SHA-256 digest: //p' | head -1 | tr 'a-f' 'A-F' | sed 's/../&:/g; s/:$//')"
 echo "signing certificate SHA-256: $got"
 if [ "$got" != "$EXPECTED" ]; then echo "android-sign: certificate differs from the SM64Coin release key ($EXPECTED)" >&2; rm -f "$OUT"; exit 1; fi
