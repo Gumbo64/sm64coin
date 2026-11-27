@@ -116,6 +116,18 @@ impl Client {
             .count()
     }
 
+    /// Up to `n` distinct node keys, best first (weighted). For callers that ask nodes one by one
+    /// ([`Client::ask_node`]), like the light-client verifier's cross-check.
+    pub fn pick_keys(&self, n: usize) -> Vec<String> {
+        self.pick(n).into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// Asks one specific node (no failover): the answer is attributable. Latency and errors still feed the score.
+    pub async fn ask_node(&self, key: &str, req: &Request, timeout: Duration) -> Result<Response, String> {
+        let addr = self.list.lock().unwrap().get(key).map(|r| r.addr.clone()).ok_or_else(|| format!("unknown node {key}"))?;
+        self.ask(key, &addr, req, timeout).await
+    }
+
     fn pick(&self, n: usize) -> Vec<(String, NodeAddr)> {
         let now = self.now();
         let r = self.env.rand();

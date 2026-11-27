@@ -6,6 +6,7 @@
 //! - [`client`]: `Transport` (HTTP, iroh), failover `Client`.
 //! - `server`, `relay`, `endpoint` (features): the service next to a node, the embedded relay, endpoint setup.
 pub mod allowlist;
+pub mod block;
 pub mod client;
 pub mod exec;
 pub mod nodes;
@@ -22,3 +23,10 @@ pub mod server;
 pub mod relay;
 #[cfg(feature = "relay")]
 pub mod peers;
+
+pub mod checkpoints;
+pub mod verify;
+#[cfg(feature = "consensus")]
+pub mod consensus;
+#[cfg(feature = "replay")]
+pub mod replay;

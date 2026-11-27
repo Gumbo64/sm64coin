@@ -1,0 +1,125 @@
+{
+ "info": {
+  "height": 17,
+  "top_block_hash": "20276c04e2d3187409d4febec2caf1ac00504c022bea719694f633830954f2ae",
+  "wide_cumulative_difficulty": "0x13",
+  "sm64_game_build": "5e3b86e14bab07ee6c0e7b1d955bc8b259b7cb82",
+  "sm64coin_version": "0.5.2"
+ },
+ "cycle": {
+  "blocks": [
+   {
+    "event": "c01s6",
+    "frames": 4858,
+    "hash": "92b2c619da3b9b907d9d64d45edf9931a379e4f0d26a9783bf84455ddd777d95",
+    "height": 1,
+    "power_on": true
+   },
+   {
+    "event": "c02s6",
+    "frames": 2433,
+    "hash": "ffaa63707050fc589c8daa09fda9f061666dd7f8a3b891dc8db5e860f5ac19c3",
+    "height": 2,
+    "power_on": false
+   },
+   {
+    "event": "c02s1",
+    "frames": 2385,
+    "hash": "6ab46c9b5cf9405776d2f750ccba131c3ab33ebfecf5e61394bb57235c659147",
+    "height": 3,
+    "power_on": false
+   },
+   {
+    "event": "c03s1",
+    "frames": 4553,
+    "hash": "a655f8715f3c6dd1d7e067f06c068d0b33841edf2835bb4bc1673bf6fc3a5a6a",
+    "height": 4,
+    "power_on": false
+   },
+   {
+    "event": "c04s1",
+    "frames": 2952,
+    "hash": "98fbb4e8c6f5d6e44cefdf50b9b795c55922a7c8ba79bb2e5cf91a477af9bf9f",
+    "height": 5,
+    "power_on": false
+   },
+   {
+    "event": "c01s1",
+    "frames": 4553,
+    "hash": "bbabee40f07ea34c93fdbbd96bfd1dd53cd8602f52d6235bcaeb029f34b15a5e",
+    "height": 6,
+    "power_on": false
+   },
+   {
+    "event": "c03s2",
+    "frames": 2817,
+    "hash": "2003993f80f27f71203970a183d45be9041016af3549f9985032a3928ca0a63d",
+    "height": 7,
+    "power_on": false
+   },
+   {
+    "event": "c04s3",
+    "frames": 2716,
+    "hash": "d07b517957d5bcf6e54dde50b4daf6555eac5785419746fb1a181409cee43627",
+    "height": 8,
+    "power_on": false
+   },
+   {
+    "event": "c01s3",
+    "frames": 2857,
+    "hash": "fb39c279dd8d9e2e95d78e4d53f3cbf53dd4d105ca4db492f55fd39ed495b55b",
+    "height": 9,
+    "power_on": false
+   },
+   {
+    "event": "c02s2",
+    "frames": 3164,
+    "hash": "ca1b8713a7db8d6fa2c6fb51cbf6ebead98519331c59119ab8e21773bcc2d4e6",
+    "height": 10,
+    "power_on": false
+   },
+   {
+    "event": "c03s5",
+    "frames": 3327,
+    "hash": "1de6ddc10ca607c892e68df90a601584c91dcea5c8a637b0c38afe2f1d7158b6",
+    "height": 11,
+    "power_on": false
+   },
+   {
+    "event": "c04s2",
+    "frames": 3446,
+    "hash": "c65f6e2412ef63c8961be5b970f050ba34d65382d06efc16b3cd45446078fc26",
+    "height": 12,
+    "power_on": false
+   },
+   {
+    "event": "c05s1",
+    "frames": 7139,
+    "hash": "f41ccb144289b98a0e9a535a8e6dea56091260b319a929b046e6dff50e8bb3f4",
+    "height": 13,
+    "power_on": false
+   },
+   {
+    "event": "c05s3",
+    "frames": 1717,
+    "hash": "19ca48a64e92487bbb368fd187e918dde33bdabaaee4947800a67a1e3dd68ce3",
+    "height": 14,
+    "power_on": false
+   },
+   {
+    "event": "c01s2",
+    "frames": 5276,
+    "hash": "30bec31e424db6476e447c896f2666564c71af2553eb827a13857cd313dc3c04",
+    "height": 15,
+    "power_on": false
+   },
+   {
+    "event": "c05s4",
+    "frames": 6736,
+    "hash": "20276c04e2d3187409d4febec2caf1ac00504c022bea719694f633830954f2ae",
+    "height": 16,
+    "power_on": false
+   }
+  ]
+ }
+}
