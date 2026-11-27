@@ -454,12 +454,14 @@ fn run(o: Opts) -> Result<(), String> {
         (cfg.solo, cfg.no_dht, cfg.dht_announce) = (o.solo, o.no_dht, o.dht_announce);
         (cfg.p2p_port, cfg.rpc_port, cfg.zmq_port) = (o.p2p_port, o.rpc_port, o.zmq_port);
         cfg.daemon_args = o.daemon_args.clone();
-        // The light-client service forwards to a RESTRICTED RPC listener (127.0.0.1 only): there monerod caps request sizes
-        // and hides sensitive pool data (Dandelion++ stem transactions) that the unrestricted RPC would hand to anyone.
+        // What strangers reach (the light-client service, and the website's /json_rpc proxy with --public) goes to a RESTRICTED
+        // RPC listener on 127.0.0.1: there monerod caps request sizes and hides sensitive pool data (Dandelion++ stem
+        // transactions) that the unrestricted RPC would hand to anyone. The launcher's own tools keep the unrestricted one.
         #[cfg(feature = "lc")]
         let lc_on = o.lc == LcMode::On || (o.lc == LcMode::Auto && o.public);
-        #[cfg(feature = "lc")]
-        let lc_rpc_port = lc_on.then(|| {
+        #[cfg(not(feature = "lc"))]
+        let lc_on = false;
+        let restricted_port = (lc_on || o.public).then(|| {
             let given = o.daemon_args.iter().enumerate().find_map(|(i, a)| {
                 a.strip_prefix("--rpc-restricted-bind-port=").map(str::to_string).or_else(|| (a == "--rpc-restricted-bind-port").then(|| o.daemon_args.get(i + 1).cloned()).flatten())
             });
@@ -474,6 +476,8 @@ fn run(o: Opts) -> Result<(), String> {
         });
         let mut node = Node::start(&cfg)?;
         o.rpc_port = node.rpc_port;
+        // a node that was already running was not started with our restricted listener
+        let restricted_port = restricted_port.filter(|_| !node.reused);
         if let Some(p) = node.take_proc() {
             // The rest starts now, not when the node answers: the site and the wallet wait for it.
             procs.push(p);
@@ -483,7 +487,7 @@ fn run(o: Opts) -> Result<(), String> {
 
         // --- light-client service (iroh) ---
         #[cfg(feature = "lc")]
-        let _lc = if let Some(port) = lc_rpc_port {
+        let _lc = if let Some(port) = restricted_port.filter(|_| lc_on) {
             let mut c = sm64coin_launcher::lcserve::LcConfig::new(port, data_dir.join("lc"));
             c.relay_bind = o.lc_relay_bind;
             c.bootstrap = o.lc_bootstrap.clone();
@@ -539,7 +543,11 @@ fn run(o: Opts) -> Result<(), String> {
 
         // --- website ---
         let host = if o.public { "0.0.0.0" } else { "127.0.0.1" };
-        let web_port = serve_web(host, o.web_port, WebCfg { dir: web_dir, rpc: rpc_url.clone(), leaderboard: lb_url, public: o.public, port: 0 })?;
+        let web_rpc = match restricted_port {
+            Some(p) if o.public => format!("http://127.0.0.1:{p}"),
+            _ => rpc_url.clone(),
+        };
+        let web_port = serve_web(host, o.web_port, WebCfg { dir: web_dir, rpc: web_rpc, leaderboard: lb_url, public: o.public, port: 0 })?;
         if web_port != o.web_port {
             println!("Port {} is in use by another program: the website is on {web_port} instead.", o.web_port);
         }
