@@ -351,11 +351,28 @@ impl Memory {
     }
 }
 
-/// A block's search in progress, kept so a later attempt at the same block
-/// (same seed and start) goes on where this one stopped.
-struct Resume {
+/// Which search a [`Resume`] belongs to: the block (its seed: the parent, the template's key), the start mode and the start
+/// state the search grew from (power-on and the parent's end state are different roots; a hash of the state after boot / settle).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResumeKey {
     seed: [u8; 32],
     start: Start,
+    origin: u64,
+}
+
+impl ResumeKey {
+    fn of(seed: &Seed, start: Start, origin: &SM64MiningSave) -> ResumeKey {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        origin.game.as_bytes().hash(&mut h);
+        ResumeKey { seed: seed.0, start, origin: h.finish() }
+    }
+}
+
+/// A block's search in progress, kept so a later attempt at the same block
+/// (same seed, start and start state: [`ResumeKey`]) goes on where this one stopped.
+struct Resume {
+    key: ResumeKey,
     game: SM64MiningSave,
     played: Vec<GamePad>,
     hub: Option<(SM64MiningSave, usize)>,
@@ -368,6 +385,17 @@ struct Resume {
 }
 
 static RESUME: Mutex<Option<Resume>> = Mutex::new(None);
+
+/// Forgets the stopped search [`mine`] would go on from: the next search of any block starts a fresh tree. A campaign's start
+/// (the miner started, or started again) calls it, so a requested restart never continues an old tree.
+pub fn forget_resume() {
+    *RESUME.lock().unwrap() = None;
+}
+
+/// The stopped search to go on from for `key`, if it is that search's (any other is dropped).
+fn take_resume(key: &ResumeKey) -> Option<Resume> {
+    RESUME.lock().unwrap().take().filter(|r| r.key == *key)
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn child_exe(o: &RrtOptions) -> Result<PathBuf> {
@@ -669,18 +697,17 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
     let mut kept: BTreeMap<u16, (SM64MiningSave, Vec<GamePad>)> = BTreeMap::new();
     let mut sim = 0u64;
     let mut salt = o.seed;
-    if let Some(r) = RESUME.lock().unwrap().take() {
-        if r.seed == seed.0 && r.start == start {
-            game.load_state(&r.game)?;
-            played = r.played;
-            hub = r.hub;
-            cp_n = r.cp_n;
-            cp_goal = r.cp_goal;
-            kept = r.kept;
-            sim = r.sim;
-            salt = r.salt;
-            log(format!("resuming this block's search at frame {} (level {})", played.len(), name(read_state(&game, played.len() as u32, false).level)));
-        }
+    let rkey = ResumeKey::of(seed, start, &game.save_state());
+    if let Some(r) = take_resume(&rkey) {
+        game.load_state(&r.game)?;
+        played = r.played;
+        hub = r.hub;
+        cp_n = r.cp_n;
+        cp_goal = r.cp_goal;
+        kept = r.kept;
+        sim = r.sim;
+        salt = r.salt;
+        log(format!("resuming this block's search at frame {} (level {})", played.len(), name(read_state(&game, played.len() as u32, false).level)));
     }
     if o.prefix.len() > played.len() {
         anyhow::ensure!(same_pads(&o.prefix[..played.len()], &played), "the run to go on from does not start like this block's start");
@@ -698,7 +725,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
     let mut step = 0usize;
     let result = loop {
         if stop.load(Ordering::Relaxed) {
-            *RESUME.lock().unwrap() = Some(Resume { seed: seed.0, start, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
+            *RESUME.lock().unwrap() = Some(Resume { key: rkey, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
             break Attempt::Gave("stopped".into());
         }
         mem.save(&mem_path, &origin);
@@ -797,7 +824,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                     let x = match run_child(o, &game, job.clone(), &format!("s{step}"), stop) {
                         Ok(x) => x,
                         Err(e) if stop.load(Ordering::Relaxed) => {
-                            *RESUME.lock().unwrap() = Some(Resume { seed: seed.0, start, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
+                            *RESUME.lock().unwrap() = Some(Resume { key: rkey, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
                             break Attempt::Gave(format!("stopped ({e})"));
                         }
                         Err(e) => return Err(e),
@@ -896,7 +923,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         let out = match run_child(o, &game, job, &format!("s{step}"), stop) {
             Ok(x) => x,
             Err(e) if stop.load(Ordering::Relaxed) => {
-                *RESUME.lock().unwrap() = Some(Resume { seed: seed.0, start, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
+                *RESUME.lock().unwrap() = Some(Resume { key: rkey, game: game.save_state(), played: played.clone(), hub: hub.clone(), cp_n, cp_goal: cp_goal.clone(), kept: kept.clone(), sim, salt });
                 break Attempt::Gave(format!("stopped ({e})"));
             }
             Err(e) => return Err(e),
@@ -998,5 +1025,55 @@ impl GameView for SM64MiningSave {
         let mut g = sm64pow::generator()?.create_game()?;
         g.load_state(&self.game)?;
         Ok(SM64MiningGame { game: g, pert: self.pert.clone() })
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    fn resume(key: ResumeKey, game: &SM64MiningGame) -> Resume {
+        Resume { key, game: game.save_state(), played: vec![GamePad::default(); 7], hub: None, cp_n: 0, cp_goal: None, kept: BTreeMap::new(), sim: 0, salt: 0 }
+    }
+
+    /// The stopped search is gone on with only by the same block, start mode and start state; anything else (a restart from
+    /// power-on, another parent, a new template) drops it, and a campaign's start forgets it. Needs the ROM; skipped without it.
+    #[test]
+    fn resume_only_for_the_same_block_start_and_state() {
+        if sm64pow::init_default().is_err() {
+            eprintln!("no ROM; skipped");
+            return;
+        }
+        let gz = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/v04_chomp.state.gz")).unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&gz[..]), &mut bytes).unwrap();
+        let parent = SaveState::from_bytes(bytes).unwrap();
+        let params = sm64pow::params(1);
+        let (seed, other_seed) = (Seed([1; 32]), Seed([2; 32]));
+        let (on, _) = sm64pow::chain::mining_start(Start::PowerOn, None, &seed, &params).unwrap();
+        let (par, _) = sm64pow::chain::mining_start(Start::Parent, Some(&parent), &seed, &params).unwrap();
+        let k_on = ResumeKey::of(&seed, Start::PowerOn, &on.save_state());
+        let k_par = ResumeKey::of(&seed, Start::Parent, &par.save_state());
+        assert_eq!(k_on, ResumeKey::of(&seed, Start::PowerOn, &on.save_state()), "the key of a state is stable");
+        assert_ne!(k_on.origin, k_par.origin, "power-on and the parent's end state are different roots");
+
+        let put = |k: ResumeKey| *RESUME.lock().unwrap() = Some(resume(k, &par));
+        // The same search: resumed (once).
+        put(k_par);
+        assert_eq!(take_resume(&k_par).map(|r| r.played.len()), Some(7));
+        assert!(take_resume(&k_par).is_none());
+        // A restart from power-on on the same block: fresh, and the parent search is dropped.
+        put(k_par);
+        assert!(take_resume(&k_on).is_none());
+        assert!(take_resume(&k_par).is_none());
+        // The same start mode from another state (another parent) or another template's seed: fresh.
+        put(ResumeKey { origin: k_par.origin ^ 1, ..k_par });
+        assert!(take_resume(&k_par).is_none());
+        put(k_par);
+        assert!(take_resume(&ResumeKey::of(&other_seed, Start::Parent, &par.save_state())).is_none());
+        // A campaign's start forgets it.
+        put(k_par);
+        forget_resume();
+        assert!(take_resume(&k_par).is_none());
     }
 }

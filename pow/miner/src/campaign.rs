@@ -31,8 +31,8 @@
 //! Mining validity never depends on the search: the proof is sealed by the shadow replay (`sm64pow::seal_proof_at`).
 //!
 //! A campaign owns its viz mailbox and frame counter (`rrt::vizio::Hub`), so several can run in one process (the search's
-//! "resume this block" memory is the one process-wide piece: it is keyed by the block's seed, so a neighbour costs a resume at
-//! most). The search engine's own console output (`println!`) is not captured; the events carry the miner's log.
+//! "resume this block" memory is the one process-wide piece: it is keyed by the block's seed, start mode and start state, and a
+//! campaign's start clears it, so a neighbour costs a resume at most). The search engine's own console output (`println!`) is not captured; the events carry the miner's log.
 use crate::reset::{self, ResetMode};
 use crate::rh::Attempt;
 use crate::rpc;
@@ -307,6 +307,9 @@ impl Campaign {
         let reset_mode: ResetMode = cfg.reset.parse().map_err(|e: String| anyhow::anyhow!(e))?;
         std::fs::create_dir_all(&cfg.data_dir)?;
         sm64pow::init(cfg.rom.clone())?;
+        // A started campaign searches from scratch: the process-wide "resume this block" memory may hold the search a stopped
+        // campaign left (the Android app runs campaigns in its own process, one after another).
+        rrt::forget_resume();
         let inner = Arc::new(Inner {
             stop: AtomicBool::new(false),
             subs: Mutex::new(Vec::new()),
