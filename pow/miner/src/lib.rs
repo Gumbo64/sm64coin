@@ -1,21 +1,18 @@
 pub mod m64;
-pub mod tracker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rpc;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod update;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod beam;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod routes;
 pub mod hook;
 pub mod rh;
 pub mod macros;
 pub mod reset;
 pub mod signed;
 pub mod rrt;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod campaign;
 
 /// The environment, files and clock the campaign uses: std's natively; in the browser build
 /// (the web miner) obrrt's (`obrrt_core::sys`: a per-instance environment, the worker's shared

@@ -53,7 +53,7 @@ use sm64pow::{Params, SM64MiningGame, SM64MiningSave, Seed};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration}; use crate::sys::Instant;
 
 #[derive(Clone)]
@@ -84,6 +84,9 @@ pub struct RrtOptions {
     pub child: Option<PathBuf>,
     /// Keep the step logs.
     pub keep: bool,
+    /// Run each step on a thread of this process ([`child::run_step_inproc`]) instead of in an `rrtrun` process
+    /// (native only; the browser always runs its steps in a fresh instance). Needs `sm64pow::init` done by the caller.
+    pub in_process: bool,
     /// The ROM the child loads (default: sm64pow's search path).
     pub rom: Option<String>,
     /// More tree settings, "VAR=value VAR=value" (campaign.py --env).
@@ -97,6 +100,9 @@ pub struct RrtOptions {
     pub sync_k: usize,
     /// Sample the trees for a viewer (see `child::viz`; the web miner's page).
     pub viz: bool,
+    /// Native: the viz hub of this search's campaign (mailbox, frame counter; None: the process's default hub).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub hub: Option<std::sync::Arc<vizio::Hub>>,
     /// Anytime mining: a run of this many frames is known (0: none), so only a shorter one counts (the frame cap
     /// is one less, and the trees go on past states that are too late, OBRRT_GOOD_MAX_FRAME) and a step that
     /// finds none ends the search ("no shorter run").
@@ -195,12 +201,15 @@ impl Default for RrtOptions {
             scratch: crate::sys::env::temp_dir().join("sm64coin-rrt"),
             child: None,
             keep: false,
+            in_process: false,
             rom: None,
             extra_env: String::new(),
             exchange: None,
             sync_secs: 0.0,
             sync_k: 0,
             viz: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            hub: None,
             beat: 0,
             guide_keys: Vec::new(),
             guide_weight: 20.0,
@@ -224,11 +233,10 @@ pub fn coverage() -> Vec<(&'static str, &'static str)> {
 /// The campaign's tree settings: campaign.py's `ENV`, the t1 campaign's
 /// `--env` (the priors and the roadmap from the miner's scratch), and `extra`.
 pub fn env(o: &RrtOptions) -> Result<Vec<(String, String)>> {
-    const ENV: &str = "OBRRT_SOFT_DEDUP=1 OBRRT_ROUND=64 OBRRT_BOOT_NOWAIT=1 OBRRT_TECH=all OBRRT_NEW_ELIGIBLE=1 OBRRT_STARSET_KEY=1 \
-         OBRRT_PICK_BY_B=0 OBRRT_SWIM_HOLD=1 OBRRT_GP_CATCH=1 OBRRT_KEEP_WIP=1 OBRRT_MOVE_WEIGHT=0.75 OBRRT_CHAIN=route OBRRT_SAMPLER=rate \
-         OBRRT_MOVES=1 OBRRT_MOVE_GA=1 OBRRT_MOVE_GA_EXTRA=1 OBRRT_CALM=1 OBRRT_LAKITU_ARC=1 OBRRT_PAINTING_FAST=1 OBRRT_ADD=last_gen \
-         OBRRT_KINSHIP_MULT=10 OBRRT_ZONE_LOCK=1 \
-         OBRRT_GOAL_FOCUS=0.5 OBRRT_GOAL_WIDE=1 OBRRT_GROUNDS_FIX=1 OBRRT_STATIC_ID=1 OBRRT_STALL_ETA=0.03 OBRRT_GOAL_EXPLORE=1";
+    // What differs from the search's defaults (obrrt-env's `SearchConfig::default()` bakes the rest of the campaign's
+    // old list: soft dedup, the starset key, route chains, the rate sampler, dense adds, kinship x10, moves and the move GA,
+    // calm, the Lakitu arc, fast paintings, swim hold, the GP catch, new-eligible, ROUND=64, TECH=all, MOVE_WEIGHT=0.75).
+    const ENV: &str = "OBRRT_ZONE_LOCK=1 OBRRT_GOAL_FOCUS=0.5 OBRRT_GOAL_WIDE=1 OBRRT_GROUNDS_FIX=1 OBRRT_STATIC_ID=1 OBRRT_STALL_ETA=0.03 OBRRT_GOAL_EXPLORE=1";
     // Copies of objective-rrt-v2/tools/seg120/{reach,rescue}_prior.json (the t1 campaign's priors).
     const REACH: &str = include_str!("../../priors/reach_prior.json");
     const RESCUE: &str = include_str!("../../priors/rescue_prior.json");
@@ -398,13 +406,61 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, _st
     Ok(serde_json::from_str(&out?)?)
 }
 
-/// Frames simulated by this process's search steps so far (all threads, finished steps and the running ones' last
-/// progress): the miner's speed is its rate (automine's `progress` line).
-pub static SIM_FRAMES: AtomicU64 = AtomicU64::new(0);
+/// Runs the tree step `job` from `game` on a thread of this process (`RrtOptions::in_process`): the same job, the same
+/// result as the child's, with the viz mailbox and the frame counter in memory instead of pipes and a file. `stop` ends
+/// the search at its next round (the engine's budget is cut), as killing the child does.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_inproc(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
+    crate::sys::fs::create_dir_all(&o.scratch)?;
+    let base = o.scratch.join(format!("{}-{tag}", std::process::id()));
+    let state = format!("{}.state", base.display());
+    crate::sys::fs::write(&state, game.game.save_state().as_bytes())?;
+    job.state_file = state.clone();
+    job.pert = game.pert.clone();
+    job.out_dir = format!("{}.run", base.display());
+    let hub = o.hub.clone().unwrap_or_else(|| vizio::host_default().clone());
+    let viz = o.viz && hub.enabled();
+    job.viz = viz;
+    let flag = std::sync::Arc::new(AtomicBool::new(false));
+    let io = child::StepIo { exchange: viz.then(|| { let h = hub.clone(); std::sync::Arc::new(move |k: &str, p: &str| h.exchange(k, p)) as Exchange }), stop: Some(flag.clone()), hub: Some(hub.clone()) };
+    hub.step_begin();
+    // A step's search needs deep stacks like the main thread's (the child's engine ran on its 8 MB main thread).
+    let worker = std::thread::Builder::new().name(format!("rrt-step-{tag}")).stack_size(32 << 20).spawn({
+        let job = job.clone();
+        move || child::run_step_inproc(&job, &io)
+    })?;
+    let mut counted = 0u64;
+    let mut polled = std::time::Instant::now();
+    while !worker.is_finished() {
+        if stop.load(Ordering::Relaxed) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        if polled.elapsed() >= Duration::from_millis(500) {
+            polled = std::time::Instant::now();
+            let n = hub.step_frames();
+            if n > counted {
+                hub.add_sim_frames(n - counted);
+                counted = n;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let r = worker.join().unwrap_or_else(|p| Err(anyhow::anyhow!("step {tag} panicked: {}", p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default())));
+    let _ = crate::sys::fs::remove_file(&state);
+    let _ = crate::sys::fs::remove_dir_all(&job.out_dir);
+    let out = r?;
+    if out.emulated > counted {
+        hub.add_sim_frames(out.emulated - counted);
+    }
+    Ok(out)
+}
 
-/// Runs the tree step `job` from `game` in a child process.
+/// Runs the tree step `job` from `game` in a child process (or on a thread: `RrtOptions::in_process`).
 #[cfg(not(target_arch = "wasm32"))]
 fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
+    if o.in_process {
+        return run_inproc(o, game, job, tag, stop);
+    }
     crate::sys::fs::create_dir_all(&o.scratch)?;
     let base = o.scratch.join(format!("{}-{tag}", std::process::id()));
     let state = format!("{}.state", base.display());
@@ -414,7 +470,8 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
     job.out_dir = format!("{}.run", base.display());
     let (jf, of, lf) = (format!("{}.job.json", base.display()), format!("{}.out.json", base.display()), format!("{}.log", base.display()));
     crate::sys::fs::write(&jf, serde_json::to_string(&job)?)?;
-    let viz = o.viz && vizio::enabled();
+    let hub = o.hub.clone().unwrap_or_else(|| vizio::host_default().clone());
+    let viz = o.viz && hub.enabled();
     let mut cmd = std::process::Command::new(child_exe(o)?);
     let logfile = crate::sys::fs::File::create(&lf)?;
     cmd.arg(&jf).arg(&of).stderr(crate::sys::fs::File::options().append(true).open(&lf)?);
@@ -427,34 +484,35 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
         let mut file = crate::sys::fs::File::options().append(true).create(true).open(&lf)?;
         // The reader drains the pipe whatever comes (bytes that are not UTF-8 are logged lossily, never end the loop: a
         // stopped reader would block the step on a full pipe), and runs before the stdin replay below.
+        let hub2 = hub.clone();
         logger = Some(std::thread::spawn(move || {
             use std::io::{BufRead, Write};
             let mut r = std::io::BufReader::new(out);
             let mut buf = Vec::new();
             while r.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
                 let line = String::from_utf8_lossy(buf.strip_suffix(b"\n").unwrap_or(&buf));
-                if !vizio::child_line(&line) {
+                if !hub2.child_line(&line) {
                     let _ = writeln!(file, "{line}");
                 }
                 buf.clear();
             }
         }));
         if let Some(i) = child.stdin.take() {
-            vizio::attach(i);
+            hub.attach(i);
         }
         child
     } else {
         cmd.stdout(logfile).spawn()?
     };
     let pf = format!("{}.progress", job.out_dir);
-    let mut counted = 0u64; // this step's frames already in SIM_FRAMES
+    let mut counted = 0u64; // this step's frames already in the hub's counter
     let mut polled = std::time::Instant::now();
     let status = loop {
         if polled.elapsed() >= Duration::from_millis(500) {
             polled = std::time::Instant::now();
             if let Ok(n) = crate::sys::fs::read_to_string(&pf).unwrap_or_default().trim().parse::<u64>() {
                 if n > counted {
-                    SIM_FRAMES.fetch_add(n - counted, Ordering::Relaxed);
+                    hub.add_sim_frames(n - counted);
                     counted = n;
                 }
             }
@@ -467,7 +525,7 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
             let _ = child.kill();
             let _ = child.wait();
             if viz {
-                vizio::detach();
+                hub.detach();
             }
             let _ = crate::sys::fs::remove_file(&state);
             bail!("stopped");
@@ -475,7 +533,7 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
         std::thread::sleep(Duration::from_millis(50));
     };
     if viz {
-        vizio::detach();
+        hub.detach();
         if let Some(l) = logger {
             let _ = l.join();
         }
@@ -489,7 +547,7 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
     }
     let out: StepOut = serde_json::from_str(&crate::sys::fs::read_to_string(&of)?)?;
     if out.emulated > counted {
-        SIM_FRAMES.fetch_add(out.emulated - counted, Ordering::Relaxed);
+        hub.add_sim_frames(out.emulated - counted);
     }
     let _ = crate::sys::fs::remove_file(&of);
     let _ = crate::sys::fs::remove_file(&jf);
@@ -599,6 +657,8 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         env0.push(("OBRRT_GUIDE_WEIGHT".into(), o.guide_weight.to_string()));
     }
     let rom = match &o.rom {
+        // In-process steps use the generator the host initialised (`sm64pow::init(bytes)`): no ROM file is read.
+        _ if o.in_process => o.rom.clone().unwrap_or_default(),
         Some(r) => crate::sys::fs::canonicalize(r)?.to_string_lossy().into_owned(),
         None => sm64pow::default_rom_path().ok_or_else(|| anyhow::anyhow!("no ROM (RrtOptions::rom)"))?,
     };
@@ -939,38 +999,4 @@ impl GameView for SM64MiningSave {
         g.load_state(&self.game)?;
         Ok(SM64MiningGame { game: g, pert: self.pert.clone() })
     }
-}
-
-/// Goal bias from the best run so far (the anytime miner's later searches): the
-/// run's path as waypoint objectives for the tree (an `OBRRT_SPEC` file), as
-/// RRT samples its goal at a fixed rate among random targets. Mario's position
-/// every `every` frames in the run's courses (not the castle) becomes a spec
-/// "reach this point" with pool weight `weight` (the bias: the sampler picks
-/// objectives in proportion to their weights; kinship is waived). `pads` are the run's played pads
-/// from the block's start. Returns how many waypoints were written.
-pub fn write_guide(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Params, pads: &[GamePad], every: usize, weight: f64, path: &std::path::Path) -> Result<usize> {
-    let (mut game, _) = sm64pow::chain::mining_start(start, parent, seed, params)?;
-    let mut specs = Vec::new();
-    for (f, p) in pads.iter().enumerate() {
-        game.game.step_game(*p)?; // played pads: the pokes are in them already
-        if f % every != every - 1 {
-            continue;
-        }
-        let st = read_state(&game.game, (f + 1) as u32, false);
-        if is_hub_level(st.level) || !st.controllable() {
-            continue;
-        }
-        let pos = [st.pos[0].round(), st.pos[1].round(), st.pos[2].round()];
-        specs.push(serde_json::json!({
-            "name": format!("guide_{}", specs.len()),
-            "zone": [st.level, st.area],
-            "phases": [{ "target": pos, "done": { "in_sphere": { "center": pos, "r": 200 } } }],
-            // Kinship waived: any state in the tree may start toward a waypoint (not only
-            // b's near relatives), so the best-placed one is picked by its ETA.
-            "hints": { "obj_weight": weight, "kinship": 1000 },
-        }));
-    }
-    let n = specs.len();
-    crate::sys::fs::write(path, serde_json::to_string_pretty(&serde_json::json!({ "specs": specs }))?)?;
-    Ok(n)
 }

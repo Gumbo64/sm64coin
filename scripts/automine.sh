@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 # Automated miner. Usage: automine.sh [SM64... address] [extra automine flags]
 # Without an address, uses the first address of the open wallet via wallet RPC get_address.
-# Env: ROUTE, DAEMON_URL, WALLET_URL, ROM
+# Env: DAEMON_URL, WALLET_URL, ROM, THREADS
 set -euo pipefail
 # Simulation threads (THREADS, default 4).
 export RAYON_NUM_THREADS="${THREADS:-4}"
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 BINARY="$ROOT/pow/target/release/automine"
-# Space-separated; tried in order (the first is the calmest to follow).
-# Routes from files; the chain's own winning runs are added automatically.
-ROUTE="${ROUTE:-$ROOT/pow/miner/routes/block1-human.m64}"
 # Always (re)build: a stale miner with other rules would waste its runs.
-(cd "$ROOT/pow" && cargo build --release -q -p sm64coin-miner --bin automine --bin rrtrun) # rrtrun: the tree search child automine spawns
+(cd "$ROOT/pow" && cargo build --release -q -p sm64coin-miner --bin automine --bin rrtrun) # rrtrun: only for `--process` (a child process per search step)
 [ -f "$ROM" ] || { echo "missing ROM $ROM" >&2; exit 1; }
 if [ $# -ge 1 ] && [[ "$1" == SM64* ]]; then
   ADDR="$1"; shift
@@ -21,6 +18,4 @@ else
   [ -n "$ADDR" ] || { echo "no address given and wallet RPC at $WALLET_URL has no open wallet (create/open one, or pass an address)" >&2; exit 1; }
 fi
 echo "mining to $ADDR via $DAEMON_URL"
-ROUTE_ARGS=()
-for r in $ROUTE; do ROUTE_ARGS+=(--route "$r"); done
-exec "$BINARY" --address "$ADDR" --daemon "$DAEMON_URL" --rom "$ROM" "${ROUTE_ARGS[@]}" "$@"
+exec "$BINARY" --address "$ADDR" --daemon "$DAEMON_URL" --rom "$ROM" --rh-threads "${THREADS:-4}" "$@"
