@@ -85,7 +85,8 @@ fn reply(req: tiny_http::Request, code: u16, ct: &str, body: Vec<u8>, origin: Op
 
 fn handle(mut req: tiny_http::Request, net: &Net, port: u16, origins: &[String]) {
     let host = hv(&req, "host").unwrap_or_default().to_ascii_lowercase();
-    if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
+    // wallet2 sends `Host: 127.0.0.1` without the port; any other name (DNS rebinding) is refused.
+    if ![format!("127.0.0.1:{port}"), format!("localhost:{port}"), "127.0.0.1".into(), "localhost".into()].contains(&host) {
         return reply(req, 403, "text/plain", b"wrong Host".to_vec(), None);
     }
     let origin = hv(&req, "origin");
@@ -121,6 +122,7 @@ fn handle(mut req: tiny_http::Request, net: &Net, port: u16, origins: &[String])
         };
         let Some(method) = v.get("method").and_then(|m| m.as_str()) else { return reply(req, 400, "text/plain", b"one JSON-RPC object with a method".to_vec(), o) };
         if !allowlist::rpc_allowed(method) {
+            eprintln!("wallet proxy: refused json_rpc {method}");
             return reply(req, 403, "text/plain", b"this RPC method is not available".to_vec(), o);
         }
         let params = v.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -135,12 +137,20 @@ fn handle(mut req: tiny_http::Request, net: &Net, port: u16, origins: &[String])
             Err(e) => reply(req, 502, "text/plain", e.into_bytes(), o),
         };
     }
+    if path == "/getheight" {
+        // wallet2 asks for the chain height this way first; not in the shared path allowlist, answered from the tip.
+        return match tauri::async_runtime::block_on(net.height()) {
+            Ok(h) => reply(req, 200, "application/json", json!({"height": h, "status": "OK", "untrusted": false}).to_string().into_bytes(), o),
+            Err(e) => reply(req, 502, "text/plain", e.into_bytes(), o),
+        };
+    }
     if allowlist::path_allowed(&path) && path != "/get_public_nodes" {
         return match tauri::async_runtime::block_on(net.wallet_post(&path, body)) {
             Ok((ct, data)) => reply(req, 200, ct, data, o),
             Err(e) => reply(req, 502, "text/plain", e.into_bytes(), o),
         };
     }
+    eprintln!("wallet proxy: refused {} {path}", req.method());
     reply(req, 403, "text/plain", b"this daemon call is not available".to_vec(), o)
 }
 

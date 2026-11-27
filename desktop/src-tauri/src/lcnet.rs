@@ -6,7 +6,8 @@
 //! Which calls fail over over which transport: a request the light-client protocol has a message for (the wallet's binary calls,
 //! `get_sm64_cycle`, `get_fee_estimate`, `get_block_headers_range`, a plain `submit_block` ...) is a `Request` and goes to any
 //! node, HTTP or iroh; submissions go to three nodes at once. Every other allowlisted JSON-RPC call (`get_info`,
-//! `get_sm64_state`, a template with the miner's `sm64_*` extras ...) has no message yet and fails over between the HTTP nodes only.
+//! `get_sm64_state`, a template with the miner's `sm64_*` extras ...) has no message yet and fails over between the HTTP nodes only
+//! (`get_info` and the wallet's `/getheight` are answered from an iroh node's tip when no HTTP node works).
 use serde_json::{Value, json};
 use sm64coin_lc::allowlist;
 use sm64coin_lc::client::{BULK_TIMEOUT, Client, ClientError, Connector, Env, READ_TIMEOUT, SystemEnv, Transport, UpstreamTransport};
@@ -250,7 +251,11 @@ impl Net {
         if !allowlist::rpc_allowed(method) {
             return Err(format!("RPC method {method} is not available"));
         }
-        let Some(m) = map_request(method, &params) else { return self.http_rpc(method, params).await };
+        let Some(m) = map_request(method, &params) else {
+            let r = self.http_rpc(method, params).await;
+            // no HTTP node works: a plain `get_info` is still answered (height, tip) by an iroh node
+            return if r.is_err() && method == "get_info" { self.info_from_tip().await.or(r) } else { r };
+        };
         let (key, resp) = if m.submit {
             self.submit_any(&m.req).await?
         } else {
@@ -258,6 +263,31 @@ impl Net {
         };
         self.note(&key, method);
         shape(method, resp)
+    }
+
+    /// The chain height (blocks, genesis included) from any node's tip, HTTP or iroh.
+    pub async fn height(&self) -> Result<u64, String> {
+        match self.client.read(&Request::GetTip, self.read_timeout).await.map_err(|e| e.to_string())? {
+            (key, Response::Tip(t)) => {
+                self.note(&key, "getheight");
+                Ok(t.height + 1)
+            }
+            (_, other) => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// `get_info` when no HTTP node answers: the little the tip tells (what the wallet needs to sync), marked `light`.
+    async fn info_from_tip(&self) -> Result<Value, String> {
+        match self.client.read(&Request::GetTip, self.read_timeout).await.map_err(|e| e.to_string())? {
+            (key, Response::Tip(t)) => {
+                self.note(&key, "get_info");
+                Ok(json!({"jsonrpc": "2.0", "id": 0, "result": {
+                    "status": "OK", "light": true, "height": t.height + 1, "target_height": 0, "top_block_hash": hex::encode(t.hash),
+                    "wide_cumulative_difficulty": format!("0x{:x}", t.cumulative_difficulty), "synchronized": true, "offline": false, "untrusted": false,
+                }}))
+            }
+            (_, other) => Err(format!("unexpected answer: {other:?}")),
+        }
     }
 
     /// Calls without a protocol message: the HTTP nodes only, best first, until one answers.

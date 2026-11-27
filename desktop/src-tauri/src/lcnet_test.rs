@@ -258,8 +258,15 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         // the headers of the genesis block through iroh
         let v = jrpc(&url, "get_block_headers_range", json!({"start_height": 0, "end_height": 0}));
         assert!(v["result"]["headers"].is_array(), "{v}");
-        // a call with no protocol message needs an HTTP node: with none in the list it says so
-        let (code, body) = post(&url, "/json_rpc", "application/json", br#"{"jsonrpc":"2.0","id":1,"method":"get_info","params":{}}"#);
+        // a call with no protocol message needs an HTTP node; with none, get_info is answered from the tip (marked light) ...
+        let v = jrpc(&url, "get_info", json!({}));
+        assert!(v["result"]["light"] == true && v["result"]["height"] == 1, "{v}");
+        // ... and the wallet's /getheight likewise
+        let (code, body) = post(&url, "/getheight", "application/json", b"{}");
+        assert_eq!(code, 200);
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["height"], 1);
+        // anything else without a message has no node to go to
+        let (code, body) = post(&url, "/json_rpc", "application/json", br#"{"jsonrpc":"2.0","id":1,"method":"get_sm64_state","params":{"hash":"00"}}"#);
         assert_eq!(code, 502, "{}", String::from_utf8_lossy(&body));
         assert!(String::from_utf8_lossy(&body).contains("no HTTP node"));
         // submissions fan out and report a node's verdict: junk is rejected by the node, not lost
@@ -289,4 +296,68 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         drop(proxy);
     }
     tauri::async_runtime::block_on(relay.shutdown());
+}
+
+/// The wallet-rpc sidecar (wallet2) syncs through the proxy, with a dead node in the list: what the desktop app does when its own
+/// node is not running. Isolated node only; skips without the sidecar binary.
+#[test]
+fn wallet_rpc_sidecar_syncs_through_the_proxy() {
+    let (Some(a), Some(wrpc)) = (start_daemon("w"), bundle_file("sm64coin-wallet-rpc")) else {
+        eprintln!("SKIPPED: needs sm64coind, the ROM and sm64coin-wallet-rpc (an unpacked release bundle in ~/apps)");
+        return;
+    };
+    let up = HttpUpstream::new(&format!("http://127.0.0.1:{}", a.rpc)).unwrap();
+    let t0 = std::time::Instant::now();
+    while tauri::async_runtime::block_on(exec::genesis_hash(&up, Duration::from_secs(2))).is_err() {
+        assert!(t0.elapsed() < Duration::from_secs(90), "the isolated node did not answer");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let net = net_with(&[(dead_http(), Source::Bootstrap), (http_of(&a), Source::Bootstrap)]);
+    let proxy = walletproxy::start(net.clone(), vec![]).unwrap();
+    struct Child2(Child);
+    impl Drop for Child2 {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let wdir = a.dir.join("wallets");
+    std::fs::create_dir_all(&wdir).unwrap();
+    let wport = free_port();
+    let _w = Child2(
+        Command::new(&wrpc)
+            .args(["--daemon-address", &proxy.addr(), "--untrusted-daemon", "--rpc-bind-ip", "127.0.0.1", "--rpc-bind-port", &wport.to_string(), "--disable-rpc-login", "--kdf-rounds", "1", "--non-interactive", "--no-dns"])
+            .arg("--wallet-dir")
+            .arg(&wdir)
+            .arg("--log-file")
+            .arg(a.dir.join("w.log"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start the wallet sidecar"),
+    );
+    let wurl = format!("http://127.0.0.1:{wport}");
+    let t1 = std::time::Instant::now();
+    loop {
+        let r = ureq::post(&format!("{wurl}/json_rpc")).timeout(Duration::from_secs(3)).send_json(json!({"jsonrpc": "2.0", "id": 0, "method": "get_version"}));
+        if r.is_ok() {
+            break;
+        }
+        assert!(t1.elapsed() < Duration::from_secs(60), "the wallet sidecar did not start");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let w = |m: &str, p: Value| -> Value {
+        let r = ureq::post(&format!("{wurl}/json_rpc")).timeout(Duration::from_secs(60)).send_json(json!({"jsonrpc": "2.0", "id": 0, "method": m, "params": p})).unwrap();
+        r.into_json().unwrap()
+    };
+    let c = w("create_wallet", json!({"filename": "t", "password": "", "language": "English"}));
+    assert!(c.get("error").is_none(), "{c}");
+    let r = w("refresh", json!({}));
+    assert!(r.get("error").is_none(), "wallet2 refreshes through the proxy: {r}");
+    let h = w("get_height", json!({}));
+    assert_eq!(h["result"]["height"], 1, "{h}");
+    let b = w("get_balance", json!({}));
+    assert!(b.get("error").is_none(), "{b}");
+    let used = net.status().used.expect("the proxy served the wallet");
+    assert!(used.node.ends_with(&format!(":{}", a.rpc)), "{used:?}");
 }
