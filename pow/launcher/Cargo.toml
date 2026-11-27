@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "sm64coin"
 path = "src/main.rs"
+required-features = ["desktop"]
 
 # Its own workspace (own Cargo.lock): it needs none of the consensus crates, so it
 # builds anywhere, quickly, and the release bundle's launcher is independent of them.
@@ -19,16 +20,20 @@ path = "src/main.rs"
 
 # `tls`: https for rpc::call_url (the desktop app talks to the public node).
 [features]
+default = ["desktop"]
+# `desktop`: everything that needs a desktop OS (ROM search, node/child processes, DHT seeds) and the CLI. Without it only
+# `rpc` (and `util`) are built: the Android app uses just the whitelisted remote RPC.
+desktop = ["dep:clap", "dep:ctrlc", "dep:sha1", "dep:mainline", "dep:tiny_http"]
 tls = ["ureq/tls"]
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-ctrlc = { version = "3", features = ["termination"] }
+clap = { version = "4", features = ["derive"], optional = true }
+ctrlc = { version = "3", features = ["termination"], optional = true }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-sha1 = "0.10"
-mainline = "8"
-tiny_http = "0.12"
+sha1 = { version = "0.10", optional = true }
+mainline = { version = "8", optional = true }
+tiny_http = { version = "0.12", optional = true }
 ureq = { version = "2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]

@@ -27,7 +27,7 @@ export const isChosenNode = () => !!chosen();
 // Desktop app: the node is the app's own (same-origin '/json_rpc' = the Rust backend) while it answers, else the public node.
 // `localUp` is kept current by watchLocalNode() (the node takes a while to start, and can be stopped).
 let localUp = true;
-const desktopNode = () => getPlatform().rpc && getPlatform().remoteRpc;
+const desktopNode = () => !!(getPlatform().rpc && getPlatform().remoteRpc);
 export const usingLocalNode = () => !!desktopNode() && !chosen() && localUp;
 export const usingPublicNode = () => !!desktopNode() && !chosen() && !localUp && !!publicNode;
 export const getNode = () => (chosen() || (desktopNode() ? (localUp || !publicNode ? '' : publicNode) : fallback ? publicNode : DEFAULT_NODE)).replace(/\/+$/, '');
@@ -56,7 +56,8 @@ export async function resolveNode() {
     const r = await withTimeout(fetch(`${import.meta.env.BASE_URL}public-node.json`, { cache: 'no-cache' }), 3000);
     if (r.ok) publicNode = String((await r.json()).url || '').trim().replace(/\/+$/, '');
   } catch { /* no public node */ }
-  if (desktopNode() && !chosen()) { await watchLocalNode(); return; } // the app's own node, or the public one while it is down
+  if (desktopNode() && !chosen()) { await watchLocalNode(); return; }
+  if (getPlatform().mobile && !chosen() && publicNode) { fallback = true; return; } // Android: no local node, the public one over https // the app's own node, or the public one while it is down
   const pick = chosen();
   if (pick) { // a node the user chose is respected, but warned about when it is on another chain
     const probe = (await probeChain((m, p) => withTimeout(call(`${pick}/json_rpc`, m, p), 2500))).state;

@@ -1,4 +1,4 @@
-// The platform of the desktop app (Tauri 2): the same UI, with Rust doing the node, the ROM and the native miner.
+// The platforms of the Tauri 2 app: `tauri` (desktop: Rust does the node, the ROM and the native miner) and `tauri-mobile` (Android).
 // Every Rust command answers `{code, message}` on failure; here that becomes an Error with `.code`.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -55,11 +55,13 @@ const rom = {
   bytes: async () => { const b = await cmd('rom_bytes'); return b instanceof ArrayBuffer ? b : new Uint8Array(b).buffer; },
 };
 
-export const tauri = {
+const isMobile = /Android|iPhone|iPad/.test(globalThis.navigator ? navigator.userAgent : '');
+
+/** The desktop app: local node, native miner, ROM kept by the app. */
+const desktop = {
   name: 'tauri',
   desktop: true,
-  /** Tauri mobile (Android APK, later): same commands, but no local node controls; see desktop/README.md. */
-  mobile: /Android|iPhone|iPad/.test(globalThis.navigator ? navigator.userAgent : ''),
+  mobile: false,
   /** JSON-RPC to the local node: resolves with the whole `{result}` / `{error}` answer (whitelisted methods only). */
   rpc: (method, params) => cmd('node_rpc', { method, params: params || {} }),
   /** The same, against a remote node over https (the public node fallback). */
@@ -70,3 +72,19 @@ export const tauri = {
   rom,
   host: () => cmd('host_info'),
 };
+
+/** The Android app (Tauri mobile): a remote node only (the public one, over https from Rust), no node controls, no sidecars,
+ *  the ROM through the page's own upload. The native miner for Android is future work (off by default, charging only). */
+const mobile = {
+  ...desktop,
+  name: 'tauri-mobile',
+  desktop: false,
+  mobile: true,
+  rpc: null, // no local node: lib/rpc.js uses the public node through remoteRpc
+  nodeUrl: () => '',
+  node: null,
+  nativeMiner: null,
+  rom: null,
+};
+
+export const tauri = isMobile ? mobile : desktop;

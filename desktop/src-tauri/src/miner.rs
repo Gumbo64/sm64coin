@@ -1,6 +1,7 @@
 //! The native miner: `sm64coin-automine` as a low-priority child against the local node. Its output is
 //! streamed to the webview as `miner-log` events (one line each); `miner-state` fires on start and exit.
-use crate::{AppError, Dirs};
+use crate::AppError;
+use crate::desktop::Dirs;
 use serde::Serialize;
 use sm64coin_launcher::proc::Proc;
 use sm64coin_launcher::util::lower_priority;
