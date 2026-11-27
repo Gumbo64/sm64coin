@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { daemon, getNode, getPublicNode, usingPublicFallback } from '../lib/rpc.js';
 import { probeChain } from '../lib/nodechain.js';
 import { latestRelease, SITE_VERSION } from '../lib/updates.js';
@@ -63,6 +63,8 @@ function Versions() {
 }
 
 export default function Info() {
+  const { hash } = useLocation();
+  useEffect(() => { if (hash) document.getElementById(hash.slice(1))?.scrollIntoView(); }, [hash]);
   return (<>
     <Versions />
     <div className="card">
@@ -114,6 +116,22 @@ export default function Info() {
         release</a>, put your own US Super Mario 64 ROM next to it as <span className="mono">baserom.us.z64</span>, and open
         the wallet app: it starts its own node. On a server, run <span className="mono">./sm64coin-node</span> (a systemd unit is
         included) and open TCP port 16480.
+      </p>
+
+      <h3 id="connection">Connection problems</h3>
+      <p>
+        <b>Can't reach the node:</b> usually a VPN, a firewall or NAT in between. Try another network or VPN server, or pick
+        another node on the <Link to="/network">Network</Link> page.
+      </p>
+      <p>
+        <b>Your own node has no incoming peers</b> (it still syncs and mines through its outgoing ones): forward TCP 16480 on
+        your router (NAT) or in your VPN if it offers port forwarding, and allow it in your firewall.
+      </p>
+      <p>
+        <b>Behind CGNAT</b> (your router's internet address differs from your public IP), port forwarding can't work. You can
+        still play, mine, sync your own node and use the wallet: all of that only needs outgoing connections. Only other nodes
+        connecting to yours is blocked. To be reachable anyway: use IPv6 if your ISP gives you one, ask your ISP for a public
+        IPv4, use a VPN with port forwarding, or run a node on a small rented server.
       </p>
 
       <h3>Is there an Android app?</h3>

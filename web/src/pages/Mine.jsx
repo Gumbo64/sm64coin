@@ -547,7 +547,7 @@ function Miner() {
         </InfoPop>
       </p>
       <NoWallet address={address} />
-      {nodeDown && <div className="notice warn" data-testid="node-down" role="status">{NODE_HINT}</div>}
+      {nodeDown && <div className="notice warn" data-testid="node-down" role="status">{NODE_HINT} <Link to="/info#connection">Help</Link></div>}
       <Cols
         main={(
           <>

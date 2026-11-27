@@ -1,3 +1,4 @@
+import { Link } from 'react-router';
 import React, { useEffect, useState } from 'react';
 import { chooseNode, daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, nodeNote, usingPublicFallback, NODE_HINT } from '../lib/rpc.js';
 import useInterval from '../lib/useInterval.js';
@@ -51,7 +52,7 @@ export default function Network() {
       <button onClick={save} disabled={!clean(draft)}>Save</button>
       {nodeInUse().kind === 'local' && <p>Reading from: <b>this app's own node</b> (127.0.0.1)</p>}
       {nodeInUse().kind === 'public' && <p>Reading from: <b>the public node</b> <code>{nodeInUse().url}</code> (the local node is not running)</p>}
-      <p>Current: <b>{node || (nodeInUse().kind === 'local' ? '(the app\'s own node)' : '(this site\'s proxy)')}</b>{status && <span className="muted"> | {status}</span>}</p>
+      <p>Current: <b>{node || (nodeInUse().kind === 'local' ? '(the app\'s own node)' : '(this site\'s proxy)')}</b>{status && <span className="muted"> | {status}</span>}{/unreachable|No incoming peers/.test(status) && <> <Link to="/info#connection">Help</Link></>}</p>
       {usingPublicFallback() && node === getPublicNode() && (
         <p className="muted">{nodeNote() || `Your own node (${import.meta.env.VITE_DEFAULT_NODE}) didn't answer, so this visit uses the public node. Start yours and reload to use it.`}</p>
       )}
