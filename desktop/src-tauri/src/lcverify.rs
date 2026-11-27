@@ -10,7 +10,7 @@
 use serde::Serialize;
 use sm64coin_lc::client::Client;
 use sm64coin_lc::consensus::Sm64Consensus;
-use sm64coin_lc::verify::{Checkpoint, Level, CrossCheckOptions, NodeVerdict, Outcome, VerifyError};
+use sm64coin_lc::verify::{Checkpoint, Level, CrossCheckOptions, NodeVerdict, Outcome, Resume, VerifyError};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -69,11 +69,16 @@ pub fn checkpoint_for(genesis: &[u8; 32]) -> Checkpoint {
 }
 
 /// Shared state of the verifier: the status the page reads and the cancel flag of the running replay.
+/// Blocks one check downloads per node at most (a phone far behind the compiled checkpoint catches up over a few checks).
+pub const MAX_BLOCKS_PER_CHECK: u64 = 2000;
+
 #[derive(Default)]
 pub struct Verifier {
     pub status: Mutex<Verification>,
     cancel: Mutex<Option<Arc<AtomicBool>>>,
     last_tip: Mutex<Option<[u8; 32]>>,
+    /// Where the next check starts (`verify::sync_resume`): only the blocks after it are downloaded.
+    resume: Mutex<Option<Resume>>,
 }
 
 fn now_ms() -> u64 {
@@ -107,12 +112,23 @@ impl Verifier {
         self.status.lock().unwrap().replay = r;
     }
 
-    /// Header layer: asks up to five nodes, verifies each one's chain from `cp`, follows the best branch. Sets the status, bans
-    /// liars (inside `verify::sync`) and restricts the client to the verified branch's nodes. Returns the outcome on success.
+    /// The resume point of the last check (to store), or one read back from storage (used only if it fits the checkpoint).
+    pub fn resume(&self) -> Option<Resume> {
+        self.resume.lock().unwrap().clone()
+    }
+    pub fn set_resume(&self, r: Option<Resume>) {
+        *self.resume.lock().unwrap() = r;
+    }
+
+    /// Header layer: asks up to five nodes, verifies the chain from the last check's resume point (or from `cp`: the first
+    /// time, after a reorg below it), follows the best branch. Sets the status, bans liars (inside `verify::sync_resume`) and
+    /// restricts the client to the verified branch's nodes. Returns the outcome on success.
     pub async fn check(&self, client: &Client, cp: &Checkpoint, replay_enabled: bool) -> Result<Outcome, String> {
         self.cancel_replay();
-        let opts = CrossCheckOptions::default();
-        let res = sm64coin_lc::verify::sync(client, cp, &Sm64Consensus, None, &opts, &|| false).await;
+        let mut opts = CrossCheckOptions::default();
+        opts.verify.max_blocks = Some(MAX_BLOCKS_PER_CHECK);
+        let resume = self.resume();
+        let res = sm64coin_lc::verify::sync_resume(client, cp, resume.as_ref(), &Sm64Consensus, None, &opts, &|| false).await;
         let mut st = Verification { checkpoint_height: cp.height, checked_at_ms: now_ms(), ..Default::default() };
         st.replay = if replay_enabled { ReplayStatus { state: "running", detail: "waiting".into(), ..Default::default() } } else { ReplayStatus::default() };
         match res {
@@ -144,7 +160,13 @@ impl Verifier {
                     .collect();
                 let conflicted = out.nodes.iter().any(|(_, v)| matches!(v, NodeVerdict::Forked | NodeVerdict::Liar(_)));
                 let nodes_word = if st.agree == 1 { "1 node agrees".to_string() } else { format!("{} nodes agree", st.agree) };
-                if conflicted {
+                if out.resume.is_some() {
+                    *self.resume.lock().unwrap() = out.resume.clone();
+                }
+                if out.partial {
+                    st.state = "checking";
+                    st.label = format!("checking the chain (verified to block {}, catching up)", out.best.tip.height);
+                } else if conflicted {
                     st.state = "conflict";
                     st.label = format!("conflict ({nodes_word}; following the heaviest valid chain)");
                 } else {
@@ -164,7 +186,14 @@ impl Verifier {
                     e => e.to_string(),
                 };
                 st.state = "unverified";
-                st.label = "unverified (no node could be checked)".into();
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                let all_banned = client.with_list(|l| !l.is_empty() && l.records().iter().all(|r| r.is_banned(now)));
+                st.label = if all_banned {
+                    // never a dead end: the client falls back to the banned nodes as a last resort, and says so here
+                    "unverified (every node failed the chain check; reading from them anyway)".into()
+                } else {
+                    "unverified (no node could be checked)".into()
+                };
                 st.error = Some(why.clone());
                 st.replay = ReplayStatus::default();
                 client.set_allowed(None);

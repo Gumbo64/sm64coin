@@ -151,7 +151,19 @@ impl Client {
 
     fn pick(&self, n: usize) -> Vec<(String, NodeAddr)> {
         let allowed = self.allowed.lock().unwrap().clone();
-        let Some(allowed) = allowed else { return self.pick_unrestricted(n) };
+        let Some(allowed) = allowed else {
+            let v = self.pick_unrestricted(n);
+            if !v.is_empty() {
+                return v;
+            }
+            // Last resort, when every node is banned or behind (a verifier that rejects every node, e.g. after a rule
+            // change it does not know): the best-scored records anyway, so the app is never left with no node at all. The
+            // caller's verification state says the reads are unverified.
+            let list = self.list.lock().unwrap();
+            let mut all: Vec<&NodeRecord> = list.records().iter().collect();
+            all.sort_by(|a, b| b.ok_rate.total_cmp(&a.ok_rate));
+            return all.into_iter().take(n).map(|r| (r.key(), r.addr.clone())).collect();
+        };
         let all = self.list.lock().unwrap().len();
         self.pick_unrestricted(all).into_iter().filter(|(k, _)| allowed.contains(k)).take(n).collect()
     }

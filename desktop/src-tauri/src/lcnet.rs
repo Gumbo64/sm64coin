@@ -102,6 +102,11 @@ impl Connector for AppConnector {
 /// Supplies the ROM bytes (desktop: from the app's data dir) for the replay of the current cycle.
 pub type RomFinder = Arc<dyn Fn() -> Option<Vec<u8>> + Send + Sync>;
 
+/// Where the last verification's resume point is kept (next to `nodes.json`): the next start checks only newer blocks.
+fn verified_file(nodes_file: &std::path::Path) -> PathBuf {
+    nodes_file.with_file_name("lc-verified.json")
+}
+
 /// The chain this app follows: mainnet, or `SM64COIN_GENESIS` (tests, closed networks).
 pub fn network_genesis() -> [u8; 32] {
     hex::decode(std::env::var("SM64COIN_GENESIS").unwrap_or_else(|_| MAINNET_GENESIS.into())).ok().and_then(|b| <[u8; 32]>::try_from(b).ok()).unwrap_or([0; 32])
@@ -149,6 +154,12 @@ impl Net {
             list.add(NodeAddr::Http { url: s.to_string() }, Source::Manual, now);
         }
         let conn = Arc::new(AppConnector { iroh: RwLock::new(None), http: Mutex::new(HashMap::new()) });
+        let verifier = Arc::new(Verifier::default());
+        // the stored resume point (the app's own data dir; used only if it descends from this release's checkpoint)
+        let stored = nodes_file.as_ref().and_then(|f| std::fs::read_to_string(verified_file(f)).ok()).and_then(|s| sm64coin_lc::verify::Resume::from_json(&s).ok());
+        if let Some(r) = stored.filter(|r| r.fits(&checkpoint_for(&network_genesis()))) {
+            verifier.set_resume(Some(r));
+        }
         Arc::new(Net {
             client: Client::new(list, conn.clone(), Arc::new(SystemEnv)),
             conn,
@@ -158,7 +169,7 @@ impl Net {
             used: Mutex::new(None),
             iroh_id: Mutex::new(None),
             proxy: Mutex::new(None),
-            verifier: Arc::new(Verifier::default()),
+            verifier,
             rom_finder: Mutex::new(None),
             network: network_genesis(),
             read_timeout: READ_TIMEOUT,
@@ -199,6 +210,9 @@ impl Net {
     /// Persists the node list (when it changed).
     pub fn persist(&self) {
         let Some(f) = &self.nodes_file else { return };
+        if let Some(r) = self.verifier.resume() {
+            let _ = std::fs::write(verified_file(f), r.to_json());
+        }
         let json = self.client.list_json();
         let mut last = self.saved_json.lock().unwrap();
         if *last != json && std::fs::write(f, &json).is_ok() {
@@ -277,9 +291,17 @@ impl Net {
                     (None, _) => false,
                 };
                 let since = last_verify.map(|t| t.elapsed());
+                // no verified node answers any more: check again soon (the check asks any node, and either finds the new verified
+                // set or lifts the restriction), so the restriction never leaves the app without a node for long
+                let stranded = tip.is_none() && v.state != "unverified";
                 let due = match since {
                     None => true,
-                    Some(e) => e > Duration::from_secs(600) || (moved && e > Duration::from_secs(15)) || (v.state == "unverified" && e > Duration::from_secs(60)),
+                    Some(e) => {
+                        e > Duration::from_secs(600)
+                            || (moved && e > Duration::from_secs(15))
+                            || ((v.state == "unverified" || stranded) && e > Duration::from_secs(30))
+                            || (v.state == "checking" && e > Duration::from_secs(5))
+                    }
                 };
                 if due {
                     last_verify = Some(std::time::Instant::now());
@@ -311,6 +333,11 @@ impl Net {
     #[cfg_attr(mobile, allow(dead_code))]
     pub fn enable_replay(&self, rom: RomFinder) {
         *self.rom_finder.lock().unwrap() = Some(rom);
+        // the replay needs the current cycle's blocks, which a resume point read from disk does not carry: the first check of
+        // this run goes from the checkpoint (later ones resume from memory, which keeps them)
+        if self.verifier.resume().is_some_and(|r| r.raw.is_empty()) {
+            self.verifier.set_resume(None);
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -331,6 +358,8 @@ impl Net {
             let me = self.clone();
             tauri::async_runtime::spawn(async move {
                 if me.verifier.replay(&me.client, out, Some(rom)).await.is_err() {
+                    // the resume point may descend from the block that failed: start again from the checkpoint
+                    me.verifier.set_resume(None);
                     let _ = me.verifier.check(&me.client, &cp, false).await;
                 }
             });
