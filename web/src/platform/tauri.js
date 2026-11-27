@@ -72,20 +72,40 @@ async function pageRomBytes() {
   const b = await f.getROM();
   return b instanceof ArrayBuffer ? new Uint8Array(b) : new Uint8Array(b.buffer || b);
 }
+// Android's IPC carries no raw bodies (every invoke is a JSON message; a Uint8Array would become 8 M numbers), so base64.
+async function pageRomBase64() {
+  const bytes = await pageRomBytes();
+  const url = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(new Blob([bytes]));
+  });
+  return url.slice(url.indexOf(',') + 1);
+}
+// Mining only while the app is on screen (no wake lock or foreground service in this version): whichever page is open, a
+// hidden app stops the miner, and a start that finishes while hidden is stopped at once.
+const stopIfHidden = () => { if (globalThis.document && document.hidden) cmd('miner_stop').catch(() => {}); };
 const mobileMiner = {
   ...nativeMiner,
-  async start(args = {}) {
+  async start({ address, threads, viz } = {}) {
+    const args = { address, threads, viz };
+    let r;
     try {
-      return await cmd('miner_start', args);
+      r = await cmd('miner_start', args);
     } catch (e) {
       if (e.code !== 'rom_missing') throw e;
-      await cmd('rom_put', await pageRomBytes()); // raw body: the ROM's bytes (checked by SHA-1 in Rust)
-      return cmd('miner_start', args);
+      await cmd('rom_put', { rom: await pageRomBase64() }); // checked by size and SHA-1 in Rust
+      r = await cmd('miner_start', args);
     }
+    stopIfHidden();
+    return r;
   },
 };
 
 const isMobile = /Android|iPhone|iPad/.test(globalThis.navigator ? navigator.userAgent : '');
+// Hooked at load, so a miner still running in Rust after a page reload is stopped on hide too.
+if (isMobile && globalThis.document) document.addEventListener('visibilitychange', stopIfHidden);
 
 // The wallet: the sm64coin-wallet-rpc sidecar behind Rust (wallet.rs). The page never sees its port or login; Rust refuses
 // methods outside its whitelist and enforces the password rules (the password goes along as `_password`). Amounts are atomic

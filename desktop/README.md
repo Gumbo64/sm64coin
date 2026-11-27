@@ -95,14 +95,16 @@ Android cannot spawn sidecar binaries, so the miner is a library that runs on th
 `sm64coin_miner::campaign` (pow/miner, see its README). The app's Rust side is `src-tauri/src/mobile_miner.rs` (no Tauri types:
 events leave through an `Emit` closure, so the host can test it) with the commands in `lib.rs` (`mobile_cmds`):
 
-- `rom_put(bytes)`: the page sends its own ROM (read from its IndexedDB) once, as the raw request body, when `miner_start`
-  answers `rom_missing`; Rust checks size and SHA-1 and keeps it in the app's data dir (`rom.z64`).
+- `rom_put({rom})`: the page sends its own ROM (read from its IndexedDB) once, base64 (Android's IPC has no raw bodies: every
+  invoke is a JSON message), when `miner_start` answers `rom_missing`; Rust checks the length, then size and SHA-1, and keeps it
+  in the app's data dir (`rom.z64`).
 - `miner_start({address, threads, viz})`: `Campaign` against the public node only (`Remote::daemon_url`; the page cannot pass a
   URL), data dir = the app's data dir + `miner/`, threads default min(4, cores - 1). `miner_stop`, `miner_status`, `miner_viz_on`,
   `miner_viz_mail` (checked by `vizfeed::clean_mail`) as on the desktop; events `miner-log` (with the 2 s `progress` line),
   `miner-state`, `miner-viz`, so the Native miner card and the visualisation adapter are the desktop's. Only in
   `capabilities/mobile.json`.
-- Foreground only: the card stops the miner when the page goes hidden (`visibilitychange`). No wake lock, no foreground
+- Foreground only: the page (`platform/tauri.js`, on every page) stops the miner when it goes hidden (`visibilitychange`), and
+  stops a start that completes while hidden. No wake lock, no foreground
   service, no extra permission in this version (later work: a foreground service with a battery/charging policy).
 - Engine: sm64-binds runs the game through wasmer's `sys` backend with Cranelift (JIT; the ahead-of-time LLVM module is
   x86-64 Linux only, and the userfaultfd dirty-page tracker is Linux-only, so on Android it compiles the WebAssembly at

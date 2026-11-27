@@ -65,13 +65,7 @@ export default function NativeMiner() {
   const th = Number(threads) || undefined;
   // While the native miner runs, its search drives the page's visualisations (lib/webminer/nativeFeed.js).
   useEffect(() => { if (running) miner.attachNative(p.nativeMiner); }, [running, p]);
-  // Android: mining only while the app is in the foreground (no wake lock or foreground service in this version).
-  useEffect(() => {
-    if (!mobile || !running) return undefined;
-    const hide = () => { if (document.hidden) p.nativeMiner.stop().catch(() => {}); };
-    document.addEventListener('visibilitychange', hide);
-    return () => document.removeEventListener('visibilitychange', hide);
-  }, [mobile, running, p]);
+  // Android: mining only while the app is in the foreground; platform/tauri.js stops it on hide, on any page.
 
   return (
     <SideCard title={mobile ? 'Native miner (preview)' : 'Native miner'} tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
