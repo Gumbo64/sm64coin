@@ -19,6 +19,21 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.3: the SM64Coin Android app (preview)
+
+Same chain as 0.5.0 to 0.5.2: no reset, upgrade in place.
+
+- **New: the SM64Coin Android app** (preview): `sm64coin-@VERSION@-android.apk`, for arm64 phones with Android 7 or
+  newer. It is the website in an app: it reads the chain from the public node, uses the website's wallet (create or
+  restore from seed words; passkey wallets are not available in the app, a website passkey wallet opens from its seed
+  words) and your own ROM picked from the phone, and you play to mine with the touch controls. No auto-mining in the
+  app yet: native mining on Android comes next.
+- Install it with [Obtainium](https://obtainium.imranr.dev/) (**[Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Gumbo64/sm64coin)**,
+  which also keeps it up to date) or download the APK and open it (allow "install unknown apps" for your browser).
+  This is the first release of the app id `io.github.gumbo64.sm64coin`. It is signed with the SM64Coin release key,
+  certificate SHA-256 `63:10:2D:9D:EE:E7:3F:03:D2:CF:EB:6A:61:E6:77:B1:4E:2A:4B:92:55:60:D2:8B:D5:53:ED:42:4E:45:9A:C4`
+  (check with `apksigner verify --print-certs`); updates are only ever signed with that key.
+
 ### 0.5.2: the native miner drives the desktop app's views
 
 Same chain as 0.5.0 and 0.5.1: no reset, upgrade in place.

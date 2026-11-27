@@ -65,7 +65,7 @@ Releases (https://github.com/Gumbo64/sm64coin/releases) hold one archive per pla
 
 The release also holds `sm64coin-<version>-android.apk` (arm64 phones, Android 7+): the website in an app, reading the chain from the
 public node, with the website's wallet and your own ROM picked from the phone. Easiest: install [Obtainium](https://obtainium.imranr.dev/)
-and tap **[Add to Obtainium](obtainium://add/https://github.com/Gumbo64/sm64coin)**, which installs it and keeps it up to date; or download
+and tap **[Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Gumbo64/sm64coin)**, which installs it and keeps it up to date; or download
 the APK from the release and open it (allow "install unknown apps" for your browser). It is signed with the SM64Coin release key, SHA-256
 `63:10:2D:9D:EE:E7:3F:03:D2:CF:EB:6A:61:E6:77:B1:4E:2A:4B:92:55:60:D2:8B:D5:53:ED:42:4E:45:9A:C4`; check it with `apksigner verify --print-certs`.
 
@@ -190,7 +190,7 @@ Sync verifies every block by replay (about 0.1 to 1 s per block). Notes from tes
 `https://gumbo64.github.io/sm64coin/` (one-time setup: Settings -> Pages -> Source: GitHub Actions). The pages are
 static and call a node's RPC from the visitor's browser, by default the visitor's own node at
 `http://127.0.0.1:16481`, so nothing goes through GitHub and the RPC stays bound to localhost. Nodes started by the
-`sm64coin-node` or `scripts/start-node.sh` allow that origin (`--rpc-access-control-origins https://gumbo64.github.io,https://sm64coin.pages.dev`, a comma separated list;
+`sm64coin-node` or `scripts/start-node.sh` allow that origin (`--rpc-access-control-origins https://gumbo64.github.io,https://sm64coin.pages.dev,http://tauri.localhost`, a comma separated list, the last one the Android app;
 `SITE_ORIGIN` overrides it) and answer Chrome's private-network preflight. Chrome and Firefox let an https page call
 `http://127.0.0.1`; newer Chrome asks first ("access devices on your local network": allow). Safari may refuse.
 Another node: the site's Network page.
