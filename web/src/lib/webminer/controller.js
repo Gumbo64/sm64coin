@@ -84,6 +84,9 @@ class MinerController {
     this.subs = new Set();
     const q = new URLSearchParams(window.location.search).get('address');
     this.address = ls('sm64coin.address', '');
+    // The wallet this device has (Wallet page, any platform): the default mining address.
+    this.walletAddress = ls('sm64coin.walletAddress', '');
+    if (!isAddress(this.address) && isAddress(this.walletAddress)) this.address = this.walletAddress;
     // A payout address in the page's URL is never applied silently (a phishing link would make the visitor mine for someone else):
     // it waits here until the visitor confirms it in the banner (acceptLinkAddress).
     this.linkAddress = q && isAddress(q.trim()) && q.trim() !== this.address ? q.trim() : '';
@@ -119,7 +122,7 @@ class MinerController {
   subscribe = (fn) => { this.subs.add(fn); return () => this.subs.delete(fn); };
   getSnapshot = () => this.snap;
   makeSnap() {
-    return { address: this.address, linkAddress: this.linkAddress, count: this.count, mode: this.mode, vizOn: this.vizOn, playFromStart: this.playFromStart, hybridOK: hybrid.available, running: this.running || !!this.native, native: !!this.native, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
+    return { address: this.address, walletAddress: this.walletAddress, linkAddress: this.linkAddress, count: this.count, mode: this.mode, vizOn: this.vizOn, playFromStart: this.playFromStart, hybridOK: hybrid.available, running: this.running || !!this.native, native: !!this.native, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
   }
   /** Wakes the views: at most 4 times a second, at once when `now`. */
   emit(now = false) {
@@ -172,6 +175,14 @@ class MinerController {
   acceptLinkAddress() { const a = this.linkAddress; this.linkAddress = ''; clearAddressParam(); if (a) this.setAddress(a); else this.emit(true); }
   /** The visitor refused it: the stored address stays. */
   dismissLinkAddress() { this.linkAddress = ''; clearAddressParam(); this.emit(true); }
+  /** The wallet's address (opened, created or restored): it becomes the mining address unless another one was chosen on purpose
+   *  (the mining address is the previous wallet's, or empty). */
+  noteWallet(a, force = false) {
+    if (!isAddress(a || '')) return;
+    const prev = this.walletAddress;
+    this.walletAddress = a; lsSet('sm64coin.walletAddress', a);
+    if (force || !isAddress(this.address) || this.address === prev) this.setAddress(a); else this.emit(true);
+  }
   setAddress(a) { this.address = a; if (isAddress(a)) lsSet('sm64coin.address', a); this.emit(true); }
   setCount(n) { this.count = Math.max(1, Math.min(32, Number(n) || 1)); this.emit(true); }
   setMode(m) { this.mode = m; lsSet('sm64coin.resetMode', m); this.emit(true); }

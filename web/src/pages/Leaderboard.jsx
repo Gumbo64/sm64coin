@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { daemon } from '../lib/rpc.js';
+import Identicon from '../components/Identicon.jsx';
+import { daemon, NODE_HINT } from '../lib/rpc.js';
 
 // The board every node keeps and shares with its peers over p2p (the node's
 // sm64_board RPC): the top 50 addresses by blocks mined, each counted by the
 // node itself with the entry's view key.
 const BoardJoin = React.lazy(() => import('./BoardJoin.jsx'));
 const fmt = (a) => (a / 1e12).toLocaleString(undefined, { maximumFractionDigits: 6 });
-const short = (a) => a.slice(0, 8) + '…' + a.slice(-6);
+import { groupedShort } from '../lib/identicon.js';
 
 export default function Leaderboard() {
   const [rows, setRows] = useState(null);
@@ -15,7 +16,7 @@ export default function Leaderboard() {
 
   const load = useCallback(() => {
     daemon('sm64_board').then((r) => { setRows(r.entries || []); setOff(!!r.disabled); setErr(''); })
-      .catch((e) => setErr('Node unreachable: ' + e.message));
+      .catch((e) => setErr(`Node unreachable: ${e.message}. ${NODE_HINT}`));
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
 
@@ -40,8 +41,8 @@ export default function Leaderboard() {
             <tbody>
               {rows.map((r, i) => (
                 <tr key={r.address}>
-                  <td>{i + 1}</td><td>{r.name}</td>
-                  <td className="mono" title={r.address}>{short(r.address)}<CopyButton text={r.address} /></td>
+                  <td>{i + 1}</td><td><Identicon address={r.address} size={24} /> {r.name}</td>
+                  <td className="mono" title={r.address}>{groupedShort(r.address)}<CopyButton text={r.address} /></td>
                   <td>{r.blocks}</td><td>{fmt(r.reward)}</td><td>{r.last_height || '-'}</td>
                 </tr>
               ))}

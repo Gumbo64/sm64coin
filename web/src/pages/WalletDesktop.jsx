@@ -2,7 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { daemon, nodeInUse, onNodeChange } from '../lib/rpc.js';
 import { fmt, fmtShort, parseAmount } from '../lib/wallet/engine.js';
+import Identicon from '../components/Identicon.jsx';
 import { miner } from '../lib/webminer/controller.js';
+import { newPassword, NO_PASSWORD_WARNING } from '../lib/wallet/pwRule.js';
+import { isNoPw, setNoPw } from '../lib/wallet/quick.js';
 import { getPlatform } from '../platform/index.js';
 
 // The desktop app's wallet: sm64coin-wallet-rpc (the wallet the Qt GUI uses) behind the Rust backend, which keeps its login to itself
@@ -50,7 +53,7 @@ export default function WalletDesktop() {
     setBusy(label); setErr('');
     try { return await f(); } catch (e) { setErr(e.message || String(e)); } finally { setBusy(''); refresh(); }
   };
-  const adopt = (a) => { setAddress(a); setNote(''); };
+  const adopt = (a, force = false) => { setAddress(a); setNote(''); miner.noteWallet(a, force); };
 
   if (!st) return <div className="card"><h2>Wallet</h2><p className="muted">{err || 'Starting…'}</p></div>;
   if (!st.available) return <div className="card"><h2>Wallet</h2><p className="walleterr">The wallet component (sm64coin-wallet-rpc) is not in this app's folder.</p></div>;
@@ -86,6 +89,8 @@ function Unlock({ st, note, run, adopt, busy }) {
   const [name, setName] = useState(st.wallets[0]);
   const [pw, setPw] = useState('');
   const go = () => run('Opening', async () => { const r = await w.open(name, pw); setPw(''); adopt(r.address); });
+  // a wallet made without a password opens by itself
+  useEffect(() => { if (isNoPw(name) && !busy) go(); }, [name]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="card">
       <h2>Wallet</h2>
@@ -95,9 +100,9 @@ function Unlock({ st, note, run, adopt, busy }) {
         {st.wallets.length === 1 && <b>{name}</b>}
       </p>
       {/* a form: Enter submits it */}
-      <form onSubmit={(e) => { e.preventDefault(); if (pw && !busy) go(); }}>
+      <form onSubmit={(e) => { e.preventDefault(); if (!busy) go(); }}>
         <input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
-        <button type="submit" disabled={busy || !pw}>Open</button>
+        <button type="submit" disabled={busy}>Open</button>
       </form>
       <p className="muted">Stored in {st.dir} (readable by you only).</p>
     </div>
@@ -106,7 +111,7 @@ function Unlock({ st, note, run, adopt, busy }) {
 
 function Onboard({ st, run, setFresh, adopt, busy, first }) {
   const w = getPlatform().wallet;
-  const [mode, setMode] = useState(first ? 'create' : null); // create | restore
+  const [mode, setMode] = useState(first ? 'home' : null); // home (first wallet: one click) | create | restore | passkey
   const [name, setName] = useState(first ? 'main' : '');
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
@@ -115,15 +120,25 @@ function Onboard({ st, run, setFresh, adopt, busy, first }) {
   const [offset, setOffset] = useState('');
   const [kdf, setKdf] = useState('1');
   const [adv, setAdv] = useState(false);
+  if (mode === 'home') {
+    return (
+      <div className="card" data-testid="onboard-home">
+        <p><button className="ui-big" style={{ maxWidth: 320 }} disabled={busy} onClick={() => run('Creating the wallet', async () => { const r = await w.create({ name: 'main', password: '' }); setNoPw('main', true); adopt(r.address, true); })}>Create wallet</button></p>
+        <p><button disabled={busy} onClick={() => setMode('passkey')}>Use my website passkey</button></p>
+        <p className="small"><button className="linkish" onClick={() => setMode('restore')}>Restore a wallet…</button></p>
+      </div>
+    );
+  }
   if (!mode) return <div className="card"><button onClick={() => setMode('create')}>Create another wallet…</button>{' '}<button onClick={() => setMode('restore')}>Restore from seed…</button>{' '}<button onClick={() => setMode('passkey')}>Use my website passkey…</button></div>;
-  if (mode === 'passkey') return <Passkey st={st} run={run} adopt={adopt} busy={busy} first={first} back={() => setMode(first ? 'create' : null)} />;
+  if (mode === 'passkey') return <Passkey st={st} run={run} adopt={adopt} busy={busy} first={first} back={() => setMode(first ? 'home' : null)} />;
   const nameOk = /^[A-Za-z0-9_-]{1,40}$/.test(name) && !st.wallets.includes(name);
-  const pwOk = pw.length >= 8 && pw === pw2;
+  const np = newPassword(pw, pw2);
+  const pwOk = np.ok;
   const ok = nameOk && pwOk && (mode === 'create' || seed.trim().split(/\s+/).length >= 24);
   const kdfN = Math.max(1, Math.min(1000000, parseInt(kdf, 10) || 1));
   const go = () => run(mode === 'create' ? 'Creating the wallet' : 'Restoring (this scans the chain from the restore height)', async () => {
-    if (mode === 'create') { const r = await w.create({ name, password: pw, kdfRounds: kdfN }); setPw(''); setPw2(''); setFresh(r); } else {
-      const r = await w.restore({ name, password: pw, seed, restoreHeight: height, seedOffset: offset, kdfRounds: kdfN }); setPw(''); setPw2(''); setSeed(''); adopt(r.address);
+    if (mode === 'create') { const r = await w.create({ name, password: pw, kdfRounds: kdfN }); setNoPw(name, !pw); setPw(''); setPw2(''); setFresh(r); } else {
+      const r = await w.restore({ name, password: pw, seed, restoreHeight: height, seedOffset: offset, kdfRounds: kdfN }); setNoPw(name, !pw); setPw(''); setPw2(''); setSeed(''); adopt(r.address, true);
     }
   });
   return (
@@ -131,9 +146,9 @@ function Onboard({ st, run, setFresh, adopt, busy, first }) {
       <h2>{first ? 'Wallet' : mode === 'create' ? 'New wallet' : 'Restore a wallet'}</h2>
       {first && (
         <div className="controls">
-          <button className={mode === 'create' ? '' : 'linkish'} onClick={() => setMode('create')}>New wallet</button>
+          <button className="linkish" onClick={() => setMode('home')}>◂ back</button>
           <button className={mode === 'restore' ? '' : 'linkish'} onClick={() => setMode('restore')}>Restore from seed words</button>
-          <button className={mode === 'passkey' ? '' : 'linkish'} onClick={() => setMode('passkey')}>Use my website passkey</button>
+          <button className="linkish" onClick={() => setMode('passkey')}>Use my website passkey</button>
         </div>
       )}
       <p><input placeholder="wallet name" value={name} onChange={(e) => setName(e.target.value)} />{!nameOk && name && <span className="muted"> letters, digits, - _ (not used yet)</span>}</p>
@@ -143,8 +158,9 @@ function Onboard({ st, run, setFresh, adopt, busy, first }) {
           <p><input placeholder="restore height" size={12} value={height} onChange={(e) => setHeight(e.target.value)} /> <span className="muted">block to scan from (0 = the start: always right, slower)</span></p>
         </>
       )}
-      <p><input type="password" placeholder="password (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+      <p><input type="password" placeholder="password (8+ characters, optional)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
         <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} /></p>
+      {np.error ? <p className="walleterr" data-testid="pw-error">{np.error}</p> : np.warn ? <p className="muted small" data-testid="pw-warn">{np.warn}</p> : null}
       <p><button className="linkish" onClick={() => setAdv(!adv)}>{adv ? '▾' : '▸'} advanced</button></p>
       {adv && (
         <p>
@@ -177,6 +193,7 @@ function Open({ st, w, address, setAddress, run, refresh }) {
 
   const syncPct = heights.chain > 0 ? Math.min(100, Math.floor((heights.wallet * 100) / heights.chain)) : null;
   const val = (a) => (hide ? '•••••' : a == null ? '…' : fmtShort(a));
+  const [, bump] = useState(0);
   const lock = () => run('Locking', async () => { await w.close(); setAddress(''); });
 
   return (
@@ -184,6 +201,7 @@ function Open({ st, w, address, setAddress, run, refresh }) {
       <div className="card">
         <h2>Wallet <span className="muted">{st.open}</span></h2>
         <AddressRow w={w} address={address} setAddress={setAddress} />
+        {address && !isBacked(address) && <p className="notice small" data-testid="backup-reminder">Back up your seed words: <b>Show seed words and keys</b> below.</p>}
         <div className="controls">
           <button onClick={lock}>Lock</button>{' '}
           {st.settings.hide_balance && <button className="linkish" onClick={() => setShown(!shown)}>{hide ? 'Show balance' : 'Hide balance'}</button>}
@@ -197,7 +215,8 @@ function Open({ st, w, address, setAddress, run, refresh }) {
       </div>
       <Txs txs={txs} hide={hide} />
       <Send w={w} bal={bal} settings={st.settings} run={run} poll={poll} hide={hide} />
-      <Keys w={w} run={run} />
+      <Keys w={w} run={run} onShown={() => { markBacked(address); bump(); }} />
+      <SetPassword w={w} name={st.open} run={run} />
       <Settings w={w} st={st} run={run} refresh={refresh} />
     </>
   );
@@ -208,7 +227,7 @@ function AddressRow({ w, address, setAddress }) {
   return (
     <>
       <div className="label">Primary address</div>
-      <p className="mono break addr">{address || '…'}</p>
+      <p className="mono break addr">{address && <Identicon address={address} size={32} />} {address || '…'}</p>
       <div className="controls">
         <button disabled={!address} onClick={() => copy(address)}>Copy</button>{' '}
         {address && <Link to="/mine" onClick={() => miner.setAddress(address)}><button>Mine to it</button></Link>}
@@ -254,7 +273,7 @@ function Send({ w, bal, settings, run, poll, hide }) {
   const [draft, setDraft] = useState(null);
   const [sent, setSent] = useState('');
   const atomic = parseAmount(amt);
-  const ok = isAddress(to) && atomic && atomic > 0n && (!settings.password_on_send || pw);
+  const ok = isAddress(to) && atomic && atomic > 0n && true; // the app checks the password (an empty one is right for a wallet made without one)
   const prepare = () => run('Building the transaction', async () => {
     setSent('');
     const d = await w.draft({ address: to.trim(), amount: atomic, password: pw });
@@ -270,6 +289,8 @@ function Send({ w, bal, settings, run, poll, hide }) {
     <div className="card">
       <h3>Send</h3>
       <p><input className="wide mono" placeholder="SM64… recipient address" value={to} onChange={(e) => { setTo(e.target.value); setDraft(null); }} /></p>
+      {isAddress(to) && <p className="muted small" data-testid="to-preview"><Identicon address={to.trim()} size={24} /> {to.trim().slice(0, 8)}…{to.trim().slice(-6)}: check it is the right one.</p>}
+
       <p>
         <input placeholder="amount" value={amt} size={16} onChange={(e) => { setAmt(e.target.value); setDraft(null); }} />{' '}
         <span className="muted">spendable {hide ? '•••••' : bal ? fmtShort(bal.unlocked) : '…'}</span>
@@ -288,7 +309,7 @@ function Send({ w, bal, settings, run, poll, hide }) {
   );
 }
 
-function Keys({ w, run }) {
+function Keys({ w, run, onShown }) {
   const [open, setOpen] = useState(false);
   const [pw, setPw] = useState('');
   const [k, setK] = useState(null);
@@ -296,7 +317,7 @@ function Keys({ w, run }) {
   const reveal = () => run('Checking the password', async () => {
     const seed = await w.seed(pw);
     const keys = await w.keys(pw);
-    setK({ seed, ...keys }); setPw('');
+    setK({ seed, ...keys }); setPw(''); onShown && onShown();
   });
   return (
     <div className="card">
@@ -304,9 +325,9 @@ function Keys({ w, run }) {
       {open && !k && (
         <>
           <p className="walleterr">Anyone who sees the spend key or the seed words can spend all of this wallet's coins. Show them only where nobody can look over your shoulder, and never paste them into a website or send them to anyone.</p>
-          <form onSubmit={(e) => { e.preventDefault(); if (pw) reveal(); }}>
+          <form onSubmit={(e) => { e.preventDefault(); reveal(); }}>
             <input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
-            <button type="submit" disabled={!pw}>I understand, show them</button>{' '}
+            <button type="submit">I understand, show them</button>{' '}
             <button type="button" className="linkish" onClick={close}>cancel</button>
           </form>
         </>
@@ -318,6 +339,36 @@ function Keys({ w, run }) {
           <p><span className="label">Private spend key</span><br /><span className="mono break seedbox">{k.spendKey}</span></p>
           <p><span className="label">Private view key</span><br /><span className="mono break seedbox">{k.viewKey}</span></p>
           <button onClick={close}>Hide</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+const BK = (a) => `sm64coin.backedup.${a}`;
+const isBacked = (a) => { try { return !!localStorage.getItem(BK(a)); } catch { return false; } };
+const markBacked = (a) => { try { if (a) localStorage.setItem(BK(a), String(Date.now())); } catch { /* storage unavailable */ } };
+
+/** Set (or change) the wallet's password, later: nothing asks for one while the visitor plays or explores. */
+function SetPassword({ w, name, run }) {
+  const none = isNoPw(name);
+  const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState('');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const np = newPassword(pw, pw2);
+  const save = () => run('Setting the password', async () => { await w.setPassword(none ? '' : cur, pw); setNoPw(name, false); setOpen(false); setCur(''); setPw(''); setPw2(''); });
+  return (
+    <div className="card">
+      <button className="linkish" onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} {none ? 'Set a password' : 'Change password'}</button>
+      {open && (
+        <>
+          {none && <p className="muted small">{NO_PASSWORD_WARNING}</p>}
+          {!none && <p><input type="password" placeholder="current password" value={cur} onChange={(e) => setCur(e.target.value)} /></p>}
+          <p><input type="password" placeholder="new password (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+            <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} /></p>
+          {(pw || pw2) && np.error ? <p className="walleterr" data-testid="pw-error">{np.error}</p> : null}
+          <button disabled={!pw || !np.ok} onClick={save}>Save password</button>
         </>
       )}
     </div>
@@ -355,7 +406,8 @@ function Passkey({ st, run, adopt, busy, back }) {
   const [link, setLink] = useState(null); // {state, url}
   const [got, setGot] = useState(''); // the address that arrived: the user compares it with the browser page before importing
   const nameOk = /^[A-Za-z0-9_-]{1,40}$/.test(name) && !st.wallets.includes(name);
-  const ok = nameOk && pw.length >= 8 && pw === pw2;
+  const np = newPassword(pw, pw2);
+  const ok = nameOk && np.ok;
   const waiting = link && link.state === 'waiting';
 
   useEffect(() => {
@@ -375,7 +427,7 @@ function Passkey({ st, run, adopt, busy, back }) {
   const start = () => run('Opening your browser', async () => setLink(await p.link.start(true)));
   const cancel = async () => { await p.link.cancel().catch(() => {}); setLink(null); setGot(''); };
   const finish = () => run('Restoring the passkey wallet (this scans the chain)', async () => {
-    await p.link.finish({ name, password: pw, address: got });
+    await p.link.finish({ name, password: pw, address: got }); setNoPw(name, !pw);
     setPw(''); setPw2(''); setGot(''); adopt('');
   });
   return (
@@ -394,8 +446,9 @@ function Passkey({ st, run, adopt, busy, back }) {
       {!waiting && !got && (
         <>
           <p><input placeholder="wallet name" value={name} onChange={(e) => setName(e.target.value)} /></p>
-          <p><input type="password" placeholder="password for this app (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+          <p><input type="password" placeholder="password for this app (8+ characters, optional)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
             <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} /></p>
+          {np.error ? <p className="walleterr" data-testid="pw-error">{np.error}</p> : np.warn ? <p className="muted small">{np.warn}</p> : null}
           <button disabled={busy || !ok} onClick={start}>Open the browser</button>{' '}
           <button className="linkish" onClick={back}>back</button>
         </>

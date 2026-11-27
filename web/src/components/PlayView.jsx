@@ -1,3 +1,4 @@
+import { getPlatform } from '../platform/index.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { Toolbar, ToolBtn } from './ui.jsx';
 import { TouchOverlay, TouchSettings, useTouchConfig, isTouchDevice } from './TouchPad.jsx';
@@ -30,7 +31,8 @@ export default function PlayView({ rec, clock, limit, children, normal, actions,
     const r = rec.current;
     if (r && r.paused) r.togglePause();
     const el = root.current;
-    if (gesture && el && el.requestFullscreen) {
+    // The Android app: no element fullscreen (the webview would cover the system bars); the fixed view inside the inset-padded webview is the full screen.
+    if (gesture && el && el.requestFullscreen && !getPlatform().mobile) {
       Promise.resolve(el.requestFullscreen({ navigationUI: 'hide' })).then(() => {
         try { return screen.orientation.lock('landscape'); } catch { return null; }
       }).catch(() => { /* no element fullscreen (iOS Safari): the fixed view is the full screen */ });

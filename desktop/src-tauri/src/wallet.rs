@@ -390,7 +390,7 @@ fn scrub(v: &mut Value) {
 const ALLOWED: &[&str] = &[
     "get_version", "get_height", "get_balance", "get_address", "get_transfers", "get_transfer_by_txid", "validate_address", "get_languages",
     "store", "refresh", "rescan_blockchain", "relay_tx", "transfer", "query_key", "set_daemon", "get_address_book",
-    "create_wallet", "open_wallet", "restore_deterministic_wallet", "close_wallet",
+    "create_wallet", "open_wallet", "restore_deterministic_wallet", "close_wallet", "change_wallet_password",
 ];
 
 pub fn lock_wallet(app: &App) {
@@ -427,8 +427,8 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
                 return Err(AppError::new("bad_name", "a wallet name is letters, digits, - and _ (up to 40)"));
             }
             let pw = Zeroizing::new(str_param(&p, "password").unwrap_or("").to_string());
-            if method != "open_wallet" && pw.len() < 8 {
-                return Err(AppError::new("weak_password", "use a password of at least 8 characters"));
+            if method != "open_wallet" && !pw.is_empty() && pw.len() < 8 {
+                return Err(AppError::new("weak_password", "a password is at least 8 characters (or leave it empty)"));
             }
             if app.wallet.open.lock().unwrap().is_some() {
                 lock_wallet(app);
@@ -463,8 +463,21 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
             if needs_wallet && app.wallet.open.lock().unwrap().is_none() {
                 return Err(AppError::new("wallet_not_open", "no wallet is open"));
             }
+            let mut new_pw: Option<Zeroizing<String>> = None;
             match method {
                 "query_key" => check_password(app, password.as_deref())?, // seed, spend key, view key: always the password
+                "change_wallet_password" => {
+                    // Set or change the open wallet's password (a wallet made without one has the empty password): the current one is
+                    // checked here, the new one is empty-or-8+ like at creation.
+                    check_password(app, password.as_deref())?;
+                    let new = Zeroizing::new(str_param(&p, "new_password").unwrap_or("").to_string());
+                    if new.is_empty() || new.len() < 8 {
+                        return Err(AppError::new("weak_password", "a password is at least 8 characters"));
+                    }
+                    let old = Zeroizing::new(password.clone().unwrap_or_default());
+                    p = json!({"old_password": old.as_str(), "new_password": new.as_str()});
+                    new_pw = Some(new);
+                }
                 "transfer" => {
                     if app.wallet.settings.lock().unwrap().password_on_send {
                         check_password(app, password.as_deref())?;
@@ -497,6 +510,14 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
             ensure_sidecar(app, None)?;
             let mut r = call(app, method, p, if matches!(method, "refresh" | "rescan_blockchain") { slow } else { Duration::from_secs(120) })?;
             amounts_to_strings(&mut r);
+            if let Some(new) = new_pw {
+                if r.get("error").is_none() {
+                    let name = app.wallet.open.lock().unwrap().as_ref().map(|o| o.name.clone());
+                    if let Some(name) = name {
+                        remember(app, &name, &new);
+                    }
+                }
+            }
             Ok(r)
         }
     }

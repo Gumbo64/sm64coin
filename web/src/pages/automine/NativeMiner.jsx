@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getPlatform } from '../../platform/index.js';
 import { miner, isAddress, fmtRate } from '../../lib/webminer/controller.js';
 import { useMiner } from '../../lib/webminer/useMiner.js';
+import { AddrLabel } from '../../lib/AddrLabel.jsx';
 import { SideCard, GearBtn, Toolbar, ToolBtn, Row, useStored } from '../../components/ui.jsx';
 
 // Apps only (platform.nativeMiner): on desktop the native sm64coin-automine against the app's own node (also shows the local
 // node and, until the ROM is found, asks for its path); on Android (platform.mobile) the miner library inside the app, against
 // the public node, with the page's own ROM, and only while the app is in the foreground.
-const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const KEEP = 200;
 // What this webview supports (the WASM workers want SharedArrayBuffer, the game WebGL). Probed once, and the probe's context
 // is released at once: a context per render piled up until the browser dropped the oldest live one (the 3D cloud went black).
@@ -35,7 +35,8 @@ function usePolled(fn, ms) {
 
 export default function NativeMiner() {
   const p = getPlatform();
-  const { address } = useMiner();
+  const { address, walletAddress } = useMiner();
+  const [editAddr, setEditAddr] = useState(false);
   const [open, setOpen] = useStored('sm64coin.nativeCardOpen', false);
   const mobile = !!p.mobile;
   // Desktop: 0 = all cores but one. Android: min(4, cores - 1) (a phone throttles and drains fast with more).
@@ -96,9 +97,10 @@ export default function NativeMiner() {
           {mobile ? 'the public node' : nodeUp ? `block ${node.height}${node.synchronized ? '' : ` of ${node.target_height || '?'}`} · ${node.peers} peer${node.peers === 1 ? '' : 's'}${node.synchronized ? '' : ' · syncing'}`
             : node && node.starting ? 'starting…' : node && node.running ? 'loading the chain…' : node && node.error ? <span className="error">{node.error.split('\n')[0]}</span> : 'not running'}
         </dd>
-        <dt>Paying</dt><dd>{isAddress(address || '') ? <span className="mono" title={address}>{short(address)}</span> : <em>no address</em>}</dd>
+        <dt>Paying</dt><dd><AddrLabel address={address} wallet={walletAddress} /></dd>
       </dl>
-      {!running && (
+      {!running && isAddress(address || '') && address === walletAddress && !editAddr && <button className="linkish" onClick={() => setEditAddr(true)}>✎ change address</button>}
+      {!running && (editAddr || !(isAddress(address || '') && address === walletAddress)) && (
         <input className="mono wide" style={{ width: '100%' }} value={address || ''} onChange={(e) => miner.setAddress(e.target.value.trim())} placeholder="SM64… (paste your address)" title="Reward address" />
       )}
       <Toolbar label="Native miner">

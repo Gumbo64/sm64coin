@@ -145,6 +145,9 @@ export async function exportData(w) {
   return { keysData: bytes(keys), cacheData: bytes(cache) };
 }
 
+/** Changes the open wallet's password ('' = none now); wallet2 re-encrypts its keys and cache. */
+export async function setPassword(w, oldPassword, newPassword) { return w.changePassword(oldPassword, newPassword); }
+
 export async function isViewOnly(w) { return w.isViewOnly(); }
 
 /** One sync pass; `onProgress(percent)`. */

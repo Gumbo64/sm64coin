@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { miner, isAddress, isolated, fmtRate } from '../../lib/webminer/controller.js';
 import { syncStatus, enableSync, disableSync, takeReloadNote } from '../../lib/webminer/sync.js';
+import { AddrLabel } from '../../lib/AddrLabel.jsx';
 import { SideCard, GearBtn, useStored } from '../../components/ui.jsx';
 
-const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 // The Auto-mine card of the sidebar (like the Mine page's reset-cycle card): the big Start/Stop, the speed, the
 // counts, the reward address, and under the ⚙ the worker count, the reset policy, worker sync and the master
@@ -25,7 +25,7 @@ function useSync() {
 }
 
 export default function ControlCard({ s }) {
-  const { address, count, running, workers, stats, mode, vizOn, fps } = s;
+  const { address, walletAddress, count, running, workers, stats, mode, vizOn, fps } = s;
   const [open, setOpen] = useStored('sm64coin.autoCardOpen', false);
   const [editing, setEditing] = useState(false);
   const n = workers.length || count;
@@ -70,7 +70,7 @@ export default function ControlCard({ s }) {
         <span>{n} worker{n === 1 ? '' : 's'} · {stats.found} run{stats.found === 1 ? '' : 's'} found · {stats.accepted} block{stats.accepted === 1 ? '' : 's'}{stats.proofs ? ` · ${stats.proofs} proof${stats.proofs === 1 ? '' : 's'} published (${stats.proofsPooled} pooled)` : ''}</span>
       </div>
       <div className="ui-addr">
-        Mining for {isAddress(address) ? <span className="mono paysto" title={address}>{short(address)}</span> : <em>no address</em>}{' '}
+        Mining for <span className="paysto"><AddrLabel address={address} wallet={walletAddress} /></span>{' '}
         <button className="linkish" title="Change the reward address" disabled={running} onClick={() => setEditing((e) => !e)}>✎ change</button>
       </div>
       {(editing || !isAddress(address)) && !running && (
