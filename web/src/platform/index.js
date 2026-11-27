@@ -1,6 +1,7 @@
 // One small platform layer, two implementations picked at startup: `browser` (a tab on the website) and `tauri` (the desktop
 // app, the same UI in a webview with a Rust backend). Pages ask for what they need and treat null as "not available here":
 //   platform.rpc(method, params)  JSON-RPC to the local node (desktop only; null in the browser: lib/rpc.js uses fetch)
+//   platform.remoteRpc(url, method, params)  the same against the public node over https (desktop only)
 //   platform.node                 {status, start, stop} of the local node, or null
 //   platform.nativeMiner          {start, stop, status, subscribe, onState} of the native miner, or null
 //   platform.rom                  {status, set(path), pick(), bytes()} of the ROM kept by the app, or null

@@ -50,6 +50,23 @@ pub fn forward(method: &str, base: &str, path: &str, content_type: Option<&str>,
     Ok((code, ct, data))
 }
 
+/// Calls a whitelisted method of a remote node (`base` = `https://host[:port]`, the public node); returns the whole JSON-RPC answer.
+/// Only https (needs the `tls` feature) so the answer cannot be tampered with in transit; the whitelist is the same.
+pub fn call_url(base: &str, method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, String> {
+    if !allowed(method) {
+        return Err(format!("RPC method {method} is not available"));
+    }
+    if !base.starts_with("https://") || base.contains(['@', '?', '#', ' ']) {
+        return Err("a remote node must be an https:// address".into());
+    }
+    let body = serde_json::json!({"jsonrpc": "2.0", "id": 0, "method": method, "params": params}).to_string();
+    let (code, _, data) = forward("POST", base.trim_end_matches('/'), "/json_rpc", Some("application/json"), None, body.as_bytes(), timeout)?;
+    if code != 200 {
+        return Err(format!("node answered HTTP {code}"));
+    }
+    serde_json::from_slice(&data).map_err(|e| format!("bad answer from the node: {e}"))
+}
+
 /// Calls a whitelisted method of the node at 127.0.0.1:`port`; returns the whole JSON-RPC answer.
 pub fn call(port: u16, method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, String> {
     if !allowed(method) {

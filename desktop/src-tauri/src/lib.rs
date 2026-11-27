@@ -262,6 +262,15 @@ async fn node_rpc(app: AppHandle, method: String, params: Option<serde_json::Val
         .map_err(|e| AppError::new("internal", e.to_string()))?
 }
 
+/// The same whitelisted call against a remote node over https (the public node, when no local node answers). Done here and not
+/// with the webview's fetch so it needs no CORS entry on that node.
+#[tauri::command]
+async fn remote_rpc(url: String, method: String, params: Option<serde_json::Value>) -> Res<serde_json::Value> {
+    tauri::async_runtime::spawn_blocking(move || rpc::call_url(&url, &method, params.unwrap_or_else(|| serde_json::json!({})), Duration::from_secs(60)).map_err(|e| AppError::new("rpc", e)))
+        .await
+        .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
 #[tauri::command]
 fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: Option<usize>) -> Res<miner::MinerInfo> {
     let rpc_port = {
@@ -324,7 +333,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, miner_start, miner_stop, miner_status])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, remote_rpc, miner_start, miner_stop, miner_status])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {

@@ -62,6 +62,8 @@ export const tauri = {
   mobile: /Android|iPhone|iPad/.test(globalThis.navigator ? navigator.userAgent : ''),
   /** JSON-RPC to the local node: resolves with the whole `{result}` / `{error}` answer (whitelisted methods only). */
   rpc: (method, params) => cmd('node_rpc', { method, params: params || {} }),
+  /** The same, against a remote node over https (the public node fallback). */
+  remoteRpc: (url, method, params) => cmd('remote_rpc', { url, method, params: params || {} }),
   nodeUrl: () => nodeRpcUrl,
   node,
   nativeMiner,

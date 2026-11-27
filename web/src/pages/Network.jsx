@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { daemonAt, getNode, getPublicNode, nodeNote, setNode, usingPublicFallback } from '../lib/rpc.js';
+import { daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, nodeNote, setNode, usingPublicFallback } from '../lib/rpc.js';
 import useInterval from '../lib/useInterval.js';
 
 const clean = (u) => (u || '').trim().replace(/\/+$/, '');
@@ -23,6 +23,7 @@ export default function Network() {
       return `unreachable: ${e.message}`;
     }
   };
+  useEffect(() => onNodeChange(() => { setNodeState(getNode()); setDraft((d) => (nodeInUse().kind === 'chosen' ? d : getNode())); }), []);
   const refresh = async () => setStatus(await check(node));
   useInterval(refresh, 10000);
   useEffect(() => { refresh(); }, [node]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -40,7 +41,9 @@ export default function Network() {
       <button onClick={() => use(draft)}>Use this node</button>{' '}
       <button onClick={test}>Test</button>{' '}
       <button onClick={save} disabled={!clean(draft)}>Save</button>
-      <p>Current: <b>{node || '(this site\'s proxy)'}</b>{status && <span className="muted"> | {status}</span>}</p>
+      {nodeInUse().kind === 'local' && <p>Reading from: <b>this app's own node</b> (127.0.0.1)</p>}
+      {nodeInUse().kind === 'public' && <p>Reading from: <b>the public node</b> <code>{nodeInUse().url}</code> (the local node is not running)</p>}
+      <p>Current: <b>{node || (nodeInUse().kind === 'local' ? '(the app\'s own node)' : '(this site\'s proxy)')}</b>{status && <span className="muted"> | {status}</span>}</p>
       {usingPublicFallback() && node === getPublicNode() && (
         <p className="muted">{nodeNote() || `Your own node (${import.meta.env.VITE_DEFAULT_NODE}) didn't answer, so this visit uses the public node. Start yours and reload to use it.`}</p>
       )}

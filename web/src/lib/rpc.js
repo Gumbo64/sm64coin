@@ -20,11 +20,34 @@ let fallback = false; // this visit uses the public node
 export const getPublicNode = () => publicNode;
 export const usingPublicFallback = () => fallback;
 let note = ''; // visible warning about the node's chain (old v0.2 node), '' for none
-export const nodeNote = () => note;
+export const nodeNote = () => (usingPublicNode() ? `The local node is not running (yet): this app reads the chain from the public node ${publicNode}. Mining needs the local node.` : note);
 const chosen = () => { try { return (localStorage.getItem(KEY) || '').trim(); } catch { return ''; } };
 /** True when the node was set by hand (localStorage 'sm64coin.node'), not the build default or the public node. */
 export const isChosenNode = () => !!chosen();
-export const getNode = () => (chosen() || (fallback ? publicNode : DEFAULT_NODE)).replace(/\/+$/, '');
+// Desktop app: the node is the app's own (same-origin '/json_rpc' = the Rust backend) while it answers, else the public node.
+// `localUp` is kept current by watchLocalNode() (the node takes a while to start, and can be stopped).
+let localUp = true;
+const desktopNode = () => getPlatform().rpc && getPlatform().remoteRpc;
+export const usingLocalNode = () => !!desktopNode() && !chosen() && localUp;
+export const usingPublicNode = () => !!desktopNode() && !chosen() && !localUp && !!publicNode;
+export const getNode = () => (chosen() || (desktopNode() ? (localUp || !publicNode ? '' : publicNode) : fallback ? publicNode : DEFAULT_NODE)).replace(/\/+$/, '');
+/** Desktop: what node the app is reading from, for the UI: {kind: 'local' | 'public' | 'chosen' | 'none', url}. */
+export const nodeInUse = () => (chosen() ? { kind: 'chosen', url: chosen() } : usingLocalNode() ? { kind: 'local', url: '' } : usingPublicNode() ? { kind: 'public', url: publicNode } : { kind: 'none', url: '' });
+const listeners = new Set();
+export const onNodeChange = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+let watching = false;
+/** Desktop: probe the local node every 4 s; when it does not answer, calls go to the public node (and back when it does). */
+export function watchLocalNode() {
+  if (watching || !desktopNode()) return;
+  watching = true;
+  const tick = async () => {
+    let up = false;
+    try { const s = await getPlatform().node.status(); up = !!(s && s.answering); } catch { /* not running */ }
+    if (up !== localUp) { localUp = up; infoShared = null; listeners.forEach((f) => f()); }
+  };
+  setInterval(tick, 4000);
+  return tick();
+}
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);
 // Decides this visit's node (main.jsx, before the first render).
@@ -33,6 +56,7 @@ export async function resolveNode() {
     const r = await withTimeout(fetch(`${import.meta.env.BASE_URL}public-node.json`, { cache: 'no-cache' }), 3000);
     if (r.ok) publicNode = String((await r.json()).url || '').trim().replace(/\/+$/, '');
   } catch { /* no public node */ }
+  if (desktopNode() && !chosen()) { await watchLocalNode(); return; } // the app's own node, or the public one while it is down
   const pick = chosen();
   if (pick) { // a node the user chose is respected, but warned about when it is on another chain
     const probe = (await probeChain((m, p) => withTimeout(call(`${pick}/json_rpc`, m, p), 2500))).state;
@@ -58,7 +82,8 @@ export const setNode = (url) => {
 
 async function call(url, method, params = {}) {
   // Desktop app: the same-origin node is the local one, reached through the Rust backend (no HTTP, no CORS, whitelisted methods).
-  const native = url === '/json_rpc' ? getPlatform().rpc : null;
+  const p = getPlatform();
+  const native = url === '/json_rpc' ? p.rpc : (p.remoteRpc && publicNode && url === `${publicNode}/json_rpc` ? (m, pr) => p.remoteRpc(publicNode, m, pr) : null);
   if (native) {
     const j = await withTimeout(native(method, params), 60000);
     if (j.error) throw new Error(`${method}: ${j.error.message}`);

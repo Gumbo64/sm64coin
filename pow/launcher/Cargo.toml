@@ -17,6 +17,10 @@ path = "src/main.rs"
 # builds anywhere, quickly, and the release bundle's launcher is independent of them.
 [workspace]
 
+# `tls`: https for rpc::call_url (the desktop app talks to the public node).
+[features]
+tls = ["ureq/tls"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }

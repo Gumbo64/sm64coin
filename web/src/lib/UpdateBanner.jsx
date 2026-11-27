@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { daemon, nodeNote } from './rpc.js';
+import { daemon, nodeNote, onNodeChange, usingPublicNode } from './rpc.js';
 import { latestRelease, isNewer, nodeLacksState, SITE_VERSION } from './updates.js';
 
 // "Update available" notice (GitHub releases, checked from the browser, silent on any failure).
@@ -24,11 +24,12 @@ export default function UpdateBanner() {
       } else if (rel && isNewer(rel.version, SITE_VERSION)) {
         text = `SM64Coin ${rel.version} is available.`;
       }
-      setMsg(text && { text, url: rel?.url || 'https://github.com/Gumbo64/sm64coin/releases/latest', required: !old && rel?.required });
+      setMsg(text && { text, url: rel?.url || 'https://github.com/Gumbo64/sm64coin/releases/latest', required: !old && !usingPublicNode() && rel?.required });
     };
     check();
     const t = setInterval(check, 6 * 3600 * 1000);
-    return () => { dead = true; clearInterval(t); };
+    const off = onNodeChange(check); // desktop: the local node came up or went away
+    return () => { dead = true; clearInterval(t); off(); };
   }, []);
 
   if (!msg || gone) return null;
