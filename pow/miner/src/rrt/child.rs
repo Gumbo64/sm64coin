@@ -2,11 +2,12 @@
 //! user's objective-RRT engine (objective-rrt-v2, feature `hooked`) from a
 //! start state, over perturbed games only.
 //!
-//! Why a process: the engine and the objectives read many `OBRRT_*` switches
-//! once per process, so each step gets a fresh process, as the seg120
-//! campaign runs one `obrrt2` per step. The switches are the campaign's
-//! (`campaign::env`), read the way `obrrt2` reads them
-//! (`obrrt_search::envconfig`).
+//! Two ways to run a step. As its own process (`rrtrun`, the desktop default): a fresh process per step, the settings
+//! installed process-wide ([`run_step`]). In-process ([`run_step_inproc`], for hosts that cannot spawn binaries, the
+//! Android app): on a thread of the host, under the step's own typed `SearchConfig` ([`step_config`]) and its own
+//! run-time state (`Config::runtime`), with its own rayon pool; the search no longer reads the environment, so
+//! nothing leaks from one step to the next. Both build the config from the job's `OBRRT_*` list through the
+//! `obrrt-env` adapter, so they search the same tree.
 //!
 //! The start is a mining save: the game's memory plus the block's
 //! perturbation state (the engine stores the perturbation in every node).
@@ -18,6 +19,8 @@
 //! pads through its own shadow `SM64MiningGame`, which is what the verifier
 //! replays.
 use anyhow::{Result, bail};
+use obrrt_core::config::SearchConfig;
+use obrrt_core::runtime::Runtime;
 use obrrt_core::{St, check_layout, read_state};
 use obrrt_objectives::Registry;
 use obrrt_search::Engine;
@@ -226,33 +229,73 @@ fn meets(job: &Job, root: &St, st: &St) -> bool {
 #[cfg(target_arch = "wasm32")]
 const RAMP_FIRST: usize = 2;
 
-/// Runs one tree step in this process. Call once per process.
+/// The step's settings as one typed [`SearchConfig`]: the campaign's preset (`job.env`, the `OBRRT_*` switches the miner
+/// sets, read through the `obrrt-env` adapter over the job's own list, never the process environment) plus the step's
+/// own fields (the skip list, the frame budget). The same function builds it in a child process, in a thread of the
+/// miner (see [`run_step_inproc`]) and in the browser, so the three cannot differ.
+pub fn step_config(job: &Job) -> Result<SearchConfig> {
+    let get = |k: &str| job.env.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let mut sc = obrrt_core::config::from_env_with(SearchConfig::default(), &get)?;
+    if !job.skip.is_empty() {
+        sc.stop.exit_skip = job.skip.iter().map(|&l| l as u32).collect();
+    }
+    Ok(sc)
+}
+
+/// What a step needs from its host besides the job. The channel to the other workers of the block (the browser's
+/// tree sync and hybrid mining; the desktop app's viz mailbox) and, in-process, the stop flag the host raises.
+#[derive(Clone, Default)]
+pub struct StepIo {
+    pub exchange: Option<super::Exchange>,
+    pub stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+/// Runs one tree step in this process, as the process's only one (`rrtrun`, a fresh browser instance): settings
+/// are installed process-wide, the rayon pool is the global one. Call once per process.
 pub fn run_step(job: &Job) -> Result<StepOut> {
-    // Settings first: the objectives read them lazily, once.
+    // The search's few remaining direct reads of the environment (research switches), as `extra_env` may set them.
     // SAFETY: single-threaded here (nothing else has started).
     unsafe {
         for (k, v) in &job.env {
             crate::sys::env::set_var(k, v);
         }
         crate::sys::env::set_var("RAYON_NUM_THREADS", job.threads.to_string());
-        if job.skip.is_empty() {
-            crate::sys::env::remove_var("OBRRT_EXIT_SKIP");
-        } else {
-            crate::sys::env::set_var("OBRRT_EXIT_SKIP", job.skip.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
-        }
     }
-    let (tech, names) = obrrt_objectives::setup::from_env().map_err(anyhow::Error::msg)?;
-    println!("techniques ({tech}): {names:?}");
+    let sc = obrrt_core::config::install(step_config(job)?);
     rayon::ThreadPoolBuilder::new().num_threads(job.threads).build_global().ok();
+    let io = StepIo { exchange: EXCHANGE.get().cloned(), stop: None };
+    run_step_core(job, sc, None, &io, true)
+}
+
+/// Runs one tree step on the calling thread inside a process that runs other work (the Android app, the desktop miner
+/// with `--in-process`): the step's own typed config and run-time state ([`Runtime`]) scoped on its threads, its own
+/// rayon pool of `job.threads`, nothing process-wide touched. Steps run one at a time. The result is the same as
+/// [`run_step`]'s in a fresh process (`rrtrun --inproc` and the gate in the README compare them).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_step_inproc(job: &Job, io: &StepIo) -> Result<StepOut> {
+    let sc = obrrt_core::config::leak(step_config(job)?);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(job.threads).build()?;
+    let rt = Runtime::new();
+    pool.install(|| run_step_core(job, sc, Some(rt), io, false))
+}
+
+fn run_step_core(job: &Job, sc: &'static SearchConfig, rt: Option<Arc<Runtime>>, io: &StepIo, own_process: bool) -> Result<StepOut> {
+    let _cfg_scope = obrrt_core::config::scope(sc);
+    let _rt_scope = rt.clone().map(obrrt_core::runtime::scope);
+    let (tech, names) = obrrt_objectives::setup::from_config(sc).map_err(anyhow::Error::msg)?;
+    println!("techniques ({tech}): {names:?}");
     let mut cfg = obrrt_search::Config::default();
-    obrrt_search::envconfig::from_env(&mut cfg)?;
+    obrrt_search::envconfig::apply_globals(sc, &mut cfg)?;
+    cfg.runtime = rt;
     cfg.out_dir = job.out_dir.clone();
     cfg.seed = job.seed;
     cfg.minutes = if job.seconds > 0.0 { job.seconds / 60.0 } else { 1e9 };
     cfg.max_frames = Some(job.budget);
     crate::sys::fs::create_dir_all(&job.out_dir)?;
 
-    sm64pow::init(crate::sys::fs::read(&job.rom)?)?;
+    if own_process {
+        sm64pow::init(crate::sys::fs::read(&job.rom)?)?;
+    }
     let mut g = sm64pow::generator()?.create_game()?;
     // Not kept: the viz sampler reads the file again whenever the page needs the step's start state.
     g.load_state(&SaveState::from_bytes(crate::sys::fs::read(&job.state_file)?)?)?;
@@ -260,9 +303,8 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     check_layout(&game)?;
     let root = read_state(&game, job.frame0, true);
     println!("root: frame {} level {} course {} area {} act_select {} act_init {} cursor {} action {:#x} play_mode {} pos {:?}; goal {:?} target {:?} need {:#x}", root.frame, root.level, root.course, root.area, root.act_select, root.act_init, root.act_cursor, root.action, root.play_mode, root.pos, job.goal, job.target, job.need_flags);
-    obrrt_search::envconfig::after_root(&root);
 
-    let generator = guide::wrap(obrrt_spec::wrap(Arc::new(Registry))?)?;
+    let generator = guide::wrap(job, obrrt_spec::wrap(Arc::new(Registry))?)?;
     let save = game.save_state();
     let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator.clone())?;
     if job.viz {
@@ -270,19 +312,19 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     } else {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            engine.on_round = Some(viz::progress_file(format!("{}.progress", job.out_dir)));
+            engine.on_round = Some(viz::progress_file(if own_process { format!("{}.progress", job.out_dir) } else { String::new() }));
         }
     }
     let sync_stats = Arc::new(std::sync::Mutex::new(SyncStats::default()));
     if job.sync_secs > 0.0 && job.sync_k > 0 && !job.sync_tag.is_empty() {
-        if let Some(ex) = EXCHANGE.get() {
+        if let Some(ex) = &io.exchange {
             engine.on_sync = Some(tsync::hook(job, ex.clone(), &root, sync_stats.clone()));
         }
     }
     // Hybrid mining (the page's human-played nodes, state requests and position goal): needs the step's tag.
     let mut page: Option<Box<dyn FnMut(&mut Engine) + Send>> = None;
     if !job.sync_tag.is_empty() {
-        if let Some(ex) = EXCHANGE.get() {
+        if let Some(ex) = &io.exchange {
             page = Some(hybrid::hook(job, ex.clone(), &root));
         }
     }
@@ -348,7 +390,21 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
             }
         }));
     }
+    // In-process stop: the host raises the flag; the next round's hook ends the search (the engine's frame budget).
+    if let Some(stop) = io.stop.clone() {
+        let mut inner = engine.on_hybrid.take();
+        engine.on_hybrid = Some(Box::new(move |e| {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                e.cfg.max_frames = Some(0);
+            } else if let Some(f) = inner.as_mut() {
+                f(e);
+            }
+        }));
+    }
     engine.run()?;
+    if io.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) {
+        bail!("stopped");
+    }
     let sync_out = (job.sync_secs > 0.0 && engine.on_sync.is_some()).then(|| {
         let mut s = sync_stats.lock().unwrap().clone();
         s.expanded = engine.tree.nodes.iter().filter(|n| n.via == "sync" && n.stats.as_start > 0).count() as u32;
@@ -433,7 +489,7 @@ fn path_keys(tree: &obrrt_search::tree::Tree, i: u32, out_dir: &str) -> Vec<Stri
 /// from), as RRT samples its goal at a fixed rate among random targets.
 mod guide {
     use anyhow::Result;
-    use obrrt_core::{Arrival, Budget, DenseKeep, Eta, GaBudget, Generator, Mem, Objective, PadOverlay, Precision, St};
+    use obrrt_core::{Arrival, Budget, Eta, GaBudget, Generator, Mem, Objective, PadOverlay, Precision, St};
     use std::collections::HashSet;
     use std::sync::Arc;
 
@@ -452,7 +508,6 @@ mod guide {
         fn ga_budget(&self) -> Option<GaBudget> { self.inner.ga_budget() }
         fn precision(&self) -> Precision { self.inner.precision() }
         fn kinship(&self) -> u32 { 1000 }
-        fn dense_keep(&self) -> DenseKeep { self.inner.dense_keep() }
         fn start_bias(&self, s: &St) -> f64 { self.inner.start_bias(s) }
         fn done_frames(&self, s: &St, mem: &Mem) -> f64 { self.inner.done_frames(s, mem) }
         fn temperature(&self) -> f64 { self.inner.temperature() }
@@ -491,10 +546,12 @@ mod guide {
         fn report(&self, out_dir: &str) { self.inner.report(out_dir) }
     }
 
-    pub fn wrap(inner: Arc<dyn Generator>) -> Result<Arc<dyn Generator>> {
-        let Ok(path) = crate::sys::env::var("OBRRT_GUIDE_KEYS") else { return Ok(inner) };
+    pub fn wrap(job: &super::Job, inner: Arc<dyn Generator>) -> Result<Arc<dyn Generator>> {
+        // From the job's own settings (the last of a name wins), not the process environment.
+        let get = |k: &str| job.env.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let Some(path) = get("OBRRT_GUIDE_KEYS") else { return Ok(inner) };
         let keys: HashSet<String> = crate::sys::fs::read_to_string(&path)?.lines().filter(|l| !l.is_empty()).map(String::from).collect();
-        let weight = crate::sys::env::var("OBRRT_GUIDE_WEIGHT").ok().map(|w| w.parse()).transpose()?.unwrap_or(20.0);
+        let weight = get("OBRRT_GUIDE_WEIGHT").map(|w| w.parse()).transpose()?.unwrap_or(20.0);
         println!("guide: {} objective keys from the best run, weight x{weight}, kinship waived", keys.len());
         Ok(Arc::new(WithGuide { inner, keys, weight }))
     }
@@ -1117,7 +1174,12 @@ pub mod viz {
                 return;
             }
             last = Instant::now();
-            let _ = std::fs::write(&path, e.total_frames_emulated().to_string());
+            let n = e.total_frames_emulated();
+            if path.is_empty() {
+                crate::rrt::vizio::progress(n);
+            } else {
+                let _ = std::fs::write(&path, n.to_string());
+            }
         })
     }
 

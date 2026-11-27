@@ -47,6 +47,10 @@ struct Args {
     /// Without it stdin/stdout carry nothing extra.
     #[arg(long)]
     viz: bool,
+    /// Run each search step on a thread of this process (own config, run-time state and rayon pool) instead of in an
+    /// `rrtrun` process per step; no `rrtrun` binary needed (rrt/child.rs `run_step_inproc`).
+    #[arg(long)]
+    in_process: bool,
     /// Reset cycle (power-on start) policy, when the chain allows it (template sm64_start "either"):
     /// `never` (only when the chain forces it), `when-stuck` (search the parent's end state first; take
     /// power-on if that finds no route / gives up / times out / the parent has 120 stars; and restart when
@@ -353,7 +357,11 @@ fn main() -> Result<()> {
         }
     });
     if a.viz {
-        sm64coin_miner::rrt::vizio::enable(true);
+        if a.in_process {
+            sm64coin_miner::rrt::vizio::enable_inproc(true, None);
+        } else {
+            sm64coin_miner::rrt::vizio::enable(true);
+        }
         std::thread::spawn(|| {
             for line in std::io::stdin().lines().map_while(Result::ok) {
                 sm64coin_miner::rrt::vizio::input(&line);
@@ -490,7 +498,7 @@ fn main() -> Result<()> {
         let mut no_route = None;
         if a.controller == "rrt" || a.controller == "rh" {
             let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt + a.salt, frame_cap: a.rh_frames, max_retries: if t.sm64_start == "either" { 3 } else { 40 }, ..Default::default() };
-            let mut ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
+            let mut ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), in_process: a.in_process, ..Default::default() };
             if a.viz {
                 // The desktop app's visualisation feed (rrt/vizio.rs). The exchange only names the steps (sync tags) for hybrid mining.
                 ro.viz = true;
@@ -742,6 +750,7 @@ fn rrt_options(a: &Args, attempt: u64, k: u64, guide: Option<&str>) -> rrt::RrtO
         frame_cap: a.rh_frames,
         scratch: a.rrt_scratch.clone().into(),
         rom: Some(a.rom.clone()),
+        in_process: a.in_process,
         ..Default::default()
     }
 }

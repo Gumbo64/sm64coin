@@ -84,6 +84,9 @@ pub struct RrtOptions {
     pub child: Option<PathBuf>,
     /// Keep the step logs.
     pub keep: bool,
+    /// Run each step on a thread of this process ([`child::run_step_inproc`]) instead of in an `rrtrun` process
+    /// (native only; the browser always runs its steps in a fresh instance). Needs `sm64pow::init` done by the caller.
+    pub in_process: bool,
     /// The ROM the child loads (default: sm64pow's search path).
     pub rom: Option<String>,
     /// More tree settings, "VAR=value VAR=value" (campaign.py --env).
@@ -195,6 +198,7 @@ impl Default for RrtOptions {
             scratch: crate::sys::env::temp_dir().join("sm64coin-rrt"),
             child: None,
             keep: false,
+            in_process: false,
             rom: None,
             extra_env: String::new(),
             exchange: None,
@@ -224,11 +228,10 @@ pub fn coverage() -> Vec<(&'static str, &'static str)> {
 /// The campaign's tree settings: campaign.py's `ENV`, the t1 campaign's
 /// `--env` (the priors and the roadmap from the miner's scratch), and `extra`.
 pub fn env(o: &RrtOptions) -> Result<Vec<(String, String)>> {
-    const ENV: &str = "OBRRT_SOFT_DEDUP=1 OBRRT_ROUND=64 OBRRT_BOOT_NOWAIT=1 OBRRT_TECH=all OBRRT_NEW_ELIGIBLE=1 OBRRT_STARSET_KEY=1 \
-         OBRRT_PICK_BY_B=0 OBRRT_SWIM_HOLD=1 OBRRT_GP_CATCH=1 OBRRT_KEEP_WIP=1 OBRRT_MOVE_WEIGHT=0.75 OBRRT_CHAIN=route OBRRT_SAMPLER=rate \
-         OBRRT_MOVES=1 OBRRT_MOVE_GA=1 OBRRT_MOVE_GA_EXTRA=1 OBRRT_CALM=1 OBRRT_LAKITU_ARC=1 OBRRT_PAINTING_FAST=1 OBRRT_ADD=last_gen \
-         OBRRT_KINSHIP_MULT=10 OBRRT_ZONE_LOCK=1 \
-         OBRRT_GOAL_FOCUS=0.5 OBRRT_GOAL_WIDE=1 OBRRT_GROUNDS_FIX=1 OBRRT_STATIC_ID=1 OBRRT_STALL_ETA=0.03 OBRRT_GOAL_EXPLORE=1";
+    // What differs from the search's defaults (obrrt-env's `SearchConfig::default()` bakes the rest of the campaign's
+    // old list: soft dedup, the starset key, route chains, the rate sampler, dense adds, kinship x10, moves and the move GA,
+    // calm, the Lakitu arc, fast paintings, swim hold, the GP catch, new-eligible, ROUND=64, TECH=all, MOVE_WEIGHT=0.75).
+    const ENV: &str = "OBRRT_ZONE_LOCK=1 OBRRT_GOAL_FOCUS=0.5 OBRRT_GOAL_WIDE=1 OBRRT_GROUNDS_FIX=1 OBRRT_STATIC_ID=1 OBRRT_STALL_ETA=0.03 OBRRT_GOAL_EXPLORE=1";
     // Copies of objective-rrt-v2/tools/seg120/{reach,rescue}_prior.json (the t1 campaign's priors).
     const REACH: &str = include_str!("../../priors/reach_prior.json");
     const RESCUE: &str = include_str!("../../priors/rescue_prior.json");
@@ -402,9 +405,60 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, _st
 /// progress): the miner's speed is its rate (automine's `progress` line).
 pub static SIM_FRAMES: AtomicU64 = AtomicU64::new(0);
 
-/// Runs the tree step `job` from `game` in a child process.
+/// Runs the tree step `job` from `game` on a thread of this process (`RrtOptions::in_process`): the same job, the same
+/// result as the child's, with the viz mailbox and the frame counter in memory instead of pipes and a file. `stop` ends
+/// the search at its next round (the engine's budget is cut), as killing the child does.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_inproc(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
+    crate::sys::fs::create_dir_all(&o.scratch)?;
+    let base = o.scratch.join(format!("{}-{tag}", std::process::id()));
+    let state = format!("{}.state", base.display());
+    crate::sys::fs::write(&state, game.game.save_state().as_bytes())?;
+    job.state_file = state.clone();
+    job.pert = game.pert.clone();
+    job.out_dir = format!("{}.run", base.display());
+    let viz = o.viz && vizio::enabled();
+    job.viz = viz;
+    let flag = std::sync::Arc::new(AtomicBool::new(false));
+    let io = child::StepIo { exchange: viz.then(|| std::sync::Arc::new(vizio::exchange) as Exchange), stop: Some(flag.clone()) };
+    vizio::step_begin();
+    // A step's search needs deep stacks like the main thread's (the child's engine ran on its 8 MB main thread).
+    let worker = std::thread::Builder::new().name(format!("rrt-step-{tag}")).stack_size(32 << 20).spawn({
+        let job = job.clone();
+        move || child::run_step_inproc(&job, &io)
+    })?;
+    let mut counted = 0u64;
+    let mut polled = std::time::Instant::now();
+    while !worker.is_finished() {
+        if stop.load(Ordering::Relaxed) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        if polled.elapsed() >= Duration::from_millis(500) {
+            polled = std::time::Instant::now();
+            let n = vizio::step_frames();
+            if n > counted {
+                SIM_FRAMES.fetch_add(n - counted, Ordering::Relaxed);
+                counted = n;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let r = worker.join().unwrap_or_else(|p| Err(anyhow::anyhow!("step {tag} panicked: {}", p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default())));
+    let _ = crate::sys::fs::remove_file(&state);
+    let _ = crate::sys::fs::remove_dir_all(&job.out_dir);
+    let out = r?;
+    if out.emulated > counted {
+        SIM_FRAMES.fetch_add(out.emulated - counted, Ordering::Relaxed);
+    }
+    Ok(out)
+}
+
+/// Runs the tree step `job` from `game` in a child process (or on a thread: `RrtOptions::in_process`).
 #[cfg(not(target_arch = "wasm32"))]
 fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, stop: &AtomicBool) -> Result<StepOut> {
+    if o.in_process {
+        return run_inproc(o, game, job, tag, stop);
+    }
     crate::sys::fs::create_dir_all(&o.scratch)?;
     let base = o.scratch.join(format!("{}-{tag}", std::process::id()));
     let state = format!("{}.state", base.display());
@@ -599,6 +653,8 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         env0.push(("OBRRT_GUIDE_WEIGHT".into(), o.guide_weight.to_string()));
     }
     let rom = match &o.rom {
+        // In-process steps use the generator the host initialised (`sm64pow::init(bytes)`): no ROM file is read.
+        _ if o.in_process => o.rom.clone().unwrap_or_default(),
         Some(r) => crate::sys::fs::canonicalize(r)?.to_string_lossy().into_owned(),
         None => sm64pow::default_rom_path().ok_or_else(|| anyhow::anyhow!("no ROM (RrtOptions::rom)"))?,
     };

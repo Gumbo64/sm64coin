@@ -8,13 +8,48 @@
 //! * parent -> child: JSON lines on the child's stdin: `{"viz_on": bool}` and `{"mail": {goal, cmds, reqs}}` (the page's
 //!   mailbox: the sampling bubble, hybrid commands, node requests; keys replace). The parent ([`input`]) keeps the latest of
 //!   each and replays them to every new step's child.
+//!
+//! In-process steps (`--in-process`, [`enable_inproc`]: the Android app) have no child and no pipes: the step's hooks call
+//! [`frame`] / [`viz_on`] / [`requested`] / [`exchange`] in the host's own process, [`input`] writes the same mailbox the
+//! hooks read, and the frames go to a [`Sink`] (the host's channel; by default a line on stdout as the parent would forward it).
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 pub const MARK: &str = "\u{1}VIZ";
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static INPROC: AtomicBool = AtomicBool::new(false);
+/// Where in-process frames go: (kind, key, payload), kind one of [`KINDS`].
+pub type Sink = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
+static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+/// Frames the running step has simulated, as its hook last reported (in-process: the host's frames/s counter).
+static STEP_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Turns the feed on for steps that run in this process: `on` is its initial state, `sink` takes the frames (None: stdout
+/// lines `MARK 0 kind key payload`, what automine forwards for a child's).
+pub fn enable_inproc(on: bool, sink: Option<Sink>) {
+    ENABLED.store(true, Ordering::Relaxed);
+    INPROC.store(true, Ordering::Relaxed);
+    *SINK.lock().unwrap() = sink;
+    INPUT.lock().unwrap().viz_on = on;
+}
+
+/// The host stopped: frames go nowhere (the sink is dropped), the feed is off.
+pub fn disable_inproc() {
+    *SINK.lock().unwrap() = None;
+    INPUT.lock().unwrap().viz_on = false;
+}
+
+/// A new in-process step begins: its mailbox commands count as not yet given, its frame counter restarts.
+pub fn step_begin() {
+    INPUT.lock().unwrap().given.clear();
+    STEP_FRAMES.store(0, Ordering::Relaxed);
+}
+
+pub fn step_frames() -> u64 {
+    STEP_FRAMES.load(Ordering::Relaxed)
+}
 
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
@@ -69,6 +104,18 @@ pub fn input(line: &str) {
         return;
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
+    if INPROC.load(Ordering::Relaxed) {
+        let mut i = INPUT.lock().unwrap();
+        if let Some(b) = v.get("viz_on").and_then(|b| b.as_bool()) {
+            i.viz_on = b;
+        }
+        if let Some(m) = v.get("mail").and_then(|m| m.as_object()) {
+            for (k, x) in m.iter().filter(|(k, _)| MAIL_KEYS.contains(&k.as_str())) {
+                i.mail.insert(k.clone(), x.clone());
+            }
+        }
+        return;
+    }
     let mut l = LINK.lock().unwrap();
     if let Some(b) = v.get("viz_on").and_then(|b| b.as_bool()) {
         l.viz_on = b;
@@ -146,7 +193,9 @@ pub fn child_start(progress_file: String) {
     let _ = super::child::EXCHANGE.set(std::sync::Arc::new(exchange));
 }
 
-fn exchange(kind: &str, payload: &str) -> Option<String> {
+/// The step's channel to the viz mailbox (hybrid commands in, `hybrid_out` frames out): the `exchange` of a step's
+/// [`super::child::StepIo`] when the feed is on.
+pub fn exchange(kind: &str, payload: &str) -> Option<String> {
     match kind {
         // The page's mailbox for this step (board.js makeHybridPoll): the bubble and the commands not given yet.
         "hybrid" => {
@@ -180,6 +229,17 @@ fn exchange(kind: &str, payload: &str) -> Option<String> {
 }
 
 pub fn frame(kind: &str, key: &str, payload: &str) {
+    if INPROC.load(Ordering::Relaxed) {
+        let sink = SINK.lock().unwrap().clone();
+        match sink {
+            Some(f) => f(kind, key, payload),
+            None => {
+                let out = std::io::stdout();
+                let _ = writeln!(out.lock(), "{MARK}\t0\t{kind}\t{key}\t{payload}");
+            }
+        }
+        return;
+    }
     let out = std::io::stdout();
     let _ = writeln!(out.lock(), "{MARK}\t{kind}\t{key}\t{payload}");
 }
@@ -206,6 +266,7 @@ pub fn requested(key: &str) -> Vec<u32> {
 }
 
 pub fn progress(frames: u64) {
+    STEP_FRAMES.store(frames, Ordering::Relaxed);
     if let Some(p) = PROGRESS.get() {
         let _ = std::fs::write(p, frames.to_string());
     }

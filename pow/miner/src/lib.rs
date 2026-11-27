@@ -16,6 +16,8 @@ pub mod macros;
 pub mod reset;
 pub mod signed;
 pub mod rrt;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod campaign;
 
 /// The environment, files and clock the campaign uses: std's natively; in the browser build
 /// (the web miner) obrrt's (`obrrt_core::sys`: a per-instance environment, the worker's shared
