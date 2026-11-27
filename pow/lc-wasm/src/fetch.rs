@@ -54,6 +54,14 @@ async fn post(url: &str, content_type: &str, body: JsValue, timeout: Duration) -
             let status = js_sys::Reflect::get(&resp, &"status".into()).map_err(js_err)?.as_f64().unwrap_or(0.0) as u16;
             return Err(UpError::Status(status));
         }
+        // a node that announces a huge answer is refused before the browser buffers it
+        let headers = js_sys::Reflect::get(&resp, &"headers".into()).map_err(js_err)?;
+        if let Ok(get) = js_sys::Reflect::get(&headers, &"get".into()).and_then(|g| g.dyn_into::<js_sys::Function>().map_err(JsValue::from)) {
+            let len = get.call1(&headers, &"content-length".into()).ok().and_then(|v| v.as_string()).and_then(|s| s.trim().parse::<usize>().ok());
+            if len.is_some_and(|n| n > MAX_BODY) {
+                return Err(UpError::Bad("response too large".into()));
+            }
+        }
         let ab = js_sys::Reflect::get(&resp, &"arrayBuffer".into()).map_err(js_err)?.dyn_into::<js_sys::Function>().map_err(|_| UpError::Bad("no arrayBuffer".into()))?;
         let buf = JsFuture::from(ab.call0(&resp).map_err(js_err)?.dyn_into::<js_sys::Promise>().map_err(|_| UpError::Bad("no promise".into()))?).await.map_err(js_err)?;
         let bytes = js_sys::Uint8Array::new(&buf);
