@@ -154,6 +154,8 @@ export class VizHub {
     if (!w) return;
     this.mirrors[i] = null;
     this.dropPaths(i);
+    // The new campaign is a new tree (from the block's start, maybe another start): the old one's points leave the cloud.
+    this.dropNodes(i);
     Object.assign(w, { start, line: 'loading the game…', steps: [], cur: null, stepNo: 0, played: 0, keysBase: 0, starsBase: 0, fps: 0, lastSim: null, nodesTotal: 0, best: null, bestPads: null, bestStep: null, prefix: null, root: null, keys: {} });
     this.notify();
   }
@@ -254,6 +256,41 @@ export class VizHub {
     this.parentSlot[slot] = parent >= 0 ? this.index.get((w * 4096 + (step & 4095)) * 1e8 + parent) ?? -1 : -1;
     this.cloudChanged = true;
     return slot;
+  }
+
+  /** Removes worker `i`'s nodes from the point cloud (its campaign restarted): the other workers' nodes keep their order,
+   *  packed from slot 0; parents, the index, the selection and the manual node follow their slots. */
+  dropNodes(i) {
+    const total = this.count();
+    const first = this.n > CAP ? this.n % CAP : 0;
+    const map = new Int32Array(CAP).fill(-1); // old slot -> new slot (-1: dropped)
+    const order = [];
+    for (let k = 0; k < total; k++) {
+      const s = (first + k) % CAP;
+      if (this.worker[s] !== i) { map[s] = order.length; order.push(s); }
+    }
+    if (order.length === total) return;
+    const take = (a, width = 1, empty = 0) => {
+      const b = new a.constructor(a.length).fill(empty);
+      order.forEach((s, k) => b.set(a.subarray(s * width, s * width + width), k * width));
+      return b;
+    };
+    this.pos = take(this.pos, 3);
+    for (const f of ['frame', 'stars', 'worker', 'level', 'area', 'flags', 'nodeId', 'stepOf']) this[f] = take(this[f]);
+    this.kind = take(this.kind, 1, NO_KIND);
+    this.keyAt = take(this.keyAt, 1, -1);
+    const ps = new Int32Array(CAP).fill(-1);
+    order.forEach((s, k) => { const p = this.parentSlot[s]; ps[k] = p >= 0 ? map[p] : -1; });
+    this.parentSlot = ps;
+    this.index = new Map();
+    for (let k = 0; k < order.length; k++) this.index.set(this.keyAt[k], k);
+    this.n = order.length;
+    const remap = (s) => (s != null && s >= 0 ? map[s] : s);
+    if (this.selected && this.selected.slot != null) this.selected = map[this.selected.slot] >= 0 ? { ...this.selected, slot: map[this.selected.slot] } : null;
+    if (this.manual) this.manual = this.manual.w === i ? null : { ...this.manual, slot: remap(this.manual.slot), parentSlot: remap(this.manual.parentSlot) };
+    if (this.hl && this.hl.w === i) this.hl = null;
+    this.bumpCloud();
+    this.cloudChanged = true;
   }
 
   /** Worker `i`'s search-tree edges (binary, lib/webminer/treeMirror.js): the page's sparse mirror of the tree. */
