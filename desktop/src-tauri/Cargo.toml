@@ -26,9 +26,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sm64coin-launcher = { path = "../../pow/launcher", default-features = false, features = ["tls"] }
 
-# Android only: links to web pages open in the system browser (the app's window never leaves its own pages).
+# Android only: links to web pages open in the system browser (the app's window never leaves its own pages); the native miner
+# is the sm64coin-miner library (Campaign, in this process; pow/miner/README.md).
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 tauri-plugin-opener = "2"
+sm64coin-miner = { path = "../../pow/miner" }
+sha1 = "0.10"
+
+# The host's tests run the Android miner core (src/mobile_miner.rs) against an isolated offline node.
+[dev-dependencies]
+sm64coin-miner = { path = "../../pow/miner" }
+sha1 = "0.10"
 
 # Desktop only: processes, files, dialogs (the launcher's `desktop` feature is what builds its node/ROM/DHT parts).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
@@ -50,3 +58,35 @@ zeroize = "1"
 opt-level = "s"
 lto = true
 strip = true
+
+# The game's engine (Android's native miner) is compute-bound: full optimisation for it and the search, size for the rest.
+[profile.release.package.sm64coin-miner]
+opt-level = 3
+[profile.release.package.sm64pow]
+opt-level = 3
+[profile.release.package.sm64-binds]
+opt-level = 3
+[profile.release.package.obrrt-core]
+opt-level = 3
+[profile.release.package.obrrt-search]
+opt-level = 3
+[profile.release.package.obrrt-objectives]
+opt-level = 3
+[profile.release.package.obrrt-spec]
+opt-level = 3
+[profile.release.package.wasmer]
+opt-level = 3
+[profile.release.package.wasmer-vm]
+opt-level = 3
+[profile.release.package.wasmer-types]
+opt-level = 3
+[profile.release.package.wasmer-compiler]
+opt-level = 3
+[profile.release.package.wasmer-compiler-cranelift]
+opt-level = 3
+[profile.release.package.cranelift-codegen]
+opt-level = 3
+[profile.release.package.rayon]
+opt-level = 3
+[profile.release.package.rayon-core]
+opt-level = 3

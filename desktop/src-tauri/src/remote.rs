@@ -40,6 +40,11 @@ impl Remote {
         let u = normalize(url)?;
         (self.public.as_deref() == Some(u.as_str()) || self.saved.lock().unwrap().as_deref() == Some(u.as_str())).then_some(u)
     }
+    /// The node the native miner (Android) talks to directly: the public node, checked like any other (a campaign takes one
+    /// fixed URL, so this is the only place that decides which node it may reach).
+    pub fn daemon_url(&self) -> Res<String> {
+        self.public.as_deref().and_then(|p| self.allowed(p)).ok_or_else(|| AppError::new("no_public_node", "this build has no public node to mine against"))
+    }
     pub fn saved(&self) -> Option<String> {
         self.saved.lock().unwrap().clone()
     }

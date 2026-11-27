@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "The Android app's window: the public-node RPC and host info only (no node, ROM, miner, wallet-rpc or passkey link there).",
+  "description": "The Android app's window: the public-node RPC, host info and the in-process native miner (no node, ROM file picker, wallet-rpc or passkey link there).",
   "windows": ["main"],
   "platforms": ["android", "iOS"],
   "permissions": [
     "allow-host-info", "allow-remote-rpc", "allow-remote-node-get",
+    "allow-rom-put", "allow-miner-start", "allow-miner-stop", "allow-miner-status", "allow-miner-viz-on", "allow-miner-viz-mail",
     "core:event:allow-listen", "core:event:allow-unlisten"
   ]
 }
