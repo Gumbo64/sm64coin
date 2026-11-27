@@ -335,6 +335,27 @@ fn miner_status(state: State<'_, App>) -> Res<miner::MinerInfo> {
     Ok(state.miner.lock().unwrap().as_mut().map(|m| m.info()).unwrap_or_else(miner::MinerInfo::idle))
 }
 
+/// Is `url` the app's own page (tauri://localhost on Linux/macOS, http(s)://tauri.localhost on Windows)?
+fn app_url(url: &tauri::Url) -> bool {
+    url.scheme() == "tauri" || (matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost")) || url.as_str() == "about:blank"
+}
+
+/// The window never leaves the app's own pages: a link to a web page opens in the system browser instead (the app's
+/// capabilities only apply to its own origin anyway; this keeps a remote page from posing as the app).
+fn nav_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("nav-guard")
+        .on_navigation(|_, url| {
+            if app_url(url) {
+                return true;
+            }
+            if matches!(url.scheme(), "http" | "https") {
+                let _ = link::open_browser(url.as_str());
+            }
+            false
+        })
+        .build()
+}
+
 pub fn run() {
     let dirs = Dirs::detect();
     let wallet = wallet::Wallet::new(&dirs);
@@ -342,6 +363,7 @@ pub fn run() {
     let remote = crate::remote::Remote::new(Some(app.dirs.data.join("remote-node.txt")));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(nav_guard())
         .manage(app)
         .manage(remote)
         .setup(|t| {
@@ -377,4 +399,14 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_app_pages() {
+        let ok = |u: &str| super::app_url(&u.parse().unwrap());
+        assert!(ok("tauri://localhost/wallet") && ok("http://tauri.localhost/") && ok("https://tauri.localhost/mine"));
+        assert!(!ok("https://sm64coin.pages.dev/") && !ok("https://tauri.localhost.evil.example/") && !ok("file:///etc/passwd"));
+    }
 }
