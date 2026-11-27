@@ -4,8 +4,11 @@
 //! - [`nodes`]: scored node list, pure logic.
 //! - [`exec`], [`allowlist`]: request -> node RPC mapping and the RPC allowlist.
 //! - [`client`]: `Transport` (HTTP, iroh), failover `Client`.
+//! - [`block`], [`verify`], [`checkpoints`]: light-client verification (anchor, header chain, cross-check; wasm ok);
+//!   `consensus` / `replay` features: the rules and the Mario replay from sm64pow.
 //! - `server`, `relay`, `endpoint` (features): the service next to a node, the embedded relay, endpoint setup.
 pub mod allowlist;
+pub mod block;
 pub mod client;
 pub mod exec;
 pub mod nodes;
@@ -22,3 +25,10 @@ pub mod server;
 pub mod relay;
 #[cfg(feature = "relay")]
 pub mod peers;
+
+pub mod checkpoints;
+pub mod verify;
+#[cfg(feature = "consensus")]
+pub mod consensus;
+#[cfg(feature = "replay")]
+pub mod replay;
