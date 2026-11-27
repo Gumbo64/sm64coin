@@ -98,19 +98,61 @@ fn host_info(app: State<'_, App>) -> Res<HostInfo> {
     })
 }
 
-#[tauri::command]
-fn rom_set(app: State<'_, App>, path: String) -> Res<RomInfo> {
-    let p = PathBuf::from(path.trim());
+fn rom_install(d: &Dirs, p: &Path) -> Res<RomInfo> {
     if !p.is_file() {
         return Err(AppError::new("rom_missing", format!("{} is not a file", p.display())));
     }
-    match rom::verify(&p) {
+    match rom::verify(p) {
         Ok(true) => {}
         Ok(false) => return Err(AppError::new("rom_wrong", format!("{} is not the US Super Mario 64 ROM (SHA-1 {})", p.display(), rom::ROM_SHA1))),
         Err(e) => return Err(AppError::new("rom_unreadable", e)),
     }
-    let dst = rom::install(&p, &app.dirs.data).map_err(|e| AppError::new("rom_copy", e))?;
+    let dst = rom::install(p, &d.data).map_err(|e| AppError::new("rom_copy", e))?;
     Ok(RomInfo { found: true, path: Some(dst.display().to_string()), error: None })
+}
+
+/// After a ROM arrives the node can start (it did not when the app opened without one).
+fn start_node_later(app: &AppHandle) {
+    let h = app.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = start_node(&h.state::<App>()) {
+            eprintln!("node: {}", e.message);
+        }
+    });
+}
+
+#[tauri::command]
+fn rom_set(app: AppHandle, path: String) -> Res<RomInfo> {
+    let r = rom_install(&app.state::<App>().dirs, Path::new(path.trim()))?;
+    start_node_later(&app);
+    Ok(r)
+}
+
+/// Opens the system file dialog and installs the chosen ROM; `None` when the dialog was cancelled.
+#[tauri::command]
+async fn rom_pick(app: AppHandle) -> Res<Option<RomInfo>> {
+    use tauri_plugin_dialog::DialogExt;
+    let h = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || h.dialog().file().set_title("Super Mario 64 (US) ROM").add_filter("N64 ROM", &["z64", "n64", "v64", "rom"]).add_filter("All files", &["*"]).blocking_pick_file())
+        .await
+        .map_err(|e| AppError::new("internal", e.to_string()))?;
+    let Some(f) = picked else { return Ok(None) };
+    let p = f.into_path().map_err(|e| AppError::new("rom_missing", e.to_string()))?;
+    let r = rom_install(&app.state::<App>().dirs, &p)?;
+    start_node_later(&app);
+    Ok(Some(r))
+}
+
+/// The ROM's bytes for the in-page game (which keeps its own copy in IndexedDB), so the app never asks for a second upload.
+#[tauri::command]
+async fn rom_bytes(app: AppHandle) -> Res<tauri::ipc::Response> {
+    let d = app.state::<App>().dirs.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = rom::find(None, &d.bundle, &d.data).map_err(|e| AppError::new("rom_missing", e))?;
+        std::fs::read(&p).map(tauri::ipc::Response::new).map_err(|e| AppError::new("rom_unreadable", e.to_string()))
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
 }
 
 fn node_config(d: &Dirs, rom: PathBuf) -> NodeConfig {
@@ -264,6 +306,7 @@ pub fn run() {
     let dirs = Dirs::detect();
     let app = App { dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(app)
         .setup(|t| {
             // The node starts with the app when the ROM is there (the UI asks for it otherwise, then calls node_start).
@@ -281,7 +324,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, node_start, node_stop, node_status, node_rpc, miner_start, miner_stop, miner_status])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, miner_start, miner_stop, miner_status])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {

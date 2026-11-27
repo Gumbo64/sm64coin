@@ -34,7 +34,6 @@ export default function NativeMiner() {
   const [m, refreshMiner] = usePolled(() => p.nativeMiner.status(), 2000);
   const [lines, setLines] = useState([]);
   const [err, setErr] = useState('');
-  const [romPath, setRomPath] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { p.host().then(setHost).catch(() => {}); }, [p]);
@@ -66,9 +65,8 @@ export default function NativeMiner() {
       {!romOk && (
         <div className="notice">
           <p>The app needs your US Super Mario 64 ROM (.z64) for its node and miner. It is checked (SHA-1) and copied into the app's data folder; it is not included.</p>
-          <input className="mono wide" style={{ width: '100%' }} value={romPath} onChange={(e) => setRomPath(e.target.value)} placeholder="/path/to/baserom.us.z64" />
           <Toolbar label="ROM">
-            <ToolBtn disabled={busy || !romPath.trim()} onClick={() => run(async () => { await p.rom.set(romPath); setHost(await p.host()); await p.node.start(); })}>Use this ROM</ToolBtn>
+            <ToolBtn disabled={busy} onClick={() => run(async () => { const r = await p.rom.pick(); if (r) setHost(await p.host()); })}>Choose ROM file...</ToolBtn>
           </Toolbar>
         </div>
       )}

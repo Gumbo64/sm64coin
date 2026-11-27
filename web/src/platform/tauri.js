@@ -43,9 +43,16 @@ const nativeMiner = {
   },
 };
 
+// Tells the page (RomGate) that the app now has a ROM, whoever asked for it.
+const romChanged = () => window.dispatchEvent(new Event('sm64coin:rom'));
+
 const rom = {
   status: async () => (await cmd('host_info')).rom,
-  set: (path) => cmd('rom_set', { path }),
+  set: async (path) => { const r = await cmd('rom_set', { path }); romChanged(); return r; },
+  /** Opens the system file dialog; resolves with the ROM info, or null when cancelled. */
+  pick: async () => { const r = await cmd('rom_pick'); if (r) romChanged(); return r; },
+  /** The ROM's bytes (ArrayBuffer) for the in-page game. */
+  bytes: async () => { const b = await cmd('rom_bytes'); return b instanceof ArrayBuffer ? b : new Uint8Array(b).buffer; },
 };
 
 export const tauri = {

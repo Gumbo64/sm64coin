@@ -3,7 +3,7 @@
 //   platform.rpc(method, params)  JSON-RPC to the local node (desktop only; null in the browser: lib/rpc.js uses fetch)
 //   platform.node                 {status, start, stop} of the local node, or null
 //   platform.nativeMiner          {start, stop, status, subscribe, onState} of the native miner, or null
-//   platform.rom                  {status, set(path)} of the ROM kept by the app, or null
+//   platform.rom                  {status, set(path), pick(), bytes()} of the ROM kept by the app, or null
 // `await initPlatform()` once before the first render; `getPlatform()` after that.
 import { browser } from './browser.js';
 
