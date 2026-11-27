@@ -8,7 +8,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'pow/webminer/**', 'pow/miner/**', 'pow/sm64pow/**', 'pow/Cargo.lock', 'scripts/build-wasm.sh', 'scripts/build-wallet-wasm.sh', 'monero', '.github/workflows/pages.yml', '.github/workflows/wallet-engine.yml']
+    paths: ['web/**', 'pow/perturb/**', 'pow/perturb-wasm/**', 'pow/statecodec/**', 'pow/webminer/**', 'pow/lc/**', 'pow/lc-wasm/**', 'scripts/build-lc-wasm.sh', 'pow/miner/**', 'pow/sm64pow/**', 'pow/Cargo.lock', 'scripts/build-wasm.sh', 'scripts/build-wallet-wasm.sh', 'monero', '.github/workflows/pages.yml', '.github/workflows/wallet-engine.yml']
   workflow_dispatch:
 
 permissions:
@@ -45,6 +45,7 @@ jobs:
           workspaces: |
             pow/perturb-wasm
             pow/webminer
+            pow/lc-wasm
           key: wasm
       # The web miner (pow/webminer) needs clang for wasm32 (zstd-sys) and the obrrt crates from
       # Gumbo64/sm64-AI-binds. If that repo is private, add the repo secret SM64_AI_BINDS_TOKEN
@@ -59,7 +60,7 @@ jobs:
           if [ -n "$SM64_AI_BINDS_TOKEN" ]; then
             git config --global url."https://x-access-token:${SM64_AI_BINDS_TOKEN}@github.com/Gumbo64/".insteadOf "https://github.com/Gumbo64/"
           fi
-      - name: Browser WASM modules (perturbation, web miner)
+      - name: Browser WASM modules (perturbation, light-client network, web miner)
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
           REQUIRE_WEBMINER: "1"   # the site and the bundles ship the browser miner: a failed build fails the job

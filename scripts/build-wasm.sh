@@ -9,6 +9,9 @@ build() { # crate-dir out-dir out-name
   wasm-pack build "$ROOT/pow/$1" --release --target web --no-opt --out-dir "$ROOT/web/src/wasm/$2" --out-name "$3"
 }
 build perturb-wasm perturb sm64coin_perturb_wasm
+# The light-client network (pow/lc-wasm, own lockfile and build flags): the site's node access, loaded lazily. NO_LCWASM=1 skips it
+# (then `vite build` needs web/src/wasm/lc from elsewhere: the site imports it).
+if [ -z "${NO_LCWASM:-}" ]; then "$ROOT/scripts/build-lc-wasm.sh"; fi
 # The web miner (the native miner's RRT campaign, pow/webminer): needs the search crates
 # (objective-rrt-v2) and a C compiler for wasm32 (clang); skipped when they aren't there.
 if [ -z "${NO_WEBMINER:-}" ]; then
