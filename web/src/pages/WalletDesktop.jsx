@@ -43,7 +43,11 @@ export default function WalletDesktop() {
     const n = nodeInUse();
     try {
       if (n.kind === 'local') { const u = getPlatform().nodeUrl(); const m = /:(\d+)$/.exec(u || ''); if (m) await w.setNode(`127.0.0.1:${m[1]}`); }
-      else if (n.kind === 'public' && n.url) await w.setNode(n.url);
+      else if (n.kind === 'public' && n.url) {
+        // the app's loopback daemon (fails over between the public nodes), else the public node itself
+        const p = getPlatform().net && getPlatform().net.walletDaemon();
+        await w.setNode(p ? p.replace(/^http:\/\//, '') : n.url);
+      }
       else if (n.kind === 'chosen' && /^https:\/\//.test(n.url)) await w.setNode(n.url);
     } catch { /* not open yet: the sidecar starts with the right node */ }
   }, [w]);

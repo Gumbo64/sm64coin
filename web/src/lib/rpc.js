@@ -58,6 +58,7 @@ export async function resolveNode() {
     const r = await withTimeout(fetch(`${import.meta.env.BASE_URL}public-node.json`, { cache: 'no-cache' }), 3000);
     if (r.ok) publicNode = String((await r.json()).url || '').trim().replace(/\/+$/, '');
   } catch { /* no public node */ }
+  if (getPlatform().net) { try { await getPlatform().net.status(); } catch { /* the loopback daemon is not up yet */ } }
   if (getPlatform().remoteNode) { try { savedRemote = clean((await getPlatform().remoteNode.get()).saved); } catch { /* none */ } }
   if (desktopNode() && !chosen()) { await watchLocalNode(); return; }
   if (getPlatform().mobile && !chosen() && publicNode) { fallback = true; return; } // Android: no local node, the public one over https // the app's own node, or the public one while it is down

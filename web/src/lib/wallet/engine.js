@@ -2,7 +2,7 @@
 // (web/wallet-wasm, scripts/build-wallet-wasm.sh). Two static files next to the site, loaded only on
 // the Wallet page: wallet/monero-ts.lib.mjs (the API, 0.7 MB) and wallet/monero.worker.js (a web
 // worker that holds the wasm and all keys, 8 MB, gzips to about 3).
-import { getNode, daemon } from '../rpc.js';
+import { getNode, daemon, isChosenNode, usingLocalNode } from '../rpc.js';
 import { getPlatform } from '../../platform/index.js';
 import { BACKUP_FORMAT, b64, parseBackup } from './backup.js';
 export { BACKUP_FORMAT, parseBackup };
@@ -41,7 +41,13 @@ export function loadLib() {
 }
 
 /** The node's URL as the wallet engine (a worker) needs it: absolute. '' is this site's own proxy. */
-export const daemonUri = () => getNode() || getPlatform().nodeUrl() || location.origin;
+export const daemonUri = () => {
+  // The app (Android always; desktop while its own node is not running): the loopback daemon, which fails over between the
+  // light-client network's nodes. A node the user chose, and the app's own node, are used directly.
+  const proxy = getPlatform().net && getPlatform().net.walletDaemon();
+  if (proxy && !isChosenNode() && !usingLocalNode()) return proxy;
+  return getNode() || getPlatform().nodeUrl() || location.origin;
+};
 
 const net = (m) => m.MoneroNetworkType.MAINNET; // the SM64Coin chain is the fork's "mainnet" (addresses SM64...)
 

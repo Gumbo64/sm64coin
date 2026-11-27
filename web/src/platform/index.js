@@ -3,6 +3,8 @@
 //   platform.rpc(method, params)  JSON-RPC to the local node (desktop only; null in the browser: lib/rpc.js uses fetch)
 //   platform.remoteRpc(url, method, params)  the same against the public node (or the one confirmed with remoteNode.set) over https
 //   platform.remoteNode           {get, set(url)}: the https node the user confirmed in a native dialog (Network page)
+//   platform.net                  {status, walletDaemon}: the app's light-client network (which node and transport is in use, the
+//                                 loopback daemon the wallet and the native miner use), or null
 //   platform.node                 {status, start, stop} of the local node, or null
 //   platform.nativeMiner          {start, stop, status, subscribe, onState} of the native miner, or null
 //   platform.wallet               the wallet-rpc sidecar's API (desktop) or null: the Wallet page then uses it, not the WASM engine
