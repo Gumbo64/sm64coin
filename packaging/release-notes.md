@@ -23,13 +23,20 @@ The `sm64coin` launcher is no longer shipped.
 
 Same chain as 0.5.0 to 0.5.4: no reset, upgrade in place.
 
+- **Mine page**: one **Auto-mine** card under the search cloud (it drives the native miner in the apps and the web workers in the
+  browser), and a **star board** between them showing which of the 120 stars the block's start state has and which are left,
+  with the cap switches and Bowser keys.
+
 - **No single public node any more**: the website, the Android app and the desktop app (while its own node is down)
   keep a scored list of nodes (the release's bootstrap list plus nodes they learn), move to the next one when a node is
   slow or down, and send blocks, proofs and transactions to three nodes at once. The wallet and the native miner talk to a
   loopback daemon in the app that does this for them.
-- **iroh**: nodes behind NAT can serve light clients over iroh (QUIC, end-to-end authenticated to the node's key, through
-  a relay when there is no direct path). The apps speak it natively; the website reaches iroh nodes over a relay's
-  WebSocket (the site's CSP now allows `wss:` for that).
+- **Plain HTTP(S) everywhere**: the network is ordinary HTTPS to nodes' RPC (the apps also take plain `http://ip:port`
+  nodes), nothing else is needed. The apps find more nodes by asking the nodes they use for Monero's list of public nodes
+  (`get_public_nodes`, public addresses only); the website uses the https nodes of its bootstrap list.
+- **Tip push**: a node's `sm64coin-lc` service pushes the chain tip to the apps and the website as Server-Sent Events
+  (`GET /lc/tip`), so a new block is seen at once and the frame limit is computed on the device from the tip and the
+  clock, with a 30 s poll as the fallback. A node behind Caddy or nginx forwards `/lc/tip` with buffering off.
 - **Verification**: a light client no longer trusts the node it reads from. It checks the chain from a checkpoint compiled
   into the release: every block's id, links, timestamps, difficulty, frame limit, the miner's signature and the proof
   weight, across several nodes, and follows the heaviest valid chain; a node that serves an invalid chain is banned for a
@@ -39,22 +46,19 @@ Same chain as 0.5.0 to 0.5.4: no reset, upgrade in place.
 - **In the browser**: the same Rust code runs as WASM, loaded after the page appears; until it is ready, or if it fails,
   the site uses the public node directly as before.
 - **For node runners: `sm64coin-lc`** (in the bundles; Linux also `sm64coin-lc.service`): the light-client service next
-  to your node. It reads the node's restricted RPC on 127.0.0.1 (set `RESTRICTED_PORT=16489` on the node unit), with
-  per-IP and per-client budgets, and turns into an iroh relay for others when a self-test from two peers on different
-  networks shows your machine is reachable and you gave it a Let's Encrypt domain (`--tls acme --acme-domain ...
-  --acme-production`), with a per-client rate limit and a monthly byte cap. The launcher has the same as `--lc`.
+  to your node. It reads the node's restricted RPC on 127.0.0.1 (set `RESTRICTED_PORT=16489` on the node unit) and serves
+  the tip stream on a local port for your reverse proxy. The launcher has the same as `--lc` (`--lc-sse-bind`).
 - **Privacy**: the apps and the website publish nothing about themselves (no DHT or lookup record of your device) and
   only dial nodes they know; the wallet still downloads whole blocks and scans them locally, as with any Monero remote
   node, so a node learns your IP and timing but not which outputs are yours. Joining the leaderboard (which sends your
   view key) only goes to the node you chose, never to a node picked by failover.
-- Still to come: the Raspberry Pi as the first iroh seed and relay in the bootstrap list, then removing the Cloudflare
-  tunnel in front of it.
+- Still to come: the Raspberry Pi in the bootstrap list, then removing the Cloudflare tunnel in front of it.
 
 ### 0.5.4: native mining on Android (preview)
 
 Same chain as 0.5.0 to 0.5.3: no reset, upgrade in place.
 
-- **Android app: native mining** (preview). The Mine page has a **Native miner** card: the miner runs inside the app
+- **Android app: native mining** (preview). The Mine page's **Auto-mine** card drives the miner inside the app
   (the same search the desktop miner uses), mines against the public node with the ROM you already loaded in the app,
   and feeds the page's visualisations. It is off until you start it; threads default to cores - 1, at most 4. It uses a
   lot of battery and warms the phone, so use it while charging. It mines only while the app is open on screen and stops

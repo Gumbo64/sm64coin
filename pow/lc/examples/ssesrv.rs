@@ -1,6 +1,6 @@
-//! Tip push over plain HTTP with no iroh at all: the shared watcher and the SSE listener in front of a node's RPC.
+//! Tip push over plain HTTP: the shared watcher and the SSE listener in front of a node's RPC.
 //!
-//!   cargo run --example ssesrv --no-default-features --features tip-server -- http://127.0.0.1:16481 127.0.0.1:16490
+//!   cargo run --example ssesrv --features tip-server -- http://127.0.0.1:16481 127.0.0.1:16490
 use std::sync::Arc;
 use std::time::Duration;
 

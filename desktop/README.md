@@ -1,7 +1,7 @@
 # SM64Coin desktop app (Tauri 2)
 
 The website (`web/`, React) in a Tauri window, with a Rust backend for what a browser cannot do well: a local full
-node, the native miner, (later) wallet-rpc and iroh. The UI is not forked: `web/src/platform/` has two implementations
+node, the native miner and wallet-rpc. The UI is not forked: `web/src/platform/` has two implementations
 (`browser`, `tauri`) picked at startup (`window.__TAURI_INTERNALS__`); pages ask `getPlatform()` for `rpc`, `node`,
 `nativeMiner`, `rom` and treat null as "not here". Rust is the single source of logic: `pow/launcher` (library +
 the `sm64coin` CLI) does ROM search, node start/stop/status, the RPC whitelist and seeds/DHT; `src-tauri` is a thin
@@ -121,6 +121,6 @@ owns its viz mailbox and frame counter, so the app and a campaign never share pr
 
 ## Not done
 
-- iroh group mining (same tree-sync records) in Rust; native miner on Android as a foreground service (the app mines only while on screen); Windows job object for the app's own children is
+- Group mining (same tree-sync records) in Rust, not yet over any network transport (the iroh one is archived at the tag `archive/iroh`); native miner on Android as a foreground service (the app mines only while on screen); Windows job object for the app's own children is
   in the launcher `proc` (children get CREATE_NO_WINDOW now), pdeathsig on Linux.
 - Wallet: sweep, subaddresses, address book, view-only wallets, leaderboard join from the app.
