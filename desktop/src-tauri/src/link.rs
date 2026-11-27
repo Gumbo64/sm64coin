@@ -20,6 +20,7 @@
 //! local processes can read, and a local process can send any Origin. Such a process could win the race with a seed of its own
 //! (it cannot read the real one: that is encrypted to the app's key). It cannot make the app show the user's own address for it:
 //! the address is checked against the restored seed.
+#[cfg(desktop)]
 use crate::desktop::App;
 use crate::{AppError, Res};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -32,7 +33,9 @@ use serde_json::Value;
 use sha2::Sha256;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, State as TState};
+use tauri::State as TState;
+#[cfg(desktop)]
+use tauri::{AppHandle, Manager};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -298,6 +301,7 @@ fn info(l: &Link, url: Option<String>) -> LinkInfo {
     LinkInfo { state: g.state, url, address: g.got.as_ref().map(|r| r.address.clone()).filter(|a| !a.is_empty()), error: g.error.clone() }
 }
 
+#[cfg(desktop)]
 pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let mut c = if cfg!(target_os = "macos") {
@@ -316,10 +320,8 @@ pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| format!("cannot open the browser: {e}"))
 }
 
-/// Starts the one-time listener and opens the website's link page in the system browser (`open: false` only returns the URL).
-#[tauri::command]
-pub fn link_start(app: TState<'_, App>, open: Option<bool>) -> Res<LinkInfo> {
-    let l = &app.link;
+/// Starts the one-time listener; returns the website page to open (the caller opens it in the system browser).
+fn begin(l: &Link) -> Res<String> {
     let (epoch, inner) = {
         let mut g = l.inner.lock().unwrap();
         g.stop = true; // an older listener ends
@@ -343,6 +345,15 @@ pub fn link_start(app: TState<'_, App>, open: Option<bool>) -> Res<LinkInfo> {
     if let Ok(f) = std::env::var("SM64COIN_LINK_URL_FILE") {
         let _ = std::fs::write(f, &url); // tests only (debug builds): the secret is otherwise never written anywhere
     }
+    Ok(url)
+}
+
+/// Starts the one-time listener and opens the website's link page in the system browser (`open: false` only returns the URL).
+#[cfg(desktop)]
+#[tauri::command]
+pub fn link_start(app: TState<'_, App>, open: Option<bool>) -> Res<LinkInfo> {
+    let l = &app.link;
+    let url = begin(l)?;
     // If no browser can be opened the link is still shown for the user to copy.
     if open.unwrap_or(true) {
         if let Err(e) = open_browser(&url) {
@@ -352,24 +363,69 @@ pub fn link_start(app: TState<'_, App>, open: Option<bool>) -> Res<LinkInfo> {
     Ok(info(l, Some(url)))
 }
 
+/// Android: the same, opened with the system's default browser (Chrome); the seed goes to the page (link_take), the WASM wallet restores it.
+#[cfg(mobile)]
+#[tauri::command]
+pub fn link_start(app: tauri::AppHandle, l: TState<'_, Link>, open: Option<bool>) -> Res<LinkInfo> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = begin(&l)?;
+    if open.unwrap_or(true) {
+        if let Err(e) = app.opener().open_url(&url, None::<&str>) {
+            l.inner.lock().unwrap().error = Some(format!("cannot open the browser: {e}; copy the link below into your browser"));
+        }
+    }
+    Ok(info(&l, Some(url)))
+}
+
+#[cfg(desktop)]
 #[tauri::command]
 pub fn link_status(app: TState<'_, App>) -> Res<LinkInfo> {
     Ok(info(&app.link, None))
 }
-
+#[cfg(mobile)]
 #[tauri::command]
-pub fn link_cancel(app: TState<'_, App>) -> Res<LinkInfo> {
+pub fn link_status(l: TState<'_, Link>) -> Res<LinkInfo> {
+    Ok(info(&l, None))
+}
+
+fn cancel(l: &Link) -> Res<LinkInfo> {
     {
-        let mut g = app.link.inner.lock().unwrap();
+        let mut g = l.inner.lock().unwrap();
         g.stop = true;
         g.got = None;
         g.state = LinkState::Cancelled;
     }
-    Ok(info(&app.link, None))
+    Ok(info(l, None))
+}
+#[cfg(desktop)]
+#[tauri::command]
+pub fn link_cancel(app: TState<'_, App>) -> Res<LinkInfo> {
+    cancel(&app.link)
+}
+#[cfg(mobile)]
+#[tauri::command]
+pub fn link_cancel(l: TState<'_, Link>) -> Res<LinkInfo> {
+    cancel(&l)
+}
+
+/// Android: hands the received wallet to the page (once, for the address the user confirmed): {seed, height, address}. The
+/// page restores it into the WASM wallet and must check that the restored address is `address`.
+#[cfg(mobile)]
+#[tauri::command]
+pub fn link_take(l: TState<'_, Link>, address: String) -> Res<Value> {
+    let mut g = l.inner.lock().unwrap();
+    expire(&mut g);
+    if !g.got.as_ref().is_some_and(|r| r.address == address) {
+        return Err(AppError::new("link_nothing", "no passkey wallet with that address was received"));
+    }
+    g.state = LinkState::Idle;
+    let got = g.got.take().unwrap();
+    Ok(serde_json::json!({"seed": got.seed.as_str(), "height": got.height, "address": got.address}))
 }
 
 /// Imports the received wallet under `name` with the password the user chose in the app (seed restore through wallet-rpc).
 /// `address`: the address the user confirmed (the one `link_status` showed); the restored wallet must have it.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn link_finish(app: AppHandle, name: String, password: String, address: String, kdf_rounds: Option<u32>) -> Res<Value> {
     let password = Zeroizing::new(password);

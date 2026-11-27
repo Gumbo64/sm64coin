@@ -138,6 +138,8 @@ const wallet = {
     const r = await wcall('restore_deterministic_wallet', { filename: name, password, seed: seed.trim().replace(/\s+/g, ' '), restore_height: Number(restoreHeight) || 0, seed_offset: seedOffset || '', _kdf_rounds: kdfRounds });
     return { address: r.address };
   },
+  /** Sets / changes the open wallet's password (`oldPassword` '' for a wallet made without one). */
+  async setPassword(oldPassword, newPassword) { await wcall('change_wallet_password', { new_password: newPassword, _password: oldPassword }); },
   async address() { return (await wcall('get_address', { account_index: 0 })).address; },
   async open(name, password) { await wcall('open_wallet', { filename: name, password }); return { address: (await wcall('get_address', { account_index: 0 })).address }; },
   close: () => wcall('close_wallet'),
@@ -223,7 +225,8 @@ const mobile = {
   rom: null,
   remoteNode: { get: desktop.remoteNode.get, set: null }, // the public node only (no native confirmation dialog there)
   wallet: null, // the browser's WASM wallet engine (Wallet page) serves there
-  link: null,
+  // The passkey hand-off works there too: `take(address)` returns {seed, height, address} for the page's WASM wallet.
+  link: { ...link, take: (address) => cmd('link_take', { address }), finish: null },
 };
 
 export const tauri = isMobile ? mobile : desktop;

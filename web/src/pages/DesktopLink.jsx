@@ -4,7 +4,7 @@ import * as pk from '../lib/wallet/passkey.js';
 import * as eng from '../lib/wallet/engine.js';
 
 // Opened by the SM64Coin desktop app (Wallet > Use my website passkey): derives the passkey wallet with the existing, frozen
-// passkey.js and sends its seed words to the app's one-time listener on this computer, encrypted to the app's key
+// passkey.js and sends its seed words to the app's one-time listener on this device, encrypted to the app's key
 // (lib/desktopLink.js). Nothing else is done here and nothing leaves this computer.
 export default function DesktopLink() {
   const [link, setLink] = useState(undefined); // undefined: not read yet; null: not a valid link
@@ -42,10 +42,10 @@ export default function DesktopLink() {
   return (
     <div className="card">
       <h2>Use my passkey in the SM64Coin app</h2>
-      {link === null && <p className="walleterr">This page is opened from the desktop app (Wallet, "Use my website passkey"), with a link that carries a one-time key. Open it from there.</p>}
+      {link === null && <p className="walleterr">This page is opened from the SM64Coin app (Wallet, "Use my website passkey"), with a link that carries a one-time key. Open it from there.</p>}
       {link && state !== 'done' && (
         <>
-          <p>This hands your passkey wallet to the SM64Coin app running on <b>this computer</b>. The wallet's seed words are encrypted to a key the app just made and sent straight to it (127.0.0.1); they go nowhere else. Your passkey itself never leaves this device.</p>
+          <p>This hands your passkey wallet to the SM64Coin app running on <b>this device</b>. The wallet's seed words are encrypted to a key the app just made and sent straight to it (127.0.0.1); they go nowhere else. Your passkey itself never leaves this device.</p>
           <p className="muted">Only continue if you just clicked this in your own SM64Coin app.</p>
           <button disabled={state === 'working'} onClick={go}>Use my passkey</button>
           {msg && <p className={state === 'error' ? 'walleterr' : 'muted'}>{msg}</p>}

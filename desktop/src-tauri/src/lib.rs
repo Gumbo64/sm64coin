@@ -14,8 +14,7 @@ mod desktop;
 mod miner;
 #[cfg(desktop)]
 mod wallet;
-#[cfg(desktop)]
-mod link;
+mod link; // desktop: the passkey hand-off into wallet-rpc; Android: the seed goes to the page's WASM wallet (link_take)
 // The visualisation feed's checks (desktop: the miner's stdout; Android: the page's mailbox).
 #[allow(dead_code)]
 mod vizfeed;
@@ -149,6 +148,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(nav_guard())
         .manage(remote::Remote::new(None))
+        .manage(link::Link::default())
         .setup(|t| {
             use tauri::Manager;
             let data = t.path().app_data_dir()?;
@@ -159,7 +159,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail])
+        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail, link::link_start, link::link_status, link::link_cancel, link::link_take])
         .run(tauri::generate_context!())
         .expect("error while running the SM64Coin app");
 }
