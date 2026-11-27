@@ -97,7 +97,7 @@ jobs:
           v="${VERSION#v}"
           [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || v=0.0.1   # a dry run's label: any valid version
           echo "APP_VERSION=$v" >> "$GITHUB_ENV"
-      - name: Tauri CLI (cargo tauri: the Gradle plugin calls it too, so the npm CLI is not enough)
+      - name: "Tauri CLI (cargo tauri; the Gradle plugin calls it too, so the npm CLI is not enough)"
         run: command -v cargo-tauri >/dev/null || cargo install tauri-cli --version 2.12.6 --locked
       - name: Build the release APK (unsigned)
         working-directory: desktop/src-tauri
