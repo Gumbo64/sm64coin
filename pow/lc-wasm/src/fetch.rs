@@ -70,10 +70,24 @@ async fn post(url: &str, content_type: &str, body: JsValue, timeout: Duration) -
         }
         Ok(bytes.to_vec())
     };
-    match n0_future::time::timeout(timeout, work).await {
-        Ok(r) => r,
-        Err(_) => Err(UpError::Unreachable("timed out".into())),
+    // the request, or the timer, whichever finishes first (the loser is dropped: a dropped request aborts its fetch)
+    let timer = sleep(timeout);
+    futures_util::pin_mut!(work, timer);
+    match futures_util::future::select(work, timer).await {
+        futures_util::future::Either::Left((r, _)) => r,
+        futures_util::future::Either::Right(_) => Err(UpError::Unreachable("timed out".into())),
     }
+}
+
+/// `setTimeout` as a future.
+async fn sleep(d: Duration) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let global = js_sys::global();
+        if let Ok(set) = js_sys::Reflect::get(&global, &"setTimeout".into()).and_then(|f| f.dyn_into::<js_sys::Function>().map_err(JsValue::from)) {
+            let _ = set.call2(&global, &resolve, &JsValue::from_f64(d.as_millis() as f64));
+        }
+    });
+    let _ = JsFuture::from(promise).await;
 }
 
 #[async_trait::async_trait(?Send)]

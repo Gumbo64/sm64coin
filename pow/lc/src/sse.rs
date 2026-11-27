@@ -1,5 +1,5 @@
-//! The tip over plain HTTP(S): Server-Sent Events at `GET /lc/tip`, next to the iroh `SubscribeTip` (server.rs) and fed by the same
-//! [`TipFeed`] (one watcher of the node for every subscriber, whatever the transport).
+//! The tip over plain HTTP(S): Server-Sent Events at `GET /lc/tip`, fed by a [`TipFeed`] (one watcher of the node for every
+//! subscriber).
 //!
 //! The service speaks plain HTTP on a local port (`--sse-bind 127.0.0.1:PORT`); the public HTTPS address is the node's reverse proxy
 //! (Caddy / nginx) forwarding `/lc/tip` to it with buffering OFF (Caddy: `reverse_proxy /lc/tip 127.0.0.1:PORT { flush_interval -1 }`;

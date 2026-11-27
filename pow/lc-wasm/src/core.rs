@@ -41,12 +41,19 @@ impl Drop for Busy<'_> {
     }
 }
 
+/// The nodes a page can reach: https ones (a plain-http node is mixed content on an https page), and plain http on loopback
+/// (a development node).
+pub fn https_only(a: &NodeAddr) -> bool {
+    let NodeAddr::Http { url } = a;
+    url.starts_with("https://") || ["http://localhost", "http://127.0.0.1", "http://[::1]"].iter().any(|p| url.strip_prefix(p).is_some_and(|r| r.is_empty() || r.starts_with(':') || r.starts_with('/')))
+}
+
 pub fn parse_genesis(s: &str) -> Option<[u8; 32]> {
     hex::decode(s.trim()).ok()?.try_into().ok()
 }
 
 /// The node list: the saved one (scores, bans) topped up with the bootstrap entries. `keep` filters entries the
-/// platform cannot reach (iroh nodes when no endpoint could be built).
+/// platform cannot reach.
 ///
 /// The saved list comes from localStorage, which is not trusted: it keeps only records of current bootstrap entries, and
 /// only their latency and success history (`NodeList::sanitize_loaded`: no bans, heights or extra nodes from storage).
@@ -334,12 +341,11 @@ mod tests {
 
     #[test]
     fn list_is_saved_and_restored_and_unreachable_kinds_dropped() {
-        let id = "ab".repeat(32);
-        let boot = format!(r#"{{"nodes":["https://a.example","iroh:{id}@https://relay.example"]}}"#);
-        let with = build_list(&boot, "", 1, |_| true);
-        assert_eq!(with.len(), 2);
-        let without = build_list(&boot, &with.to_json(), 2, |a| matches!(a, NodeAddr::Http { .. }));
-        assert_eq!(without.len(), 1, "an iroh node is dropped when there is no endpoint, even from the saved list");
+        let boot = r#"{"nodes":["https://a.example","http://203.0.113.9:16481","iroh:abababababababababababababababababababababababababababababababab@https://relay.example"]}"#;
+        let with = build_list(boot, "", 1, |_| true);
+        assert_eq!(with.len(), 2, "an old iroh entry is not a node any more");
+        let https_only = build_list(boot, &with.to_json(), 2, https_only);
+        assert_eq!(https_only.len(), 1, "a page reaches https nodes only, even from the saved list");
         assert!(build_list(r#"{"url":"https://eboy.au"}"#, "garbage", 1, |_| true).len() == 1);
     }
 
@@ -364,18 +370,4 @@ mod tests {
         assert!(anchor_for(None).is_none());
         assert!(anchor_for(Some([9; 32])).is_none());
     }
-}
-
-/// A pushed tip as the JSON the page reads (`difficulty` and `cumulative_difficulty` as decimal strings: they can exceed 2^53).
-pub fn tip_json(node: &str, t: &sm64coin_lc::proto::TipInfo) -> String {
-    json!({
-        "node": node,
-        "height": t.height,
-        "hash": hex::encode(t.hash),
-        "timestamp": t.timestamp,
-        "cumulative_difficulty": t.cumulative_difficulty.to_string(),
-        "difficulty": t.difficulty.to_string(),
-        "server_time": t.server_time,
-    })
-    .to_string()
 }

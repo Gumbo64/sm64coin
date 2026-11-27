@@ -1,7 +1,6 @@
 //! Request -> node RPC. The single place that knows how a protocol [`Request`] maps onto the node's
-//! JSON-RPC / `.bin` calls and how the answer is shaped into a [`Response`]. Used by the server
-//! (against the local node) and by [`crate::client::UpstreamTransport`] (against a remote HTTP node),
-//! so both transports give identical answers.
+//! JSON-RPC / `.bin` calls and how the answer is shaped into a [`Response`]. Used by
+//! [`crate::client::UpstreamTransport`] against a remote HTTP(S) node and by the tip feed against the local one.
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -69,7 +68,6 @@ pub fn validate(req: &Request) -> Result<(), ErrorKind> {
     match req {
         Request::GetHeaders { count, .. } if *count == 0 || *count > MAX_HEADERS => Err(ErrorKind::Malformed),
         Request::GetBlocks { count, .. } if *count == 0 || *count > MAX_BLOCKS => Err(ErrorKind::Malformed),
-        Request::GetNodes { max } if *max == 0 || *max > MAX_NODES => Err(ErrorKind::Malformed),
         Request::GetCycle { hash } if !(hash.is_empty() || (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))) => Err(ErrorKind::Malformed),
         Request::GetTemplate { address, reserve } if address.len() > 200 || address.is_empty() || *reserve > 255 => Err(ErrorKind::Malformed),
         Request::GetOutDistribution { amounts, .. } if amounts.len() > 64 => Err(ErrorKind::Malformed),
@@ -95,10 +93,6 @@ pub fn validate(req: &Request) -> Result<(), ErrorKind> {
         }
         _ => Ok(()),
     }
-}
-
-fn is_local(req: &Request) -> bool {
-    matches!(req, Request::Hello { .. } | Request::GetNodes { .. } | Request::Probe { .. } | Request::SubscribeTip)
 }
 
 fn upstream_err(e: UpError) -> Response {
@@ -131,7 +125,7 @@ pub fn tip_from_info(info: &Value) -> Option<Tip> {
     Some(Tip { height: height.saturating_sub(1), hash, cumulative_difficulty: cd })
 }
 
-/// A tip as the JSON record every transport and client shares (the SSE event, the page's `tip` event, lc-wasm's `watch_tip`): the
+/// A tip as the JSON record every transport and client shares (the SSE event, the desktop page's `tip` event): the
 /// two big numbers are decimal strings (they can exceed 2^53).
 pub fn tip_record(node: &str, t: &TipInfo) -> Value {
     json!({
@@ -199,14 +193,10 @@ pub async fn tip_info(up: &dyn Upstream, known: Option<&TipInfo>, now: u64, t: D
     tip_info_from(&info, timestamp, now).ok_or_else(|| ErrorKind::Upstream("unreadable get_info".into()))
 }
 
-/// Answers a request from the node behind `up`. `Hello`, `GetNodes` and `Probe` are not node calls
-/// (the server answers them itself) and give `Unsupported` here.
+/// Answers a request from the node behind `up`.
 pub async fn run(up: &dyn Upstream, req: &Request, timeout: Duration) -> Response {
     if let Err(e) = validate(req) {
         return Response::Error(e);
-    }
-    if is_local(req) {
-        return Response::Error(ErrorKind::Unsupported);
     }
     match run_inner(up, req, timeout).await {
         Ok(r) | Err(r) => r,
@@ -298,7 +288,6 @@ async fn run_inner(up: &dyn Upstream, req: &Request, t: Duration) -> Result<Resp
             let ct = if path.ends_with(".bin") { "application/octet-stream" } else { "application/json" };
             Response::Bin(up.post(path, ct, body.clone(), t).await.map_err(upstream_err)?)
         }
-        Request::Hello { .. } | Request::GetNodes { .. } | Request::Probe { .. } | Request::SubscribeTip => Response::Error(ErrorKind::Unsupported),
     })
 }
 
@@ -307,7 +296,7 @@ pub async fn node_restricted(up: &dyn Upstream, timeout: Duration) -> Option<boo
     rpc(up, "get_info", json!({}), timeout).await.ok()?.get("restricted")?.as_bool()
 }
 
-/// The chain's genesis block hash (`get_block_header_by_height 0`): the `network` of `Hello`.
+/// The chain's genesis block hash (`get_block_header_by_height 0`): the chain's identity.
 pub async fn genesis_hash(up: &dyn Upstream, timeout: Duration) -> Result<[u8; 32], String> {
     let r = rpc(up, "get_block_header_by_height", json!({"height": 0}), timeout).await.map_err(|e| format!("{e:?}"))?;
     r.get("block_header").and_then(|h| h.get("hash")).and_then(|h| h.as_str()).and_then(hex32).ok_or_else(|| "no genesis hash in the answer".to_string())

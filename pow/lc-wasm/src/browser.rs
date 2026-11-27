@@ -2,11 +2,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use sm64coin_lc::client::{Connector, Env, IrohConnector, Transport, UpstreamTransport};
+use sm64coin_lc::client::{Connector, Env, Transport, UpstreamTransport};
 use sm64coin_lc::nodes::NodeAddr;
 use wasm_bindgen::prelude::*;
 
-use crate::core::{Core, anchor_for, build_list, default_rules, parse_genesis};
+use crate::core::{Core, anchor_for, build_list, default_rules, https_only, parse_genesis};
 use crate::fetch::FetchUpstream;
 
 struct BrowserEnv;
@@ -19,83 +19,37 @@ impl Env for BrowserEnv {
     }
 }
 
-/// HTTP(S) nodes through `fetch`, iroh nodes through the endpoint (when one could be built).
+/// HTTP(S) nodes through `fetch`.
 struct BrowserConnector {
     http: Mutex<HashMap<String, Arc<dyn Transport>>>,
-    iroh: Option<IrohConnector>,
 }
 
 impl Connector for BrowserConnector {
     fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>> {
-        match addr {
-            NodeAddr::Http { url } => {
-                let mut m = self.http.lock().unwrap();
-                Some(m.entry(url.clone()).or_insert_with(|| Arc::new(UpstreamTransport(FetchUpstream::new(url)))).clone())
-            }
-            NodeAddr::Iroh { .. } => self.iroh.as_ref()?.transport(addr),
-        }
+        let NodeAddr::Http { url } = addr;
+        let mut m = self.http.lock().unwrap();
+        Some(m.entry(url.clone()).or_insert_with(|| Arc::new(UpstreamTransport(FetchUpstream::new(url)))).clone())
     }
-}
-
-/// Builds the browser's iroh endpoint (relay-only; nothing is published; the relays are the bootstrap entries' own,
-/// n0's public ones only as a fallback after a few seconds). None when it cannot be built.
-async fn iroh_connector(relays: Vec<String>, network: [u8; 32]) -> Option<IrohConnector> {
-    use sm64coin_lc::endpoint::{Discovery, EndpointOptions, build_endpoint};
-    let relays = relays.iter().filter_map(|r| r.parse::<iroh::RelayUrl>().ok()).collect();
-    let opts = EndpointOptions { relays, discovery: Discovery::None, ..Default::default() };
-    match build_endpoint(opts).await {
-        Ok(ep) => Some(IrohConnector::new(ep, network)),
-        Err(e) => {
-            web_sys_log(&format!("lightnet: no iroh endpoint ({e}); HTTPS nodes only"));
-            None
-        }
-    }
-}
-
-fn web_sys_log(s: &str) {
-    let _ = js_sys::Reflect::get(&js_sys::global(), &"console".into()).and_then(|c| {
-        let f: js_sys::Function = js_sys::Reflect::get(&c, &"warn".into())?.into();
-        f.call1(&c, &s.into())
-    });
 }
 
 /// The light client. One per page.
 #[wasm_bindgen]
 pub struct LightClient {
     core: Core,
-    iroh: bool,
 }
 
 #[wasm_bindgen]
 impl LightClient {
-    /// `bootstrap_json`: public-node.json (`{"nodes": [...]}` / `{"url": ...}`; entries are https URLs or
-    /// `iroh:<endpoint id>@<relay url>`). `genesis`: the chain's genesis block hash (hex; "" or "any": any chain, no
+    /// `bootstrap_json`: public-node.json (`{"nodes": [...]}` / `{"url": ...}`; the https entries are the nodes). `genesis`: the chain's genesis block hash (hex; "" or "any": any chain, no
     /// chain check and no verification). `saved_json`: the list a previous visit saved (`list_json()`), or "".
     pub async fn create(bootstrap_json: String, genesis: String, saved_json: String) -> LightClient {
         console_error_panic_hook_free();
         let genesis_bytes = parse_genesis(&genesis);
-        let wants_iroh = sm64coin_lc::nodes::parse_bootstrap(&bootstrap_json).unwrap_or_default().iter().any(|a| matches!(a, NodeAddr::Iroh { .. }))
-            || sm64coin_lc::nodes::NodeList::from_json(&saved_json).map(|l| l.records().iter().any(|r| matches!(r.addr, NodeAddr::Iroh { .. }))).unwrap_or(false);
-        let mut iroh = None;
-        if wants_iroh {
-            if let Some(net) = genesis_bytes {
-                let mut relays: Vec<String> = Vec::new();
-                for a in sm64coin_lc::nodes::parse_bootstrap(&bootstrap_json).unwrap_or_default() {
-                    if let NodeAddr::Iroh { relay_url: Some(r), .. } = a {
-                        if !relays.contains(&r) {
-                            relays.push(r);
-                        }
-                    }
-                }
-                iroh = iroh_connector(relays, net).await;
-            }
-        }
-        let has_iroh = iroh.is_some();
         let now = (js_sys::Date::now() / 1000.0) as u64;
-        let list = build_list(&bootstrap_json, &saved_json, now, |a| has_iroh || !matches!(a, NodeAddr::Iroh { .. }));
-        let connector = Arc::new(BrowserConnector { http: Default::default(), iroh });
+        let list = build_list(&bootstrap_json, &saved_json, now, https_only);
+        let connector = Arc::new(BrowserConnector { http: Default::default() });
         let core = Core::new(list, connector, Arc::new(BrowserEnv), genesis_bytes, anchor_for(genesis_bytes), default_rules());
-        LightClient { core, iroh: has_iroh }
+        LightClient { core }
     }
 
     /// True when `method` may go through the light-client network (the node RPC allowlist); anything else must use
@@ -131,9 +85,7 @@ impl LightClient {
 
     /// Node list with scores, the last verification and the allowed set, as JSON.
     pub fn status(&self) -> String {
-        let mut v = self.core.status();
-        v["iroh"] = self.iroh.into();
-        v.to_string()
+        self.core.status().to_string()
     }
 
     /// The node list to persist (scores and bans survive a reload).
@@ -141,44 +93,9 @@ impl LightClient {
         self.core.client.list_json()
     }
 
-    /// Follows the chain tip by push (`Request::SubscribeTip` over iroh): `on_tip(json)` is called with the current tip and on
-    /// every change (`{node, height, hash, timestamp, cumulative_difficulty, difficulty, server_time}`), reconnecting by
-    /// itself. When no listed node can push (HTTPS-only list, older servers) `on_end("nopush" | "nonodes")` is called once
-    /// and the caller polls. `stop()` on the returned handle ends it.
-    pub fn watch_tip(&self, on_tip: js_sys::Function, on_end: js_sys::Function) -> TipWatch {
-        let client = self.core.client.clone();
-        let (fut, handle) = futures_util::future::abortable(async move {
-            let end = client
-                .watch_tip(|node, t| {
-                    let _ = on_tip.call1(&JsValue::NULL, &crate::core::tip_json(node, &t).into());
-                })
-                .await;
-            let why = match end {
-                sm64coin_lc::client::WatchEnd::NoPush => "nopush",
-                sm64coin_lc::client::WatchEnd::NoNodes => "nonodes",
-            };
-            let _ = on_end.call1(&JsValue::NULL, &why.into());
-        });
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = fut.await;
-        });
-        TipWatch(handle)
-    }
-
     /// Bans a node caught lying (a week).
     pub fn ban_liar(&self, key: &str) {
         self.core.client.ban_liar(key)
-    }
-}
-
-/// A running [`LightClient::watch_tip`].
-#[wasm_bindgen]
-pub struct TipWatch(futures_util::future::AbortHandle);
-
-#[wasm_bindgen]
-impl TipWatch {
-    pub fn stop(&self) {
-        self.0.abort();
     }
 }
 

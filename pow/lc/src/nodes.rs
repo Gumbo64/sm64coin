@@ -18,16 +18,13 @@ const EWMA_ALPHA: f64 = 0.2;
 pub enum NodeAddr {
     /// A JSON-RPC node (`https://host[:port]`, or plain http for list members).
     Http { url: String },
-    /// An iroh endpoint: id (hex), optional home relay, optional direct "ip:port" addresses.
-    Iroh { endpoint_id: String, relay_url: Option<String>, direct: Vec<String> },
 }
 
 impl NodeAddr {
-    /// Stable identity: the URL or the endpoint id (addresses may change).
+    /// Stable identity: the URL.
     pub fn key(&self) -> String {
         match self {
             NodeAddr::Http { url } => format!("http:{}", url.trim_end_matches('/')),
-            NodeAddr::Iroh { endpoint_id, .. } => format!("iroh:{endpoint_id}"),
         }
     }
 }
@@ -38,12 +35,10 @@ pub enum Source {
     Bootstrap,
     /// Added by the user by hand: kept above discovered ones.
     Manual,
-    /// `/get_public_nodes` of a node in use.
+    /// `/get_public_nodes` of a node in use (lists saved by older builds call this "Gossip" or "Dht" when another node told
+    /// of it: they are loaded as discovered nodes too).
+    #[serde(alias = "Gossip", alias = "Dht")]
     PublicNodes,
-    /// Mainline DHT (apps only).
-    Dht,
-    /// `GetNodes` gossip.
-    Gossip,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -266,7 +261,13 @@ impl NodeList {
 
     /// Loads a persisted list; keeps at most [`MAX_NODES`] records and drops duplicate keys.
     pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
-        let mut l: NodeList = serde_json::from_str(s)?;
+        // A record a build no longer understands (an old list's iroh node) is dropped, not the whole list.
+        #[derive(Deserialize)]
+        struct Raw {
+            records: Vec<serde_json::Value>,
+        }
+        let raw: Raw = serde_json::from_str(s)?;
+        let mut l = NodeList { records: raw.records.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect() };
         let mut seen = std::collections::HashSet::new();
         l.records.retain(|r| seen.insert(r.key()));
         l.records.truncate(MAX_NODES as usize);
@@ -274,8 +275,8 @@ impl NodeList {
     }
 }
 
-/// The bootstrap list shipped with a release: `{"nodes": [..]}` or the old `{"url": ".."}`; entries are
-/// https/http URLs, or `iroh:<endpoint id hex>[@<relay url>]`.
+/// The bootstrap list shipped with a release: `{"nodes": [..]}` or the old `{"url": ".."}`; entries are https/http URLs
+/// (anything else, such as an old `iroh:` entry, is skipped).
 pub fn parse_bootstrap(json: &str) -> Result<Vec<NodeAddr>, serde_json::Error> {
     #[derive(Deserialize)]
     struct B {
@@ -288,19 +289,9 @@ pub fn parse_bootstrap(json: &str) -> Result<Vec<NodeAddr>, serde_json::Error> {
     Ok(v.into_iter().filter_map(|s| parse_node_spec(&s)).collect())
 }
 
-/// `https://host`, `http://host:port`, or `iroh:<hex>[@<relay url>]`.
+/// `https://host` or `http://host:port`.
 pub fn parse_node_spec(s: &str) -> Option<NodeAddr> {
     let s = s.trim();
-    if let Some(rest) = s.strip_prefix("iroh:") {
-        let (id, relay) = match rest.split_once('@') {
-            Some((i, r)) => (i, Some(r.to_string())),
-            None => (rest, None),
-        };
-        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        return Some(NodeAddr::Iroh { endpoint_id: id.to_ascii_lowercase(), relay_url: relay, direct: vec![] });
-    }
     if (s.starts_with("https://") || s.starts_with("http://")) && !s.contains(['@', '?', '#', ' ']) {
         return Some(NodeAddr::Http { url: s.trim_end_matches('/').to_string() });
     }
@@ -319,9 +310,9 @@ mod tests {
     fn add_dedups_and_caps() {
         let mut l = NodeList::new();
         assert!(l.add(http(0), Source::Bootstrap, 1));
-        assert!(!l.add(http(0), Source::Gossip, 1));
+        assert!(!l.add(http(0), Source::PublicNodes, 1));
         for i in 1..200 {
-            l.add(http(i), Source::Gossip, 1);
+            l.add(http(i), Source::PublicNodes, 1);
         }
         assert_eq!(l.len(), MAX_NODES as usize);
         assert!(l.get(&http(0).key()).is_some(), "bootstrap entries are never evicted");
@@ -367,7 +358,7 @@ mod tests {
     fn a_stored_list_cannot_ban_add_or_demote_nodes() {
         let mut l = NodeList::new();
         for i in 0..3 {
-            l.add(http(i), Source::Gossip, 0);
+            l.add(http(i), Source::PublicNodes, 0);
         }
         l.ban_liar(&http(0).key(), 5);
         l.record_ok(&http(1).key(), 10.0, Some(1 << 40), 5);
@@ -418,9 +409,19 @@ mod tests {
         assert_eq!(l2.len(), 1);
         let id = "ab".repeat(32);
         let b = parse_bootstrap(&format!(r#"{{"nodes":["https://a.example/","iroh:{id}@https://r.example"],"url":"https://eboy.au"}}"#)).unwrap();
-        assert_eq!(b.len(), 3);
+        assert_eq!(b.len(), 2, "the iroh entry of an old list is skipped");
         assert!(parse_bootstrap(r#"{"url":"https://eboy.au"}"#).unwrap().len() == 1);
-        assert!(parse_node_spec("iroh:zz").is_none());
+        assert!(parse_node_spec(&format!("iroh:{id}")).is_none());
         assert!(parse_node_spec("ftp://x").is_none());
+    }
+
+    #[test]
+    fn a_list_saved_by_an_older_build_keeps_its_http_nodes() {
+        let old = r#"{"records":[
+            {"addr":{"Iroh":{"endpoint_id":"ab","relay_url":null,"direct":[]}},"source":"Gossip","first_seen":1,"last_ok":0,"ewma_latency_ms":0.0,"ok_rate":0.5,"height":0,"strikes":0,"banned_until":0,"tls":null},
+            {"addr":{"Http":{"url":"https://a.example"}},"source":"Dht","first_seen":1,"last_ok":0,"ewma_latency_ms":0.0,"ok_rate":0.5,"height":0,"strikes":0,"banned_until":0,"tls":null}]}"#;
+        let l = NodeList::from_json(old).unwrap();
+        assert_eq!(l.len(), 1);
+        assert_eq!(l.records()[0].source, Source::PublicNodes);
     }
 }

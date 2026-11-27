@@ -1,29 +1,25 @@
-//! The client: one [`Transport`] trait (HTTP JSON-RPC and iroh implementations) and [`Client`], which
+//! The client: one [`Transport`] trait (HTTP(S) JSON-RPC) and [`Client`], which
 //! picks nodes from a [`NodeList`], fails over, fans submissions out to several nodes and feeds
 //! latency, errors and tip heights back into the scores.
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::exec::{self, MaybeSend, MaybeSync, Upstream};
-use crate::nodes::{NodeAddr, NodeList, NodeRecord, Source};
+use crate::nodes::{NodeAddr, NodeList, NodeRecord};
 use crate::proto::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
-    #[error("timed out")]
-    Timeout,
     #[error("cannot connect: {0}")]
     Connect(String),
     #[error("protocol error: {0}")]
     Protocol(String),
-    #[error("network mismatch (other chain)")]
-    WrongNetwork,
-    /// The peer (or this transport) does not do that (an older server, or an HTTP node).
+    /// The peer (or this transport) does not do that (a node without the tip stream).
     #[error("not supported by this node")]
     Unsupported,
 }
 
-/// A tip subscription ([`Request::SubscribeTip`]) as the client reads it.
+/// A tip subscription (Server-Sent Events, `GET /lc/tip`) as the client reads it.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait TipStream: MaybeSend {
@@ -36,17 +32,13 @@ pub trait TipStream: MaybeSend {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: MaybeSend + MaybeSync {
     async fn request(&self, req: &Request, timeout: Duration) -> Result<Response, TransportError>;
-    /// The peer's IP on the path in use, when the transport has a direct one (None: relayed, HTTP, unknown).
-    fn remote_ip(&self) -> Option<std::net::IpAddr> {
-        None
-    }
-    /// Opens a tip subscription. The default (HTTP nodes) cannot push: `Unsupported`, and the caller polls instead.
+    /// Opens a tip subscription. The default cannot push: `Unsupported`, and the caller polls instead.
     async fn open_tip_stream(&self) -> Result<Box<dyn TipStream>, TransportError> {
         Err(TransportError::Unsupported)
     }
 }
 
-/// The existing JSON-RPC over HTTP(S) as a [`Transport`] (same answers as the iroh service gives).
+/// The JSON-RPC of a node over HTTP(S) as a [`Transport`] (the [`Upstream`] decides how the bytes travel).
 pub struct UpstreamTransport<U: Upstream>(pub U);
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -60,7 +52,7 @@ impl<U: Upstream> Transport for UpstreamTransport<U> {
     }
 }
 
-/// Builds the transport for a node address (HTTP, iroh ...). The browser supplies its own.
+/// Builds the transport for a node address (HTTP(S)). The browser supplies its own.
 pub trait Connector: MaybeSend + MaybeSync {
     fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>>;
 }
@@ -95,8 +87,6 @@ pub enum ClientError {
     Refused(ErrorKind),
 }
 
-/// New nodes taken from one `GetNodes` answer at most.
-pub const LEARN_PER_ANSWER: usize = 8;
 /// How many nodes a failing read tries before giving up.
 pub const MAX_ATTEMPTS: usize = 4;
 /// Fan-out of submissions (`submit_block`, proofs, `sendrawtransaction`).
@@ -136,21 +126,6 @@ impl Client {
         let now = self.now();
         self.list.lock().unwrap().ban_liar(key, now);
     }
-    /// Adds the verified announcements of `GetNodes` (invalid / expired ones are dropped). At most [`MAX_NODES`] of an answer
-    /// are looked at (a signature check each) and at most [`LEARN_PER_ANSWER`] new nodes are taken from it, so one server
-    /// cannot fill the list with endpoint ids of its own.
-    pub fn learn(&self, ann: &[NodeAnnouncement]) -> usize {
-        let now = self.now();
-        let mut list = self.list.lock().unwrap();
-        ann.iter()
-            .take(MAX_NODES as usize)
-            .filter(|a| a.validate().is_ok() && a.verify(now).is_ok())
-            .filter_map(|a| announcement_addr(a))
-            .filter(|addr| list.add(addr.clone(), Source::Gossip, now))
-            .take(LEARN_PER_ANSWER)
-            .count()
-    }
-
     /// Up to `n` distinct node keys, best first (weighted). For callers that ask nodes one by one
     /// ([`Client::ask_node`]), like the light-client verifier's cross-check.
     pub fn pick_keys(&self, n: usize) -> Vec<String> {
@@ -206,18 +181,14 @@ impl Client {
         let now = self.now();
         let mut list = self.list.lock().unwrap();
         match res {
-            Ok(Response::Error(ErrorKind::Busy { .. })) | Ok(Response::Error(ErrorKind::Upstream(_))) => {
+            Ok(Response::Error(ErrorKind::Upstream(_))) => {
                 list.record_err(key, now);
-                Err("node busy or failing".into())
+                Err("node failing".into())
             }
             Ok(resp) => {
                 let height = if let Response::Tip(t) = &resp { Some(t.height) } else { None };
                 list.record_ok(key, ms, height, now);
                 Ok(resp)
-            }
-            Err(TransportError::WrongNetwork) => {
-                list.ban_liar(key, now);
-                Err("other chain".into())
             }
             Err(e) => {
                 list.record_err(key, now);
@@ -227,7 +198,7 @@ impl Client {
     }
 
     /// An idempotent read: tries nodes best-first (weighted) until one answers. A definite refusal
-    /// (`Malformed`, `NotFound`, `Unsupported`, `TooLarge`) is returned, not retried elsewhere.
+    /// (`Malformed`, `NotFound`, `Unsupported`) is returned, not retried elsewhere.
     pub async fn read(&self, req: &Request, timeout: Duration) -> Result<(String, Response), ClientError> {
         let picks = self.pick(MAX_ATTEMPTS);
         if picks.is_empty() {
@@ -265,11 +236,7 @@ impl Client {
     }
 }
 
-#[cfg(feature = "iroh-client")]
-async fn nap(d: Duration) {
-    n0_future::time::sleep(d).await
-}
-#[cfg(all(feature = "http", not(feature = "iroh-client")))]
+#[cfg(feature = "http")]
 async fn nap(d: Duration) {
     tokio::time::sleep(d).await
 }
@@ -277,7 +244,7 @@ async fn nap(d: Duration) {
 /// How a tip watch ended.
 #[derive(Debug)]
 pub enum WatchEnd {
-    /// No node in the list pushes tips (old servers, HTTP nodes): poll instead.
+    /// No node in the list serves the tip stream: poll instead.
     NoPush,
     /// No usable node at all, or [`WATCH_GIVE_UP_ROUNDS`] rounds in a row in which no node could be subscribed (all failing):
     /// the caller polls meanwhile and tries again later, so a dead push never leaves it without a tip.
@@ -287,7 +254,7 @@ pub enum WatchEnd {
 /// Rounds in a row without any subscription (every node erred) after which [`Client::watch_tip`] gives up with `NoNodes`.
 pub const WATCH_GIVE_UP_ROUNDS: u32 = 4;
 
-#[cfg(any(feature = "iroh-client", feature = "http"))]
+#[cfg(feature = "http")]
 impl Client {
     /// Follows the chain tip by push: subscribes at the best node, calls `on_tip(node key, tip)` for the current tip and each
     /// change, and on a broken stream reconnects (another node, with backoff up to 30 s). Runs until the future is dropped; it
@@ -314,10 +281,6 @@ impl Client {
                     Err(TransportError::Unsupported) => {
                         unsupported.insert(key);
                         learned = true;
-                        continue;
-                    }
-                    Err(TransportError::WrongNetwork) => {
-                        self.list.lock().unwrap().ban_liar(&key, self.now());
                         continue;
                     }
                     Err(_) => {
@@ -357,213 +320,6 @@ impl Client {
             }
             nap(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(30));
-        }
-    }
-}
-
-/// The node address an announcement describes.
-pub fn announcement_addr(a: &NodeAnnouncement) -> Option<NodeAddr> {
-    Some(NodeAddr::Iroh { endpoint_id: hex::encode(a.endpoint_id), relay_url: a.relay_url.clone(), direct: a.direct_addrs.clone() })
-}
-
-#[cfg(feature = "iroh-client")]
-pub use iroh_transport::*;
-
-#[cfg(feature = "iroh-client")]
-mod iroh_transport {
-    use super::*;
-    use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, TransportAddr, endpoint::Connection};
-    use std::collections::HashMap;
-
-    /// Converts a stored [`NodeAddr::Iroh`] into an iroh address.
-    pub fn to_endpoint_addr(addr: &NodeAddr) -> Option<EndpointAddr> {
-        let NodeAddr::Iroh { endpoint_id, relay_url, direct } = addr else { return None };
-        let id: EndpointId = endpoint_id.parse().ok()?;
-        let mut a = EndpointAddr::new(id);
-        if let Some(r) = relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
-            a = a.with_relay_url(r);
-        }
-        for d in direct.iter().filter_map(|d| d.parse().ok()) {
-            a = a.with_ip_addr(d);
-        }
-        Some(a)
-    }
-
-    pub fn from_endpoint_addr(a: &EndpointAddr) -> NodeAddr {
-        let mut relay_url = None;
-        let mut direct = vec![];
-        for t in a.addrs.iter() {
-            match t {
-                TransportAddr::Relay(r) => relay_url = Some(r.to_string()),
-                TransportAddr::Ip(i) => direct.push(i.to_string()),
-                _ => {}
-            }
-        }
-        NodeAddr::Iroh { endpoint_id: a.id.to_string(), relay_url, direct }
-    }
-
-    /// The iroh transport to one node: a cached connection (`Hello` on connect), one bi-stream per request.
-    pub struct IrohTransport {
-        endpoint: Endpoint,
-        addr: EndpointAddr,
-        network: [u8; 32],
-        conn: tokio::sync::Mutex<Option<Connection>>,
-    }
-
-    impl IrohTransport {
-        pub fn new(endpoint: Endpoint, addr: EndpointAddr, network: [u8; 32]) -> Self {
-            Self { endpoint, addr, network, conn: Default::default() }
-        }
-
-        async fn connect(&self) -> Result<Connection, TransportError> {
-            let conn = self.endpoint.connect(self.addr.clone(), ALPN).await.map_err(|e| TransportError::Connect(e.to_string()))?;
-            let hello = Request::Hello { minor: MINOR, features: 0, network: self.network };
-            match round_trip(&conn, &hello).await? {
-                Response::Hello { network, .. } if network == self.network => Ok(conn),
-                Response::Hello { .. } | Response::Error(ErrorKind::BadHello) => Err(TransportError::WrongNetwork),
-                other => Err(TransportError::Protocol(format!("unexpected answer to Hello: {other:?}"))),
-            }
-        }
-    }
-
-    /// One request on a fresh bi-stream of `conn`.
-    pub async fn round_trip(conn: &Connection, req: &Request) -> Result<Response, TransportError> {
-        let (mut send, mut recv) = conn.open_bi().await.map_err(|e| TransportError::Connect(e.to_string()))?;
-        write_frame(&mut send, req, MAX_REQUEST_FRAME).await.map_err(|e| TransportError::Protocol(e.to_string()))?;
-        send.finish().map_err(|e| TransportError::Protocol(e.to_string()))?;
-        let body = read_frame(&mut recv, MAX_FRAME).await.map_err(|e| TransportError::Protocol(e.to_string()))?.ok_or_else(|| TransportError::Protocol("stream ended without an answer".into()))?;
-        decode_body(&body).map_err(|e| TransportError::Protocol(e.to_string()))
-    }
-
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    impl Transport for IrohTransport {
-        async fn request(&self, req: &Request, timeout: Duration) -> Result<Response, TransportError> {
-            n0_future::time::timeout(timeout, async {
-                let mut guard = self.conn.lock().await;
-                let conn = match guard.as_ref() {
-                    Some(c) if c.close_reason().is_none() => c.clone(),
-                    _ => {
-                        let c = self.connect().await?;
-                        *guard = Some(c.clone());
-                        c
-                    }
-                };
-                drop(guard);
-                let r = round_trip(&conn, req).await;
-                if r.is_err() {
-                    *self.conn.lock().await = None;
-                }
-                r
-            })
-            .await
-            .map_err(|_| TransportError::Timeout)?
-        }
-        async fn open_tip_stream(&self) -> Result<Box<dyn TipStream>, TransportError> {
-            let conn = {
-                let mut guard = self.conn.lock().await;
-                match guard.as_ref() {
-                    Some(c) if c.close_reason().is_none() => c.clone(),
-                    _ => {
-                        let c = n0_future::time::timeout(READ_TIMEOUT, self.connect()).await.map_err(|_| TransportError::Timeout)??;
-                        *guard = Some(c.clone());
-                        c
-                    }
-                }
-            };
-            let (mut send, recv) = conn.open_bi().await.map_err(|e| TransportError::Connect(e.to_string()))?;
-            write_frame(&mut send, &Request::SubscribeTip, MAX_REQUEST_FRAME).await.map_err(|e| TransportError::Protocol(e.to_string()))?;
-            send.finish().map_err(|e| TransportError::Protocol(e.to_string()))?;
-            // the first frame tells at once whether this server pushes (an older one answers `Unsupported`)
-            let mut st = IrohTipStream { recv, _conn: conn };
-            match st.next().await {
-                Ok(Some(first)) => Ok(Box::new(Primed { first: Some(first), rest: st })),
-                Ok(None) => Err(TransportError::Unsupported),
-                Err(e) => Err(e),
-            }
-        }
-        fn remote_ip(&self) -> Option<std::net::IpAddr> {
-            let g = self.conn.try_lock().ok()?;
-            let c = g.as_ref()?;
-            let paths = c.paths();
-            let ip = paths.iter().find_map(|p| match p.remote_addr() {
-                TransportAddr::Ip(a) if p.is_selected() => Some(a.ip()),
-                _ => None,
-            });
-            ip
-        }
-    }
-
-    struct IrohTipStream {
-        recv: iroh::endpoint::RecvStream,
-        _conn: Connection,
-    }
-
-    /// A stream whose first tip was already read (to learn that the server pushes at all).
-    struct Primed {
-        first: Option<TipInfo>,
-        rest: IrohTipStream,
-    }
-
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    impl TipStream for IrohTipStream {
-        async fn next(&mut self) -> Result<Option<TipInfo>, TransportError> {
-            // the server speaks at least every KEEPALIVE_SECS; 2.5 times that of silence is a dead path
-            let quiet = Duration::from_millis(KEEPALIVE_SECS * 2500);
-            loop {
-                let body = n0_future::time::timeout(quiet, read_frame(&mut self.recv, MAX_FRAME)).await.map_err(|_| TransportError::Timeout)?.map_err(|e| TransportError::Protocol(e.to_string()))?;
-                let Some(body) = body else { return Ok(None) };
-                match decode_body::<Response>(&body).map_err(|e| TransportError::Protocol(e.to_string()))? {
-                    Response::TipPush(t) => return Ok(Some(t)),
-                    Response::Keepalive => continue,
-                    Response::Error(ErrorKind::Unsupported) => return Err(TransportError::Unsupported),
-                    other => return Err(TransportError::Protocol(format!("unexpected frame on a tip stream: {other:?}"))),
-                }
-            }
-        }
-    }
-
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    impl TipStream for Primed {
-        async fn next(&mut self) -> Result<Option<TipInfo>, TransportError> {
-            match self.first.take() {
-                Some(t) => Ok(Some(t)),
-                None => self.rest.next().await,
-            }
-        }
-    }
-
-    /// Connector for iroh nodes (and, with the `http` feature, HTTP nodes).
-    pub struct IrohConnector {
-        endpoint: Endpoint,
-        network: [u8; 32],
-        cache: Mutex<HashMap<String, Arc<dyn Transport>>>,
-    }
-
-    impl IrohConnector {
-        pub fn new(endpoint: Endpoint, network: [u8; 32]) -> Self {
-            Self { endpoint, network, cache: Default::default() }
-        }
-    }
-
-    impl Connector for IrohConnector {
-        fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>> {
-            let key = addr.key();
-            let mut c = self.cache.lock().unwrap();
-            if let Some(t) = c.get(&key) {
-                return Some(t.clone());
-            }
-            let t: Arc<dyn Transport> = match addr {
-                NodeAddr::Iroh { .. } => Arc::new(IrohTransport::new(self.endpoint.clone(), to_endpoint_addr(addr)?, self.network)),
-                #[cfg(feature = "http")]
-                NodeAddr::Http { url } => Arc::new(UpstreamTransport(crate::http::HttpUpstream::new(url).ok()?)),
-                #[cfg(not(feature = "http"))]
-                NodeAddr::Http { .. } => return None,
-            };
-            c.insert(key, t.clone());
-            Some(t)
         }
     }
 }

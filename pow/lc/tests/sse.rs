@@ -1,6 +1,6 @@
-//! Tip push over plain HTTP (Server-Sent Events), with NO iroh in the build: the shared watcher, the SSE listener, the HTTP client
+//! Tip push over plain HTTP (Server-Sent Events): the shared watcher, the SSE listener, the HTTP client
 //! stream, `Client::watch_tip` over HTTP nodes, and the fall-back when a node has no such endpoint.
-//! Run with `cargo test --no-default-features --features tip-server --test sse`.
+//! Run with `cargo test --features tip-server --test sse`.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -134,14 +134,12 @@ async fn the_http_client_follows_the_tip_and_falls_back_without_the_endpoint() {
     mine(&up, 11);
     let second = tokio::time::timeout(Duration::from_secs(5), st.next()).await.unwrap().unwrap().unwrap();
     assert_eq!((second.height, second.hash), (5, [11; 32]));
-    // watch_tip over an HTTP node list (no iroh anywhere in this build)
+    // watch_tip over an HTTP node list
     struct C;
     impl Connector for C {
         fn transport(&self, a: &NodeAddr) -> Option<Arc<dyn Transport>> {
-            match a {
-                NodeAddr::Http { url } => Some(Arc::new(UpstreamTransport(HttpUpstream::new(url).unwrap()))),
-                _ => None,
-            }
+            let NodeAddr::Http { url } = a;
+            Some(Arc::new(UpstreamTransport(HttpUpstream::new(url).unwrap())))
         }
     }
     let mut list = NodeList::new();

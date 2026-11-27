@@ -1,9 +1,8 @@
-//! The tip, watched ONCE per server and fanned out to every subscriber, whatever the transport (iroh `SubscribeTip`: server.rs;
-//! Server-Sent Events over plain HTTP: sse.rs). Needs no iroh: a node can serve tips over HTTP(S) alone.
+//! The tip, watched ONCE per server and fanned out to every subscriber (Server-Sent Events over plain HTTP: sse.rs).
 //!
 //! One poller asks the local node (`get_info`, plus the tip block's header when the tip changed) every `poll` while anybody is
 //! subscribed and every `idle_poll` otherwise, and publishes through a `watch` channel. Subscriptions are counted per key (an
-//! endpoint id, an IP address) and in total; [`TipFeed::acquire`] refuses beyond the caps.
+//! IP address) and in total; [`TipFeed::acquire`] refuses beyond the caps.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build the light-client WASM (pow/lc-wasm: node list, failover, HTTPS + iroh-over-relay, header verification) into
+# Build the light-client WASM (pow/lc-wasm: node list, failover, HTTPS, header verification) into
 # web/src/wasm/lc (git-ignored). Called by scripts/build-wasm.sh; also usable on its own.
-# Needs: rustup target add wasm32-unknown-unknown, wasm-pack (npm i -g wasm-pack@0.13.1), clang (wasm32 C code: ring).
+# Needs: rustup target add wasm32-unknown-unknown, wasm-pack (npm i -g wasm-pack@0.13.1), clang (wasm32 C code of a dependency, if any).
 # The crate has its own Cargo.lock (wasm-bindgen 0.2.108: see pow/lc-wasm/Cargo.toml), so it never touches the web miner's pin.
-# The wasm is large (~1.4 MB gzipped: iroh + rustls + the consensus rules); the site loads it lazily (web/src/lib/lightnet.js).
+# The site loads it lazily (web/src/lib/lightnet.js).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CC_wasm32_unknown_unknown="${CC_wasm32_unknown_unknown:-$(command -v clang || echo /usr/lib/llvm-18/bin/clang)}"
