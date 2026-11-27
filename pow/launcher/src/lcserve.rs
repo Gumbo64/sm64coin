@@ -30,11 +30,13 @@ pub struct LcConfig {
     pub discovery: Discovery,
     /// `iroh:<id>[@relay]` or https URLs of servers to learn peers from.
     pub bootstrap: Vec<String>,
+    /// Use n0's public relays (the default; tests and closed networks turn it off).
+    pub n0_fallback: bool,
 }
 
 impl LcConfig {
     pub fn new(node_rpc_port: u16, data_dir: PathBuf) -> Self {
-        LcConfig { node_rpc_port, data_dir, relay: RelayChoice::Auto, relay_bind: "0.0.0.0:443".parse().unwrap(), discovery: Discovery::Dht, bootstrap: vec![] }
+        LcConfig { node_rpc_port, data_dir, relay: RelayChoice::Auto, relay_bind: "0.0.0.0:443".parse().unwrap(), discovery: Discovery::Dht, bootstrap: vec![], n0_fallback: true }
     }
 }
 
@@ -105,7 +107,7 @@ async fn run(cfg: LcConfig, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::er
     };
     let secret = load_or_create_key(&cfg.data_dir)?;
     let hello = HelloLog::default();
-    let ep = build_endpoint(EndpointOptions { secret_key: Some(secret.clone()), discovery: cfg.discovery, alpns: vec![ALPN.to_vec()], ..Default::default() }).await?;
+    let ep = build_endpoint(EndpointOptions { secret_key: Some(secret.clone()), discovery: cfg.discovery, n0_fallback: cfg.n0_fallback, alpns: vec![ALPN.to_vec()], ..Default::default() }).await?;
     let service = LcService::new(ServerConfig { network, limits: Limits::default(), flags: node_flags::ARCHIVE, version: 1, https_rpc: None }, upstream, secret, hello.clone());
     let router = service.serve(ep.clone());
     println!("Light-client service: endpoint id {} (relay {:?}).", ep.id(), cfg.relay);
@@ -142,4 +144,40 @@ async fn run(cfg: LcConfig, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::er
     }
     router.shutdown().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    /// The service starts against a (fake) node RPC, makes its key and stops; no network (no discovery, no relays, no n0).
+    #[test]
+    fn starts_next_to_a_node_and_stops() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let hash = "ab".repeat(32);
+        std::thread::spawn(move || {
+            for mut req in server.incoming_requests() {
+                let mut b = String::new();
+                let _ = req.as_reader().read_to_string(&mut b);
+                let body = serde_json::json!({"jsonrpc": "2.0", "id": 0, "result": {"block_header": {"hash": hash}, "status": "OK"}}).to_string();
+                let _ = req.respond(tiny_http::Response::from_string(body));
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("lcserve-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut c = LcConfig::new(port, dir.clone());
+        (c.relay, c.discovery, c.n0_fallback, c.relay_bind) = (RelayChoice::Off, Discovery::None, false, "127.0.0.1:0".parse().unwrap());
+        let h = start(c).unwrap();
+        let t = std::time::Instant::now();
+        while !dir.join("secret.key").is_file() {
+            assert!(t.elapsed() < Duration::from_secs(20), "the service did not come up");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(std::fs::read(dir.join("secret.key")).unwrap().len(), 32);
+        h.stop();
+        std::thread::sleep(Duration::from_millis(1500));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
