@@ -64,7 +64,8 @@ enum Cmd {
         /// front is the node's reverse proxy (see pow/lc/src/sse.rs). Off by default.
         #[arg(long)]
         sse_bind: Option<SocketAddr>,
-        /// Read the client IP of an SSE subscriber from X-Forwarded-For (only when the listener is reachable only through that proxy).
+        /// Read the client IP of an SSE subscriber from X-Forwarded-For (only when the listener is reachable only through that proxy;
+        /// a loopback --sse-bind does this anyway).
         #[arg(long)]
         sse_trust_forwarded: bool,
         #[arg(long)]
@@ -179,7 +180,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let service = LcService::new(cfg, upstream, secret, hello.clone());
             let router = service.serve(ep.clone());
             if let Some(bind) = sse_bind {
-                let (a, _task) = sm64coin_lc::sse::serve(service.feed(), sm64coin_lc::sse::SseConfig { bind, trust_forwarded: sse_trust_forwarded, ..Default::default() }).await?;
+                let (a, _task) = sm64coin_lc::sse::serve(service.feed(), {
+                    let mut c = sm64coin_lc::sse::SseConfig::behind_local_proxy(bind);
+                    c.trust_forwarded |= sse_trust_forwarded;
+                    c
+                }).await?;
                 println!("tip stream (SSE): http://{a}/lc/tip");
                 std::mem::forget(_task);
             }

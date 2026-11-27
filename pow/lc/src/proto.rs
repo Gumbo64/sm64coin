@@ -113,7 +113,8 @@ pub struct TipInfo {
     pub cumulative_difficulty: u128,
     /// The retarget difficulty of the next block (`get_info.difficulty`).
     pub difficulty: u64,
-    /// The server's clock (unix seconds) when it saw this tip, so a client can tell how far its own clock is off.
+    /// The server's clock (unix seconds) when it sent this record (a pushed tip: at sending, not when the tip was first seen), so
+    /// a client can tell how far its own clock is off.
     pub server_time: u64,
 }
 

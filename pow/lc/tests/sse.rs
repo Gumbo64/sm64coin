@@ -10,7 +10,6 @@ use sm64coin_lc::client::*;
 use sm64coin_lc::exec::{UpError, Upstream};
 use sm64coin_lc::http::HttpUpstream;
 use sm64coin_lc::nodes::{NodeAddr, NodeList, Source};
-use sm64coin_lc::proto::*;
 use sm64coin_lc::sse::{SseConfig, serve};
 use sm64coin_lc::tipfeed::{TipFeed, TipFeedConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -95,8 +94,14 @@ async fn sse_headers_events_keepalive_caps_and_other_paths() {
     read_until(&mut a, &want, &mut ta).await;
     read_until(&mut b, &want, &mut tb).await;
     assert!(t0.elapsed() < Duration::from_millis(1500), "{:?}", t0.elapsed());
-    // keepalive events while nothing changes
-    read_until(&mut a, "event: ka", &mut ta).await;
+    // keepalive events while nothing changes, carrying the server's clock; the record's server_time is the clock at sending
+    read_until(&mut a, "event: ka\ndata: ", &mut ta).await;
+    let ka_at = ta.rfind("event: ka\ndata: ").unwrap() + "event: ka\ndata: ".len();
+    read_until(&mut a, "event: ka\ndata: 1", &mut ta).await; // whole line arrives with the event
+    let clock: u64 = ta[ka_at..].split('\n').next().unwrap().trim().parse().unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    assert!(clock + 2 >= now && clock <= now + 2, "ka clock {clock} vs {now}");
+    assert!(ta.contains(&format!("\"server_time\":{}", now)) || ta.contains(&format!("\"server_time\":{}", now - 1)) || ta.contains(&format!("\"server_time\":{}", now - 2)), "{ta}");
     // the per-IP cap: a third from the same address is 429
     let mut c = raw_get(addr, req).await;
     let mut tc = String::new();

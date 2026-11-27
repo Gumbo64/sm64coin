@@ -417,6 +417,8 @@ impl LcService {
             let cur = rx.borrow_and_update().clone();
             if let Some(t) = cur.filter(|t| Some(t.hash) != last) {
                 last = Some(t.hash);
+                // the clock at sending, not when the watcher first saw the tip: a client corrects its own clock by it
+                let t = TipInfo { server_time: now_secs(), ..t };
                 if write_frame(&mut send, &Response::TipPush(t), MAX_FRAME).await.is_err() {
                     break;
                 }

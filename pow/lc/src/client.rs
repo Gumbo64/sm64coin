@@ -279,32 +279,41 @@ async fn nap(d: Duration) {
 pub enum WatchEnd {
     /// No node in the list pushes tips (old servers, HTTP nodes): poll instead.
     NoPush,
-    /// No usable node at all.
+    /// No usable node at all, or [`WATCH_GIVE_UP_ROUNDS`] rounds in a row in which no node could be subscribed (all failing):
+    /// the caller polls meanwhile and tries again later, so a dead push never leaves it without a tip.
     NoNodes,
 }
+
+/// Rounds in a row without any subscription (every node erred) after which [`Client::watch_tip`] gives up with `NoNodes`.
+pub const WATCH_GIVE_UP_ROUNDS: u32 = 4;
 
 #[cfg(any(feature = "iroh-client", feature = "http"))]
 impl Client {
     /// Follows the chain tip by push: subscribes at the best node, calls `on_tip(node key, tip)` for the current tip and each
     /// change, and on a broken stream reconnects (another node, with backoff up to 30 s). Runs until the future is dropped; it
-    /// returns only when no node can push (`WatchEnd::NoPush`: every node answered `Unsupported`) so the caller can poll.
+    /// returns when no node can push (`WatchEnd::NoPush`: every node answered `Unsupported`) or none could be reached for
+    /// [`WATCH_GIVE_UP_ROUNDS`] rounds (`WatchEnd::NoNodes`), so the caller can poll.
     pub async fn watch_tip<F: FnMut(&str, TipInfo) + MaybeSend>(&self, mut on_tip: F) -> WatchEnd {
         let mut unsupported = std::collections::HashSet::<String>::new();
         let mut backoff = Duration::from_secs(1);
+        let mut failed_rounds = 0u32;
         loop {
             let picks: Vec<_> = self.pick(MAX_ATTEMPTS + unsupported.len()).into_iter().filter(|(k, _)| !unsupported.contains(k)).take(MAX_ATTEMPTS).collect();
             if picks.is_empty() {
                 return if unsupported.is_empty() { WatchEnd::NoNodes } else { WatchEnd::NoPush };
             }
+            let (mut subscribed, mut learned) = (false, false); // learned: a node turned out not to push (not a failure)
             for (key, addr) in picks {
                 let Some(t) = self.connector.transport(&addr) else {
                     unsupported.insert(key);
+                    learned = true;
                     continue;
                 };
                 let mut st = match t.open_tip_stream().await {
                     Ok(st) => st,
                     Err(TransportError::Unsupported) => {
                         unsupported.insert(key);
+                        learned = true;
                         continue;
                     }
                     Err(TransportError::WrongNetwork) => {
@@ -335,7 +344,16 @@ impl Client {
                 if got {
                     backoff = Duration::from_secs(1);
                 }
+                subscribed = true;
                 break;
+            }
+            if subscribed {
+                failed_rounds = 0;
+            } else if !learned {
+                failed_rounds += 1;
+                if failed_rounds >= WATCH_GIVE_UP_ROUNDS {
+                    return WatchEnd::NoNodes;
+                }
             }
             nap(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(30));

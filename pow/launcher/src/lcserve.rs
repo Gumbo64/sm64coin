@@ -122,7 +122,7 @@ async fn run(cfg: LcConfig, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::er
     let service = LcService::new(ServerConfig { network, limits: Limits::default(), flags: node_flags::ARCHIVE, version: 1, https_rpc: None }, upstream, secret, hello.clone());
     let router = service.serve(ep.clone());
     if let Some(bind) = cfg.sse_bind {
-        let (a, task) = sm64coin_lc::sse::serve(service.feed(), sm64coin_lc::sse::SseConfig { bind, ..Default::default() }).await?;
+        let (a, task) = sm64coin_lc::sse::serve(service.feed(), sm64coin_lc::sse::SseConfig::behind_local_proxy(bind)).await?;
         println!("Tip stream (SSE): http://{a}/lc/tip");
         std::mem::forget(task);
     }
