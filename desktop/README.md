@@ -51,7 +51,13 @@ node directly (node CORS origins include `tauri://localhost`).
   (and `host_info`) are all of the Android shape. The launcher crate has a `desktop` feature (default) for its node/ROM/DHT/CLI
   parts; the app depends on it only for desktop targets, with `tls` for `remote_rpc`. `platform` has the third shape
   `tauri-mobile` (remote node via the public node, no node/miner/rom/wallet objects: the page's own ROM upload and WASM wallet).
-  Android was not built (no SDK/target here): `cargo check` with the cfgs flipped compiles the mobile half on the host.
+  Android build: `cd desktop/src-tauri && cargo tauri android build --apk --target aarch64` (SDK with platform 37.0, build-tools 36,
+  NDK 27.0.12077973 as `NDK_HOME`; `npx vite build --mode desktop` in `web/` first). The Gradle project is `src-tauri/gen/android`
+  (committed; app id `io.github.gumbo64.sm64coin`, never to change after a release). Tauri derives `versionCode` from the version in
+  `tauri.conf.json`: major*1000000 + minor*1000 + patch (0.5.1 = 5001), monotone while minor/patch stay below 1000. The release APK
+  is unsigned from Tauri; `desktop/android-sign.sh` zipaligns, signs it with the release key and refuses any other certificate.
+  CI: `.github/workflows/android.yml` (also runnable by hand), called by `release.yml`, which publishes `sm64coin-<version>-android.apk`.
+  The native miner is not on Android (no automine sidecar model); the website's WASM miner and wallet are what runs there.
 - **Wallet** (`wallet.rs`, `pages/WalletDesktop.jsx`): the design above, as built. The sidecar gets its login through a 0600
   config file that is deleted once it answers (it is not in `ps`), speaks HTTP digest to Rust only, and the wallet dir is 0700.
   `wallet_rpc` whitelists methods; `_password` and `_kdf_rounds` are private params consumed in Rust. Password rules are
