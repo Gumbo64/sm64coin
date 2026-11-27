@@ -33,8 +33,8 @@ import { levelName } from './automine/levels.js';
 import { localInputs } from './automine/localNode.js';
 import { announceMined } from '../lib/payout.js';
 import { signedSeeds } from '../lib/webminer/bestRun.js';
-import { tipStore } from '../lib/tip.js';
-import { limitNow, validAtFor } from '../lib/limit.js';
+import { tipStore, nodeNow } from '../lib/tip.js';
+import { limitNow, validAtFor, restartDelayFor } from '../lib/limit.js';
 import { decideAfterWin, effectiveValidAt, launchFor, startNow, refusedBeforeClaim, refusalReason, confirmBlock, advanceAfter, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2e, e2eHook } from '../lib/e2e.js';
@@ -144,7 +144,7 @@ function Miner() {
     const timer = setInterval(() => {
       tipChanged();
       if (e2e() && window.__launchAt) c.launch = Number(window.__launchAt);
-      setLaunchAt(c.launch > Date.now() / 1000 ? c.launch : 0);
+      setLaunchAt(c.launch > nodeNow() ? c.launch : 0);
     }, 1000);
     // The time limit grows every second from the parent's timestamp, and a parent-only template turns "either" at
     // sm64_power_on_at: both are computed here, from this template's parent timestamp and difficulty with the Rust rules
@@ -152,7 +152,7 @@ function Miner() {
     const refresh = setInterval(() => {
       const t = c.cur;
       if (!head || !t || t.prev_hash !== head) return;
-      const nowS = Date.now() / 1000;
+      const nowS = nodeNow();
       const n = limitNow({ timestamp: t.sm64_parent_timestamp, difficulty: t.sm64_retarget_difficulty || 1 }, nowS);
       const start = startNow(t, nowS);
       c.tipTemplate = { ...t, sm64_max_frames: n, sm64_start: start };
@@ -182,7 +182,7 @@ function Miner() {
       if (other !== null) return refused(`this template's key already signed a different run (${other} frames); only one run per template: start a new template (▶| new)`, 'notaccepted');
       c.signed.record(seed, bytesToHex(proof), r.frames);
       c.used.add(seed);
-      const now = Date.now() / 1000;
+      const now = nodeNow();
       let ts = Math.max(Math.floor(now), r.validAt, templateTimestamp(t.blocktemplate_blob));
       if (st.kind === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
       try {
@@ -211,7 +211,7 @@ function Miner() {
       // Not announced yet: look for it in the chain until a few seconds past its due time.
       confirmBlock({
         blockAt: async (h) => { try { const b = await daemon('get_block', { height: h }); return { prev_hash: b.block_header.prev_hash, blob: b.blob }; } catch { return null; } },
-        now: () => (stopped ? Infinity : Date.now() / 1000),
+        now: () => (stopped ? Infinity : nodeNow()),
         sleep,
       }, t, t.minerKey.public_hex, ts).then((res) => {
         if (stopped) return;
@@ -244,8 +244,12 @@ function Miner() {
         return;
       }
       if (c.discardPending) { c.discardPending = false; c.pending = null; setPending(null); say('pending run discarded'); return; }
-      if (p.validAt - Date.now() / 1000 > SEND_AHEAD || p.sending) return;
+      if (p.validAt - nodeNow() > SEND_AHEAD || p.sending) return;
       p.sending = true;
+      // the last look at the tip before signing (free while it is pushed; polled, at most one get_info): a block that landed
+      // meanwhile makes the run worthless, and its key stays unspent for nothing
+      const cur = await tipStore().latest(5000).catch(() => null);
+      if (cur && head && cur.hash !== head) { p.sending = false; return; } // tipChanged / the check above drop it
       await submitRun(p);
       if (c.pending === p) { c.pending = null; setPending(null); }
     }, 1000);
@@ -310,16 +314,16 @@ function Miner() {
             if (used) {
               say(`practice run: ${nFrames} frames; not submitted (this template's run is already sent). Start a new template (▶| new) for the next block.`);
             } else {
-              setRuns((rs) => [...rs, { t: Date.now() / 1000 - t.sm64_parent_timestamp, frames: nFrames }]);
+              setRuns((rs) => [...rs, { t: nodeNow() - t.sm64_parent_timestamp, frames: nFrames }]);
               // When does a run this long become valid? (The limit grows with time; never before the chain's launch.)
               let validAt = 0;
               try {
-                validAt = validAtFor({ timestamp: t.sm64_parent_timestamp, difficulty: t.sm64_retarget_difficulty || 1 }, nFrames);
+                validAt = validAtFor({ timestamp: t.sm64_parent_timestamp, difficulty: t.sm64_retarget_difficulty || 1 }, nFrames, 0, restartDelayFor(t, st.kind));
               } catch (e) { say(`could not work out when the run is valid: ${e}`); }
               if (stopped) break;
               validAt = effectiveValidAt(validAt, c.launch);
               const p = c.pending && c.pending.t.prev_hash === t.prev_hash ? c.pending : null;
-              const d = decideAfterWin({ now: Date.now() / 1000, validAt, frames: nFrames, used: c.used.has(t.sm64_seed_hash), pending: p });
+              const d = decideAfterWin({ now: nodeNow(), validAt, frames: nFrames, used: c.used.has(t.sm64_seed_hash), pending: p });
               const run = { t, done: { pads: [...done.pads], poked: [...done.poked] }, st, validAt, frames: nFrames }; // copies: the recorder rewinds its own arrays
               if (d.action === 'keep-pending') {
                 say(`your pending run (${frames(p.frames)}) becomes valid sooner or as soon: this one (${frames(nFrames)}) is dropped. Play on for a shorter run.`);
@@ -490,7 +494,7 @@ function Miner() {
       {play.phase !== 'playing' && <ToolBtn onClick={cancelPlay} title="Throw the segment away and go back to the cloud">Cancel</ToolBtn>}
     </>
   );
-  const nowS = Date.now() / 1000 + tick * 0;
+  const nowS = nodeNow() + tick * 0;
   const outcomeText = outcome && (outcome.kind === 'sent'
     ? `Block ${outcome.height} sent (${frames(outcome.frames)}); waiting for the node to put it in the chain${outcome.at > nowS + 1 ? `, due ${new Date(outcome.at * 1000).toLocaleTimeString()}` : ''}…`
     : outcome.kind === 'accepted' ? `Block ${outcome.height} accepted: it is in the chain (${frames(outcome.frames)}, ${coins(outcome.reward)} SM64).`
@@ -516,7 +520,7 @@ function Miner() {
         {clock && clock.paused && <span className="stat warn">PAUSED</span>}
         {clock && clock.mode === 'catchup' && phase.kind === 'play' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
         {phase.kind === 'ff' && <span className="stat warn">fast-forwarding the cycle{phase.total ? `: ${Math.floor((phase.done / phase.total) * 100)}% (${phase.done} / ${phase.total} frames)` : '…'}</span>}
-        {pendingRun && <span className="stat warn">run {frames(pendingRun.frames)} valid in {mmss(Math.max(0, pendingRun.validAt - Date.now() / 1000))} — the time limit is still shorter than your run (sent automatically; play on for a shorter one)</span>}
+        {pendingRun && <span className="stat warn">run {frames(pendingRun.frames)} valid in {mmss(Math.max(0, pendingRun.validAt - nodeNow()))} — the time limit is still shorter than your run (sent automatically; play on for a shorter one)</span>}
         {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
       </div>
       <Controls groups={groups} />
@@ -590,7 +594,7 @@ function Miner() {
               <React.Suspense fallback={null}><VizTop hub={hub} mode={s.mode} /></React.Suspense>
             ) : (
               <>
-                {task && <SideCard><LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={clock ? clock.frame : 0} runs={runs} /></SideCard>}
+                {task && <SideCard><LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={nodeNow() + tick * 0} used={clock ? clock.frame : 0} runs={runs} /></SideCard>}
                 {pending && (
                   <div className="notice">
                     The game in progress pays <AddrLabel address={task.paysTo} wallet={walletAddress} size={16} />; the new address applies from the next attempt
@@ -666,7 +670,7 @@ function Miner() {
 // sm64_start "either"), with a countdown while it is parent-only, and suggested when the
 // parent's state looks stuck (every star taken, or a long time without a block).
 function ResetCycle({ start, startMode, powerOnAt, task, onReset, onParent, tick }) {
-  const nowS = Date.now() / 1000 + tick * 0;
+  const nowS = nodeNow() + tick * 0;
   const wait = secondsUntilAllowed(startMode, powerOnAt, nowS);
   const onPower = start.kind === 'power-on';
   const stuck = !onPower && task && (start.progress.stars >= ALL_STARS || nowS - task.sm64_parent_timestamp > 1800);

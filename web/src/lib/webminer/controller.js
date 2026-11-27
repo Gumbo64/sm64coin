@@ -6,8 +6,8 @@
 // lib/webminer/useMiner.js. Mining starts and stops only through start() / stop() (the page's buttons),
 // and stops when the tab closes.
 import { daemon } from '../rpc.js';
-import { tipStore } from '../tip.js';
-import { validAtFor } from '../limit.js';
+import { tipStore, nodeNow } from '../tip.js';
+import { validAtFor, restartDelayFor } from '../limit.js';
 import { launchFor } from '../mineflow.js';
 import { getCycle } from '../replay/client.js';
 import { hexToBytes, seal, withTimestamp, templateTimestamp } from '../proof.js';
@@ -594,13 +594,14 @@ class MinerController {
       const h = await holdUntilValid({
         best: () => c.best,
         // when a run is valid: the Rust rules from the template's own parent timestamp and difficulty (no template request)
-        validAt: async (frames) => validAtFor({ timestamp: t.sm64_parent_timestamp, difficulty: BigInt(t.sm64_retarget_difficulty || t.difficulty || 1) }, frames, launchFor(await tipStore().info().catch(() => null))),
+        // (a reset cycle, a power-on start on an "either" template, is judged against the limit sm64_restart_delay s earlier)
+        validAt: async (frames) => validAtFor({ timestamp: t.sm64_parent_timestamp, difficulty: BigInt(t.sm64_retarget_difficulty || t.difficulty || 1) }, frames, launchFor(await tipStore().info().catch(() => null)), restartDelayFor(t, c.best && c.best.start)),
         tip: async () => tipStore().get()?.hash,
         tipHash: t.tip || t.prev_hash,
         lead: this.lead,
         current: () => !c.stopped && c.template === t,
         sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
-        now,
+        now: nodeNow, // the node's clock (corrected by pushed server times): it judges the send time and the stamp
         clock: () => Date.now(),
         onHeld: (run, validAt, changed) => {
           this.setPhase('held');
@@ -630,7 +631,7 @@ class MinerController {
         await this.publishProof(t, r);
         return;
       }
-      let ts = Math.max(Math.floor(now()), validAt, templateTimestamp(t.blocktemplate_blob));
+      let ts = Math.max(Math.floor(nodeNow()), validAt, templateTimestamp(t.blocktemplate_blob));
       // A reset cycle (power-on on an "either" template) is judged against an earlier limit and is valid from sm64_power_on_at.
       if (r.start === 'power-on' && t.sm64_start === 'either' && t.sm64_power_on_at) ts = Math.max(ts, t.sm64_power_on_at);
       const proof = hexToBytes(r.proof);

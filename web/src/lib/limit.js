@@ -45,10 +45,18 @@ export function limitNow(tip, nowSec) {
 }
 
 /** The first unix second a run of `frames` is valid on top of `tip` (what the template's sm64_valid_at says; 0: never, the node
- *  decides). `launch`: the chain's launch time (mainnet), before which no block is valid. */
-export function validAtFor(tip, frames, launch = 0) {
+ *  decides). `launch`: the chain's launch time (mainnet), before which no block is valid. `restartDelay`: a restart (a power-on
+ *  start on a parent that did not end its cycle) is judged against the limit that many seconds earlier (sm64pow chain.rs; the
+ *  template's sm64_restart_delay), so it is valid that much later; the node's sm64_valid_at is the parent-start answer. */
+export function validAtFor(tip, frames, launch = 0, restartDelay = 0) {
   if (!tip) return 0;
   const due = dueElapsed(tip.difficulty, frames);
   if (due === null) return 0;
-  return Math.max(tip.timestamp + due, tip.timestamp + 1, launch || 0);
+  return Math.max(tip.timestamp + (restartDelay || 0) + due, tip.timestamp + 1, launch || 0);
+}
+
+/** A run's restart delay on template `t`: the template's sm64_restart_delay when the run starts from power-on although the
+ *  template allows the parent's start (a reset cycle), else 0. `startKind`: 'power-on' or 'parent'. */
+export function restartDelayFor(t, startKind) {
+  return startKind === 'power-on' && t && t.sm64_start !== 'power-on' ? Number(t.sm64_restart_delay) || 0 : 0;
 }
