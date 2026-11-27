@@ -3,11 +3,15 @@
 //! all of them. `remote.rs` (the page's `remote_rpc`) and `walletproxy.rs` (the wallet's and the Android miner's daemon) both
 //! go through here, so there is one list, one set of scores and one "which node is in use".
 //!
-//! Which calls fail over over which transport: a request the light-client protocol has a message for (the wallet's binary calls,
-//! `get_sm64_cycle`, `get_fee_estimate`, `get_block_headers_range`, a plain `submit_block` ...) is a `Request` and goes to any
-//! node, HTTP or iroh; submissions go to three nodes at once. Every other allowlisted JSON-RPC call (`get_info`,
-//! `get_sm64_state`, a template with the miner's `sm64_*` extras ...) has no message yet and fails over between the HTTP nodes only
-//! (`get_info` and the wallet's `/getheight` are answered from an iroh node's tip when no HTTP node works).
+//! Which calls fail over over which transport: every allowlisted call. A request the light-client protocol has a typed message
+//! for (the wallet's binary calls, `get_sm64_cycle`, `get_fee_estimate`, `get_block_headers_range`, a plain `submit_block` ...)
+//! is that message; every other allowlisted JSON-RPC call (`get_info`, `get_sm64_state`, a template with the miner's `sm64_*`
+//! extras, `get_block` by hash ...) is `Request::JsonRpc` and every other wallet path (`/get_transactions`, `/is_key_image_spent`,
+//! `/get_o_indexes.bin` ...) is `Request::Path`; all of them go to any node, HTTP or iroh, and submissions go to three nodes at
+//! once. A node too old for the passthrough requests answers `Unsupported` and the client moves on to the next.
+//!
+//! Verification (lcverify.rs): on startup and on each new tip the chain is checked from the compiled-in checkpoint across up to
+//! five nodes; afterwards reads use only the nodes on the verified best branch, and nodes that lied are banned.
 use serde_json::{Value, json};
 use sm64coin_lc::allowlist;
 use sm64coin_lc::client::{BULK_TIMEOUT, Client, ClientError, Connector, Env, READ_TIMEOUT, SystemEnv, Transport, UpstreamTransport};
@@ -16,6 +20,7 @@ use sm64coin_lc::exec::Upstream;
 use sm64coin_lc::http::HttpUpstream;
 use sm64coin_lc::nodes::{NodeAddr, NodeList, Source};
 use sm64coin_lc::proto::{ErrorKind, Request, Response, WalletBin, ALPN};
+use crate::lcverify::{Verification, Verifier, checkpoint_for};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -54,6 +59,8 @@ pub struct NetStatus {
     /// This app's iroh endpoint id, once the endpoint is up (None: HTTP nodes only so far).
     pub iroh: Option<String>,
     pub nodes: Vec<NodeInfo>,
+    /// What the verifier found (see lcverify.rs): `verified (n nodes agree)`, `conflict`, `unverified`.
+    pub verify: Verification,
 }
 
 pub fn transport_of(addr: &NodeAddr) -> &'static str {
@@ -92,6 +99,14 @@ impl Connector for AppConnector {
     }
 }
 
+/// Supplies the ROM bytes (desktop: from the app's data dir) for the replay of the current cycle.
+pub type RomFinder = Arc<dyn Fn() -> Option<Vec<u8>> + Send + Sync>;
+
+/// The chain this app follows: mainnet, or `SM64COIN_GENESIS` (tests, closed networks).
+pub fn network_genesis() -> [u8; 32] {
+    hex::decode(std::env::var("SM64COIN_GENESIS").unwrap_or_else(|_| MAINNET_GENESIS.into())).ok().and_then(|b| <[u8; 32]>::try_from(b).ok()).unwrap_or([0; 32])
+}
+
 pub struct Net {
     client: Client,
     conn: Arc<AppConnector>,
@@ -101,6 +116,11 @@ pub struct Net {
     used: Mutex<Option<Used>>,
     iroh_id: Mutex<Option<String>>,
     proxy: Mutex<Option<String>>,
+    verifier: Arc<Verifier>,
+    /// Desktop: where to get the ROM for the background replay (None: header layer only).
+    rom_finder: Mutex<Option<RomFinder>>,
+    /// The chain's genesis block hash (the iroh `Hello` network and the verifier's anchor).
+    network: [u8; 32],
     /// Timeouts of a read and of a bulk read (the tests shorten them).
     pub read_timeout: Duration,
     pub bulk_timeout: Duration,
@@ -138,6 +158,9 @@ impl Net {
             used: Mutex::new(None),
             iroh_id: Mutex::new(None),
             proxy: Mutex::new(None),
+            verifier: Arc::new(Verifier::default()),
+            rom_finder: Mutex::new(None),
+            network: network_genesis(),
             read_timeout: READ_TIMEOUT,
             bulk_timeout: BULK_TIMEOUT,
         })
@@ -196,16 +219,33 @@ impl Net {
         learned
     }
 
-    /// Background work of the app: brings the iroh endpoint up (with retries), then every minute persists the list and every
-    /// ten minutes learns more nodes. Desktop: discovery through the mainline DHT; Android: n0's (never the DHT).
+    /// The relays of the iroh nodes we know (compiled-in `iroh:<id>@<relay>` entries, the user's, learned ones): the endpoint's
+    /// home relay is one of them, so a node reachable only through its relay is dialed without any lookup service.
+    fn known_relays(&self) -> Vec<iroh::RelayUrl> {
+        let mut v: Vec<iroh::RelayUrl> = vec![];
+        self.client.with_list(|l| {
+            for r in l.records() {
+                if let NodeAddr::Iroh { relay_url: Some(u), .. } = &r.addr {
+                    if let Ok(u) = u.parse::<iroh::RelayUrl>() {
+                        if !v.contains(&u) && v.len() < 4 {
+                            v.push(u);
+                        }
+                    }
+                }
+            }
+        });
+        v
+    }
+
+    /// Background work of the app: brings the iroh endpoint up (with retries), then verifies the chain (on startup and on every
+    /// new tip), every minute persists the list and every ten minutes learns more nodes. Clients publish nothing and look nothing
+    /// up (discovery `none`, see `app_discovery`): they dial nodes by id and relay URL.
     pub fn spawn_background(self: &Arc<Self>) {
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            let network = hex::decode(std::env::var("SM64COIN_GENESIS").unwrap_or_else(|_| MAINNET_GENESIS.into())).ok().and_then(|b| <[u8; 32]>::try_from(b).ok());
-            let Some(network) = network else { return };
-            let opts = EndpointOptions { discovery: app_discovery(), ..Default::default() };
+            let opts = EndpointOptions { discovery: app_discovery(), relays: me.known_relays(), ..Default::default() };
             let mut tries = 0;
-            while me.start_iroh(opts.clone(), network).await.is_err() {
+            while me.start_iroh(opts.clone(), me.network).await.is_err() {
                 tries += 1;
                 if tries > 5 {
                     return me.maintain(false).await; // HTTP nodes only
@@ -216,15 +256,38 @@ impl Net {
         });
     }
 
-    async fn maintain(&self, iroh: bool) {
-        let mut tick = 0u64;
+    async fn maintain(self: &Arc<Self>, iroh: bool) {
+        let mut n = 0u64;
+        let mut last_verify: Option<std::time::Instant> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(if tick == 0 { 5 } else { 60 })).await;
-            if iroh && tick % 10 == 0 {
+            tokio::time::sleep(Duration::from_secs(if n == 0 { 2 } else { 5 })).await;
+            if iroh && n % 120 == 0 {
                 self.gossip().await;
             }
-            self.persist();
-            tick += 1;
+            if n % 12 == 0 {
+                self.persist();
+            }
+            if n % 4 == 0 {
+                // verify: the first time, when the tip moved, after an unverified result (every minute), and at least every ten minutes
+                let v = self.verifier.get();
+                let tip = self.client.read(&Request::GetTip, self.read_timeout).await.ok().and_then(|(_, r)| if let Response::Tip(t) = r { Some(t) } else { None });
+                let moved = match (&tip, v.height) {
+                    (Some(t), Some(h)) => t.height > h || (t.height == h && Some(hex::encode(t.hash)) != v.tip),
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                let since = last_verify.map(|t| t.elapsed());
+                let due = match since {
+                    None => true,
+                    Some(e) => e > Duration::from_secs(600) || (moved && e > Duration::from_secs(15)) || (v.state == "unverified" && e > Duration::from_secs(60)),
+                };
+                if due {
+                    last_verify = Some(std::time::Instant::now());
+                    let _ = self.verify_now(None).await;
+                    self.persist();
+                }
+            }
+            n += 1;
         }
     }
 
@@ -241,25 +304,58 @@ impl Net {
                 .map(|r| NodeInfo { key: r.key(), transport: transport_of(&r.addr), source: format!("{:?}", r.source), ok_rate: r.ok_rate, latency_ms: r.ewma_latency_ms, height: r.height, banned: r.is_banned(now) })
                 .collect()
         });
-        NetStatus { proxy: self.proxy.lock().unwrap().clone(), used: self.used.lock().unwrap().clone(), iroh: self.iroh_id.lock().unwrap().clone(), nodes }
+        NetStatus { proxy: self.proxy.lock().unwrap().clone(), used: self.used.lock().unwrap().clone(), iroh: self.iroh_id.lock().unwrap().clone(), nodes, verify: self.verifier.get() }
+    }
+
+    /// Desktop: turns the background replay of the current cycle on.
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub fn enable_replay(&self, rom: RomFinder) {
+        *self.rom_finder.lock().unwrap() = Some(rom);
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn verification(&self) -> Verification {
+        self.verifier.get()
+    }
+
+    /// Header-verifies the chain from `cp` (the release's checkpoint when None) across up to five nodes, restricts reads to the
+    /// verified branch's nodes, bans liars, and (desktop, with a ROM) replays the current cycle in the background. A branch that
+    /// fails its replay bans its servers and the check runs again (at most three times).
+    pub async fn verify_now(self: &Arc<Self>, cp: Option<sm64coin_lc::verify::Checkpoint>) -> Result<(), String> {
+        let cp = cp.unwrap_or_else(|| checkpoint_for(&self.network));
+        let rom = self.rom_finder.lock().unwrap().clone();
+        let out = self.verifier.check(&self.client, &cp, rom.is_some()).await?;
+        #[cfg(not(mobile))]
+        if let Some(rom) = rom {
+            // The replay runs behind the verdict: reads already use the verified nodes; a failed replay re-runs the check.
+            let me = self.clone();
+            tauri::async_runtime::spawn(async move {
+                if me.verifier.replay(&me.client, out, Some(rom)).await.is_err() {
+                    let _ = me.verifier.check(&me.client, &cp, false).await;
+                }
+            });
+        }
+        #[cfg(mobile)]
+        let _ = out;
+        Ok(())
     }
 
     // ---- calls ----------------------------------------------------------------------------------------------------------
 
-    /// An allowlisted JSON-RPC call with failover; resolves with the whole JSON-RPC answer (`{"result": ..}` or `{"error": ..}`).
+    /// An allowlisted JSON-RPC call with failover over every transport; resolves with the whole JSON-RPC answer
+    /// (`{"result": ..}` or `{"error": ..}`).
     pub async fn rpc(&self, method: &str, params: Value) -> Result<Value, String> {
         if !allowlist::rpc_allowed(method) {
             return Err(format!("RPC method {method} is not available"));
         }
-        let Some(m) = map_request(method, &params) else {
-            let r = self.http_rpc(method, params).await;
-            // no HTTP node works: a plain `get_info` is still answered (height, tip) by an iroh node
-            return if r.is_err() && method == "get_info" { self.info_from_tip().await.or(r) } else { r };
+        let m = match map_request(method, &params) {
+            Some(m) => m,
+            None => Mapped { req: Request::JsonRpc { method: method.to_string(), params: params.to_string() }, submit: false },
         };
         let (key, resp) = if m.submit {
             self.submit_any(&m.req).await?
         } else {
-            self.client.read(&m.req, self.read_timeout).await.map_err(|e| e.to_string())?
+            self.client.read(&m.req, if m.req.is_bulk() { self.bulk_timeout } else { self.read_timeout }).await.map_err(|e| e.to_string())?
         };
         self.note(&key, method);
         shape(method, resp)
@@ -274,54 +370,6 @@ impl Net {
             }
             (_, other) => Err(format!("unexpected answer: {other:?}")),
         }
-    }
-
-    /// `get_info` when no HTTP node answers: the little the tip tells (what the wallet needs to sync), marked `light`.
-    async fn info_from_tip(&self) -> Result<Value, String> {
-        match self.client.read(&Request::GetTip, self.read_timeout).await.map_err(|e| e.to_string())? {
-            (key, Response::Tip(t)) => {
-                self.note(&key, "get_info");
-                Ok(json!({"jsonrpc": "2.0", "id": 0, "result": {
-                    "status": "OK", "light": true, "height": t.height + 1, "target_height": 0, "top_block_hash": hex::encode(t.hash),
-                    "wide_cumulative_difficulty": format!("0x{:x}", t.cumulative_difficulty), "synchronized": true, "offline": false, "untrusted": false,
-                }}))
-            }
-            (_, other) => Err(format!("unexpected answer: {other:?}")),
-        }
-    }
-
-    /// Calls without a protocol message: the HTTP nodes only, best first, until one answers.
-    async fn http_rpc(&self, method: &str, params: Value) -> Result<Value, String> {
-        let now = now_secs();
-        let r = self.env.rand();
-        let picks: Vec<(String, NodeAddr)> = self.client.with_list(|l| {
-            let n = l.len();
-            l.pick_many(n, now, r).into_iter().filter(|x| matches!(x.addr, NodeAddr::Http { .. })).map(|x| (x.key(), x.addr.clone())).take(sm64coin_lc::client::MAX_ATTEMPTS).collect()
-        });
-        if picks.is_empty() {
-            return Err(format!("no HTTP node is usable for {method}"));
-        }
-        let mut errs = Vec::new();
-        for (key, addr) in picks {
-            let NodeAddr::Http { url } = &addr else { continue };
-            let Some((up, _)) = self.conn.http_entry(url) else { continue };
-            let t0 = self.env.now_ms();
-            let res = up.json_rpc(method, params.clone(), self.read_timeout).await;
-            let ms = self.env.now_ms().saturating_sub(t0) as f64;
-            let now = now_secs();
-            match res {
-                Ok(v) => {
-                    self.client.with_list(|l| l.record_ok(&key, ms, None, now));
-                    self.note(&key, method);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.client.with_list(|l| l.record_err(&key, now));
-                    errs.push(format!("{key}: {e}"));
-                }
-            }
-        }
-        Err(format!("every node failed: {}", errs.join("; ")))
     }
 
     /// A call to exactly one HTTP node (the one the user confirmed): no failover, no mapping.
@@ -364,7 +412,7 @@ impl Net {
                 other => Err(format!("unexpected answer: {other:?}")),
             };
         }
-        if path == "/send_raw_transaction" {
+        if path == "/send_raw_transaction" || path == "/sendrawtransaction" {
             let v: Value = serde_json::from_slice(&body).map_err(|e| format!("bad request: {e}"))?;
             if v.get("do_not_relay").and_then(|b| b.as_bool()) == Some(true) {
                 return Err("do_not_relay is not supported through the proxy".into());
@@ -379,27 +427,30 @@ impl Net {
             };
             return Ok(("application/json", out.to_string().into_bytes()));
         }
+        if allowlist::path_allowed(path) {
+            // every other wallet call (get_transactions, is_key_image_spent, get_o_indexes.bin ...): the passthrough request
+            let req = Request::Path { path: path.to_string(), body };
+            let (key, resp) = self.client.read(&req, self.bulk_timeout).await.map_err(|e| e.to_string())?;
+            self.note(&key, path);
+            return match resp {
+                Response::Bin(b) => Ok((if path.ends_with(".bin") { "application/octet-stream" } else { "application/json" }, b)),
+                other => Err(format!("unexpected answer: {other:?}")),
+            };
+        }
         Err(format!("{path} is not available"))
     }
 }
 
-/// n0's discovery on Android (never the DHT: battery and UDP), the mainline DHT on desktop; `SM64COIN_LC_DISCOVERY` =
-/// none | n0 | dht overrides (tests and closed networks use none: static addressing).
+/// Clients use discovery `none`: they never publish themselves (no pkarr / DHT record of this app's endpoint id and addresses
+/// exists, so nobody can look the user up) and resolve nobody; they dial the nodes they know by endpoint id and relay URL (the
+/// compiled-in bootstrap, learned `GetNodes` announcements, nodes the user added). Only serving nodes publish.
+/// `SM64COIN_LC_DISCOVERY` = none | n0 | dht overrides (opt-in; tests and closed networks use none).
 pub fn app_discovery() -> Discovery {
     match std::env::var("SM64COIN_LC_DISCOVERY").as_deref() {
-        Ok("none") => return Discovery::None,
-        Ok("n0") => return Discovery::N0,
+        Ok("n0") => Discovery::N0,
         #[cfg(not(target_os = "android"))]
-        Ok("dht") => return Discovery::Dht,
-        _ => {}
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        Discovery::Dht
-    }
-    #[cfg(target_os = "android")]
-    {
-        Discovery::N0
+        Ok("dht") => Discovery::Dht,
+        _ => Discovery::None,
     }
 }
 
@@ -444,6 +495,7 @@ fn map_request(method: &str, p: &Value) -> Option<Mapped> {
 fn shape(method: &str, resp: Response) -> Result<Value, String> {
     let ok = |v: Value| Ok(json!({"jsonrpc": "2.0", "id": 0, "result": v}));
     match resp {
+        Response::JsonRpc(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
         Response::Json(s) => ok(serde_json::from_str(&s).map_err(|e| e.to_string())?),
         Response::Blocks(v) => match v.first() {
             Some(b) => ok(serde_json::from_str(b).map_err(|e| e.to_string())?),

@@ -21,7 +21,11 @@ pub fn normalize(u: &str) -> Option<String> {
 
 /// The compiled-in bootstrap nodes (https ones are normalized like any address the page could pass).
 pub fn bootstrap_nodes() -> Vec<NodeAddr> {
-    parse_bootstrap(PUBLIC_NODE_JSON)
+    bootstrap_from(PUBLIC_NODE_JSON)
+}
+
+fn bootstrap_from(json: &str) -> Vec<NodeAddr> {
+    parse_bootstrap(json)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|a| match a {
@@ -133,6 +137,23 @@ mod tests {
 
     fn remote(saved: Option<String>) -> Remote {
         Remote::with_net(None, saved.clone(), Net::new(&[NodeAddr::Http { url: "https://eboy.au".into() }], saved.as_deref(), None))
+    }
+
+    #[test]
+    fn bootstrap_lists_https_and_iroh_entries() {
+        let id = "ab".repeat(32);
+        let b = bootstrap_from(&format!(r#"{{"url":"https://eboy.au","nodes":["https://eboy.au","https://evil.example@x","iroh:{id}@https://relay.example","iroh:zz"],"comment":"x"}}"#));
+        assert!(b.contains(&NodeAddr::Http { url: "https://eboy.au".into() }));
+        assert!(b.contains(&NodeAddr::Iroh { endpoint_id: id.clone(), relay_url: Some("https://relay.example".into()), direct: vec![] }));
+        assert_eq!(b.len(), 3, "the url entry repeats nodes[0]; a bad id and a userinfo host are dropped: {b:?}");
+        // the compiled-in file parses, with an https node for the page and every iroh entry (none yet) well-formed
+        let c = bootstrap_nodes();
+        assert!(c.iter().any(|a| matches!(a, NodeAddr::Http { .. })));
+        let raw: serde_json::Value = serde_json::from_str(PUBLIC_NODE_JSON).unwrap();
+        assert!(raw["nodes"].is_array() && raw["url"].is_string(), "old clients read url, new ones nodes");
+        for n in raw["nodes"].as_array().unwrap() {
+            assert!(sm64coin_lc::nodes::parse_node_spec(n.as_str().unwrap()).is_some(), "bad bootstrap entry {n}");
+        }
     }
 
     #[test]

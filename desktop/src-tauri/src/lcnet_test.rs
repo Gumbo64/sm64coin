@@ -200,7 +200,8 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         assert!(used.node.ends_with(&format!(":{}", b.rpc)) && used.transport == "http", "{used:?}");
         assert_eq!(st.proxy.as_deref(), Some(url.as_str()));
         let dead = st.nodes.iter().find(|n| !n.key.ends_with(&format!(":{}", b.rpc))).unwrap();
-        assert!(dead.ok_rate < 0.5, "the dead node was scored down: {dead:?}");
+        let live = st.nodes.iter().find(|n| n.key.ends_with(&format!(":{}", b.rpc))).unwrap();
+        assert!(dead.ok_rate <= live.ok_rate, "the dead node was not scored above the live one (picks are weighted-random, so it may never have been tried): {dead:?} {live:?}");
 
         // what the proxy refuses
         assert_eq!(post(&url, "/json_rpc", "application/json", br#"{"jsonrpc":"2.0","id":1,"method":"stop_daemon"}"#).0, 403);
@@ -258,17 +259,48 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         // the headers of the genesis block through iroh
         let v = jrpc(&url, "get_block_headers_range", json!({"start_height": 0, "end_height": 0}));
         assert!(v["result"]["headers"].is_array(), "{v}");
-        // a call with no protocol message needs an HTTP node; with none, get_info is answered from the tip (marked light) ...
+        std::thread::sleep(Duration::from_secs(5)); // the server's per-peer budget (60 burst, 15/s) refills
+        // calls without a typed message go over iroh too (Request::JsonRpc): the node's own answer, not one made from its tip
         let v = jrpc(&url, "get_info", json!({}));
-        assert!(v["result"]["light"] == true && v["result"]["height"] == 1, "{v}");
-        // ... and the wallet's /getheight likewise
+        assert!(v["result"]["height"] == 1 && v["result"].get("light").is_none() && v["result"].get("nettype").is_some(), "{v}");
+        assert_eq!(net.status().used.unwrap().transport, "iroh");
+        // the wallet's /getheight likewise
         let (code, body) = post(&url, "/getheight", "application/json", b"{}");
         assert_eq!(code, 200);
         assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["height"], 1);
-        // anything else without a message has no node to go to
-        let (code, body) = post(&url, "/json_rpc", "application/json", br#"{"jsonrpc":"2.0","id":1,"method":"get_sm64_state","params":{"hash":"00"}}"#);
-        assert_eq!(code, 502, "{}", String::from_utf8_lossy(&body));
-        assert!(String::from_utf8_lossy(&body).contains("no HTTP node"));
+        // the miner's template calls (sm64 extras) and the proof-of-play state
+        let v = jrpc(&url, "get_sm64_state", json!({}));
+        assert!(v.get("result").is_some() || v["error"]["message"].is_string(), "the node's own answer or its own error: {v}");
+        let v = jrpc(&url, "get_block", json!({"height": 0}));
+        assert!(v["result"]["blob"].is_string(), "{v}");
+        // wallet paths over iroh: get_transactions, is_key_image_spent, get_o_indexes.bin, pool hashes, get_height, get_info
+        let (code, body) = post(&url, "/get_transactions", "application/json", br#"{"txs_hashes":[],"decode_as_json":false}"#);
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["status"], "OK");
+        let (code, body) = post(&url, "/is_key_image_spent", "application/json", br#"{"key_images":["0000000000000000000000000000000000000000000000000000000000000000"]}"#);
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["spent_status"], json!([0]));
+        let (code, body) = post(&url, "/get_transaction_pool_hashes.bin", "application/json", b"{}"); // wallet2 sends this one as JSON
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        let (code, body) = post(&url, "/get_height", "application/json", b"{}");
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        std::thread::sleep(Duration::from_secs(4));
+        for m in ["get_version", "hard_fork_info", "get_output_histogram", "get_txpool_backlog", "getblockheadersrange"] {
+            let p = if m == "getblockheadersrange" { json!({"start_height": 0, "end_height": 0}) } else { json!({}) };
+            let v = jrpc(&url, m, p);
+            assert!(v.get("result").is_some(), "{m}: {v}");
+        }
+        // the calls of a send: decoys, output indexes, spent check, broadcast (junk is rejected by the node, not lost)
+        let (code, body) = post(&url, "/get_outs.bin", "application/octet-stream", &EMPTY_EPEE);
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        let (code, body) = post(&url, "/get_o_indexes.bin", "application/octet-stream", &EMPTY_EPEE);
+        assert!(code == 200 || code == 502, "{code} {}", String::from_utf8_lossy(&body)); // the node's own verdict on an empty request
+        let (code, body) = post(&url, "/send_raw_transaction", "application/json", br#"{"tx_as_hex":"00ff","do_not_relay":false}"#);
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["status"], "Failed", "junk transaction");
+        // still refused: unrestricted calls
+        assert_eq!(post(&url, "/get_transaction_pool", "application/json", b"{}").0, 403);
+        assert_eq!(post(&url, "/json_rpc", "application/json", br#"{"jsonrpc":"2.0","id":1,"method":"get_connections"}"#).0, 403);
         // submissions fan out and report a node's verdict: junk is rejected by the node, not lost
         let v = jrpc(&url, "submit_block", json!(["000102"]));
         assert!(v.get("error").is_some(), "junk block is rejected: {v}");
@@ -360,4 +392,272 @@ fn wallet_rpc_sidecar_syncs_through_the_proxy() {
     assert!(b.get("error").is_none(), "{b}");
     let used = net.status().used.expect("the proxy served the wallet");
     assert!(used.node.ends_with(&format!(":{}", a.rpc)), "{used:?}");
+}
+
+/// A node that lies about the genesis block: it forwards everything to a real isolated node but serves another id for block 0.
+struct Liar {
+    server: Arc<tiny_http::Server>,
+    addr: NodeAddr,
+}
+impl Drop for Liar {
+    fn drop(&mut self) {
+        self.server.unblock();
+    }
+}
+
+fn liar_for(real: &Daemon) -> Liar {
+    let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+    let port = server.server_addr().to_ip().unwrap().port();
+    let (s2, rpc) = (server.clone(), real.rpc);
+    std::thread::spawn(move || {
+        for mut req in s2.incoming_requests() {
+            let mut body = Vec::new();
+            let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
+            let method = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["method"].as_str().map(String::from)).unwrap_or_default();
+            let url = format!("http://127.0.0.1:{rpc}{}", req.url());
+            let mut out = match ureq::post(&url).set("content-type", "application/json").send_bytes(&body) {
+                Ok(r) => {
+                    let mut d = Vec::new();
+                    std::io::Read::read_to_end(&mut r.into_reader(), &mut d).unwrap();
+                    d
+                }
+                Err(_) => b"{}".to_vec(),
+            };
+            if method == "get_block" {
+                if let Ok(mut v) = serde_json::from_slice::<Value>(&out) {
+                    if v["result"]["block_header"]["height"] == 0 {
+                        v["result"]["block_header"]["hash"] = json!("11".repeat(32));
+                        out = v.to_string().into_bytes();
+                    }
+                }
+            }
+            let _ = req.respond(tiny_http::Response::from_data(out).with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap()));
+        }
+    });
+    Liar { server, addr: NodeAddr::Http { url: format!("http://127.0.0.1:{port}") } }
+}
+
+fn wait_for(d: &Daemon) -> [u8; 32] {
+    let up = HttpUpstream::new(&format!("http://127.0.0.1:{}", d.rpc)).unwrap();
+    let t0 = std::time::Instant::now();
+    loop {
+        match tauri::async_runtime::block_on(exec::genesis_hash(&up, Duration::from_secs(2))) {
+            Ok(g) => return g,
+            Err(_) => {
+                assert!(t0.elapsed() < Duration::from_secs(90), "the isolated node did not answer");
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        }
+    }
+}
+
+/// The verifier across HTTP and iroh nodes from the genesis checkpoint (the isolated chain is its own, so the anchor is its
+/// genesis block, not the release's mainnet checkpoint): agreeing nodes, a node that lies about the anchor (banned, never used
+/// again), nothing reachable (unverified).
+#[test]
+fn verification_follows_the_verified_branch_and_bans_liars() {
+    let (Some(a), Some(b)) = (start_daemon("va"), start_daemon("vb")) else {
+        eprintln!("SKIPPED: set SM64COIND and SM64COIN_ROM (or unpack a release bundle in ~/apps)");
+        return;
+    };
+    let network = wait_for(&a);
+    assert_eq!(wait_for(&b), network);
+    let cp = sm64coin_lc::verify::Checkpoint::genesis(network);
+    let relay = tauri::async_runtime::block_on(RelayHandle::spawn(&RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), tls: TlsMode::SelfSigned, hello_policy: HelloPolicy::Off, ..Default::default() }, HelloLog::default())).unwrap();
+    let sb = tauri::async_runtime::block_on(serve(&b, &relay, network));
+    let liar = liar_for(&a);
+
+    // nothing to ask: unverified, and reads are not restricted
+    {
+        let net = net_with(&[(dead_http(), Source::Bootstrap)]);
+        assert_eq!(net.verification().state, "checking", "before the first run");
+        assert!(tauri::async_runtime::block_on(net.verify_now(Some(cp.clone()))).is_err());
+        let v = net.verification();
+        assert_eq!(v.state, "unverified", "{v:?}");
+        assert!(v.label.starts_with("unverified") && v.error.is_some());
+    }
+    // two honest nodes (one over iroh)
+    {
+        let net = net_with(&[(http_of(&a), Source::Bootstrap), (sb.addr.clone(), Source::Bootstrap)]);
+        tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+        tauri::async_runtime::block_on(net.verify_now(Some(cp.clone()))).unwrap();
+        let v = net.verification();
+        assert_eq!((v.state, v.agree, v.label.as_str()), ("verified", 2, "verified (2 nodes agree)"), "{v:?}");
+        assert!(v.banned.is_empty() && !v.quorum, "two nodes are below the quorum of three: {v:?}");
+        assert_eq!(v.height, Some(0));
+        assert_eq!(net.status().verify.state, "verified", "net_status carries it");
+    }
+    // an honest node, a node that lies about the anchor, a dead one, an iroh node
+    {
+        let net = net_with(&[(http_of(&a), Source::Bootstrap), (liar.addr.clone(), Source::Bootstrap), (dead_http(), Source::Bootstrap), (sb.addr.clone(), Source::Bootstrap)]);
+        tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+        tauri::async_runtime::block_on(net.verify_now(Some(cp.clone()))).unwrap();
+        let v = net.verification();
+        assert_eq!((v.state, v.agree), ("conflict", 2), "{v:?}");
+        assert_eq!(v.banned.len(), 1, "the liar is banned: {v:?}");
+        assert!(v.label.starts_with("conflict"), "{}", v.label);
+        let st = net.status();
+        let liar_key = liar.addr.key();
+        assert!(st.nodes.iter().find(|n| n.key == liar_key).unwrap().banned);
+        // from now on the wallet proxy's and the miner's calls use only the nodes on the verified branch
+        let proxy = walletproxy::start(net.clone(), vec![]).unwrap();
+        let url = proxy.url();
+        let mut used = std::collections::BTreeSet::new();
+        for _ in 0..16 {
+            assert_eq!(jrpc(&url, "get_info", json!({}))["result"]["height"], 1);
+            let u = net.status().used.unwrap();
+            assert!(u.node != liar_key && !u.node.contains(&format!(":{}", free_port())), "{u:?}");
+            used.insert(u.node);
+            jrpc(&url, "get_fee_estimate", json!({}));
+            used.insert(net.status().used.unwrap().node);
+        }
+        assert!(used.iter().all(|n| n == &http_of(&a).key() || n == &sb.addr.key()), "only verified nodes served: {used:?}");
+        drop(proxy);
+    }
+    tauri::async_runtime::block_on(relay.shutdown());
+}
+
+#[test]
+fn clients_publish_nothing_by_default() {
+    if std::env::var_os("SM64COIN_LC_DISCOVERY").is_none() {
+        assert_eq!(crate::lcnet::app_discovery(), Discovery::None, "apps neither publish their endpoint nor look anyone up");
+    }
+}
+
+/// The whole wallet flow through the proxy over IROH ONLY (the one node is reached through its lc service and a local relay; a
+/// dead HTTP node is in the list too): the native miner (as on Android: its daemon is the proxy) mines to test wallet 1 on an
+/// isolated offline node, wallet-rpc (wallet2) syncs, then sends to test wallet 2, which receives it. Then the verifier checks the
+/// mined chain (header layer; and on desktop the replay of the current cycle) and says "verified". Never touches the real chain.
+///
+/// Slow (the miner plays the game): SM64COIN_FLOW_BLOCKS (default 24) blocks, SM64COIN_TEST_SECS (default 3600) at most.
+#[test]
+fn wallet_send_flow_over_iroh_with_the_native_miner() {
+    use crate::mobile_miner::MobileMiner;
+    if std::env::var_os("SM64COIN_FLOW").is_none() {
+        eprintln!("SKIPPED: the mining flow takes hours (the miner plays the game for every block, ring size 16 needs ~24 blocks); set SM64COIN_FLOW=1");
+        return;
+    }
+    let (Some(a), Some(wrpc), Some(rom)) = (start_daemon("flow"), bundle_file("sm64coin-wallet-rpc"), std::env::var_os("SM64COIN_ROM").map(PathBuf::from).or_else(|| bundle_file("baserom.us.z64"))) else {
+        eprintln!("SKIPPED: needs sm64coind, the ROM and sm64coin-wallet-rpc (an unpacked release bundle in ~/apps)");
+        return;
+    };
+    let network = wait_for(&a);
+    let relay = tauri::async_runtime::block_on(RelayHandle::spawn(&RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), tls: TlsMode::SelfSigned, hello_policy: HelloPolicy::Off, ..Default::default() }, HelloLog::default())).unwrap();
+    let sa = tauri::async_runtime::block_on(serve(&a, &relay, network));
+    let net = net_with(&[(dead_http(), Source::Bootstrap), (sa.addr.clone(), Source::Bootstrap)]);
+    tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+    let proxy = walletproxy::start(net.clone(), vec![]).unwrap();
+    let wdir = a.dir.join("wallets");
+    std::fs::create_dir_all(&wdir).unwrap();
+    let wport = free_port();
+    struct Child2(Child);
+    impl Drop for Child2 {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _w = Child2(
+        Command::new(&wrpc)
+            .args(["--daemon-address", &proxy.addr(), "--untrusted-daemon", "--rpc-bind-ip", "127.0.0.1", "--rpc-bind-port", &wport.to_string(), "--disable-rpc-login", "--kdf-rounds", "1", "--non-interactive", "--no-dns"])
+            .arg("--wallet-dir")
+            .arg(&wdir)
+            .arg("--log-file")
+            .arg(a.dir.join("w.log"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start the wallet sidecar"),
+    );
+    let wurl = format!("http://127.0.0.1:{wport}");
+    let t1 = std::time::Instant::now();
+    while ureq::post(&format!("{wurl}/json_rpc")).timeout(Duration::from_secs(3)).send_json(json!({"jsonrpc": "2.0", "id": 0, "method": "get_version"})).is_err() {
+        assert!(t1.elapsed() < Duration::from_secs(60), "the wallet sidecar did not start");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let w = |m: &str, p: Value| -> Value {
+        let r = ureq::post(&format!("{wurl}/json_rpc")).timeout(Duration::from_secs(300)).send_json(json!({"jsonrpc": "2.0", "id": 0, "method": m, "params": p}));
+        match r {
+            Ok(r) => r.into_json().unwrap(),
+            Err(ureq::Error::Status(_, r)) => r.into_json().unwrap(),
+            Err(e) => panic!("{m}: {e}"),
+        }
+    };
+    let ok = |v: Value| -> Value {
+        assert!(v.get("error").is_none(), "{v}");
+        v["result"].clone()
+    };
+    ok(w("create_wallet", json!({"filename": "w2", "password": "", "language": "English"})));
+    let addr2 = ok(w("get_address", json!({})))["address"].as_str().unwrap().to_string();
+    ok(w("close_wallet", json!({})));
+    ok(w("create_wallet", json!({"filename": "w1", "password": "", "language": "English"})));
+    let addr1 = ok(w("get_address", json!({})))["address"].as_str().unwrap().to_string();
+
+    // the native miner, behind the proxy (so its template, state and submit calls all travel over iroh)
+    let m = MobileMiner::new(a.dir.join("app"));
+    {
+        use base64::Engine;
+        m.rom_put_b64(&base64::engine::general_purpose::STANDARD.encode(std::fs::read(&rom).unwrap())).unwrap();
+    }
+    let emit: crate::mobile_miner::Emit = Arc::new(|_, _| {});
+    assert!(proxy.url().starts_with("http://127.0.0.1:"), "this test mines only through its own loopback proxy to its own isolated node");
+    m.start(emit.clone(), &proxy.url(), &addr1, Some(4), false).expect("start the miner");
+    let want: u64 = std::env::var("SM64COIN_FLOW_BLOCKS").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
+    let limit = Duration::from_secs(std::env::var("SM64COIN_TEST_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3600));
+    let t0 = std::time::Instant::now();
+    let node = HttpUpstream::new(&format!("http://127.0.0.1:{}", a.rpc)).unwrap();
+    let height = || -> u64 { tauri::async_runtime::block_on(node.json_rpc("get_info", json!({}), Duration::from_secs(10))).ok().and_then(|v| v["result"]["height"].as_u64()).unwrap_or(0) };
+    while height() < want && t0.elapsed() < limit {
+        std::thread::sleep(Duration::from_secs(10));
+    }
+    let h = height();
+    eprintln!("mined to height {h} in {:?}; miner accepted {}", t0.elapsed(), m.status().accepted);
+    let _ = m.stop(&emit);
+    assert!(h >= want, "the isolated chain did not reach {want} blocks in time (height {h})");
+    assert!(net.status().used.is_some_and(|u| u.transport == "iroh"), "the miner reached the node over iroh");
+
+    // sync and send over iroh
+    ok(w("refresh", json!({})));
+    let bal = ok(w("get_balance", json!({})));
+    let unlocked = bal["unlocked_balance"].as_u64().unwrap();
+    assert!(unlocked > 0, "mined coins are unlocked after the 6-block lock: {bal}");
+    let sent = ok(w("transfer", json!({"destinations": [{"amount": unlocked / 10, "address": addr2}], "priority": 1, "get_tx_key": true})));
+    let txid = sent["tx_hash"].as_str().unwrap().to_string();
+    eprintln!("sent {txid} over iroh");
+    assert_eq!(net.status().used.unwrap().transport, "iroh");
+    // the node took it: it is in the pool (the node's own RPC, not the proxy)
+    let pool = ureq::post(&format!("http://127.0.0.1:{}/get_transaction_pool_hashes", a.rpc)).send_json(json!({})).unwrap().into_json::<Value>().unwrap();
+    assert!(pool["tx_hashes"].as_array().is_some_and(|l| l.iter().any(|x| x == &json!(txid))), "{pool}");
+    // wallet 1 sees its own pending spend (get_transfers pool)
+    let t = ok(w("get_transfers", json!({"pool": true, "out": true, "pending": true})));
+    assert!(t.to_string().contains(&txid), "{t}");
+    // wallet 2 sees the incoming transaction in the pool
+    ok(w("close_wallet", json!({})));
+    ok(w("open_wallet", json!({"filename": "w2", "password": ""})));
+    ok(w("refresh", json!({})));
+    let t2 = ok(w("get_transfers", json!({"pool": true, "in": true})));
+    assert!(t2.to_string().contains(&txid), "wallet 2 sees the incoming transaction: {t2}");
+
+    // verification of the mined chain (header layer through the proxy's net; the solo chain's rules are the real ones)
+    let cp = sm64coin_lc::verify::Checkpoint::genesis(network);
+    #[cfg(not(mobile))]
+    {
+        let rom2 = rom.clone();
+        net.enable_replay(Arc::new(move || std::fs::read(&rom2).ok()));
+    }
+    tauri::async_runtime::block_on(net.verify_now(Some(cp))).expect("verify");
+    let v = net.verification();
+    eprintln!("verification: {v:?}");
+    assert_eq!(v.state, "verified", "{v:?}");
+    assert!(v.height.unwrap() + 1 >= want);
+    #[cfg(not(mobile))]
+    {
+        // desktop: the current cycle replays in the background (the ROM is found through $SM64COIN_ROM)
+        let t = std::time::Instant::now();
+        while net.verification().replay.state == "running" && t.elapsed() < Duration::from_secs(300) {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        eprintln!("replay: {:?}", net.verification().replay);
+    }
+    tauri::async_runtime::block_on(relay.shutdown());
 }

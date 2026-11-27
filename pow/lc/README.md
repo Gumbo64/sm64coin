@@ -26,7 +26,7 @@ Only the allowlisted node RPC methods (`src/allowlist.rs`) are ever forwarded.
 
 | Module | Feature | What |
 |---|---|---|
-| `proto` | none (wasm ok) | ALPN `sm64coin/light/1`, `Request`/`Response`, `u32 len || postcard` frames, limits, signed `NodeAnnouncement` |
+| `proto` | none (wasm ok) | ALPN `sm64coin/light/1` (minor 1 adds `Request::JsonRpc` / `Request::Path`: any allowlisted node call over any transport; a request variant newer than the build is answered `Unsupported`, never a disconnect), `Request`/`Response`, `u32 len || postcard` frames, limits, signed `NodeAnnouncement` |
 | `nodes` | none (wasm ok) | `NodeList`: scoring, weighted pick, bans, cap 64, JSON persistence, bootstrap parsing |
 | `exec`, `allowlist` | none (wasm ok) | `Request` -> node RPC mapping, `Upstream` trait, the RPC allowlist |
 | `client` | none / `iroh-client` | `Transport` trait, `UpstreamTransport` (HTTP), `IrohTransport`, `Client` (failover, 3-node submit fan-out) |

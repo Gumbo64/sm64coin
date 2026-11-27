@@ -402,6 +402,9 @@ pub fn run() {
     let wallet = wallet::Wallet::new(&dirs);
     let app = App { link: link::Link::default(), wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
     let remote = crate::remote::Remote::new(Some(app.dirs.data.join("remote-node.txt")), Some(app.dirs.data.join("nodes.json")));
+    // The current cycle of the verified chain is replayed in the background (lcverify.rs) with the app's ROM, once there is one.
+    let (bundle, data) = (app.dirs.bundle.clone(), app.dirs.data.clone());
+    remote.net.enable_replay(std::sync::Arc::new(move || rom::find(None, &bundle, &data).ok().and_then(|p| std::fs::read(p).ok())));
     let proxy = crate::start_net(&remote).expect("the wallet's loopback daemon could not start");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

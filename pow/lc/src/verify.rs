@@ -29,6 +29,12 @@ use serde::{Deserialize, Serialize};
 use crate::block::{Block, BlockError, Claims, Hash, RpcBlock};
 use crate::client::{BULK_TIMEOUT, Client, READ_TIMEOUT};
 use crate::exec::{MaybeSend, MaybeSync};
+
+/// The cancel hook of the async checks (`Sync` natively so their futures stay `Send`).
+#[cfg(not(target_arch = "wasm32"))]
+pub type CancelFn = dyn Fn() -> bool + Sync;
+#[cfg(target_arch = "wasm32")]
+pub type CancelFn = dyn Fn() -> bool;
 use crate::proto::{ErrorKind, Request, Response, Tip};
 
 /// Monero's `BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW` = the fork's `DIFFICULTY_WINDOW`.
@@ -525,7 +531,7 @@ impl ChainSource for NodeSource<'_> {
 }
 
 /// Verifies the chain `src` serves, from `cp` to its tip (or `opts.max_height`).
-pub async fn verify_branch(cp: &Checkpoint, rules: &dyn Consensus, src: &dyn ChainSource, opts: &VerifyOptions, cancel: &dyn Fn() -> bool) -> Result<Branch, VerifyError> {
+pub async fn verify_branch(cp: &Checkpoint, rules: &dyn Consensus, src: &dyn ChainSource, opts: &VerifyOptions, cancel: &CancelFn) -> Result<Branch, VerifyError> {
     let name = src.name();
     // 1. the anchor
     let anchor = if cp.height == 0 {
@@ -645,7 +651,7 @@ pub fn order_by_fork_choice(rules: &dyn Consensus, mut branches: Vec<Branch>) ->
 
 /// Asks nodes for tips, verifies every distinct branch from the checkpoint and orders the valid ones by
 /// fork choice. Nodes whose chain is invalid are banned. No replay here (see [`sync`]).
-pub async fn candidates(client: &Client, cp: &Checkpoint, rules: &dyn Consensus, opts: &CrossCheckOptions, cancel: &dyn Fn() -> bool) -> Result<Candidates, VerifyError> {
+pub async fn candidates(client: &Client, cp: &Checkpoint, rules: &dyn Consensus, opts: &CrossCheckOptions, cancel: &CancelFn) -> Result<Candidates, VerifyError> {
     let keys = client.pick_keys(opts.nodes);
     if keys.is_empty() {
         return Err(VerifyError::Source("no usable node".into()));
@@ -711,7 +717,7 @@ pub struct Outcome {
 
 /// Cross-check, then replay the winner (if a judge is given). A branch whose replay fails is dropped and
 /// every node that served it is banned (`Client::ban_liar`), then the next best is judged.
-pub async fn sync(client: &Client, cp: &Checkpoint, rules: &dyn Consensus, judge: Option<&dyn Judge>, opts: &CrossCheckOptions, cancel: &dyn Fn() -> bool) -> Result<Outcome, VerifyError> {
+pub async fn sync(client: &Client, cp: &Checkpoint, rules: &dyn Consensus, judge: Option<&dyn Judge>, opts: &CrossCheckOptions, cancel: &CancelFn) -> Result<Outcome, VerifyError> {
     let c = candidates(client, cp, rules, opts, cancel).await?;
     let mut banned: Vec<String> = c.failed.iter().filter(|(_, v)| matches!(v, NodeVerdict::Liar(_))).map(|(k, _)| k.clone()).collect();
     let mut nodes = c.failed.clone();
@@ -765,7 +771,7 @@ pub async fn sync(client: &Client, cp: &Checkpoint, rules: &dyn Consensus, judge
 /// `lo`, the last is `hi`. No rules are applied (the chain between two checkpoints is what both vouch for);
 /// the blocks are authentic, which is what a replay of old history needs. Pick `lo` and `hi` from
 /// [`crate::checkpoints`] a few blocks apart to bound the download.
-pub async fn backfill(lo: &Checkpoint, hi: &Checkpoint, src: &dyn ChainSource, cancel: &dyn Fn() -> bool) -> Result<Vec<Block>, VerifyError> {
+pub async fn backfill(lo: &Checkpoint, hi: &Checkpoint, src: &dyn ChainSource, cancel: &CancelFn) -> Result<Vec<Block>, VerifyError> {
     if hi.height <= lo.height {
         return Err(VerifyError::Source("backfill needs lo below hi".into()));
     }

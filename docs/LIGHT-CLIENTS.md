@@ -285,3 +285,26 @@ HTTP RPC is never removed: old apps and third-party wallets keep working.
 - iroh-mainline-address-lookup 0.6.1, iroh-gossip 0.103.0: crates.io
 - Let's Encrypt, 6-day and IP certificates GA (2026-01-15): https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability
 - Monero public nodes: `monero/src/daemon/main.cpp` (`parse_public_rpc_port`), `monero/src/rpc/core_rpc_server.cpp` (`on_get_public_nodes`)
+
+
+## Apps integration (v0.5.x light-client branch)
+
+- **Passthrough**: protocol minor 1 adds `Request::JsonRpc { method, params }` (answer `Response::JsonRpc`, the node's whole
+  JSON-RPC envelope) and `Request::Path { path, body }` (answer `Response::Bin`), both gated by `allowlist.rs`. Apps send every
+  allowlisted call that has no typed message this way, so `get_info`, `get_sm64_state`, the miner's template with its `sm64_*`
+  extras, `get_block` by hash and the wallet's `/get_transactions`, `/is_key_image_spent`, `/get_o_indexes.bin` fail over across
+  HTTP and iroh nodes alike. Older nodes answer `Malformed`/`Unsupported` and the client moves on.
+- **Wallet allowlist** is derived from every daemon call wallet2 makes (wallet2.cpp, node_rpc_proxy.cpp): JSON-RPC
+  `get_version get_info hard_fork_info get_fee_estimate get_output_histogram get_output_distribution getblockheadersrange
+  getblockheaderbyheight get_txpool_backlog rpc_access_info`; paths `getblocks.bin getblocks_by_height.bin gethashes.bin
+  get_o_indexes.bin get_outs.bin get_output_distribution.bin get_transaction_pool_hashes(.bin) get_transaction_pool_stats
+  gettransactions is_key_image_spent send_raw_transaction getheight get_info`. Never the unrestricted ones.
+- **Privacy**: apps use discovery `none` (they publish nothing and resolve nothing; they dial by endpoint id and relay URL).
+  Only serving nodes publish. `SM64COIN_LC_DISCOVERY=n0|dht` opts in.
+- **Bootstrap**: `web/public/public-node.json` has `url` (old clients) and `nodes`: `https://host` or
+  `iroh:<endpoint id>@<relay url>`. The Pi's iroh entry is added at deploy time.
+- **Verification in the apps** (`desktop/src-tauri/src/lcverify.rs`): on startup and on each new tip `verify::sync` checks up to
+  five nodes from the compiled checkpoint; the Network page and the status-light tooltip show `verified (n nodes agree)`,
+  `conflict` or `unverified`; the wallet proxy and the native miner use only the verified branch's nodes; liars are banned.
+  Desktop also replays the current cycle in the background (budget 120 s, cancelled by the next tip; a branch that fails bans
+  its servers); Android runs the header layer only.

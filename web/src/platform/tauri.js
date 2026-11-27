@@ -27,12 +27,15 @@ const node = {
 
 let netInfo = null; // the last net_status: the loopback daemon, the node and transport in use, the node list
 
-/** The app's light-client network (Rust: lcnet.rs): `status()` -> {proxy, used: {node, transport, method}, iroh, nodes: [...]}.
+/** The app's light-client network (Rust: lcnet.rs): `status()` -> {proxy, used: {node, transport, method}, iroh, nodes: [...],
+ *  verify: {state: 'checking'|'verified'|'conflict'|'unverified', label: 'verified (3 nodes agree)', agree, quorum, height, replay}}
+ *  (`verify` is the chain check of lcverify.rs; `verified()` is its label).
  *  `walletDaemon()` is the loopback daemon (http://127.0.0.1:port) the wallet engine and the native miner use: it fails over
  *  between the nodes, so a dead one is skipped. '' until `status()` has answered once. */
 const net = {
   status: async () => { netInfo = await cmd('net_status'); return netInfo; },
   walletDaemon: () => (netInfo && netInfo.proxy) || '',
+  verified: () => (netInfo && netInfo.verify && netInfo.verify.label) || '',
 };
 
 const nativeMiner = {

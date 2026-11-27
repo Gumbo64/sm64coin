@@ -8,6 +8,7 @@
 //!   `sm64coin_miner` Campaign in this process, the ROM handed over once by the page with `rom_put`); no node, no sidecars.
 
 mod lcnet;
+mod lcverify;
 mod remote;
 mod walletproxy;
 #[cfg(test)]

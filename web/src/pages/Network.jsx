@@ -2,6 +2,7 @@ import { Link } from 'react-router';
 import React, { useEffect, useState } from 'react';
 import { chooseNode, daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, nodeNote, usingPublicFallback, NODE_HINT } from '../lib/rpc.js';
 import useInterval from '../lib/useInterval.js';
+import { verifyTitle } from '../lib/useVerify.js';
 import { getPlatform } from '../platform/index.js';
 
 const clean = (u) => (u || '').trim().replace(/\/+$/, '');
@@ -10,6 +11,22 @@ const loadList = () => { try { return JSON.parse(localStorage.getItem(LIST_KEY) 
 const saveList = (l) => { try { localStorage.setItem(LIST_KEY, JSON.stringify(l)); } catch { /* storage unavailable */ } };
 
 const label = (key) => String(key || '').replace(/^http:/, '').replace(/^iroh:(.{8}).*$/, 'iroh $1...');
+// What the verifier found, in words (Rust lcverify.rs). A node that served an invalid chain is banned for a week.
+function Verified({ v }) {
+  if (!v) return null;
+  const mark = { verified: '✓', conflict: '⚠', unverified: '?', checking: '…' }[v.state] || '';
+  return (
+    <p className={`verify-${v.state}`} title={verifyTitle(v)}>
+      Chain check: <b>{mark} {v.label}</b>
+      {v.height != null && <span className="muted"> | tip {v.height}, from the release's checkpoint at {v.checkpoint_height}{v.level === 'structural' ? ' (structure only)' : ''}{v.quorum ? '' : ', fewer than 3 nodes'}</span>}
+      {v.replay && v.replay.state !== 'off' && <span className="muted"> | replay: {v.replay.state === 'running' && v.replay.total ? `${v.replay.done}/${v.replay.total}` : v.replay.detail || v.replay.state}</span>}
+      {v.error && <span className="muted"> | {v.error}</span>}
+      {v.banned && v.banned.length > 0 && <span className="muted"> | banned: {v.banned.join(', ')}</span>}
+      {v.disagree && v.disagree.length > 0 && <span className="muted"> | {v.disagree.map(([k, why]) => `${k}: ${why}`).join('; ')}</span>}
+    </p>
+  );
+}
+
 const TRANSPORT = { https: 'https', http: 'http', iroh: 'iroh (QUIC)' };
 
 // The app's light-client network (Rust lcnet.rs): which node and transport the last call used, and the candidate list with its
@@ -27,6 +44,7 @@ function LightNet() {
         Connected through: <b>{st.used ? <><code>{label(st.used.node)}</code> over <b>{TRANSPORT[st.used.transport] || st.used.transport}</b></> : 'no call yet'}</b>
         {st.iroh ? <> | iroh endpoint <code>{st.iroh.slice(0, 8)}...</code></> : ' | iroh starting'}
       </p>
+      <Verified v={st.verify} />
       <table>
         <tbody>
           {st.nodes.map((n) => (
@@ -39,7 +57,7 @@ function LightNet() {
           ))}
         </tbody>
       </table>
-      <p>Calls move to the next node when one fails; submissions go to three nodes at once.</p>
+      <p>Calls move to the next node when one fails; submissions go to three nodes at once. The wallet and the miner use only nodes on the verified chain.</p>
     </div>
   );
 }

@@ -6400,6 +6400,8 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "sha3",
+ "sm64pow",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

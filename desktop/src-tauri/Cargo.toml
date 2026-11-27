@@ -26,7 +26,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sm64coin-launcher = { path = "../../pow/launcher", default-features = false, features = ["tls"] }
 # The light-client crate: failover Client over HTTP and iroh nodes (lcnet.rs). No service/relay here (that is the node's side).
-sm64coin-lc = { path = "../../pow/lc", features = ["http", "tls", "iroh-client"] }
+sm64coin-lc = { path = "../../pow/lc", features = ["http", "tls", "iroh-client", "consensus"] }
+# the endpoint's relay URLs (lcnet.rs); the same pin as pow/lc
+iroh = { version = "=1.5.0", default-features = false, features = ["tls-ring"] }
 tokio = { version = "1", default-features = false, features = ["rt", "time", "sync"] }
 hex = "0.4"
 # the passkey hand-off (link.rs), desktop and Android; sha2 (wallet.rs hashing) too
@@ -50,7 +52,6 @@ base64 = "0.22"
 [dev-dependencies]
 # lcnet_test.rs: lc services and a local relay in front of isolated offline nodes (the app itself only links the client side)
 sm64coin-lc = { path = "../../pow/lc", features = ["server", "relay"] }
-iroh = { version = "=1.5.0", default-features = false, features = ["tls-ring"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 sm64coin-miner = { path = "../../pow/miner" }
 sha1 = "0.10"
@@ -59,7 +60,8 @@ base64 = "0.22"
 # Desktop only: processes, files, dialogs (the launcher's `desktop` feature is what builds its node/ROM/DHT parts).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 sm64coin-launcher = { path = "../../pow/launcher", default-features = false, features = ["desktop", "tls"] }
-sm64coin-lc = { path = "../../pow/lc", features = ["dht"] }
+# desktop: the DHT lookup is opt-in (clients dial by id + relay and publish nothing), and the current cycle is replayed in the background
+sm64coin-lc = { path = "../../pow/lc", features = ["dht", "replay"] }
 tauri-plugin-dialog = "2"
 ctrlc = { version = "3", features = ["termination"] }
 ureq = { version = "2", default-features = false, features = ["json"] }

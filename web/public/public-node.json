@@ -1,3 +1,5 @@
 {
-  "url": "https://eboy.au"
+  "url": "https://eboy.au",
+  "nodes": ["https://eboy.au"],
+  "comment": "nodes: https://host, or iroh:<node-id>@<relay-url> for a light-client node (reached by id and relay, no lookup service). url is for clients older than the nodes list. The Pi's iroh entry is added at deploy time: iroh:<its endpoint id>@https://<its relay>."
 }
