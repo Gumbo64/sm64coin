@@ -8,8 +8,8 @@ and pins `iroh` / `iroh-relay` to `=1.5.0`.
 
 ```sh
 cargo build --release --features bin
-# a node with its RPC on 127.0.0.1:16481 is already running
-./sm64coin-lc serve --node-rpc http://127.0.0.1:16481 --data-dir ~/.sm64coin-lc \
+# a node with a restricted RPC on 127.0.0.1:16489 is already running (sm64coind --rpc-restricted-bind-port 16489)
+./sm64coin-lc serve --node-rpc http://127.0.0.1:16489 --data-dir ~/.sm64coin-lc \
     --relay auto --discovery dht --bootstrap iroh:<id>@https://relay.example
 ```
 

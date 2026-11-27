@@ -308,3 +308,28 @@ HTTP RPC is never removed: old apps and third-party wallets keep working.
   `conflict` or `unverified`; the wallet proxy and the native miner use only the verified branch's nodes; liars are banned.
   Desktop also replays the current cycle in the background (budget 120 s, cancelled by the next tip; a branch that fails bans
   its servers); Android runs the header layer only.
+
+## Hardening for v0.5.5 (review)
+
+- **Incremental verification** (`verify::sync_resume`): a check ends with a resume point `RESUME_MARGIN` (6) blocks below
+  the verified tip; the next check fetches only blocks after it (the resume block's id by one header). A node whose chain
+  does not contain it re-anchors the whole check at the compiled checkpoint (not a ban). Nodes claiming a tip inside a
+  verified branch are cut from it (no download); above `FULL_CHECK_BLOCKS` (64) one claimant per distinct tip is verified,
+  the rest spot-checked at 8 random heights. Per-check caps: 500 blocks per node in the browser, 2000 in the apps. The
+  browser keeps the resume point in WASM memory only; the apps store it in `lc-verified.json` (desktop with replay starts
+  its first check from the checkpoint, the replay needs the cycle's blocks). The checkpoint is regenerated before each
+  release (`scripts/update-checkpoint.sh`, packaging/RELEASING.md).
+- **Stored lists are not trusted**: the browser keeps from localStorage only the bootstrap entries' latency and success
+  history (no bans, heights, sources or extra nodes). The lag rule compares against the median reported height, not the
+  maximum, so one node's inflated height cannot make the honest ones look behind.
+- **Never stranded**: when no verified node answers, the apps re-check within 30 s; a failed check lifts the restriction;
+  when every node is banned the best-scored ones are used anyway and the status says the reads are unverified.
+- **Service**: reads only the node's restricted RPC (refuses an unrestricted one: no caps there and Dandelion++ stem
+  transactions in the pool answers); 16 connections per IP; relayed requests (no IP) share one budget; answers are charged
+  by size; announcements are field-checked, an answer teaches a client at most 8 new nodes, and fresh endpoint ids cannot
+  push known servers out of a server's list.
+- **Relay self-test**: two peers at known public addresses (the probe connection's own path) in different IPv4 /16 or
+  IPv6 /32 networks, observed IP public, not CGNAT, and among the endpoint's own discovered addresses; a self-signed relay
+  is never advertised (`--tls acme --acme-domain ... --acme-production`, or `--lc-acme-domain` in the launcher); the
+  monthly byte count is written atomically and on shutdown.
+- **View key**: `sm64_board_join` is `allowlist::PINNED_ONLY`, never sent by failover.

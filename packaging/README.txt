@@ -89,8 +89,10 @@ Other programs in this folder
   sm64coin-leaderboard  leaderboard server (shares the top 50 with other servers; joining shares your address + view key with that network, use a dedicated mining address)
   sm64coin-lc           light-client service: run it beside a node (public address, UDP + TCP reachable) so phones, the apps
                         and browsers can read the chain through it instead of one public node. It answers over iroh (QUIC),
-                        and turns itself into a relay for others when the machine is reachable from outside.
-                        Start:  ./sm64coin-lc serve --node-rpc http://127.0.0.1:16481 --data-dir ~/.sm64coin/lc
+                        and turns itself into a relay for others when the machine is reachable from outside and has a
+                        Let's Encrypt domain (--tls acme --acme-domain your.domain --acme-production). It reads the node's
+                        RESTRICTED RPC only: start the node with RESTRICTED_PORT=16489 (sm64coin-node --restricted-port 16489).
+                        Start:  ./sm64coin-lc serve --node-rpc http://127.0.0.1:16489 --data-dir ~/.sm64coin/lc
                         Linux:  sm64coin-lc.service (systemd unit, see its header). `sm64coin --lc` runs the same service
                         inside the launcher. Details: pow/lc/README.md and docs/LIGHT-CLIENTS.md in the source.
   sm64coin-automine     the automated miner (when present)
