@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// ALPN of the service. A breaking change is `sm64coin/light/2`, served side by side for a release.
 pub const ALPN: &[u8] = b"sm64coin/light/1";
 /// This implementation's minor version.
-pub const MINOR: u16 = 1;
+pub const MINOR: u16 = 2;
 
 /// Largest frame an answer may have (8 MiB).
 pub const MAX_FRAME: usize = 8 << 20;
@@ -39,8 +39,10 @@ pub mod features {
     pub const PROBE: u64 = 1 << 4;
     /// `Request::JsonRpc` / `Request::Path` (minor 1): any allowlisted node call.
     pub const PASSTHROUGH: u64 = 1 << 5;
+    /// `Request::SubscribeTip` (minor 2): the server pushes every new tip on a long-lived stream.
+    pub const TIP_PUSH: u64 = 1 << 6;
     /// Features this implementation's server offers.
-    pub const SERVED: u64 = CYCLE | PROOF_RECORDS | WALLET | PROBE | PASSTHROUGH;
+    pub const SERVED: u64 = CYCLE | PROOF_RECORDS | WALLET | PROBE | PASSTHROUGH | TIP_PUSH;
 }
 
 /// Flag bits of [`NodeAnnouncement::flags`].
@@ -97,6 +99,24 @@ pub struct Tip {
     pub cumulative_difficulty: u128,
 }
 
+/// What a client needs to know about the tip without asking again (minor 2, pushed by [`Request::SubscribeTip`]): the
+/// block, and the two numbers that, with the clock, give the time limit a block found now must meet
+/// (`sm64pow::rules().max_frames(difficulty, now - timestamp)`): the limit grows with the time since the parent, so a client
+/// computes it locally instead of polling for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TipInfo {
+    /// The tip block's height (not the node's block count).
+    pub height: u64,
+    pub hash: [u8; 32],
+    /// The tip block's timestamp (the parent of the next block).
+    pub timestamp: u64,
+    pub cumulative_difficulty: u128,
+    /// The retarget difficulty of the next block (`get_info.difficulty`).
+    pub difficulty: u64,
+    /// The server's clock (unix seconds) when it saw this tip, so a client can tell how far its own clock is off.
+    pub server_time: u64,
+}
+
 /// Which `.bin` (epee) call of the wallet engine to forward, body as the wallet sends it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WalletBin {
@@ -145,11 +165,15 @@ pub enum Request {
     /// Minor 1: any [`crate::allowlist::PATH_ALLOWED`] non-JSON-RPC call (`/get_transactions`, `/is_key_image_spent`,
     /// `/get_o_indexes.bin` ...), body as the wallet sends it; the answer is [`Response::Bin`].
     Path { path: String, body: Vec<u8> },
+    /// Minor 2: the answer stream stays open and carries [`Response::TipPush`] frames, the current tip first and then one
+    /// per change, and a [`Response::Keepalive`] every [`KEEPALIVE_SECS`] while nothing changes. The client ends it by
+    /// closing the stream. An older server answers `Unsupported` (one frame, stream finished): the client polls instead.
+    SubscribeTip,
 }
 
 /// Number of [`Request`] variants this build knows. A request whose postcard variant index is at or above this is from
 /// a newer minor: it is answered with `Unsupported`, not counted as malformed and never closes the connection.
-pub const REQUEST_VARIANTS: u32 = 16;
+pub const REQUEST_VARIANTS: u32 = 17;
 
 /// True when `body` (a request frame body) starts with a variant index this build does not know.
 pub fn is_unknown_request(body: &[u8]) -> bool {
@@ -199,7 +223,18 @@ pub enum Response {
     Error(ErrorKind),
     /// The node's whole JSON-RPC answer (`{"jsonrpc", "id", "result" | "error"}`) as JSON text; answer of `Request::JsonRpc`.
     JsonRpc(String),
+    /// Minor 2: one tip of a [`Request::SubscribeTip`] stream.
+    TipPush(TipInfo),
+    /// Minor 2: nothing changed; the stream is alive.
+    Keepalive,
 }
+
+/// A subscription's keepalive period; a client that hears nothing for 2.5 times this long reconnects.
+pub const KEEPALIVE_SECS: u64 = 30;
+/// Tip subscriptions one endpoint may hold at once.
+pub const MAX_SUBS_PER_ENDPOINT: usize = 2;
+/// Tip subscriptions the server holds in all.
+pub const MAX_SUBS_TOTAL: usize = 4096;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {
@@ -295,12 +330,13 @@ impl Request {
             Request::Probe { .. } => "probe",
             Request::JsonRpc { .. } => "json_rpc",
             Request::Path { .. } => "path",
+            Request::SubscribeTip => "subscribe_tip",
         }
     }
     /// Budget cost in tokens (a plain read costs 1; heavy ones more, DOS.md style).
     pub fn cost(&self) -> u32 {
         match self {
-            Request::Hello { .. } | Request::GetTip | Request::GetFee | Request::GetNodes { .. } => 1,
+            Request::Hello { .. } | Request::GetTip | Request::GetFee | Request::GetNodes { .. } | Request::SubscribeTip => 1,
             Request::GetTemplate { .. } | Request::GetOutDistribution { .. } | Request::SendTx { .. } => 2,
             Request::SubmitBlock { .. } | Request::SubmitProof { .. } | Request::Probe { .. } => 4,
             Request::GetHeaders { .. } | Request::Wallet { .. } => 5,

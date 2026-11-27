@@ -68,6 +68,15 @@ pub struct Limits {
     pub max_conns_per_ip: usize,
     /// Requests that arrive over a relay show no IP: they share one budget of this many times an IP's.
     pub relayed_budget_mult: f64,
+    /// How often the one shared watcher asks the local node for its tip while someone is subscribed (the node is local, so
+    /// 1 s is cheap; subscribers cost the node nothing).
+    pub tip_poll: Duration,
+    /// ... and while nobody is (the tip in `Hello` and the announcement).
+    pub tip_idle_poll: Duration,
+    /// Silence on a tip subscription after which a `Keepalive` is sent.
+    pub keepalive: Duration,
+    pub max_subs_per_endpoint: usize,
+    pub max_subs_total: usize,
 }
 
 impl Default for Limits {
@@ -83,6 +92,11 @@ impl Default for Limits {
             max_malformed: 3,
             max_conns_per_ip: 16,
             relayed_budget_mult: 20.0,
+            tip_poll: Duration::from_secs(1),
+            tip_idle_poll: Duration::from_secs(5),
+            keepalive: Duration::from_secs(KEEPALIVE_SECS),
+            max_subs_per_endpoint: MAX_SUBS_PER_ENDPOINT,
+            max_subs_total: MAX_SUBS_TOTAL,
         }
     }
 }
@@ -120,6 +134,10 @@ pub struct Stats {
     pub busy: AtomicU64,
     pub malformed: AtomicU64,
     pub connections: AtomicU64,
+    /// Tip subscriptions opened / tip frames pushed (one per subscriber per change) / refused over a limit.
+    pub subscriptions: AtomicU64,
+    pub tips_pushed: AtomicU64,
+    pub subs_refused: AtomicU64,
 }
 
 struct Inner {
@@ -133,6 +151,10 @@ struct Inner {
     relayed_bucket: Mutex<Option<Bucket>>,
     ip_conns: Mutex<HashMap<IpAddr, usize>>,
     tip: RwLock<(u64, [u8; 32])>,
+    /// The tip every subscriber watches; one watcher task feeds it ([`LcService::serve`]).
+    tip_tx: tokio::sync::watch::Sender<Option<TipInfo>>,
+    subs: Mutex<HashMap<EndpointId, usize>>,
+    subs_total: AtomicUsize,
     relay_advertised: RwLock<bool>,
     known: Mutex<Vec<NodeAnnouncement>>,
     hello_log: HelloLog,
@@ -167,6 +189,9 @@ impl LcService {
             relayed_bucket: Default::default(),
             ip_conns: Default::default(),
             tip: RwLock::new((0, [0; 32])),
+            tip_tx: tokio::sync::watch::channel(None).0,
+            subs: Default::default(),
+            subs_total: AtomicUsize::new(0),
             relay_advertised: RwLock::new(false),
             known: Default::default(),
             hello_log,
@@ -186,7 +211,9 @@ impl LcService {
                     break;
                 }
                 me.refresh_tip().await;
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                // one local poll for all subscribers; slow while nobody listens
+                let l = &me.0.cfg.limits;
+                tokio::time::sleep(if me.0.subs_total.load(Ordering::Relaxed) > 0 { l.tip_poll } else { l.tip_idle_poll }).await;
             }
         });
         Router::builder(endpoint).accept(ALPN, self.clone()).spawn()
@@ -194,9 +221,26 @@ impl LcService {
 
     /// Re-reads the node's tip (served in `Hello` and announcements).
     pub async fn refresh_tip(&self) {
-        if let Response::Tip(t) = exec::run(&*self.0.upstream, &Request::GetTip, Duration::from_secs(5)).await {
+        let known = self.0.tip_tx.borrow().clone();
+        if let Ok(t) = exec::tip_info(&*self.0.upstream, known.as_ref(), now_secs(), Duration::from_secs(5)).await {
             *self.0.tip.write().unwrap() = (t.height, t.hash);
+            // notify only a new block (a reorg to another block at the same height too): not every poll
+            self.0.tip_tx.send_if_modified(|cur| {
+                if cur.as_ref().is_some_and(|c| c.hash == t.hash && c.difficulty == t.difficulty) {
+                    return false;
+                }
+                *cur = Some(t);
+                true
+            });
         }
+    }
+    /// The tip the subscribers see now.
+    pub fn tip_info(&self) -> Option<TipInfo> {
+        self.0.tip_tx.borrow().clone()
+    }
+    /// Tip subscriptions open right now.
+    pub fn subscribers(&self) -> usize {
+        self.0.subs_total.load(Ordering::Relaxed)
     }
     pub fn tip(&self) -> (u64, [u8; 32]) {
         *self.0.tip.read().unwrap()
@@ -358,6 +402,74 @@ impl LcService {
         Response::Probe { observed: Some(ip.to_string()), reachable: ok }
     }
 
+    /// A tip subscription: pushes the current tip, then every change, and a keepalive while nothing changes, until the client
+    /// stops the stream or a write fails. The only thing it costs the node is the shared watcher's poll.
+    async fn subscribe(&self, conn: &Connection, mut send: iroh::endpoint::SendStream, hello_done: bool) -> Result<bool, ()> {
+        let l = &self.0.cfg.limits;
+        let id = conn.remote_id();
+        if !hello_done {
+            let _ = write_frame(&mut send, &Response::Error(ErrorKind::BadHello), MAX_FRAME).await;
+            let _ = send.finish();
+            return Ok(false);
+        }
+        let refused = {
+            let mut m = self.0.subs.lock().unwrap();
+            let mine = m.entry(id).or_insert(0);
+            if *mine >= l.max_subs_per_endpoint || self.0.subs_total.load(Ordering::Acquire) >= l.max_subs_total {
+                if *mine == 0 {
+                    m.remove(&id);
+                }
+                true
+            } else {
+                *mine += 1;
+                self.0.subs_total.fetch_add(1, Ordering::AcqRel);
+                false
+            }
+        };
+        if refused {
+            self.0.stats.subs_refused.fetch_add(1, Ordering::Relaxed);
+            let _ = write_frame(&mut send, &Response::Error(ErrorKind::Busy { retry_ms: 30_000 }), MAX_FRAME).await;
+            let _ = send.finish();
+            return Ok(false);
+        }
+        struct Sub(Arc<Inner>, EndpointId);
+        impl Drop for Sub {
+            fn drop(&mut self) {
+                self.0.subs_total.fetch_sub(1, Ordering::AcqRel);
+                let mut m = self.0.subs.lock().unwrap();
+                if let Some(n) = m.get_mut(&self.1) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        m.remove(&self.1);
+                    }
+                }
+            }
+        }
+        let _sub = Sub(self.0.clone(), id);
+        self.0.stats.subscriptions.fetch_add(1, Ordering::Relaxed);
+        let mut rx = self.0.tip_tx.subscribe();
+        let mut last: Option<[u8; 32]> = None;
+        loop {
+            let cur = rx.borrow_and_update().clone();
+            if let Some(t) = cur.filter(|t| Some(t.hash) != last) {
+                last = Some(t.hash);
+                if write_frame(&mut send, &Response::TipPush(t), MAX_FRAME).await.is_err() {
+                    break;
+                }
+                self.0.stats.tips_pushed.fetch_add(1, Ordering::Relaxed);
+            }
+            tokio::select! {
+                r = rx.changed() => if r.is_err() { break },
+                _ = tokio::time::sleep(l.keepalive) => {
+                    if write_frame(&mut send, &Response::Keepalive, MAX_FRAME).await.is_err() { break }
+                }
+                _ = send.stopped() => break,
+            }
+        }
+        let _ = send.finish();
+        Ok(false)
+    }
+
     async fn handle_stream(&self, conn: &Connection, mut send: iroh::endpoint::SendStream, mut recv: iroh::endpoint::RecvStream, hello_done: &mut bool, malformed: &mut u32) -> Result<bool, ()> {
         let l = &self.0.cfg.limits;
         let ip = observed_ip(conn);
@@ -393,6 +505,9 @@ impl LcService {
             let _ = write_frame(&mut send, &Response::Error(ErrorKind::Busy { retry_ms }), MAX_FRAME).await;
             let _ = send.finish();
             return Ok(false);
+        }
+        if matches!(req, Request::SubscribeTip) {
+            return self.subscribe(conn, send, *hello_done).await;
         }
         let (resp, close) = self.respond(conn, req, hello_done).await;
         let resp = match encode_frame(&resp, MAX_FRAME) {

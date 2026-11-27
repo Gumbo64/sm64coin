@@ -93,7 +93,7 @@ pub fn validate(req: &Request) -> Result<(), ErrorKind> {
 }
 
 fn is_local(req: &Request) -> bool {
-    matches!(req, Request::Hello { .. } | Request::GetNodes { .. } | Request::Probe { .. })
+    matches!(req, Request::Hello { .. } | Request::GetNodes { .. } | Request::Probe { .. } | Request::SubscribeTip)
 }
 
 fn upstream_err(e: UpError) -> Response {
@@ -124,6 +124,34 @@ pub fn tip_from_info(info: &Value) -> Option<Tip> {
     };
     // `height` is the count of blocks; the tip's height is one less.
     Some(Tip { height: height.saturating_sub(1), hash, cumulative_difficulty: cd })
+}
+
+/// The tip with what a client needs to compute the time limit locally ([`TipInfo`]): `get_info` for the block, difficulty and
+/// cumulative difficulty, and (only when the tip changed from `known`) `get_last_block_header` for its timestamp. `now` is the
+/// caller's clock in unix seconds.
+pub async fn tip_info(up: &dyn Upstream, known: Option<&TipInfo>, now: u64, t: Duration) -> Result<TipInfo, ErrorKind> {
+    let info = rpc(up, "get_info", json!({}), t).await.map_err(|r| match r {
+        Response::Error(e) => e,
+        _ => ErrorKind::Upstream("get_info".into()),
+    })?;
+    let tip = tip_from_info(&info).ok_or_else(|| ErrorKind::Upstream("unreadable get_info".into()))?;
+    let difficulty = info.get("difficulty").and_then(|v| v.as_u64()).unwrap_or(1).max(1);
+    let timestamp = match known {
+        Some(k) if k.hash == tip.hash => k.timestamp,
+        _ => {
+            let h = rpc(up, "get_last_block_header", json!({}), t).await.map_err(|r| match r {
+                Response::Error(e) => e,
+                _ => ErrorKind::Upstream("get_last_block_header".into()),
+            })?;
+            let bh = h.get("block_header").unwrap_or(&h);
+            if bh.get("hash").and_then(|x| x.as_str()).and_then(hex32) != Some(tip.hash) {
+                // the tip moved between the two calls: the next poll sees the new one
+                return Err(ErrorKind::Upstream("tip moved".into()));
+            }
+            bh.get("timestamp").and_then(|x| x.as_u64()).ok_or_else(|| ErrorKind::Upstream("no timestamp".into()))?
+        }
+    };
+    Ok(TipInfo { height: tip.height, hash: tip.hash, timestamp, cumulative_difficulty: tip.cumulative_difficulty, difficulty, server_time: now })
 }
 
 /// Answers a request from the node behind `up`. `Hello`, `GetNodes` and `Probe` are not node calls
@@ -225,7 +253,7 @@ async fn run_inner(up: &dyn Upstream, req: &Request, t: Duration) -> Result<Resp
             let ct = if path.ends_with(".bin") { "application/octet-stream" } else { "application/json" };
             Response::Bin(up.post(path, ct, body.clone(), t).await.map_err(upstream_err)?)
         }
-        Request::Hello { .. } | Request::GetNodes { .. } | Request::Probe { .. } => Response::Error(ErrorKind::Unsupported),
+        Request::Hello { .. } | Request::GetNodes { .. } | Request::Probe { .. } | Request::SubscribeTip => Response::Error(ErrorKind::Unsupported),
     })
 }
 

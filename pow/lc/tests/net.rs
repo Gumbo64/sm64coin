@@ -24,6 +24,8 @@ const GENESIS: [u8; 32] = [7; 32];
 struct FakeUp {
     calls: AtomicUsize,
     height: Mutex<u64>,
+    /// The tip hash byte (tests change it to "mine a block").
+    hash: Mutex<u8>,
 }
 
 #[async_trait::async_trait]
@@ -31,8 +33,10 @@ impl Upstream for FakeUp {
     async fn json_rpc(&self, method: &str, _params: Value, _t: Duration) -> Result<Value, UpError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let h = *self.height.lock().unwrap();
+        let hb = *self.hash.lock().unwrap();
         let result = match method {
-            "get_info" => json!({"height": h + 1, "top_block_hash": hex::encode([9u8; 32]), "cumulative_difficulty": 42}),
+            "get_info" => json!({"height": h + 1, "top_block_hash": hex::encode([hb; 32]), "cumulative_difficulty": 42, "difficulty": 1000}),
+            "get_last_block_header" => json!({"block_header": {"hash": hex::encode([hb; 32]), "height": h, "timestamp": 1_700_000_000u64 + h}}),
             "get_block" => json!({"blob": "00", "height": 1}),
             "get_fee_estimate" => json!({"fee": 1}),
             _ => json!({}),
@@ -73,6 +77,7 @@ async fn serve(upstream: Arc<dyn Upstream>, relay: Option<(&RelayHandle, &str)>,
 async fn fake_srv(relay: Option<(&RelayHandle, &str)>, limits: Limits) -> Srv {
     let up = Arc::new(FakeUp::default());
     *up.height.lock().unwrap() = 4;
+    *up.hash.lock().unwrap() = 9;
     let (ep, router, svc) = serve(up.clone(), relay, limits).await;
     Srv { ep, router, svc, up }
 }
@@ -236,7 +241,7 @@ fn frame(r: &Request) -> Vec<u8> {
 #[test]
 fn request_variant_count_matches_the_enum() {
     // the newest variant sits at REQUEST_VARIANTS - 1 (append-only enum; bump the constant with each new variant)
-    let last = postcard::to_stdvec(&Request::Path { path: String::new(), body: vec![] }).unwrap();
+    let last = postcard::to_stdvec(&Request::SubscribeTip).unwrap();
     assert_eq!(last[0] as u32, REQUEST_VARIANTS - 1);
     assert!(!is_unknown_request(&last));
     assert!(is_unknown_request(&[REQUEST_VARIANTS as u8, 1, 2]));
@@ -618,5 +623,176 @@ async fn gossip_floods_and_garbage_announcements_are_contained() {
     let client = Client::new(NodeList::new(), Arc::new(IrohConnector::new(client_ep(None).await, GENESIS)), Arc::new(SystemEnv));
     let flood: Vec<_> = (0..50).map(|_| ann("https://relay.example.org")).collect();
     assert_eq!(client.learn(&flood), LEARN_PER_ANSWER);
+    s.router.shutdown().await.unwrap();
+}
+
+// ---- tip push (minor 2) ----
+
+fn fast_limits() -> Limits {
+    Limits { tip_poll: Duration::from_millis(100), tip_idle_poll: Duration::from_millis(100), keepalive: Duration::from_millis(300), ..Limits::default() }
+}
+
+fn mine(up: &FakeUp, hash: u8) {
+    *up.height.lock().unwrap() += 1;
+    *up.hash.lock().unwrap() = hash;
+}
+
+async fn next_tip(st: &mut Box<dyn TipStream>) -> TipInfo {
+    tokio::time::timeout(Duration::from_secs(5), st.next()).await.expect("a tip within 5 s").unwrap().expect("stream open")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tip_push_reaches_every_subscriber_and_costs_the_node_one_poll() {
+    let s = fake_srv(None, fast_limits()).await;
+    let mut streams = Vec::new();
+    let mut eps = Vec::new();
+    for _ in 0..5 {
+        let c = client_ep(None).await;
+        let t = IrohTransport::new(c.clone(), direct_addr(&s.ep), GENESIS);
+        let mut st = t.open_tip_stream().await.expect("subscribed");
+        // the current tip comes first, with everything a client needs for the limit
+        let first = next_tip(&mut st).await;
+        assert_eq!((first.height, first.hash, first.difficulty, first.timestamp), (4, [9; 32], 1000, 1_700_000_004));
+        assert!(first.server_time > 1_700_000_000);
+        streams.push((t, st));
+        eps.push(c);
+    }
+    assert_eq!(s.svc.subscribers(), 5);
+    // a new block: pushed to all five (and only once each)
+    let before = s.up.calls.load(Ordering::SeqCst);
+    let t0 = std::time::Instant::now();
+    mine(&s.up, 10);
+    for (_, st) in streams.iter_mut() {
+        let t = next_tip(st).await;
+        assert_eq!((t.height, t.hash, t.timestamp), (5, [10; 32], 1_700_000_005));
+    }
+    let latency = t0.elapsed();
+    assert!(latency < Duration::from_millis(1500), "push latency {latency:?}");
+    // the node is asked by the one watcher, not per subscriber: over ~1 s, a handful of get_info calls plus one header
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let polls = s.up.calls.load(Ordering::SeqCst) - before;
+    assert!(polls <= 20, "one shared watcher at 10 Hz, not 5 subscribers x anything: {polls} node calls");
+    // the number of tip frames pushed is one per subscriber per block (plus the first ones)
+    assert_eq!(s.svc.stats().tips_pushed.load(Ordering::Relaxed), 10);
+    // dropping a stream frees its slot
+    drop(streams);
+    tokio::time::timeout(Duration::from_secs(5), async { while s.svc.subscribers() > 0 { tokio::time::sleep(Duration::from_millis(50)).await } }).await.expect("subscriptions released");
+    for c in eps {
+        c.close().await;
+    }
+    s.router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tip_subscription_limits_and_keepalive() {
+    let limits = Limits { max_subs_per_endpoint: 1, max_subs_total: 2, ..fast_limits() };
+    let s = fake_srv(None, limits).await;
+    let c = client_ep(None).await;
+    let t = IrohTransport::new(c.clone(), direct_addr(&s.ep), GENESIS);
+    let mut a = t.open_tip_stream().await.expect("first subscription");
+    next_tip(&mut a).await;
+    // the same endpoint may not hold a second one: Busy, not a hang
+    match t.open_tip_stream().await {
+        Err(TransportError::Protocol(m)) => assert!(m.contains("Busy"), "{m}"),
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("per-endpoint limit not enforced"),
+    }
+    assert_eq!(s.svc.stats().subs_refused.load(Ordering::Relaxed), 1);
+    // other endpoints up to the total
+    let c2 = client_ep(None).await;
+    let t2 = IrohTransport::new(c2.clone(), direct_addr(&s.ep), GENESIS);
+    let mut b = t2.open_tip_stream().await.expect("second endpoint");
+    next_tip(&mut b).await;
+    let c3 = client_ep(None).await;
+    let t3 = IrohTransport::new(c3.clone(), direct_addr(&s.ep), GENESIS);
+    assert!(t3.open_tip_stream().await.is_err(), "total limit");
+    // keepalives flow while nothing changes (raw read: the stream layer swallows them)
+    let conn = c3.connect(direct_addr(&s.ep), ALPN).await.unwrap();
+    // an unhelloed subscription is refused
+    assert_eq!(raw(&conn, &frame(&Request::SubscribeTip)).await.unwrap(), Response::Error(ErrorKind::BadHello));
+    drop(a);
+    tokio::time::timeout(Duration::from_secs(5), async { while s.svc.subscribers() > 1 { tokio::time::sleep(Duration::from_millis(50)).await } }).await.expect("released");
+    let (mut send, mut recv) = {
+        let conn = c.connect(direct_addr(&s.ep), ALPN).await.unwrap();
+        raw(&conn, &frame(&Request::Hello { minor: MINOR, features: 0, network: GENESIS })).await.unwrap();
+        let (mut send, recv) = conn.open_bi().await.unwrap();
+        send.write_all(&frame(&Request::SubscribeTip)).await.unwrap();
+        send.finish().unwrap();
+        std::mem::forget(conn);
+        (send, recv)
+    };
+    let _ = &mut send;
+    let mut kinds = Vec::new();
+    for _ in 0..3 {
+        let body = tokio::time::timeout(Duration::from_secs(3), read_frame(&mut recv, MAX_FRAME)).await.unwrap().unwrap().unwrap();
+        kinds.push(decode_body::<Response>(&body).unwrap());
+    }
+    assert!(matches!(kinds[0], Response::TipPush(_)));
+    assert_eq!(kinds[1], Response::Keepalive);
+    assert_eq!(kinds[2], Response::Keepalive);
+    s.router.shutdown().await.unwrap();
+}
+
+/// A minor-1 server: it knows nothing of SubscribeTip and answers an unknown request with `Unsupported`, as the real one did.
+#[derive(Clone, Debug)]
+struct OldServer;
+impl iroh::protocol::ProtocolHandler for OldServer {
+    async fn accept(&self, conn: iroh::endpoint::Connection) -> Result<(), iroh::protocol::AcceptError> {
+        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            let Ok(Some(body)) = read_frame(&mut recv, MAX_REQUEST_FRAME).await else { continue };
+            let resp = if is_unknown_request_for(&body, 16) {
+                Response::Error(ErrorKind::Unsupported)
+            } else {
+                Response::Hello { minor: 1, features: 0, network: GENESIS, height: 1, tip: [0; 32], relay_url: None }
+            };
+            let _ = write_frame(&mut send, &resp, MAX_FRAME).await;
+            let _ = send.finish();
+        }
+        Ok(())
+    }
+}
+
+/// `is_unknown_request` as an older build with `variants` request variants would have computed it.
+fn is_unknown_request_for(body: &[u8], variants: u8) -> bool {
+    body.first().is_some_and(|b| *b >= variants)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_server_answers_unsupported_and_the_client_falls_back() {
+    let secret = SecretKey::generate();
+    let o = EndpointOptions { secret_key: Some(secret), n0_fallback: false, alpns: vec![ALPN.to_vec()], ..Default::default() };
+    let ep = build_endpoint(o).await.unwrap();
+    let router = iroh::protocol::Router::builder(ep.clone()).accept(ALPN, OldServer).spawn();
+    let c = client_ep(None).await;
+    let t = IrohTransport::new(c.clone(), direct_addr(&ep), GENESIS);
+    assert!(matches!(t.open_tip_stream().await, Err(TransportError::Unsupported)));
+    // the high-level watch learns "nobody pushes" and returns so the caller polls
+    let mut list = NodeList::new();
+    list.add(from_endpoint_addr(&direct_addr(&ep)), Source::Bootstrap, 0);
+    let client = Client::new(list, Arc::new(IrohConnector::new(c.clone(), GENESIS)), Arc::new(SystemEnv));
+    let end = tokio::time::timeout(Duration::from_secs(10), client.watch_tip(|_, _| panic!("an old server pushes nothing"))).await.expect("returns");
+    assert!(matches!(end, WatchEnd::NoPush));
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_tip_follows_the_chain() {
+    let s = fake_srv(None, fast_limits()).await;
+    let c = client_ep(None).await;
+    let mut list = NodeList::new();
+    list.add(from_endpoint_addr(&direct_addr(&s.ep)), Source::Bootstrap, 0);
+    let client = Arc::new(Client::new(list, Arc::new(IrohConnector::new(c.clone(), GENESIS)), Arc::new(SystemEnv)));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let cl = client.clone();
+    let h = tokio::spawn(async move { cl.watch_tip(move |_, t| { let _ = tx.send(t); }).await });
+    let first = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap().unwrap();
+    assert_eq!(first.height, 4);
+    mine(&s.up, 11);
+    let second = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+    assert_eq!((second.height, second.hash), (5, [11; 32]));
+    // the pushed height feeds the node's score
+    let h5 = client.with_list(|l| l.records().iter().any(|r| r.height == 5));
+    assert!(h5, "tip height recorded");
+    h.abort();
     s.router.shutdown().await.unwrap();
 }

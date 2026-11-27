@@ -18,6 +18,17 @@ pub enum TransportError {
     Protocol(String),
     #[error("network mismatch (other chain)")]
     WrongNetwork,
+    /// The peer (or this transport) does not do that (an older server, or an HTTP node).
+    #[error("not supported by this node")]
+    Unsupported,
+}
+
+/// A tip subscription ([`Request::SubscribeTip`]) as the client reads it.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait TipStream: MaybeSend {
+    /// The next pushed tip (keepalives are swallowed); `Ok(None)`: the server ended the stream. Dropping the stream ends it.
+    async fn next(&mut self) -> Result<Option<TipInfo>, TransportError>;
 }
 
 /// One way of asking a node a [`Request`].
@@ -28,6 +39,10 @@ pub trait Transport: MaybeSend + MaybeSync {
     /// The peer's IP on the path in use, when the transport has a direct one (None: relayed, HTTP, unknown).
     fn remote_ip(&self) -> Option<std::net::IpAddr> {
         None
+    }
+    /// Opens a tip subscription. The default (HTTP nodes) cannot push: `Unsupported`, and the caller polls instead.
+    async fn open_tip_stream(&self) -> Result<Box<dyn TipStream>, TransportError> {
+        Err(TransportError::Unsupported)
     }
 }
 
@@ -247,6 +262,76 @@ impl Client {
     }
 }
 
+/// How a tip watch ended.
+#[derive(Debug)]
+pub enum WatchEnd {
+    /// No node in the list pushes tips (old servers, HTTP nodes): poll instead.
+    NoPush,
+    /// No usable node at all.
+    NoNodes,
+}
+
+#[cfg(feature = "iroh-client")]
+impl Client {
+    /// Follows the chain tip by push: subscribes at the best node, calls `on_tip(node key, tip)` for the current tip and each
+    /// change, and on a broken stream reconnects (another node, with backoff up to 30 s). Runs until the future is dropped; it
+    /// returns only when no node can push (`WatchEnd::NoPush`: every node answered `Unsupported`) so the caller can poll.
+    pub async fn watch_tip<F: FnMut(&str, TipInfo) + MaybeSend>(&self, mut on_tip: F) -> WatchEnd {
+        use n0_future::time::sleep;
+        let mut unsupported = std::collections::HashSet::<String>::new();
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            let picks: Vec<_> = self.pick(MAX_ATTEMPTS + unsupported.len()).into_iter().filter(|(k, _)| !unsupported.contains(k)).take(MAX_ATTEMPTS).collect();
+            if picks.is_empty() {
+                return if unsupported.is_empty() { WatchEnd::NoNodes } else { WatchEnd::NoPush };
+            }
+            for (key, addr) in picks {
+                let Some(t) = self.connector.transport(&addr) else {
+                    unsupported.insert(key);
+                    continue;
+                };
+                let mut st = match t.open_tip_stream().await {
+                    Ok(st) => st,
+                    Err(TransportError::Unsupported) => {
+                        unsupported.insert(key);
+                        continue;
+                    }
+                    Err(TransportError::WrongNetwork) => {
+                        self.list.lock().unwrap().ban_liar(&key, self.now());
+                        continue;
+                    }
+                    Err(_) => {
+                        self.list.lock().unwrap().record_err(&key, self.now());
+                        continue;
+                    }
+                };
+                let mut got = false;
+                loop {
+                    match st.next().await {
+                        Ok(Some(tip)) => {
+                            got = true;
+                            let now = self.now();
+                            self.list.lock().unwrap().record_ok(&key, 0.0, Some(tip.height), now);
+                            on_tip(&key, tip);
+                        }
+                        Ok(None) | Err(TransportError::Unsupported) => break,
+                        Err(_) => {
+                            self.list.lock().unwrap().record_err(&key, self.now());
+                            break;
+                        }
+                    }
+                }
+                if got {
+                    backoff = Duration::from_secs(1);
+                }
+                break;
+            }
+            sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(30));
+        }
+    }
+}
+
 /// The node address an announcement describes.
 pub fn announcement_addr(a: &NodeAnnouncement) -> Option<NodeAddr> {
     Some(NodeAddr::Iroh { endpoint_id: hex::encode(a.endpoint_id), relay_url: a.relay_url.clone(), direct: a.direct_addrs.clone() })
@@ -345,6 +430,29 @@ mod iroh_transport {
             .await
             .map_err(|_| TransportError::Timeout)?
         }
+        async fn open_tip_stream(&self) -> Result<Box<dyn TipStream>, TransportError> {
+            let conn = {
+                let mut guard = self.conn.lock().await;
+                match guard.as_ref() {
+                    Some(c) if c.close_reason().is_none() => c.clone(),
+                    _ => {
+                        let c = n0_future::time::timeout(READ_TIMEOUT, self.connect()).await.map_err(|_| TransportError::Timeout)??;
+                        *guard = Some(c.clone());
+                        c
+                    }
+                }
+            };
+            let (mut send, recv) = conn.open_bi().await.map_err(|e| TransportError::Connect(e.to_string()))?;
+            write_frame(&mut send, &Request::SubscribeTip, MAX_REQUEST_FRAME).await.map_err(|e| TransportError::Protocol(e.to_string()))?;
+            send.finish().map_err(|e| TransportError::Protocol(e.to_string()))?;
+            // the first frame tells at once whether this server pushes (an older one answers `Unsupported`)
+            let mut st = IrohTipStream { recv, _conn: conn };
+            match st.next().await {
+                Ok(Some(first)) => Ok(Box::new(Primed { first: Some(first), rest: st })),
+                Ok(None) => Err(TransportError::Unsupported),
+                Err(e) => Err(e),
+            }
+        }
         fn remote_ip(&self) -> Option<std::net::IpAddr> {
             let g = self.conn.try_lock().ok()?;
             let c = g.as_ref()?;
@@ -354,6 +462,47 @@ mod iroh_transport {
                 _ => None,
             });
             ip
+        }
+    }
+
+    struct IrohTipStream {
+        recv: iroh::endpoint::RecvStream,
+        _conn: Connection,
+    }
+
+    /// A stream whose first tip was already read (to learn that the server pushes at all).
+    struct Primed {
+        first: Option<TipInfo>,
+        rest: IrohTipStream,
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl TipStream for IrohTipStream {
+        async fn next(&mut self) -> Result<Option<TipInfo>, TransportError> {
+            // the server speaks at least every KEEPALIVE_SECS; 2.5 times that of silence is a dead path
+            let quiet = Duration::from_millis(KEEPALIVE_SECS * 2500);
+            loop {
+                let body = n0_future::time::timeout(quiet, read_frame(&mut self.recv, MAX_FRAME)).await.map_err(|_| TransportError::Timeout)?.map_err(|e| TransportError::Protocol(e.to_string()))?;
+                let Some(body) = body else { return Ok(None) };
+                match decode_body::<Response>(&body).map_err(|e| TransportError::Protocol(e.to_string()))? {
+                    Response::TipPush(t) => return Ok(Some(t)),
+                    Response::Keepalive => continue,
+                    Response::Error(ErrorKind::Unsupported) => return Err(TransportError::Unsupported),
+                    other => return Err(TransportError::Protocol(format!("unexpected frame on a tip stream: {other:?}"))),
+                }
+            }
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl TipStream for Primed {
+        async fn next(&mut self) -> Result<Option<TipInfo>, TransportError> {
+            match self.first.take() {
+                Some(t) => Ok(Some(t)),
+                None => self.rest.next().await,
+            }
         }
     }
 
