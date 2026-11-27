@@ -377,6 +377,10 @@ impl Net {
         if !allowlist::rpc_allowed(method) {
             return Err(format!("RPC method {method} is not available"));
         }
+        if allowlist::pinned_only(method) {
+            // carries the view key: only to a node the caller names (Remote::rpc pins it), never to a failover pick
+            return Err(format!("{method} is only sent to the node you chose"));
+        }
         let m = match map_request(method, &params) {
             Some(m) => m,
             None => Mapped { req: Request::JsonRpc { method: method.to_string(), params: params.to_string() }, submit: false },
@@ -546,6 +550,13 @@ mod unit {
     fn genesis_matches_the_page() {
         let js = include_str!("../../../web/src/lib/nodechain.js");
         assert!(js.contains(&format!("'{MAINNET_GENESIS}'")), "update MAINNET_GENESIS (lcnet.rs) with nodechain.js");
+    }
+
+    #[test]
+    fn the_view_key_call_is_not_routed_by_failover() {
+        let net = Net::new(&[NodeAddr::Http { url: "https://a.example".into() }], None, None);
+        let e = tauri::async_runtime::block_on(net.rpc("sm64_board_join", json!({}))).unwrap_err();
+        assert!(e.contains("only sent to the node you chose"), "{e}");
     }
 
     #[test]

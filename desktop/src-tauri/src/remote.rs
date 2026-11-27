@@ -100,7 +100,8 @@ impl Remote {
     /// through the network with failover.
     pub async fn rpc(&self, url: &str, method: &str, params: serde_json::Value) -> Res<serde_json::Value> {
         let u = self.allowed(url).ok_or_else(|| AppError::new("forbidden", "that node is not the public node or the one saved on the Network page"))?;
-        let pinned = !self.is_public(&u) && self.saved().as_deref() == Some(u.as_str());
+        // the user's own node alone; a call that carries the view key (sm64_board_join) alone to the node the page addressed
+        let pinned = (!self.is_public(&u) && self.saved().as_deref() == Some(u.as_str())) || sm64coin_lc::allowlist::pinned_only(method);
         let r = if pinned { self.net.rpc_pinned(&u, method, params).await } else { self.net.rpc(method, params).await };
         r.map_err(|e| AppError::new("rpc", e))
     }

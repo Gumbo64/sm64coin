@@ -121,7 +121,7 @@ fn handle(mut req: tiny_http::Request, net: &Net, port: u16, origins: &[String])
             Err(_) => return reply(req, 400, "text/plain", b"not JSON".to_vec(), o),
         };
         let Some(method) = v.get("method").and_then(|m| m.as_str()) else { return reply(req, 400, "text/plain", b"one JSON-RPC object with a method".to_vec(), o) };
-        if !allowlist::rpc_allowed(method) {
+        if !allowlist::rpc_allowed(method) || allowlist::pinned_only(method) {
             eprintln!("wallet proxy: refused json_rpc {method}");
             return reply(req, 403, "text/plain", b"this RPC method is not available".to_vec(), o);
         }

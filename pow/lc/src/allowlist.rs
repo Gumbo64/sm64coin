@@ -34,6 +34,15 @@ pub const PATH_ALLOWED: &[&str] = &[
     "/get_height", "/getheight", "/get_info", "/getinfo", "/get_public_nodes",
 ];
 
+/// Allowlisted calls that must go to one node the user (or the page) addressed, never to whichever node failover picks:
+/// `sm64_board_join` carries the wallet's private view key (the node checks the address's blocks with it; LIGHT-CLIENTS.md,
+/// Privacy). The failover networks (the browser's lightnet, the apps' `Net`, the wallet proxy) do not route these.
+pub const PINNED_ONLY: &[&str] = &["sm64_board_join"];
+
+pub fn pinned_only(method: &str) -> bool {
+    PINNED_ONLY.contains(&method)
+}
+
 pub fn rpc_allowed(method: &str) -> bool {
     RPC_ALLOWED.contains(&method)
 }

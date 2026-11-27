@@ -101,7 +101,8 @@ impl LightClient {
     /// True when `method` may go through the light-client network (the node RPC allowlist); anything else must use
     /// a node directly.
     pub fn allowed(method: &str) -> bool {
-        sm64coin_lc::allowlist::rpc_allowed(method)
+        // a call that carries the view key goes to the one public node, never to a failover pick
+        sm64coin_lc::allowlist::rpc_allowed(method) && !sm64coin_lc::allowlist::pinned_only(method)
     }
 
     /// A JSON-RPC call with failover across the node list. Resolves to the node's whole JSON-RPC answer as text

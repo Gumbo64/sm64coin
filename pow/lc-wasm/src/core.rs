@@ -77,6 +77,9 @@ impl Core {
 
     /// A JSON-RPC call with failover: the node's whole JSON-RPC answer as text (`result` or `error` inside).
     pub async fn rpc(&self, method: &str, params_json: &str) -> Result<String, String> {
+        if sm64coin_lc::allowlist::pinned_only(method) {
+            return Err(format!("{method}: not sent to a failover node"));
+        }
         let req = Request::JsonRpc { method: method.to_string(), params: params_json.to_string() };
         let timeout = if req.is_bulk() { BULK_TIMEOUT } else { READ_TIMEOUT };
         match self.client.read(&req, timeout).await {
@@ -302,6 +305,8 @@ mod tests {
         assert!(!sm64coin_lc::allowlist::rpc_allowed("stop_daemon"));
         assert!(sm64coin_lc::allowlist::rpc_allowed("get_info"));
         assert!(futures_executor::block_on(c.rpc("get_info", "{}")).is_ok());
+        // the view-key call never goes to a failover pick
+        assert!(futures_executor::block_on(c.rpc("sm64_board_join", "{}")).is_err());
     }
 
     #[test]
