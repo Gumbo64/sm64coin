@@ -545,7 +545,7 @@ pub struct Branch {
 
 impl Branch {
     pub fn side(&self) -> Side {
-        Side { len: self.tip.height - self.anchor_height, weight: self.tip.weight - self.anchor_weight, tainted: false }
+        Side { len: self.tip.height.saturating_sub(self.anchor_height), weight: self.tip.weight.saturating_sub(self.anchor_weight), tainted: false }
     }
     pub fn contains(&self, id: &Hash) -> bool {
         self.blocks.iter().any(|b| &b.id == id)
@@ -553,7 +553,8 @@ impl Branch {
     /// The prefix of this branch up to the block `id` (a node whose tip lies inside the branch): no download, the same
     /// chain. None when `id` is not in it.
     pub fn truncated(&self, id: &Hash, servers: Vec<String>) -> Option<Branch> {
-        let tip = self.blocks.iter().find(|b| &b.id == id)?.clone();
+        // a tip below this check's start (a laggard behind a resume point) is not comparable by fork choice from here
+        let tip = self.blocks.iter().find(|b| &b.id == id && b.height >= self.anchor_height)?.clone();
         let off = self.blocks.len() - self.raw.len();
         let blocks: Vec<VerifiedBlock> = self.blocks.iter().filter(|b| b.height <= tip.height).cloned().collect();
         let raw: Vec<Block> = self.raw.iter().enumerate().filter(|(i, _)| self.blocks[off + i].height <= tip.height).map(|(_, b)| b.clone()).collect();

@@ -657,3 +657,19 @@ async fn nodes_claiming_a_verified_tip_are_spot_checked_not_re_downloaded() {
     let total: usize = nodes.iter().map(served).sum();
     assert!(total < 2 * 17 + 4 * 3, "one node serves the range, the others a few blocks: {total}");
 }
+
+#[tokio::test]
+async fn a_laggard_below_the_resume_point_is_only_unreachable() {
+    let c = chain();
+    let cp = genesis_cp(&c);
+    let (client, _) = net(vec![("a", honest(&c)), ("b", honest(&c))]);
+    let opts = CrossCheckOptions { nodes: 3, quorum: 2, ..Default::default() };
+    let r = sync(&client, &cp, &Sm64Consensus, None, &opts, &never).await.unwrap().resume.unwrap();
+    // "lag" is at 5, below the resume point at 10: its tip is in the kept blocks, but not a branch from the resume point
+    let (client, k) = net(vec![("a", honest(&c)), ("b", honest(&c)), ("lag", honest(&c[..6]))]);
+    let out = sync_resume(&client, &cp, Some(&r), &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert_eq!(out.best.tip.height, 16);
+    let v = out.nodes.iter().find(|(n, _)| *n == k[2]).map(|(_, v)| v.clone()).unwrap();
+    assert!(matches!(v, NodeVerdict::Unreachable(_)), "{v:?}");
+    assert!(!banned(&client, &k[2]));
+}
