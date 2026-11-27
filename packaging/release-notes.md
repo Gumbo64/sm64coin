@@ -19,6 +19,25 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.6
+
+Same chain as 0.5.x: no reset, upgrade in place.
+
+- **Wallet: optional PIN / fingerprint unlock** (off unless you turn it on from the wallet page: "Set up PIN", on Android "Set up
+  PIN / fingerprint"; nothing asks for it when a wallet is created or restored, and the one-click wallet is unchanged).
+  - **Android**: the phone's fingerprint (or its screen lock PIN/pattern, Android 11+) unlocks the wallet. A hardware-backed
+    Android Keystore key that needs your authentication for every use seals the wallet password; it stops working when
+    fingerprints or the screen lock change (the password then opens the wallet).
+  - **Website and desktop**: a 4 to 8 digit PIN seals the wallet password (PBKDF2, 600 000 rounds). 5 wrong PINs wipe it and the
+    password is needed again. A PIN is a convenience lock: someone with this device's files could guess it; use a password for
+    strong protection. On the desktop the sealed password lives in the app's data folder (mode 0600) and never reaches the page.
+  - A wallet without a password gets a long random one when quick unlock is turned on (so what is stored becomes encrypted;
+    back up the seed words first, they open the wallet if the PIN is wiped); turning it off asks for a password of your choice
+    or none. The PIN or fingerprint is also accepted where the password is asked (show seed and keys, send, weakening a setting).
+- **Wallet: address book** (wallet2's own, kept encrypted inside the wallet file, so a backup carries it): save addresses with a
+  label and their picture on the Wallet page, pick one in Send, and "Save to address book" is offered after a send. Only
+  addresses of this chain are accepted.
+
 ### 0.5.5: the light-client network
 
 Same chain as 0.5.0 to 0.5.4: no reset, upgrade in place.
