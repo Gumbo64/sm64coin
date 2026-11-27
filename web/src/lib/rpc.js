@@ -5,7 +5,8 @@
 // directly from the browser, which needs the node's CORS option
 // (--rpc-access-control-origins, see scripts/public-node.sh).
 // Wallet RPC always goes through the proxy.
-import { probeChain, chainNote } from './nodechain.js';
+import { probeChain, chainNote, GENESIS } from './nodechain.js';
+import { configureLightnet, lightnet, firstHttpNode } from './lightnet.js';
 import { getPlatform } from '../platform/index.js';
 const KEY = 'sm64coin.node';
 const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
@@ -14,10 +15,12 @@ let savedRemote = ''; // desktop: the https node the user confirmed (remote_node
 // A build for a static host (GitHub Pages) has no proxy: VITE_DEFAULT_NODE (e.g. the
 // visitor's own node, http://127.0.0.1:16481) is the node until one is chosen.
 const DEFAULT_NODE = (import.meta.env.VITE_DEFAULT_NODE || '').replace(/\/+$/, '');
-// The public node: public-node.json next to the site ({"url": "https://..."}, e.g. a Cloudflare
-// tunnel to a node's restricted RPC), read at load so it can change without a rebuild. Used for
-// a visit when no node was chosen and the default (your own) node doesn't answer.
+// The public node: public-node.json next to the site ({"nodes": ["https://...", "iroh:<id>@<relay>"]}, or the old {"url": ...}; e.g.
+// a node's restricted RPC), read at load so it can change without a rebuild. Used for a visit when no node was chosen and the
+// default (your own) node doesn't answer. `publicNode` is the first https entry; in a browser tab the calls to it go through the
+// light-client network (lib/lightnet.js: all entries, failover, verification), the single node only while that loads or fails.
 let publicNode = '';
+let bootstrap = null; // the parsed public-node.json
 let fallback = false; // this visit uses the public node
 export const getPublicNode = () => publicNode;
 export const usingPublicFallback = () => fallback;
@@ -54,9 +57,20 @@ export function watchLocalNode() {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);
 // Decides this visit's node (main.jsx, before the first render).
 export async function resolveNode() {
+  await resolveNodeInner();
+  startLightnet();
+}
+/** A browser tab that reads the chain from the public node loads the light-client network, after the first paint. */
+function startLightnet() {
+  if (!fallback || chosen() || getPlatform().name !== 'browser' || !bootstrap) return;
+  const ln = configureLightnet({ genesis: GENESIS });
+  const go = () => ln.start(bootstrap);
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(go, { timeout: 3000 }); else setTimeout(go, 1500);
+}
+async function resolveNodeInner() {
   try {
     const r = await withTimeout(fetch(`${import.meta.env.BASE_URL}public-node.json`, { cache: 'no-cache' }), 3000);
-    if (r.ok) publicNode = String((await r.json()).url || '').trim().replace(/\/+$/, '');
+    if (r.ok) { bootstrap = await r.json(); publicNode = firstHttpNode(bootstrap); }
   } catch { /* no public node */ }
   if (getPlatform().net) { try { await getPlatform().net.status(); } catch { /* the loopback daemon is not up yet */ } }
   if (getPlatform().remoteNode) { try { savedRemote = clean((await getPlatform().remoteNode.get()).saved); } catch { /* none */ } }
@@ -96,7 +110,13 @@ export const setNode = (url) => {
   } catch { /* storage unavailable */ }
 };
 
+// True when `url` is the public node of a plain browser tab with no node chosen: the light-client network may serve the call.
+const viaLightnet = (url) => !!publicNode && url === `${publicNode}/json_rpc` && !chosen() && getPlatform().name === 'browser';
+
 async function call(url, method, params = {}) {
+  if (viaLightnet(url)) {
+    try { return await lightnet().call(method, params); } catch (e) { if (!e || !e.unavailable) throw e; /* not ready / not served / no node: the single node below */ }
+  }
   // Desktop app: the same-origin node is the local one, reached through the Rust backend (no HTTP, no CORS, whitelisted methods).
   const p = getPlatform();
   const remote = p.remoteRpc && [publicNode, savedRemote].find((b) => b && url === `${b}/json_rpc`);

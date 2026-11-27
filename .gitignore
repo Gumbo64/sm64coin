@@ -19,3 +19,4 @@ web/wallet-wasm/work/
 web/dist-desktop
 desktop/src-tauri/target
 desktop/src-tauri/gen/schemas
+pow/lc-wasm/target/

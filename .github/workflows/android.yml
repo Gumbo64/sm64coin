@@ -54,6 +54,7 @@ jobs:
           workspaces: |
             pow/perturb-wasm
             pow/webminer
+            pow/lc-wasm
             desktop/src-tauri
           key: android
           cache-on-failure: true   # keeps the compiled cargo-tauri even when a later step fails
@@ -66,7 +67,7 @@ jobs:
           if [ -n "$SM64_AI_BINDS_TOKEN" ]; then
             git config --global url."https://x-access-token:${SM64_AI_BINDS_TOKEN}@github.com/Gumbo64/".insteadOf "https://github.com/Gumbo64/"
           fi
-      - name: Browser WASM modules (perturbation, web miner)
+      - name: Browser WASM modules (perturbation, light-client network, web miner)
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
           REQUIRE_WEBMINER: "1"
