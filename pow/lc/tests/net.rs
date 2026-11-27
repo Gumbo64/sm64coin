@@ -195,9 +195,12 @@ async fn failover_between_two_servers() {
     }
     let ra = client.with_list(|l| l.get(&na.key()).cloned().unwrap());
     assert!(ra.strikes > 0 || ra.ok_rate < 0.9, "A was scored down: {ra:?}");
-    // submissions fan out to both listed nodes; the dead one fails, the live one answers
+    // submissions fan out to every usable listed node (A is out once three failed reads banned it for an hour, which depends
+    // on how the weighted picks fell above); the live one answers
+    let now = SystemEnv.now_ms() / 1000;
+    let a_banned = client.with_list(|l| l.get(&na.key()).unwrap().is_banned(now));
     let res = client.submit(&Request::SubmitBlock { blob: vec![1] }, Duration::from_secs(3)).await.unwrap();
-    assert_eq!(res.len(), 2);
+    assert_eq!(res.len(), if a_banned { 1 } else { 2 });
     assert!(res.iter().any(|(k, r)| *k == nb.key() && r.is_ok()));
     b.router.shutdown().await.unwrap();
 }

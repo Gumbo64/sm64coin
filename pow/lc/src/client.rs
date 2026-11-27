@@ -104,6 +104,10 @@ impl Client {
     pub fn with_list<R>(&self, f: impl FnOnce(&mut NodeList) -> R) -> R {
         f(&mut self.list.lock().unwrap())
     }
+    /// A random number from the environment (spot-check heights must not be predictable by the node checked).
+    pub fn rand(&self) -> u64 {
+        self.env.rand()
+    }
     pub fn ban_liar(&self, key: &str) {
         let now = self.now();
         self.list.lock().unwrap().ban_liar(key, now);

@@ -377,6 +377,8 @@ struct FakeNode {
     /// The tip it claims (default: its last block).
     claim: Option<Tip>,
     down: bool,
+    /// Blocks served so far (the load a check puts on the node).
+    served: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -389,7 +391,9 @@ impl Transport for FakeNode {
         Ok(match req {
             Request::GetTip => Response::Tip(self.claim.clone().unwrap_or(Tip { height: l.claims.height, hash: l.claims.hash, cumulative_difficulty: l.claims.cumulative_difficulty })),
             Request::GetBlocks { from, count, .. } => {
-                Response::Blocks(self.blocks.iter().filter(|b| b.claims.height >= *from).take(*count as usize).map(to_json).collect())
+                let v: Vec<String> = self.blocks.iter().filter(|b| b.claims.height >= *from).take(*count as usize).map(to_json).collect();
+                self.served.fetch_add(v.len(), std::sync::atomic::Ordering::Relaxed);
+                Response::Blocks(v)
             }
             _ => Response::Error(ErrorKind::Unsupported),
         })
@@ -417,7 +421,7 @@ fn net(nodes: Vec<(&str, FakeNode)>) -> (Client, Vec<String>) {
 }
 
 fn honest(c: &[RpcBlock]) -> FakeNode {
-    FakeNode { blocks: Arc::new(c.to_vec()), claim: None, down: false }
+    FakeNode { blocks: Arc::new(c.to_vec()), claim: None, down: false, served: Default::default() }
 }
 
 fn banned(client: &Client, key: &str) -> bool {
@@ -436,8 +440,8 @@ async fn agreeing_nodes_a_laggard_and_a_liar() {
         ("b", honest(&c)),
         ("c", honest(&c)),
         ("lag", honest(&c[..11])),
-        ("liar", FakeNode { blocks: Arc::new(forged), claim: None, down: false }),
-        ("down", FakeNode { blocks: Arc::new(c.clone()), claim: None, down: true }),
+        ("liar", FakeNode { blocks: Arc::new(forged), claim: None, down: false, served: Default::default() }),
+        ("down", FakeNode { blocks: Arc::new(c.clone()), claim: None, down: true, served: Default::default() }),
     ]);
     let opts = CrossCheckOptions { nodes: 6, quorum: 3, ..Default::default() };
     let out = sync(&client, &cp, &Sm64Consensus, None, &opts, &never).await.unwrap();
@@ -464,7 +468,7 @@ async fn a_node_that_forges_a_longer_tip_is_caught() {
     extra.claims.prev_hash = fake[16].claims.hash;
     extra.claims.cumulative_difficulty += 1;
     fake.push(extra);
-    let (client, k) = net(vec![("a", honest(&c)), ("b", honest(&c)), ("c", honest(&c)), ("liar", FakeNode { blocks: Arc::new(fake), claim: None, down: false })]);
+    let (client, k) = net(vec![("a", honest(&c)), ("b", honest(&c)), ("c", honest(&c)), ("liar", FakeNode { blocks: Arc::new(fake), claim: None, down: false, served: Default::default() })]);
     let out = sync(&client, &cp, &Sm64Consensus, None, &CrossCheckOptions::default(), &never).await.unwrap();
     assert_eq!(out.best.tip.height, 16, "the forged block 17 is not accepted");
     assert!(banned(&client, &k[3]));
@@ -477,7 +481,7 @@ async fn a_node_on_another_chain_is_rejected_by_the_checkpoint() {
     let cp = Checkpoint::build(&c, 8, &Sm64Consensus).unwrap();
     let mut other = c.clone();
     other[8].blob[20] ^= 1;
-    let (client, k) = net(vec![("a", honest(&c)), ("b", honest(&c)), ("x", FakeNode { blocks: Arc::new(other), claim: None, down: false })]);
+    let (client, k) = net(vec![("a", honest(&c)), ("b", honest(&c)), ("x", FakeNode { blocks: Arc::new(other), claim: None, down: false, served: Default::default() })]);
     let out = sync(&client, &cp, &Sm64Consensus, None, &CrossCheckOptions { nodes: 3, quorum: 2, ..Default::default() }, &never).await.unwrap();
     assert!(banned(&client, &k[2]));
     assert_eq!(out.best.tip.id, c[16].claims.hash);
@@ -524,7 +528,7 @@ fn fork_choice_is_longer_and_heavier() {
     let rules = Sm64Consensus;
     let branch = |name: &str, len: u64, weight: u64| {
         let tip = VerifiedBlock { height: len, id: [len as u8; 32], prev_id: [0; 32], timestamp: 0, difficulty: 1, cumulative: 0, frames: 1, power_on: false, counted: 0, weight };
-        Branch { source: name.into(), servers: vec![name.into()], level: Level::Full, anchor_height: 0, anchor_weight: 0, tip, blocks: vec![], raw: vec![] }
+        Branch { source: name.into(), servers: vec![name.into()], level: Level::Full, anchor_height: 0, anchor_weight: 0, tip, blocks: vec![], raw: vec![], partial: false, resume: None }
     };
     // longer but lighter loses; longer and heavier wins; heavier but not longer loses
     let o = order_by_fork_choice(&rules, vec![branch("short-heavy", 10, 100), branch("long-light", 12, 40), branch("long-heavy", 12, 120)]);
@@ -552,4 +556,104 @@ fn cycles_are_found_from_power_on_starts() {
     let (at, complete) = b.cycle_start(0);
     assert!(complete && b.blocks[b.blocks.len() - b.raw.len() + at].power_on);
     assert_eq!(b.raw.len(), 16);
+}
+
+// ---- incremental checks ----
+
+fn served(n: &FakeNode) -> usize {
+    n.served.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[tokio::test]
+async fn a_resumed_check_downloads_only_the_new_blocks() {
+    let c = chain();
+    let cp = genesis_cp(&c);
+    // first check: the chain up to 12
+    let early: Vec<FakeNode> = (0..3).map(|_| honest(&c[..13])).collect();
+    let (client, _) = net(vec![("a", early[0].clone()), ("b", early[1].clone()), ("c", early[2].clone())]);
+    let opts = CrossCheckOptions { nodes: 3, quorum: 3, ..Default::default() };
+    let first = sync(&client, &cp, &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert_eq!(first.best.tip.height, 12);
+    let r = first.resume.clone().expect("a resume point");
+    assert_eq!(r.state.height, 12 - RESUME_MARGIN);
+    assert!(r.fits(&cp));
+    // it survives a round trip through storage (without the kept blocks)
+    let stored = Resume::from_json(&r.to_json()).unwrap();
+    assert_eq!(stored.state.height, r.state.height);
+    assert!(stored.raw.is_empty());
+    // the chain grows to 16: the next check starts at the resume point
+    let late: Vec<FakeNode> = (0..3).map(|_| honest(&c)).collect();
+    let (client, _) = net(vec![("a", late[0].clone()), ("b", late[1].clone()), ("c", late[2].clone())]);
+    let out = sync_resume(&client, &cp, Some(&r), &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert_eq!(out.best.tip.height, 16);
+    assert!(out.quorum_met && !out.reanchored && !out.partial);
+    for n in &late {
+        // the resume block's id (one block: these fakes have no headers) and blocks 7..=16
+        assert!(served(n) <= 1 + (16 - r.state.height as usize), "served {}", served(n));
+    }
+    // the kept blocks carry across, so the branch still reaches back for the replay of the cycle
+    assert!(out.best.raw.len() > (16 - r.state.height) as usize);
+    assert_eq!(out.best.blocks.len(), out.best.raw.len().max(out.best.blocks.len()));
+    // and the same from the stored point (no kept blocks): still verified
+    let (client, _) = net(vec![("a", honest(&c)), ("b", honest(&c)), ("c", honest(&c))]);
+    let out2 = sync_resume(&client, &cp, Some(&stored), &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert_eq!(out2.best.tip.id, out.best.tip.id);
+}
+
+#[tokio::test]
+async fn a_reorg_below_the_resume_point_re_anchors_at_the_checkpoint() {
+    let c = chain();
+    let cp = genesis_cp(&c);
+    let (client, _) = net(vec![("a", honest(&c)), ("b", honest(&c))]);
+    let opts = CrossCheckOptions { nodes: 2, quorum: 2, ..Default::default() };
+    let first = sync(&client, &cp, &Sm64Consensus, None, &opts, &never).await.unwrap();
+    // a resume point that is not on the chain (as after a reorg below it): its id is different
+    let mut r = first.resume.unwrap();
+    r.state.id[0] ^= 1;
+    let (client, k) = net(vec![("a", honest(&c)), ("b", honest(&c))]);
+    let out = sync_resume(&client, &cp, Some(&r), &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert!(out.reanchored);
+    assert_eq!(out.best.tip.height, 16);
+    assert!(out.quorum_met);
+    assert!(!banned(&client, &k[0]) && !banned(&client, &k[1]), "a node without the resume point is not a liar");
+    // a resume point for another checkpoint is ignored
+    let other = Checkpoint::build(&c, 8, &Sm64Consensus).unwrap();
+    assert!(!first_fits(&out, &other));
+}
+
+fn first_fits(o: &Outcome, cp: &Checkpoint) -> bool {
+    o.resume.as_ref().is_some_and(|r| r.fits(cp))
+}
+
+#[tokio::test]
+async fn the_per_check_cap_verifies_in_steps() {
+    let c = chain();
+    let cp = genesis_cp(&c);
+    let (client, _) = net(vec![("a", honest(&c))]);
+    let mut opts = CrossCheckOptions { nodes: 1, quorum: 1, ..Default::default() };
+    opts.verify.max_blocks = Some(10);
+    let one = sync(&client, &cp, &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert!(one.partial);
+    assert_eq!(one.best.tip.height, 10);
+    let two = sync_resume(&client, &cp, one.resume.as_ref(), &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert!(!two.partial);
+    assert_eq!(two.best.tip.height, 16);
+}
+
+#[tokio::test]
+async fn nodes_claiming_a_verified_tip_are_spot_checked_not_re_downloaded() {
+    let c = chain();
+    let cp = genesis_cp(&c);
+    // TestEnv's random number is 7: the spot check looks at the tip and at height 8
+    let mut forged = c.clone();
+    forged[8].blob[12] ^= 0x40;
+    let nodes = vec![honest(&c), honest(&c), honest(&c), FakeNode { blocks: Arc::new(forged), claim: None, down: false, served: Default::default() }];
+    let (client, k) = net(vec![("a", nodes[0].clone()), ("b", nodes[1].clone()), ("c", nodes[2].clone()), ("liar", nodes[3].clone())]);
+    let opts = CrossCheckOptions { nodes: 4, quorum: 3, full_check_blocks: 0, ..Default::default() };
+    let out = sync(&client, &cp, &Sm64Consensus, None, &opts, &never).await.unwrap();
+    assert_eq!(out.best.tip.height, 16);
+    assert!(out.quorum_met);
+    assert!(banned(&client, &k[3]), "the spot check caught the forged block");
+    let total: usize = nodes.iter().map(served).sum();
+    assert!(total < 2 * 17 + 4 * 3, "one node serves the range, the others a few blocks: {total}");
 }
