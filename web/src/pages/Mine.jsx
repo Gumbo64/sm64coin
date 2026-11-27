@@ -132,7 +132,10 @@ function Miner() {
     // a 30 s poll) and is checked again every second from memory: no request here.
     const tipChanged = () => {
       const i = tipStore().get();
+      // c.cur.tip: the store's tip when the template was asked for. The store may follow another node than the template's, a
+      // block ahead of it: then the template is asked for again every 5 s (not every tick) until its node has the block too.
       if (!i || !head || i.hash === head || c.restart) return;
+      if (c.cur && i.hash === c.cur.tip && Date.now() - c.cur.fetchedAt < 5000) return;
       if (c.cur && c.used.has(c.cur.sm64_seed_hash)) {
         // This template's run is sent: the block (yours, usually) landed on top of it. Move on to the next block's template at once.
         if (advanceAfter({ used: true, tipChanged: true })) { c.restart = true; say(`new block ${i.height} on the chain: moving on to the next block`); }
@@ -265,7 +268,10 @@ function Miner() {
           try {
             const paysTo = addr.current;
             const key = await newMinerKey(); // v0.3: this template's miner key, chosen before the run is played
+            const seen = tipStore().get();
             t = await daemon('get_block_template', templateParams(paysTo, key));
+            t.tip = seen ? seen.hash : '';
+            t.fetchedAt = Date.now();
             t.minerKey = key;
             t.paysTo = paysTo; // the template's coinbase pays this address
             setNodeDown(false);
@@ -319,6 +325,7 @@ function Miner() {
               let validAt = 0;
               try {
                 validAt = validAtFor({ timestamp: t.sm64_parent_timestamp, difficulty: t.sm64_retarget_difficulty || 1 }, nFrames, 0, restartDelayFor(t, st.kind));
+                if (e2e() && typeof window.__validAt === 'function') validAt = window.__validAt(nFrames); // test hook (?e2e): a run held on demand
               } catch (e) { say(`could not work out when the run is valid: ${e}`); }
               if (stopped) break;
               validAt = effectiveValidAt(validAt, c.launch);
