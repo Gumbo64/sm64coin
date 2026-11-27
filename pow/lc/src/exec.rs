@@ -229,6 +229,11 @@ async fn run_inner(up: &dyn Upstream, req: &Request, t: Duration) -> Result<Resp
     })
 }
 
+/// Whether the node's RPC is restricted (`get_info`'s `restricted`); None when it does not say.
+pub async fn node_restricted(up: &dyn Upstream, timeout: Duration) -> Option<bool> {
+    rpc(up, "get_info", json!({}), timeout).await.ok()?.get("restricted")?.as_bool()
+}
+
 /// The chain's genesis block hash (`get_block_header_by_height 0`): the `network` of `Hello`.
 pub async fn genesis_hash(up: &dyn Upstream, timeout: Duration) -> Result<[u8; 32], String> {
     let r = rpc(up, "get_block_header_by_height", json!({"height": 0}), timeout).await.map_err(|e| format!("{e:?}"))?;

@@ -104,6 +104,15 @@ struct Opts {
     #[cfg(feature = "lc")]
     #[arg(long = "lc-bootstrap", value_name = "SPEC")]
     lc_bootstrap: Vec<String>,
+    /// The light-client relay's domain for a Let's Encrypt certificate (port 443 must be reachable; repeatable). Without
+    /// one the relay stays off: a self-signed relay is never advertised.
+    #[cfg(feature = "lc")]
+    #[arg(long = "lc-acme-domain", value_name = "DOMAIN")]
+    lc_acme_domain: Vec<String>,
+    /// Contact for the Let's Encrypt account (mailto:you@example.org)
+    #[cfg(feature = "lc")]
+    #[arg(long = "lc-acme-contact", value_name = "URI")]
+    lc_acme_contact: Vec<String>,
     /// Extra argument for sm64coind, repeatable
     #[arg(long = "daemon-arg", value_name = "ARG", allow_hyphen_values = true)]
     daemon_args: Vec<String>,
@@ -445,6 +454,24 @@ fn run(o: Opts) -> Result<(), String> {
         (cfg.solo, cfg.no_dht, cfg.dht_announce) = (o.solo, o.no_dht, o.dht_announce);
         (cfg.p2p_port, cfg.rpc_port, cfg.zmq_port) = (o.p2p_port, o.rpc_port, o.zmq_port);
         cfg.daemon_args = o.daemon_args.clone();
+        // The light-client service forwards to a RESTRICTED RPC listener (127.0.0.1 only): there monerod caps request sizes
+        // and hides sensitive pool data (Dandelion++ stem transactions) that the unrestricted RPC would hand to anyone.
+        #[cfg(feature = "lc")]
+        let lc_on = o.lc == LcMode::On || (o.lc == LcMode::Auto && o.public);
+        #[cfg(feature = "lc")]
+        let lc_rpc_port = lc_on.then(|| {
+            let given = o.daemon_args.iter().enumerate().find_map(|(i, a)| {
+                a.strip_prefix("--rpc-restricted-bind-port=").map(str::to_string).or_else(|| (a == "--rpc-restricted-bind-port").then(|| o.daemon_args.get(i + 1).cloned()).flatten())
+            });
+            match given.and_then(|p| p.parse::<u16>().ok()) {
+                Some(p) => p,
+                None => {
+                    let p = sm64coin_launcher::util::pick_port(o.rpc_port.saturating_add(8), "127.0.0.1", &[o.p2p_port, o.rpc_port, o.zmq_port]);
+                    cfg.daemon_args.extend(["--rpc-restricted-bind-ip".to_string(), "127.0.0.1".to_string(), "--rpc-restricted-bind-port".to_string(), p.to_string()]);
+                    p
+                }
+            }
+        });
         let mut node = Node::start(&cfg)?;
         o.rpc_port = node.rpc_port;
         if let Some(p) = node.take_proc() {
@@ -456,10 +483,13 @@ fn run(o: Opts) -> Result<(), String> {
 
         // --- light-client service (iroh) ---
         #[cfg(feature = "lc")]
-        let _lc = if o.lc == LcMode::On || (o.lc == LcMode::Auto && o.public) {
-            let mut c = sm64coin_launcher::lcserve::LcConfig::new(o.rpc_port, data_dir.join("lc"));
+        let _lc = if let Some(port) = lc_rpc_port {
+            let mut c = sm64coin_launcher::lcserve::LcConfig::new(port, data_dir.join("lc"));
             c.relay_bind = o.lc_relay_bind;
             c.bootstrap = o.lc_bootstrap.clone();
+            if !o.lc_acme_domain.is_empty() {
+                c.tls = sm64coin_lc::relay::TlsMode::Acme { domains: o.lc_acme_domain.clone(), contact: o.lc_acme_contact.clone(), cache_dir: data_dir.join("lc").join("acme"), production: true };
+            }
             if o.no_dht {
                 c.discovery = sm64coin_lc::endpoint::Discovery::N0;
             }

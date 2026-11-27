@@ -44,9 +44,14 @@ enum Tls {
 enum Cmd {
     /// Serve the light-client protocol from the local node's RPC (and relay, if enabled).
     Serve {
-        /// The local node's RPC (restricted or not: only allowlisted methods are forwarded).
-        #[arg(long, default_value = "http://127.0.0.1:16481")]
+        /// The local node's RESTRICTED RPC (sm64coind --rpc-restricted-bind-port 16489; on 127.0.0.1 it needs no opening).
+        /// Only allowlisted methods are forwarded, and a restricted listener also caps request sizes and keeps sensitive pool
+        /// data (Dandelion++ stem transactions) out of the answers.
+        #[arg(long, default_value = "http://127.0.0.1:16489")]
         node_rpc: String,
+        /// Serve from an unrestricted RPC anyway (closed test networks only).
+        #[arg(long)]
+        allow_unrestricted_rpc: bool,
         /// Holds secret.key, nodes.json, relay-usage.json, the ACME cache.
         #[arg(long, default_value = "sm64coin-lc-data")]
         data_dir: PathBuf,
@@ -131,7 +136,7 @@ fn load_or_create_key(dir: &PathBuf) -> std::io::Result<SecretKey> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
     match Cli::parse().cmd {
-        Cmd::Serve { node_rpc, data_dir, relay, relay_bind, relay_quic_bind, relay_rate_kib, relay_max_clients, relay_monthly_cap_gib, public_host, tls, tls_cert, tls_key, acme_domain, acme_contact, acme_production, discovery, relay_url, no_n0_fallback, bootstrap, https_rpc, bind } => {
+        Cmd::Serve { node_rpc, allow_unrestricted_rpc, data_dir, relay, relay_bind, relay_quic_bind, relay_rate_kib, relay_max_clients, relay_monthly_cap_gib, public_host, tls, tls_cert, tls_key, acme_domain, acme_contact, acme_production, discovery, relay_url, no_n0_fallback, bootstrap, https_rpc, bind } => {
             let upstream: Arc<dyn Upstream> = Arc::new(HttpUpstream::new(&node_rpc)?);
             let network = loop {
                 match exec::genesis_hash(&*upstream, Duration::from_secs(5)).await {
@@ -142,6 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
+            match exec::node_restricted(&*upstream, Duration::from_secs(5)).await {
+                Some(true) => {}
+                _ if allow_unrestricted_rpc => tracing::warn!("serving from the UNRESTRICTED RPC at {node_rpc} (--allow-unrestricted-rpc)"),
+                _ => return Err(format!("{node_rpc} is not a restricted RPC: start sm64coind with --rpc-restricted-bind-port 16489 and use --node-rpc http://127.0.0.1:16489").into()),
+            }
             let secret = load_or_create_key(&data_dir)?;
             let hello = HelloLog::default();
             let ep = build_endpoint(EndpointOptions {

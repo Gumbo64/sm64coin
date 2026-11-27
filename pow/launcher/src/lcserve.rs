@@ -20,8 +20,11 @@ use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct LcConfig {
-    /// The local node's RPC port (127.0.0.1).
+    /// The local node's RESTRICTED RPC port (127.0.0.1; `--rpc-restricted-bind-port`). The service refuses to start on an
+    /// unrestricted one unless `allow_unrestricted` (tests): monerod's unrestricted RPC has no request caps and returns
+    /// Dandelion++ stem transactions in the pool calls.
     pub node_rpc_port: u16,
+    pub allow_unrestricted: bool,
     /// `secret.key`, `nodes.json`, `relay-usage.json` live here.
     pub data_dir: PathBuf,
     pub relay: RelayChoice,
@@ -32,11 +35,14 @@ pub struct LcConfig {
     pub bootstrap: Vec<String>,
     /// Use n0's public relays (the default; tests and closed networks turn it off).
     pub n0_fallback: bool,
+    /// The relay's certificate. Self-signed (the default) keeps the relay off in auto mode (no client trusts it); ACME with
+    /// a domain (`--lc-acme-domain`) gets a browser-valid Let's Encrypt one on port 443 (cached in `data_dir/acme`).
+    pub tls: TlsMode,
 }
 
 impl LcConfig {
     pub fn new(node_rpc_port: u16, data_dir: PathBuf) -> Self {
-        LcConfig { node_rpc_port, data_dir, relay: RelayChoice::Auto, relay_bind: "0.0.0.0:443".parse().unwrap(), discovery: Discovery::Dht, bootstrap: vec![], n0_fallback: true }
+        LcConfig { node_rpc_port, allow_unrestricted: false, data_dir, relay: RelayChoice::Auto, relay_bind: "0.0.0.0:443".parse().unwrap(), discovery: Discovery::Dht, bootstrap: vec![], n0_fallback: true, tls: TlsMode::SelfSigned }
     }
 }
 
@@ -105,6 +111,9 @@ async fn run(cfg: LcConfig, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::er
             Err(_) => tokio::time::sleep(Duration::from_secs(3)).await,
         }
     };
+    if !cfg.allow_unrestricted && exec::node_restricted(&*upstream, Duration::from_secs(5)).await != Some(true) {
+        return Err(format!("the node RPC on port {} is not restricted (start sm64coind with --rpc-restricted-bind-port and point the service at that port)", cfg.node_rpc_port).into());
+    }
     let secret = load_or_create_key(&cfg.data_dir)?;
     let hello = HelloLog::default();
     let ep = build_endpoint(EndpointOptions { secret_key: Some(secret.clone()), discovery: cfg.discovery, n0_fallback: cfg.n0_fallback, alpns: vec![ALPN.to_vec()], ..Default::default() }).await?;
@@ -123,7 +132,7 @@ async fn run(cfg: LcConfig, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::er
     let client = Arc::new(Client::new(list, connector.clone(), Arc::new(SystemEnv)));
     let rcfg = RelayConfig {
         https_bind: cfg.relay_bind,
-        tls: TlsMode::SelfSigned,
+        tls: cfg.tls.clone(),
         hello_policy: HelloPolicy::Probation { slots: 40, secs: 60 },
         data_dir: Some(cfg.data_dir.clone()),
         ..Default::default()
@@ -169,6 +178,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut c = LcConfig::new(port, dir.clone());
         (c.relay, c.discovery, c.n0_fallback, c.relay_bind) = (RelayChoice::Off, Discovery::None, false, "127.0.0.1:0".parse().unwrap());
+        c.allow_unrestricted = true; // the fake node answers no get_info
         let h = start(c).unwrap();
         let t = std::time::Instant::now();
         while !dir.join("secret.key").is_file() {
