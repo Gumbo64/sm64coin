@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { daemon } from './rpc.js';
+import { daemon, NODE_HINT } from './rpc.js';
 import { getCycle } from './replay/client.js';
 import { restartDelay } from './rules.js';
 
@@ -110,7 +110,7 @@ export default function CycleTimeline({ attempt = 0, limit = 0 }) {
   const [cycle, err] = useCycle();
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => { const id = setInterval(() => setNow(Date.now() / 1000), 1000); return () => clearInterval(id); }, []);
-  if (err) return <div className="card muted">Cycle: daemon unreachable ({err})</div>;
+  if (err) return <div className="card muted">Cycle: daemon unreachable ({err}). {NODE_HINT}</div>;
   if (!cycle) return <div className="card muted">Loading the cycle…</div>;
 
   const newCycle = cycle.ends_cycle || cycle.blocks.length === 0;

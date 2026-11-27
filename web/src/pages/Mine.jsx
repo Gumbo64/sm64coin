@@ -4,7 +4,7 @@ import { Recorder } from '../lib/recorder.js';
 import { SAVE_KEYS, LOAD_KEYS, courseLabel } from '../lib/saveslots.js';
 import CycleTimeline from '../lib/CycleTimeline.jsx';
 import LimitChart from '../lib/LimitChart.jsx';
-import { daemon } from '../lib/rpc.js';
+import { daemon, NODE_HINT } from '../lib/rpc.js';
 import { newMinerKey, templateParams, signRun } from '../lib/minerkey.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { prepareStart } from '../lib/cycle.js';
@@ -17,6 +17,8 @@ import PlayView from '../components/PlayView.jsx';
 import EngineSlot, { acquireEngine } from '../components/EngineSlot.jsx';
 import { Toolbar, ToolBtn, Cols, Row, SideCard, Panel, InfoPop, useStored } from '../components/ui.jsx';
 import RomGate from '../lib/RomGate.jsx';
+import MineGate from '../lib/MineGate.jsx';
+import { AddrLabel, NoWallet } from '../lib/AddrLabel.jsx';
 import NativeMiner from './automine/NativeMiner.jsx';
 import { getPlatform } from '../platform/index.js';
 import { miner, hybrid, isAddress } from '../lib/webminer/controller.js';
@@ -31,7 +33,7 @@ import { levelName } from './automine/levels.js';
 import { localInputs } from './automine/localNode.js';
 import { announceMined } from '../lib/payout.js';
 import { signedSeeds } from '../lib/webminer/bestRun.js';
-import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
+import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, advanceAfter, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2e, e2eHook } from '../lib/e2e.js';
 
@@ -44,7 +46,7 @@ import { e2e, e2eHook } from '../lib/e2e.js';
 // (?address=), or is pasted (and remembered).
 export default function Mine() {
   // Desktop app: the native miner needs no browser copy of the ROM, so its card shows above the ROM prompt.
-  return <RomGate fallback={getPlatform().nativeMiner && getPlatform().rom ? <NativeMiner /> : null}><Miner /></RomGate>;
+  return <MineGate><RomGate fallback={getPlatform().nativeMiner && getPlatform().rom ? <><NoWalletNow /><NativeMiner /></> : null}><Miner /></RomGate></MineGate>;
 }
 
 // The auto-miner's views, loaded only when they are needed (three.js, the visual game's reel, the charts).
@@ -60,11 +62,13 @@ const loadingCard = <div className="viz-card"><p className="muted">Loading…</p
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
+function NoWalletNow() { return <NoWallet address={useMiner().address} />; }
+
 function Miner() {
   // The auto-miner (lib/webminer/controller.js) lives as long as the site's page: this page is its view and the manual miner's.
   // The reward address is the controller's (?address= from the wallet's links beats the stored one there).
   const s = useMiner();
-  const { address, running, vizOn, playFromStart, hybridOK } = s;
+  const { address, walletAddress, running, vizOn, playFromStart, hybridOK } = s;
   const hub = miner.hub;
   const addr = useRef(address);
   addr.current = address;
@@ -99,6 +103,7 @@ function Miner() {
   const [rewindSec, setRewindSec] = useStored('sm64coin.rewindSec', REWIND_DEFAULT);
   const rewindRef = useRef(rewindSec);
   rewindRef.current = rewindSec;
+  const [nodeDown, setNodeDown] = useState(false); // the node did not answer the last template request
   const [tick, setTick] = useState(0);
   const rec = useRef(null);
   useEffect(() => { e2eHook('__miner', { rec }); }, []); // test hook, ?e2e only (read-only use: the touch-controls test)
@@ -130,8 +135,8 @@ function Miner() {
         setLaunchAt(launch > Date.now() / 1000 ? launch : 0);
         if (head && i.top_block_hash !== head) {
           if (c.cur && c.used.has(c.cur.sm64_seed_hash)) {
-            // This template's run is sent: the block (yours, usually) lands on top of it. Keep the practice state; the next attempt waits for the player.
-            if (!c.tipNoted) { c.tipNoted = true; say(`new block ${i.height - 1} on the chain: you can keep practising here, but only a new template (▶| new) can be submitted`); }
+            // This template's run is sent: the block (yours, usually) landed on top of it. Move on to the next block's template at once.
+            if (advanceAfter({ used: true, tipChanged: true })) { c.restart = true; say(`new block ${i.height - 1} on the chain: moving on to the next block`); }
           } else { c.restart = true; say(`new block ${i.height - 1} on the chain: new template; your cycle continues from its end`); }
         }
       } catch { /* daemon hiccup */ }
@@ -208,7 +213,9 @@ function Miner() {
         if (stopped) return;
         if (res.status === 'accepted') {
           markLast(r, 'accepted');
-          setOutcome({ kind: 'accepted', height: t.height, frames: r.frames, reward: t.expected_reward });
+          setOutcome({ kind: 'accepted', fresh: true, height: t.height, frames: r.frames, reward: t.expected_reward });
+          // Nothing else waits: one run per key, so no leftover run of this template exists to send. Go on to the next block.
+          if (advanceAfter({ used: true, confirmed: 'accepted' }) && c.cur === t) c.restart = true;
           announceMined(t.height, t.expected_reward);
           say(`★ BLOCK ${t.height} ACCEPTED: ${r.frames} frames (${frames(r.frames)}), ${coins(t.expected_reward)} SM64 to you`);
         } else {
@@ -253,7 +260,8 @@ function Miner() {
             t = await daemon('get_block_template', templateParams(paysTo, key));
             t.minerKey = key;
             t.paysTo = paysTo; // the template's coinbase pays this address
-          } catch (e) { say(String(e)); await sleep(3000); continue; }
+            setNodeDown(false);
+          } catch (e) { say(String(e)); if (!/^(Error: )?get_block_template: /.test(String(e.message || e))) setNodeDown(true); await sleep(3000); continue; }
           const won = successFor(t.sm64_rules);
           if (!won) { say(`unknown rules "${t.sm64_rules}": update web/src/lib/rules.js`); return; }
           if (head !== t.prev_hash) { c.forcePower = false; setRuns([]); }
@@ -342,7 +350,6 @@ function Miner() {
     return () => { stopped = true; clearInterval(timer); clearInterval(refresh); clearInterval(pendingTimer); setClock(null); setPhase({ kind: 'loading' }); };
   }, [engine, manualActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const paying = task ? task.paysTo : address;
   const pending = task && isAddress(address) && address !== task.paysTo;
 
@@ -492,7 +499,7 @@ function Miner() {
         </div>
       )}
       {outcome && <div className={`notice${outcome.kind === 'accepted' || outcome.kind === 'sent' ? '' : ' warn'}`} data-testid="outcome" role="status">{outcomeText}</div>}
-      {practice && <div className="notice warn" data-testid="practice" role="status">Practice only: this template's run is already sent, so nothing played here can be submitted. The next block is a new attempt on a new template: press ▶| new (N).</div>}
+      {practice && <div className="notice warn" data-testid="practice" role="status">Run sent: moving on to the next block once it lands (practice until then; ▶| new skips ahead).</div>}
       <div className="budget" title="Frames you have used of the current time limit. The limit grows from the last block's timestamp up to 20 minutes; you can play past it and wait for it to catch up.">
         <div className={`bar${over ? ' over' : ''}`}><div className="fill" style={{ width: `${lim ? Math.min(100, (used / lim) * 100) : 0}%` }} /></div>
         <span className="stat">{lim ? `${used} / ${lim} frames (${frames(used)} / ${frames(lim)})` : '—'}{over ? ` — ${used - lim} over: it becomes valid when the limit has grown to your run` : ''}</span>
@@ -505,7 +512,7 @@ function Miner() {
         {clock && clock.paused && <span className="stat warn">PAUSED</span>}
         {clock && clock.mode === 'catchup' && phase.kind === 'play' && <span className="stat warn">replaying to frame {clock.target} (T to play from here)</span>}
         {phase.kind === 'ff' && <span className="stat warn">fast-forwarding the cycle{phase.total ? `: ${Math.floor((phase.done / phase.total) * 100)}% (${phase.done} / ${phase.total} frames)` : '…'}</span>}
-        {pendingRun && <span className="stat warn">pending run {frames(pendingRun.frames)}: valid in {mmss(Math.max(0, pendingRun.validAt - Date.now() / 1000))} (sent automatically; play on for a shorter one)</span>}
+        {pendingRun && <span className="stat warn">run {frames(pendingRun.frames)} valid in {mmss(Math.max(0, pendingRun.validAt - Date.now() / 1000))} — the time limit is still shorter than your run (sent automatically; play on for a shorter one)</span>}
         {phase.kind === 'submitting' && <span className="stat warn">submitting…</span>}
       </div>
       <Controls groups={groups} />
@@ -539,6 +546,8 @@ function Miner() {
           While it runs, this page shows its search: click a node of the cloud and <b>Play from here</b> to play on by hand; the segment you play becomes a high-weight node the search builds on. <b>Play from the start</b> turns hybrid mining off.
         </InfoPop>
       </p>
+      <NoWallet address={address} />
+      {nodeDown && <div className="notice warn" data-testid="node-down" role="status">{NODE_HINT}</div>}
       <Cols
         main={(
           <>
@@ -580,7 +589,7 @@ function Miner() {
                 {task && <SideCard><LimitChart difficulty={task.sm64_retarget_difficulty} parentTs={task.sm64_parent_timestamp} now={Date.now() / 1000 + tick * 0} used={clock ? clock.frame : 0} runs={runs} /></SideCard>}
                 {pending && (
                   <div className="notice">
-                    The game in progress pays {short(task.paysTo)}; the new address applies from the next attempt
+                    The game in progress pays <AddrLabel address={task.paysTo} wallet={walletAddress} size={16} />; the new address applies from the next attempt
                     (the reward address is part of the block template the run is sealed to).{' '}
                     <button onClick={() => rec.current && rec.current.skip()}>Switch now (restarts the attempt)</button>
                   </div>
@@ -597,7 +606,7 @@ function Miner() {
                       <dt>Accepting runs up to</dt><dd>{frames(limit ?? task.sm64_max_frames)} ({limit ?? task.sm64_max_frames} frames){(limit ?? task.sm64_max_frames) >= MAX_RUN_FRAMES ? '' : `, loosens to ${frames(MAX_RUN_FRAMES)}`}</dd>
                       <dt>Pokes</dt><dd>{task.sm64_random_amount} × {task.sm64_burst_length} frames per {task.sm64_window_length}</dd>
                       <dt>Reward</dt><dd>{coins(task.expected_reward)} SM64</dd>
-                      <dt>Paying</dt><dd>{isAddress(paying || '') ? <span className="mono" title={paying}>{short(paying)}</span> : <em>no address</em>}</dd>
+                      <dt>Paying</dt><dd><AddrLabel address={paying} wallet={walletAddress} /></dd>
                     </dl>
                   ) : <p className="muted">Getting a block template…</p>}
                 </SideCard>

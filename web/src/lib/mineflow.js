@@ -86,3 +86,23 @@ export async function confirmBlock(d, t, keyHex, dueAt, grace = CONFIRM_GRACE, e
     await d.sleep(every);
   }
 }
+
+/**
+ * Whether the manual miner moves on to the next block's template by itself: once this template's run is used (sent) and
+ * either a block landed on the tip (yours or another) or the node's answer for it came in (accepted / lost / missing).
+ * Nothing else is waited for: a key signs one run, so no other run of this template is left to send.
+ */
+export function advanceAfter({ used = false, tipChanged = false, confirmed = null }) {
+  return !!used && (!!tipChanged || confirmed === 'accepted' || confirmed === 'lost' || confirmed === 'missing');
+}
+
+/**
+ * What the manual miner does next, after a finished run:
+ *   'redo'     held (over the limit, waiting for it to grow): rewind a few seconds for a shorter run, which replaces the held one
+ *   'advance'  sent and accepted, or beaten (another block took the height / the tip moved): next block's template, at once
+ *   'wait'     sent, the node has not answered yet and no block landed: the same template (practice) until it does
+ */
+export function nextStep({ held = false, used = false, tipChanged = false, confirmed = null }) {
+  if (used) return advanceAfter({ used, tipChanged, confirmed }) ? 'advance' : 'wait';
+  return held ? 'redo' : 'wait';
+}

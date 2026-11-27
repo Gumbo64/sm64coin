@@ -147,3 +147,6 @@ export const daemon = (method, params) => {
   const node = getNode();
   return method === 'get_info' && (params === undefined || (params && Object.keys(params).length === 0)) ? sharedInfo(node) : daemonAt(node, method, params);
 };
+
+/** Shown wherever the node cannot be reached (a VPN, firewall or network filter often blocks the public node). */
+export const NODE_HINT = "Can't reach the node — a VPN, firewall or network filter may be blocking it; try another network or pick a node on the Network page.";

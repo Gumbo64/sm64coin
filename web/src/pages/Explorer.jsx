@@ -2,7 +2,7 @@ import { MAX_RUN_FRAMES } from '../lib/rules.js';
 import React, { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import CycleTimeline, { RecentCycles, eventName } from '../lib/CycleTimeline.jsx';
-import { daemon } from '../lib/rpc.js';
+import { daemon, NODE_HINT } from '../lib/rpc.js';
 import { getCycle, blockSummary } from '../lib/replay/client.js';
 import { coins, short, ago, frames } from '../lib/format.js';
 import useInterval from '../lib/useInterval.js';
@@ -99,7 +99,7 @@ export default function Explorer() {
 
   return (
     <>
-      {err && <div className="card error">Daemon unreachable: {err}</div>}
+      {err && <div className="card error">Daemon unreachable: {err}. {NODE_HINT}</div>}
       <CycleTimeline />
       {info && (
         <div className="stats">

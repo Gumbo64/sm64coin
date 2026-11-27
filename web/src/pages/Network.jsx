@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { chooseNode, daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, nodeNote, usingPublicFallback } from '../lib/rpc.js';
+import { chooseNode, daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, nodeNote, usingPublicFallback, NODE_HINT } from '../lib/rpc.js';
 import useInterval from '../lib/useInterval.js';
 
 const clean = (u) => (u || '').trim().replace(/\/+$/, '');
@@ -20,7 +20,7 @@ export default function Network() {
       const i = await daemonAt(u, 'get_info');
       return `height ${i.height}, ${i.synchronized ? 'synced' : 'syncing'}, ${i.outgoing_connections_count + i.incoming_connections_count} peers`;
     } catch (e) {
-      return `unreachable: ${e.message}`;
+      return `unreachable: ${e.message}. ${NODE_HINT}`;
     }
   };
   useEffect(() => onNodeChange(() => { setNodeState(getNode()); setDraft((d) => (nodeInUse().kind === 'chosen' ? d : getNode())); }), []);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, LAUNCH_TIMESTAMP } from './mineflow.js';
+import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, advanceAfter, nextStep, LAUNCH_TIMESTAMP } from './mineflow.js';
 
 // launch applies on mainnet only; validAt never precedes it
 assert.equal(launchFor({ mainnet: true }), LAUNCH_TIMESTAMP);
@@ -60,3 +60,22 @@ r = mk(() => null);
 const miss = await confirmBlock(r.d, tpl, 'key', 100, 5);
 assert.equal(miss.status, 'missing'); assert.ok(r.calls[r.calls.length - 1] >= 105 && r.calls[r.calls.length - 1] < 107); // gives up just past due + grace
 console.log('mineflow ok');
+
+// auto-advance: only after this template's run is used, and a block landed or the node answered
+assert.equal(advanceAfter({ used: true, confirmed: 'accepted' }), true);
+assert.equal(advanceAfter({ used: true, tipChanged: true }), true);
+assert.equal(advanceAfter({ used: true, confirmed: 'lost' }), true);
+assert.equal(advanceAfter({ used: true }), false);                       // sent, not seen yet: practice
+assert.equal(advanceAfter({ used: false, tipChanged: true }), false);    // unused template: the restart path handles a new tip
+assert.equal(advanceAfter({ used: false, confirmed: 'accepted' }), false);
+// a run valid exactly now is sent, one second ahead is held (countdown), a shorter run replaces it
+assert.equal(decideAfterWin({ now: 1000, validAt: 1000, frames: 5 }).action, 'send');
+assert.equal(decideAfterWin({ now: 1000, validAt: 1001, frames: 5 }).action, 'hold');
+
+// the three transitions after a finished run
+assert.equal(nextStep({ held: true }), 'redo');                                     // held: redo for a shorter run
+assert.equal(nextStep({ used: true, confirmed: 'accepted' }), 'advance');          // accepted: on to the next block
+assert.equal(nextStep({ used: true, confirmed: 'lost' }), 'advance');              // beaten: on too
+assert.equal(nextStep({ used: true, tipChanged: true }), 'advance');
+assert.equal(nextStep({ used: true }), 'wait');                                    // sent, no answer yet
+assert.equal(nextStep({ held: true, used: true, confirmed: 'accepted' }), 'advance'); // a held run that was sent meanwhile
