@@ -194,3 +194,26 @@ pub fn progress(frames: u64) {
         let _ = std::fs::write(p, frames.to_string());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_matches_the_standard_alphabet() {
+        assert_eq!(super::b64(b""), "");
+        assert_eq!(super::b64(b"f"), "Zg==");
+        assert_eq!(super::b64(b"fo"), "Zm8=");
+        assert_eq!(super::b64(b"foo"), "Zm9v");
+        assert_eq!(super::b64(&[0xff, 0xfe, 0x00, 0x7f]), "//4Afw==");
+    }
+
+    #[test]
+    fn mail_state_is_replayed_to_a_new_child() {
+        super::input(r#"{"viz_on":false}"#);
+        super::input(r#"{"mail":{"goal":{"level":9}}}"#);
+        super::input(r#"{"mail":{"cmds":[]}}"#);
+        let l = super::LINK.lock().unwrap();
+        assert!(!l.viz_on);
+        assert_eq!(l.mail.get("goal").unwrap()["level"], 9);
+        assert!(l.mail.contains_key("cmds"));
+    }
+}

@@ -5,31 +5,7 @@
 import { daemon } from '../rpc.js';
 import { newMinerKey, templateParams } from '../minerkey.js';
 import { hybrid } from './controller.js';
-
-const b64 = (s) => { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
-const hexToBytes = (h) => { const b = new Uint8Array(h.length / 2); for (let i = 0; i < b.length; i++) b[i] = parseInt(h.substr(i * 2, 2), 16); return b; };
-/** A campaign line as the hub expects it: the native miner indents rrt::mine's log by two spaces. */
-const unindent = (line) => (/^ {2}step \d+:/.test(line) ? line.slice(2) : line);
-
-/** Dispatches one native frame like controller.js's worker.onmessage does. `hub`: the VizHub. */
-export function dispatchFrame(hub, f, hyb = hybrid) {
-  const w = f.w || 0;
-  switch (f.kind) {
-    case 'viz': hub.ingest(w, f.data); break;
-    case 'state': hub.setRoot(w, f.key, b64(f.data)); break;
-    case 'pert': hub.setPert(w, f.key, f.data); break;
-    case 'edges': hub.addEdges(w, f.key, b64(f.data).buffer); break;
-    case 'path': { const m = JSON.parse(f.data); hub.setPath(w, f.key, m.id, Int32Array.from(m.flat)); break; }
-    case 'hybrid_out': {
-      const m = JSON.parse(f.data);
-      const state = typeof m.state === 'string' ? hexToBytes(m.state) : null;
-      delete m.state;
-      hyb.onMessage(w, m, state);
-      break;
-    }
-    default: break;
-  }
-}
+import { dispatchFrame, unindent } from './nativeFrames.js';
 
 export class NativeFeed {
   constructor(miner, nm) {
@@ -46,7 +22,7 @@ export class NativeFeed {
 
   start() {
     const { nm, hub } = this;
-    hybrid.attachSender((mail) => { nm.vizMail(mail).catch(() => {}); return true; });
+    hybrid.attachSender((mail) => { nm.vizMail(mail).catch((e) => console.error('native mailbox:', e.message || e)); return true; });
     this.offs.push(nm.subscribeViz((f) => this.onFrame(f)));
     this.offs.push(nm.subscribe((line) => this.onLine(line)));
     this.offs.push(nm.onState((s) => { if (s && s.running === false) this.stop(); }));
@@ -99,7 +75,7 @@ export class NativeFeed {
   onFrame(f) {
     if (this.dead) return;
     if (!this.ready) { if (this.queue.length < 400) this.queue.push(f); return; }
-    dispatchFrame(this.hub, f);
+    dispatchFrame(this.hub, f, hybrid);
   }
 
   onLine(raw) {
@@ -118,12 +94,12 @@ export class NativeFeed {
     this.miner.nativeLine(this.line);
   }
 
-  setViz(on) { this.nm.vizOn(on).catch(() => {}); }
+  setViz(on) { this.nm.vizOn(on).catch((e) => console.error('native viz switch:', e.message || e)); }
 
   /** Asks the search for the inputs of node `nid` of its step `key` (answered as a `path` frame at its next sample). */
   ask(w, key, nid) {
     this.reqs = [...(this.reqs || []).slice(-40), { id: (this.seq = (this.seq || 0) + 1), slot: w, key, nid }];
-    this.nm.vizMail({ reqs: this.reqs }).catch(() => {});
+    this.nm.vizMail({ reqs: this.reqs }).catch((e) => console.error('native node request:', e.message || e));
     return true;
   }
 }
