@@ -7,7 +7,11 @@
 //! - mobile (Android APK): `remote_rpc` (the public node), `host_info`, and the native miner (`mobile_miner.rs`: the
 //!   `sm64coin_miner` Campaign in this process, the ROM handed over once by the page with `rom_put`); no node, no sidecars.
 
+mod lcnet;
 mod remote;
+mod walletproxy;
+#[cfg(test)]
+mod lcnet_test;
 #[cfg(desktop)]
 mod desktop;
 #[cfg(desktop)]
@@ -24,6 +28,15 @@ mod vizfeed;
 mod mobile_miner;
 
 use serde::Serialize;
+
+/// Starts the app's light-client network: the loopback daemon (walletproxy.rs) for the wallet and the native miner, and the
+/// background work (iroh endpoint, node gossip, persistence). The returned proxy must be kept (managed) while the app runs.
+pub(crate) fn start_net(remote: &remote::Remote) -> Result<std::sync::Arc<walletproxy::WalletProxy>, String> {
+    let proxy = walletproxy::start(remote.net.clone(), vec![])?;
+    remote.set_proxy(&proxy.url());
+    remote.net.spawn_background();
+    Ok(proxy)
+}
 
 /// A typed error: `code` is stable (the UI switches on it), `message` is for people.
 #[derive(Debug, Serialize)]
@@ -147,11 +160,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(nav_guard())
-        .manage(remote::Remote::new(None))
         .manage(link::Link::default())
         .setup(|t| {
             use tauri::Manager;
             let data = t.path().app_data_dir()?;
+            let remote = remote::Remote::new(None, Some(data.join("nodes.json")));
+            t.manage(start_net(&remote)?);
+            t.manage(remote);
             t.manage(std::sync::Arc::new(mobile_miner::MobileMiner::new(data)));
             // tauri.conf.json's window has `create: false` (desktop.rs builds it, for portable mode): build it here too.
             if let Some(cfg) = t.config().app.windows.iter().find(|w| w.label == "main").cloned() {
@@ -159,7 +174,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail, link::link_start, link::link_status, link::link_cancel, link::link_take])
+        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, remote::net_status, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail, link::link_start, link::link_status, link::link_cancel, link::link_take])
         .run(tauri::generate_context!())
         .expect("error while running the SM64Coin app");
 }

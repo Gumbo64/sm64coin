@@ -6,7 +6,7 @@
 //! events `miner-log` (a line), `miner-state` ({running}), `miner-viz` ({w, kind, key, data}); `MinerInfo` from status.
 //!
 //! The ROM is not a file the user picks here: the page sends its own (from its IndexedDB) once with `rom_put`, which checks the
-//! SHA-1 and keeps it in the app's data dir. The daemon is the public node only (the command layer resolves it through
+//! SHA-1 and keeps it in the app's data dir. The daemon is the app's loopback proxy (walletproxy.rs: fails over between the public nodes; the command layer resolves it through
 //! `remote::Remote`; the campaign never gets a URL the page chose).
 use crate::vizfeed;
 use crate::{AppError, Res};

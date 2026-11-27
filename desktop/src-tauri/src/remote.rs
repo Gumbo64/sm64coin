@@ -1,10 +1,11 @@
+use crate::lcnet::{NetStatus, Net};
 use crate::{AppError, Res};
-use sm64coin_launcher::rpc;
+use sm64coin_lc::nodes::{NodeAddr, parse_bootstrap};
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
 
-/// The website's public node (web/public/public-node.json, compiled in): the page cannot widen it.
+/// The website's public node(s) (web/public/public-node.json, compiled in): the page cannot widen them. `{"url": ..}` or
+/// `{"nodes": [..]}`, entries `https://host` or `iroh:<endpoint id>[@relay]`.
 const PUBLIC_NODE_JSON: &str = include_str!("../../../web/public/public-node.json");
 
 /// `https://host[:port][/path]` without a trailing slash, or None when `u` is not such an address.
@@ -18,32 +19,63 @@ pub fn normalize(u: &str) -> Option<String> {
     Some(u.to_string())
 }
 
-pub fn public_node() -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(PUBLIC_NODE_JSON).ok().and_then(|v| v.get("url").and_then(|u| u.as_str()).and_then(normalize))
+/// The compiled-in bootstrap nodes (https ones are normalized like any address the page could pass).
+pub fn bootstrap_nodes() -> Vec<NodeAddr> {
+    parse_bootstrap(PUBLIC_NODE_JSON)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|a| match a {
+            NodeAddr::Http { url } => normalize(&url).map(|url| NodeAddr::Http { url }),
+            iroh => Some(iroh),
+        })
+        .collect()
 }
 
-/// The remote nodes `remote_rpc` (and the wallet's `set_daemon`) may reach: the public node, and one https node the user
+/// The first https public node (what the page shows as "the public node").
+#[cfg(test)]
+pub fn public_node() -> Option<String> {
+    bootstrap_nodes().into_iter().find_map(|a| if let NodeAddr::Http { url } = a { Some(url) } else { None })
+}
+
+/// The remote nodes `remote_rpc` (and the wallet's `set_daemon`) may reach: the public node(s), and one https node the user
 /// confirmed in a native dialog (`remote_node_set`), kept in the data dir. Never an address the page passes per call.
+/// Behind them is the app's light-client network (`Net`): a call for the public node is answered by whichever bootstrap or
+/// learned node works (failover, HTTP and iroh); a call for the user's own node goes to that node only.
 pub struct Remote {
-    public: Option<String>,
+    public: Vec<String>,
     saved: Mutex<Option<String>>,
     file: Option<PathBuf>,
+    pub net: Arc<Net>,
+    /// The loopback daemon (walletproxy.rs) the native miner is given.
+    proxy: OnceLock<String>,
 }
 
 impl Remote {
-    pub fn new(file: Option<PathBuf>) -> Remote {
+    /// `file`: where the user's confirmed node is kept; `nodes_file`: where the network keeps learned nodes.
+    pub fn new(file: Option<PathBuf>, nodes_file: Option<PathBuf>) -> Remote {
         let saved = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| normalize(&s));
-        Remote { public: public_node(), saved: Mutex::new(saved), file }
+        Remote::with_net(file, saved.clone(), Net::new(&bootstrap_nodes(), saved.as_deref(), nodes_file))
+    }
+    pub fn with_net(file: Option<PathBuf>, saved: Option<String>, net: Arc<Net>) -> Remote {
+        let public = bootstrap_nodes().into_iter().filter_map(|a| if let NodeAddr::Http { url } = a { Some(url) } else { None }).collect();
+        Remote { public, saved: Mutex::new(saved), file, net, proxy: OnceLock::new() }
+    }
+    fn is_public(&self, u: &str) -> bool {
+        self.public.iter().any(|p| p == u)
     }
     /// The allowed form of `url`, or None.
     pub fn allowed(&self, url: &str) -> Option<String> {
         let u = normalize(url)?;
-        (self.public.as_deref() == Some(u.as_str()) || self.saved.lock().unwrap().as_deref() == Some(u.as_str())).then_some(u)
+        (self.is_public(&u) || self.saved.lock().unwrap().as_deref() == Some(u.as_str())).then_some(u)
     }
-    /// The node the native miner (Android) talks to directly: the public node, checked like any other (a campaign takes one
-    /// fixed URL, so this is the only place that decides which node it may reach).
+    /// The daemon the native miner (Android) talks to: the loopback proxy, which fails over between the network's nodes (a
+    /// campaign takes one fixed URL, so this is the only place that decides which node it may reach).
+    #[cfg_attr(not(mobile), allow(dead_code))]
     pub fn daemon_url(&self) -> Res<String> {
-        self.public.as_deref().and_then(|p| self.allowed(p)).ok_or_else(|| AppError::new("no_public_node", "this build has no public node to mine against"))
+        self.proxy.get().cloned().ok_or_else(|| AppError::new("no_public_node", "the app's node connection is not up yet"))
+    }
+    pub fn set_proxy(&self, url: &str) {
+        let _ = self.proxy.set(url.to_string());
     }
     pub fn saved(&self) -> Option<String> {
         self.saved.lock().unwrap().clone()
@@ -56,8 +88,17 @@ impl Remote {
             };
             r.map_err(|e| AppError::new("remote_node", e.to_string()))?;
         }
-        *self.saved.lock().unwrap() = u;
+        let old = std::mem::replace(&mut *self.saved.lock().unwrap(), u.clone());
+        self.net.set_saved(old.as_deref(), u.as_deref());
         Ok(())
+    }
+    /// The whitelisted call of `url` (an allowed node, see `allowed`): the user's own node is called alone, the public node
+    /// through the network with failover.
+    pub async fn rpc(&self, url: &str, method: &str, params: serde_json::Value) -> Res<serde_json::Value> {
+        let u = self.allowed(url).ok_or_else(|| AppError::new("forbidden", "that node is not the public node or the one saved on the Network page"))?;
+        let pinned = !self.is_public(&u) && self.saved().as_deref() == Some(u.as_str());
+        let r = if pinned { self.net.rpc_pinned(&u, method, params).await } else { self.net.rpc(method, params).await };
+        r.map_err(|e| AppError::new("rpc", e))
     }
 }
 
@@ -69,26 +110,34 @@ pub struct RemoteNodes {
 
 #[tauri::command]
 pub fn remote_node_get(remote: tauri::State<'_, Remote>) -> Res<RemoteNodes> {
-    Ok(RemoteNodes { public: remote.public.clone(), saved: remote.saved() })
+    Ok(RemoteNodes { public: remote.public.first().cloned(), saved: remote.saved() })
 }
 
-/// The same whitelisted call against a remote node over https (the public node, when no local node answers; always on Android).
-/// Done here and not with the webview's fetch so it needs no CORS entry on that node. Only the allowed nodes (see `Remote`).
+/// The same whitelisted call against a remote node (the public node, when no local node answers; always on Android): through the
+/// app's light-client network, so a dead node is skipped. Done here and not with the webview's fetch so it needs no CORS entry
+/// on that node. Only the allowed nodes (see `Remote`).
 #[tauri::command]
 pub async fn remote_rpc(remote: tauri::State<'_, Remote>, url: String, method: String, params: Option<serde_json::Value>) -> Res<serde_json::Value> {
-    let url = remote.allowed(&url).ok_or_else(|| AppError::new("forbidden", "that node is not the public node or the one saved on the Network page"))?;
-    tauri::async_runtime::spawn_blocking(move || rpc::call_url(&url, &method, params.unwrap_or_else(|| serde_json::json!({})), Duration::from_secs(60)).map_err(|e| AppError::new("rpc", e)))
-        .await
-        .map_err(|e| AppError::new("internal", e.to_string()))?
+    remote.rpc(&url, &method, params.unwrap_or_else(|| serde_json::json!({}))).await
+}
+
+/// Which node and transport the app is using, the node list with its scores, the loopback daemon and this app's iroh id.
+#[tauri::command]
+pub fn net_status(remote: tauri::State<'_, Remote>) -> Res<NetStatus> {
+    Ok(remote.net.status())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn remote(saved: Option<String>) -> Remote {
+        Remote::with_net(None, saved.clone(), Net::new(&[NodeAddr::Http { url: "https://eboy.au".into() }], saved.as_deref(), None))
+    }
+
     #[test]
     fn only_the_public_and_the_saved_node() {
-        let r = Remote { public: Some("https://eboy.au".into()), saved: Mutex::new(None), file: None };
+        let r = remote(None);
         assert_eq!(r.allowed("https://eboy.au/").as_deref(), Some("https://eboy.au"));
         assert!(r.allowed("https://eboy.au.evil.example").is_none());
         assert!(r.allowed("https://evil.example").is_none());
@@ -99,5 +148,9 @@ mod tests {
         assert!(r.allowed("https://node.example:18090").is_none());
         assert!(normalize("https:///x").is_none());
         assert!(public_node().is_some_and(|u| u.starts_with("https://")));
+        // the confirmed node joins the network's list (above discovered ones) and leaves it when forgotten
+        assert!(r.net.status().nodes.iter().any(|n| n.key == "http:https://node.example:18089"));
+        r.set_saved(None).unwrap();
+        assert!(!r.net.status().nodes.iter().any(|n| n.key.contains("node.example")));
     }
 }

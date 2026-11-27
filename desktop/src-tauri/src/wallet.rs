@@ -174,7 +174,8 @@ fn ensure_sidecar(app: &App, want_kdf: Option<u32>) -> Res<()> {
     let port = pick_port(20000 + (u16::from_le_bytes(rand_bytes::<2>()) % 30000), "127.0.0.1", &[]);
     let (user, pass) = (hex(&rand_bytes::<8>()), hex(&rand_bytes::<24>()));
     let daemon = w.daemon.lock().unwrap().clone().unwrap_or_else(|| default_daemon(app));
-    let local = daemon.starts_with("127.0.0.1:");
+    // Only this app's own node is trusted (the loopback proxy of walletproxy.rs, also 127.0.0.1, stands for remote nodes).
+    let local = daemon == default_daemon(app);
 
     // The login goes in a config file readable by this user only, deleted as soon as the sidecar has read it.
     let cfg = app.dirs.data.join(format!("wallet-rpc-{}.conf", hex(&rand_bytes::<4>())));
@@ -494,13 +495,16 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
                     // user confirmed on the Network page; untrusted): never another local port or any other remote.
                     let a = str_param(&p, "address").unwrap_or("").to_string();
                     let local = a == default_daemon(app);
+                    // The loopback daemon of this app (fails over between the public nodes): plain http, untrusted.
+                    let via_proxy = handle.state::<std::sync::Arc<crate::walletproxy::WalletProxy>>().addr() == a;
                     let remote = handle.state::<crate::remote::Remote>().allowed(&a);
-                    if !local && remote.is_none() {
-                        return Err(AppError::new("forbidden", "the wallet's node must be this app's own node, the public node or the one saved on the Network page"));
+                    if !local && !via_proxy && remote.is_none() {
+                        return Err(AppError::new("forbidden", "the wallet's node must be this app's own node, the app's loopback daemon, the public node or the one saved on the Network page"));
                     }
                     let a = remote.unwrap_or(a);
                     *app.wallet.daemon.lock().unwrap() = Some(a.clone());
-                    p = json!({"address": a, "trusted": local, "ssl_support": if local { "disabled" } else { "enabled" }});
+                    let plain = local || via_proxy;
+                    p = json!({"address": a, "trusted": local, "ssl_support": if plain { "disabled" } else { "enabled" }});
                     if !app.wallet.side.lock().unwrap().as_mut().is_some_and(|s| s.proc.alive()) {
                         return Ok(json!({"result": {}})); // applied when the sidecar starts
                     }

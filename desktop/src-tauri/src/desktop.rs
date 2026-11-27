@@ -401,12 +401,14 @@ pub fn run() {
     let dirs = Dirs::detect();
     let wallet = wallet::Wallet::new(&dirs);
     let app = App { link: link::Link::default(), wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
-    let remote = crate::remote::Remote::new(Some(app.dirs.data.join("remote-node.txt")));
+    let remote = crate::remote::Remote::new(Some(app.dirs.data.join("remote-node.txt")), Some(app.dirs.data.join("nodes.json")));
+    let proxy = crate::start_net(&remote).expect("the wallet's loopback daemon could not start");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(nav_guard())
         .manage(app)
         .manage(remote)
+        .manage(proxy)
         .setup(|t| {
             // The node starts with the app when the ROM is there (the UI asks for it otherwise, then calls node_start).
             // SIGTERM / SIGINT / console close: leave through the normal exit path, which stops the miner and the node.
@@ -435,7 +437,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, crate::remote::net_status, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {
