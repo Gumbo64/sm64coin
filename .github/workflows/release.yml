@@ -11,15 +11,7 @@ name: Release
 on:
   push:
     tags: ['v*']
-    # main: cache warming. A run may restore caches only from its own ref or the default branch, so
-    # every new tag started with an empty ccache (v0.5.2: 2% hits, ~20 min per platform). These
-    # build-only runs on main fill the caches the next tag restores; they publish nothing (publish
-    # needs a tag) and skip the desktop/android jobs. The paths filter applies to branch pushes only
-    # (GitHub ignores it for tags), so main builds only when native code changes.
-    branches: ['release-test', 'main']
-    paths: ['monero', 'gui', 'pow/**', 'scripts/**', 'packaging/**', '.github/workflows/release.yml']
-  schedule:
-    - cron: '17 3 * * 1'   # weekly cache refresh (caches unused for 7 days are evicted)
+    branches: ['release-test']
   workflow_dispatch:
     inputs:
       version:
@@ -29,7 +21,7 @@ on:
 permissions:
   contents: write
 
-concurrency:   # cache-warming runs on main: only the newest matters
+concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
