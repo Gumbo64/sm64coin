@@ -1,0 +1,40 @@
+# systemd unit for the SM64Coin light-client service (sm64coin-lc) beside a node. It answers phones, the apps and browsers
+# over iroh (QUIC) from the local node's RPC, and turns itself into an iroh relay for others once a reachability self-test
+# shows the machine can be reached from outside (--relay auto). Only allowlisted RPC calls are ever forwarded.
+# Install (the node unit sm64coin-node.service is installed first, see its header; same user and folder):
+#   sudo cp /opt/sm64coin/sm64coin-lc.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sm64coin-lc
+# Open: UDP 16483 (QUIC, direct connections) and TCP 443 (the relay, when it switches on). Neither is needed to be a node.
+# Logs: journalctl -u sm64coin-lc -f   (the first line says "endpoint id: ...": the id others bootstrap from, as
+# iroh:<endpoint id>@<relay url>; add it to public-node.json / --bootstrap lists). The key lives in /var/lib/sm64coin/lc/secret.key.
+# Settings: `sudo systemctl edit sm64coin-lc` and override ExecStart= (an empty ExecStart= line first), e.g.
+#   --relay off                           never relay (a home connection, a metered line)
+#   --relay-rate-kib 256 --relay-max-clients 200 --relay-monthly-cap-gib 2048    the relay's limits (the defaults)
+#   --tls acme --acme-domain node.example.org --acme-contact mailto:you@example.org --acme-production   a browser-valid relay certificate
+#   --public-host node.example.org        the name or IP clients use for the relay (default: the IP peers see)
+#   --discovery n0                        n0's lookup service instead of the mainline DHT
+# The node's RPC can stay on 127.0.0.1: this service is the only thing that reaches it.
+[Unit]
+Description=SM64Coin light-client service (iroh)
+Wants=network-online.target
+After=network-online.target sm64coin-node.service
+
+[Service]
+User=sm64coin
+Group=sm64coin
+WorkingDirectory=/var/lib/sm64coin
+ExecStart=/opt/sm64coin/sm64coin-lc serve --node-rpc http://127.0.0.1:16481 --data-dir /var/lib/sm64coin/lc --relay auto --relay-bind 0.0.0.0:443 --bind 0.0.0.0:16483 --discovery dht
+Restart=always
+RestartSec=10
+# the relay listens on 443
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sm64coin
+
+[Install]
+WantedBy=multi-user.target

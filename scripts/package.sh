@@ -4,7 +4,7 @@
 #
 # Bundle layout (flat, everything next to the wallet app):
 #   sm64coind  sm64coin-node (+ .bat on Windows, sm64coin-node.service on Linux)  sm64coin-wallet-cli  sm64coin-wallet-rpc  sm64coin-wallet-gui
-#   sm64coin-leaderboard  [sm64coin-automine]  web/  seeds.txt  README.txt  LICENSE
+#   sm64coin-leaderboard  sm64coin-lc  [sm64coin-automine]  web/  seeds.txt  README.txt  LICENSE
 #   Linux:   lib/ qt/ qt.conf   the shared libraries and Qt plugins the binaries need, found
 #                               through RPATH $ORIGIN/lib, so users install nothing
 #   Windows: the GUI's Qt DLLs/plugins/qml (windeployqt, run before this script) and every
@@ -18,6 +18,7 @@
 #   GUI_BIN   (gui/build/bin/monero-wallet-gui; skipped if missing)
 #   GUI_APP   (macOS: gui/build/bin/monero-wallet-gui.app, the deployed app bundle)
 #   POW_TARGET (pow/target/release: sm64coin-leaderboard, automine and its rrtrun; each skipped if missing)
+#   LC_TARGET  (pow/lc/target/release: sm64coin-lc, the light-client service; its own workspace; skipped if missing)
 #   ALLOW_NO_WEB=1  dry runs: a placeholder page when there is no website build
 #   WEB_DIST (web/dist)
 set -euo pipefail
@@ -38,6 +39,7 @@ MONERO_BIN="${MONERO_BIN:-$ROOT/monero/build/release/bin}"
 GUI_BIN="${GUI_BIN:-$ROOT/gui/build/bin/monero-wallet-gui}"
 GUI_APP="${GUI_APP:-$ROOT/gui/build/bin/monero-wallet-gui.app}"
 POW_TARGET="${POW_TARGET:-$ROOT/pow/target/release}"
+LC_TARGET="${LC_TARGET:-$ROOT/pow/lc/target/release}"
 WEB_DIST="${WEB_DIST:-$ROOT/web/dist}"
 X=""; case "$PLATFORM" in windows-*) X=".exe" ;; esac
 
@@ -65,8 +67,10 @@ case "$PLATFORM" in
              sed -i 's/\r$//; s/$/\r/' "$STAGE/sm64coin-node.bat" ;;   # cmd.exe wants CRLF
   *) put "$ROOT/scripts/sm64coin-node" "sm64coin-node" required ;;
 esac
-case "$PLATFORM" in linux-*) cp "$ROOT/packaging/sm64coin-node.service" "$STAGE/sm64coin-node.service"; echo "  + sm64coin-node.service" ;; esac
+case "$PLATFORM" in linux-*) cp "$ROOT/packaging/sm64coin-node.service" "$STAGE/sm64coin-node.service"; echo "  + sm64coin-node.service"
+                    cp "$ROOT/packaging/sm64coin-lc.service" "$STAGE/sm64coin-lc.service"; echo "  + sm64coin-lc.service" ;; esac
 put "$POW_TARGET/sm64coin-leaderboard$X"   "sm64coin-leaderboard$X"
+put "$LC_TARGET/sm64coin-lc$X"             "sm64coin-lc$X"   # the light-client service: run it beside the node (packaging/sm64coin-lc.service)
 put "$POW_TARGET/automine$X"               "sm64coin-automine$X"
 put "$POW_TARGET/rrtrun$X"                 "rrtrun$X"   # the miner's tree-search child, found next to it
 if [ ! -f "$WEB_DIST/index.html" ] && [ -n "${ALLOW_NO_WEB:-}" ]; then   # dry runs only
@@ -216,7 +220,7 @@ bundle_macos_libs() {
   command -v dylibbundler >/dev/null || { echo "package.sh: dylibbundler is required (brew install dylibbundler)" >&2; exit 1; }
   set +e +o pipefail   # the loops below probe files with commands that may fail; errors are checked explicitly
   local args=() f
-  for f in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-leaderboard sm64coin-automine rrtrun; do
+  for f in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc sm64coin-leaderboard sm64coin-lc sm64coin-automine rrtrun; do
     [ -f "$STAGE/$f" ] && args+=(-x "$STAGE/$f")
   done
   # The deployed app carries its own copy of the daemon (a post-build step of the wallet app); the

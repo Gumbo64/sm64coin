@@ -29,6 +29,7 @@ echo "--- command-line programs"
 for p in sm64coind sm64coin-wallet-cli sm64coin-wallet-rpc; do
   ./$p$X --version || bad "$p --version failed"
 done
+./sm64coin-lc$X --version || bad "sm64coin-lc --version failed"
 
 echo "--- wallet app libraries"
 case "$OS" in

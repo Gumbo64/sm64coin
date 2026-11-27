@@ -151,6 +151,7 @@ jobs:
         with:
           workspaces: |
             pow
+            pow/lc
           key: ${{ matrix.platform }}
 
       - name: Restore ccache
@@ -165,6 +166,9 @@ jobs:
 
       - name: Leaderboard server (Rust)
         run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: Light-client service (Rust; sm64coin-lc, its own workspace)
+        run: scripts/ci-run.sh lc bash -c 'cd pow/lc && cargo build --release --features bin'
 
       - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
         run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
@@ -293,6 +297,7 @@ jobs:
             .ccache
             .cargo-home/registry
             pow/target
+            pow/lc/target
           key: windows-${{ github.run_id }}
           restore-keys: windows-
 
@@ -305,6 +310,9 @@ jobs:
 
       - name: Leaderboard server (Rust)
         run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: Light-client service (Rust; sm64coin-lc, its own workspace)
+        run: scripts/ci-run.sh lc bash -c 'cd pow/lc && cargo build --release --features bin'
 
       - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
         run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
@@ -329,6 +337,7 @@ jobs:
             .ccache
             .cargo-home/registry
             pow/target
+            pow/lc/target
           key: windows-${{ github.run_id }}
 
       # The wallet app needs the Qt DLLs, plugins and QML modules next to it.
@@ -409,6 +418,7 @@ jobs:
         with:
           workspaces: |
             pow
+            pow/lc
           key: macos-arm64
 
       - name: Restore ccache
@@ -423,6 +433,9 @@ jobs:
 
       - name: Leaderboard server (Rust)
         run: scripts/ci-run.sh leaderboard bash -c 'cd pow && cargo build --release -p sm64coin-leaderboard'
+
+      - name: Light-client service (Rust; sm64coin-lc, its own workspace)
+        run: scripts/ci-run.sh lc bash -c 'cd pow/lc && cargo build --release --features bin'
 
       - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
         run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'
