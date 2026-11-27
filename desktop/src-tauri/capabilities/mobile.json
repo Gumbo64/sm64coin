@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "The Android app's window: the public-node RPC and host info only (no node, ROM, miner, wallet-rpc or passkey link there).",
+  "windows": ["main"],
+  "platforms": ["android", "iOS"],
+  "permissions": [
+    "allow-host-info", "allow-remote-rpc", "allow-remote-node-get",
+    "core:event:allow-listen", "core:event:allow-unlisten"
+  ]
+}

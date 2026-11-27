@@ -53,11 +53,40 @@ pub fn run() {
     desktop::run();
 }
 
+/// Android: the window never leaves the app's own pages (http(s)://tauri.localhost); a link to a web page opens in the
+/// system browser instead (as desktop.rs `nav_guard` does), so no remote page is shown inside the app's window.
+#[cfg(mobile)]
+fn nav_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    use tauri::Manager;
+    use tauri_plugin_opener::OpenerExt;
+    tauri::plugin::Builder::new("nav-guard")
+        .on_navigation(|w, url| {
+            let own = (matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost")) || url.scheme() == "tauri" || url.as_str() == "about:blank";
+            if own {
+                return true;
+            }
+            if matches!(url.scheme(), "http" | "https") {
+                let _ = w.app_handle().opener().open_url(url.as_str(), None::<&str>);
+            }
+            false
+        })
+        .build()
+}
+
 #[cfg(mobile)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(nav_guard())
         .manage(remote::Remote::new(None))
+        .setup(|t| {
+            // tauri.conf.json's window has `create: false` (desktop.rs builds it, for portable mode): build it here too.
+            if let Some(cfg) = t.config().app.windows.iter().find(|w| w.label == "main").cloned() {
+                tauri::WebviewWindowBuilder::from_config(t.handle(), &cfg)?.build()?;
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get])
         .run(tauri::generate_context!())
         .expect("error while running the SM64Coin app");
