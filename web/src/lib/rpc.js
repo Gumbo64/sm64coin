@@ -8,6 +8,8 @@
 import { probeChain, chainNote } from './nodechain.js';
 import { getPlatform } from '../platform/index.js';
 const KEY = 'sm64coin.node';
+const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
+let savedRemote = ''; // desktop: the https node the user confirmed (remote_node_set), reached through Rust like the public node
 
 // A build for a static host (GitHub Pages) has no proxy: VITE_DEFAULT_NODE (e.g. the
 // visitor's own node, http://127.0.0.1:16481) is the node until one is chosen.
@@ -56,6 +58,7 @@ export async function resolveNode() {
     const r = await withTimeout(fetch(`${import.meta.env.BASE_URL}public-node.json`, { cache: 'no-cache' }), 3000);
     if (r.ok) publicNode = String((await r.json()).url || '').trim().replace(/\/+$/, '');
   } catch { /* no public node */ }
+  if (getPlatform().remoteNode) { try { savedRemote = clean((await getPlatform().remoteNode.get()).saved); } catch { /* none */ } }
   if (desktopNode() && !chosen()) { await watchLocalNode(); return; }
   if (getPlatform().mobile && !chosen() && publicNode) { fallback = true; return; } // Android: no local node, the public one over https // the app's own node, or the public one while it is down
   const pick = chosen();
@@ -74,6 +77,17 @@ export async function resolveNode() {
     note = chainNote({ chosen: true, node: DEFAULT_NODE, probe: probe.state });
   }
 }
+/** The Network page's "use this node". In the app an https node (other than the public one) is first confirmed by the user in a
+ *  native dialog and then reached through Rust (remote_rpc only goes to the public node and that one); rejects when cancelled. */
+export async function chooseNode(url) {
+  const v = clean(url);
+  const rn = getPlatform().remoteNode;
+  if (rn && rn.set) {
+    if (/^https:\/\//.test(v) && v !== publicNode) savedRemote = clean(await rn.set(v));
+    else if (!v && savedRemote) { await rn.set(null).catch(() => {}); savedRemote = ''; }
+  }
+  setNode(v);
+}
 export const setNode = (url) => {
   try {
     const v = (url || '').trim().replace(/\/+$/, '');
@@ -84,7 +98,8 @@ export const setNode = (url) => {
 async function call(url, method, params = {}) {
   // Desktop app: the same-origin node is the local one, reached through the Rust backend (no HTTP, no CORS, whitelisted methods).
   const p = getPlatform();
-  const native = url === '/json_rpc' ? p.rpc : (p.remoteRpc && publicNode && url === `${publicNode}/json_rpc` ? (m, pr) => p.remoteRpc(publicNode, m, pr) : null);
+  const remote = p.remoteRpc && [publicNode, savedRemote].find((b) => b && url === `${b}/json_rpc`);
+  const native = url === '/json_rpc' ? p.rpc : (remote ? (m, pr) => p.remoteRpc(remote, m, pr) : null);
   if (native) {
     const j = await withTimeout(native(method, params), 60000);
     if (j.error) throw new Error(`${method}: ${j.error.message}`);

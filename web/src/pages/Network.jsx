@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, nodeNote, setNode, usingPublicFallback } from '../lib/rpc.js';
+import { chooseNode, daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, nodeNote, usingPublicFallback } from '../lib/rpc.js';
 import useInterval from '../lib/useInterval.js';
 
 const clean = (u) => (u || '').trim().replace(/\/+$/, '');
@@ -28,7 +28,11 @@ export default function Network() {
   useInterval(refresh, 10000);
   useEffect(() => { refresh(); }, [node]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const use = (u) => { const v = clean(u); setNode(v); setNodeState(getNode()); setDraft(v); setStatus(''); };
+  const use = async (u) => {
+    const v = clean(u);
+    try { await chooseNode(v); } catch (e) { setStatus(e.code === 'cancelled' ? 'not changed' : `not changed: ${e.message}`); return; }
+    setNodeState(getNode()); setDraft(v); setStatus('');
+  };
   const save = () => { const v = clean(draft); if (!v || list.includes(v)) return; const l = [...list, v]; setList(l); saveList(l); };
   const remove = (u) => { const l = list.filter((x) => x !== u); setList(l); saveList(l); };
   const test = async () => { const v = clean(draft) || node; setStatus('testing ' + (v || 'the proxy') + ': ' + (await check(v))); };

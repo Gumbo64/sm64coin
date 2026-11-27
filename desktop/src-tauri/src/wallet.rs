@@ -433,13 +433,15 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
                     }
                 }
                 "set_daemon" => {
-                    // Only this app's node, or an https node (the public one): never a plain-http remote.
+                    // Only this app's own node (its RPC port, trusted) or an allowed https node (the public one, or the one the
+                    // user confirmed on the Network page; untrusted): never another local port or any other remote.
                     let a = str_param(&p, "address").unwrap_or("").to_string();
-                    let local = a.strip_prefix("127.0.0.1:").is_some_and(|x| x.parse::<u16>().is_ok());
-                    let https = a.starts_with("https://") && !a.contains(['@', '?', '#', ' ']);
-                    if !local && !https {
-                        return Err(AppError::new("forbidden", "the wallet's node must be this app's own node or an https address"));
+                    let local = a == default_daemon(app);
+                    let remote = handle.state::<crate::remote::Remote>().allowed(&a);
+                    if !local && remote.is_none() {
+                        return Err(AppError::new("forbidden", "the wallet's node must be this app's own node, the public node or the one saved on the Network page"));
                     }
+                    let a = remote.unwrap_or(a);
                     *app.wallet.daemon.lock().unwrap() = Some(a.clone());
                     p = json!({"address": a, "trusted": local, "ssl_support": if local { "disabled" } else { "enabled" }});
                     if !app.wallet.side.lock().unwrap().as_mut().is_some_and(|s| s.proc.alive()) {
@@ -502,6 +504,10 @@ pub fn spawn_idle_lock(handle: AppHandle) {
             let (minutes, idle) = (st.wallet.settings.lock().unwrap().auto_lock_minutes, st.wallet.last_activity.lock().unwrap().elapsed());
             if minutes > 0 && idle >= Duration::from_secs(minutes as u64 * 60) && st.wallet.open.lock().unwrap().is_some() {
                 let _gate = st.wallet.gate.lock().unwrap();
+                // A call may have held the gate for a while: lock only if the user is still away.
+                if st.wallet.last_activity.lock().unwrap().elapsed() < Duration::from_secs(minutes as u64 * 60) {
+                    continue;
+                }
                 lock_wallet(&st);
                 let _ = handle.emit("wallet-locked", "idle");
             }

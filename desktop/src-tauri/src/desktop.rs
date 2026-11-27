@@ -263,6 +263,38 @@ async fn node_rpc(app: AppHandle, method: String, params: Option<serde_json::Val
         .map_err(|e| AppError::new("internal", e.to_string()))?
 }
 
+/// Saves the https node the user picked on the Network page as the one `remote_rpc` and the wallet may also use, after the user
+/// confirms it in a native dialog (the page cannot widen the list by itself). `None` forgets it (no question asked).
+#[tauri::command]
+async fn remote_node_set(app: AppHandle, url: Option<String>) -> Res<Option<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let remote = app.state::<crate::remote::Remote>();
+        let Some(url) = url.filter(|u| !u.trim().is_empty()) else {
+            remote.set_saved(None)?;
+            return Ok(None);
+        };
+        let u = crate::remote::normalize(&url).ok_or_else(|| AppError::new("bad_url", "a remote node must be an https:// address"))?;
+        if remote.allowed(&u).is_some() {
+            return Ok(Some(u));
+        }
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let ok = app
+            .dialog()
+            .message(format!("Read the chain from the node at\n\n{u}\n\nand send your wallet's requests there? That node sees which blocks and transactions this app asks about."))
+            .title("Use this node?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Use it".into(), "Cancel".into()))
+            .blocking_show();
+        if !ok {
+            return Err(AppError::new("cancelled", "the node was not confirmed"));
+        }
+        remote.set_saved(Some(u.clone()))?;
+        Ok(Some(u))
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
 #[tauri::command]
 fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: Option<usize>) -> Res<miner::MinerInfo> {
     let rpc_port = {
@@ -307,9 +339,11 @@ pub fn run() {
     let dirs = Dirs::detect();
     let wallet = wallet::Wallet::new(&dirs);
     let app = App { link: link::Link::default(), wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
+    let remote = crate::remote::Remote::new(Some(app.dirs.data.join("remote-node.txt")));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app)
+        .manage(remote)
         .setup(|t| {
             // The node starts with the app when the ROM is there (the UI asks for it otherwise, then calls node_start).
             // SIGTERM / SIGINT / console close: leave through the normal exit path, which stops the miner and the node.
@@ -327,7 +361,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {

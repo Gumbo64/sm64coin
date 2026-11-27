@@ -141,8 +141,14 @@ const desktop = {
   mobile: false,
   /** JSON-RPC to the local node: resolves with the whole `{result}` / `{error}` answer (whitelisted methods only). */
   rpc: (method, params) => cmd('node_rpc', { method, params: params || {} }),
-  /** The same, against a remote node over https (the public node fallback). */
+  /** The same, against a remote node over https: only the public node or the one saved with remoteNode.set (Rust checks). */
   remoteRpc: (url, method, params) => cmd('remote_rpc', { url, method, params: params || {} }),
+  /** The https node the user picked on the Network page: `get()` -> {public, saved}; `set(url)` asks the user in a native
+   *  dialog and resolves with the saved URL (rejects with code 'cancelled'); `set(null)` forgets it. */
+  remoteNode: {
+    get: () => cmd('remote_node_get'),
+    set: (url) => cmd('remote_node_set', { url: url || null }),
+  },
   nodeUrl: () => nodeRpcUrl,
   node,
   nativeMiner,
@@ -164,6 +170,7 @@ const mobile = {
   node: null,
   nativeMiner: null,
   rom: null,
+  remoteNode: { get: desktop.remoteNode.get, set: null }, // the public node only (no native confirmation dialog there)
   wallet: null, // the browser's WASM wallet engine (Wallet page) serves there
   link: null,
 };
