@@ -362,17 +362,31 @@ about 2000 requests an hour per open page. Now the tip is pushed and the limit i
 The tip push does not need iroh. `pow/lc/src/tipfeed.rs` (feature `tip-server`, no iroh) is the one watcher of the local node and the subscriber
 counter; `pow/lc/src/sse.rs` serves it as **`GET /lc/tip`**, `text/event-stream`: an unnamed event per tip (the JSON record of `exec::tip_record`:
 `node, height, hash, timestamp, cumulative_difficulty, difficulty, server_time`) first for the current tip and then for each change, and
-`event: ka` every 30 s. The iroh `SubscribeTip` is the same feed through another door; `LcService::feed()` hands it to the SSE listener.
+`event: ka` every 30 s whose data is the server's clock (unix s). `server_time` is stamped when the record is sent (SSE and iroh alike), not when
+the tip was first seen, and the apps' `tip` event carries the source's clock *now* (`TipHub::stamped`). The iroh `SubscribeTip` is the same feed through another door; `LcService::feed()` hands it to the SSE listener.
 
 - **Run it**: `sm64coin-lc serve --sse-bind 127.0.0.1:16490`, or the launcher's `--lc-sse-bind`, or (no iroh in the build at all) the
   `ssesrv` example. The listener speaks plain HTTP on a local port; the public HTTPS address is the node's reverse proxy, which must not
   buffer the stream: Caddy `reverse_proxy /lc/tip 127.0.0.1:16490 { flush_interval -1 }`; nginx `location = /lc/tip { proxy_pass http://127.0.0.1:16490; proxy_buffering off; proxy_read_timeout 1h; }`.
-- **Caps**: 4 subscriptions per client IP (`X-Forwarded-For` is read only with `--sse-trust-forwarded`, i.e. when only the proxy can reach the
-  listener), 4096 in all, shared with the iroh subscriptions; beyond them `429`.
+- **Caps**: 4 subscriptions per client IP (an IPv6 client per /64), 4096 in all, shared with the iroh subscriptions; beyond them `429`; open
+  connections 4096 + 256 (heads still arriving, 404s), beyond that closed at once. `X-Forwarded-For` (its last entry, the one the proxy adds) is
+  read when the listener is on loopback (only the local proxy reaches it; otherwise every visitor would be 127.0.0.1 and share 4 slots) or with
+  `--sse-trust-forwarded`; nginx needs `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` (Caddy sets it). A reader that stops
+  reading holds only its own task (the tip is a `watch`, nothing queues) and is dropped when a write stalls 30 s. The browser reconnects after
+  the stream's `retry:` (spread over 4-10 s per connection).
 - **CORS / CSP**: the response sends `Access-Control-Allow-Origin: *` (public chain data; an `OPTIONS` preflight is answered `204`). The site's CSP
   `connect-src` already allows `https:` (and `http://127.0.0.1:*` / `http://localhost:*`), which is what an `EventSource` needs; no change.
 - **Clients choose**: the page (`tip.js`) tries, in order, the app's tip event, SSE at the node in use (`openSse`: a 404 is remembered for the page
-  load), the iroh watch, and the 30 s poll. Rust (`Client::watch_tip`) tries nodes best-first; an HTTP node's `Transport::open_tip_stream` is the SSE
+  load and the next source is tried within seconds), the iroh watch, and the 30 s poll. A push that ends falls back to the poll after a random
+  0-5 s and is tried again after 60 s doubling to 10 min (+-25 % jitter); `Client::watch_tip` gives up (`WatchEnd::NoNodes`) after 4 rounds in
+  which no node could be subscribed, so a dead push never leaves a client without a tip.
+- **The clock**: a held run is sent 5 s before it is valid and stamped with its valid second, both by the NODE's clock (`tipStore().now()`: this
+  device's clock corrected by pushed server times; `get_info.adjusted_time` is a median of block stamps, not a clock, and is not used). A phone
+  40 s fast would otherwise send 45 s early, past the node's 30 s submit window, and lose the run. A reset cycle (power-on start on a parent that
+  did not end its cycle) is valid `sm64_restart_delay` s later than a parent start of the same length (`validAtFor(..., restartDelay)`).
+- **The native miner's feed** (Android): `TipHub::live_tip_hash` is the tip only while a push delivers (or the local node is polled), else None
+  and the campaign polls its daemon itself; a change the feed reports is confirmed with the daemon (the template source) before the search is
+  dropped, so a feed one block ahead of a lagging daemon does not restart the search on the same old template. Rust (`Client::watch_tip`) tries nodes best-first; an HTTP node's `Transport::open_tip_stream` is the SSE
   reader (`HttpUpstream`), an iroh node's is `SubscribeTip`, and a node that does neither is `Unsupported`, so a list with none of them ends in
   `WatchEnd::NoPush` and the caller polls. With the `iroh-client` feature off everything above still builds (`cargo test --no-default-features
   --features tip-server --test sse`).
