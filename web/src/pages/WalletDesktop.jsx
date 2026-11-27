@@ -94,7 +94,7 @@ function Unlock({ st, note, run, adopt, busy }) {
         {st.wallets.length > 1 && <select value={name} onChange={(e) => setName(e.target.value)}>{st.wallets.map((n) => <option key={n}>{n}</option>)}</select>}
         {st.wallets.length === 1 && <b>{name}</b>}
       </p>
-      {/* a form, not onKeyDown: main.jsx stops keyboard events at window (for the game), so Enter never reaches React key handlers */}
+      {/* a form: Enter submits it */}
       <form onSubmit={(e) => { e.preventDefault(); if (pw && !busy) go(); }}>
         <input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
         <button type="submit" disabled={busy || !pw}>Open</button>

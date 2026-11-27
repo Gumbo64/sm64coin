@@ -56,8 +56,8 @@ node directly (node CORS origins include `tauri://localhost`).
   enforced in Rust against a salted hash kept while the wallet is open: password for `query_key` (seed, keys) always, for
   `transfer` when the setting is on; weakening a setting needs the password; `transfer` never relays (the page reviews, then
   `relay_tx`). Auto-lock (default 10 min, 0 = never) stores and closes the wallet; the page reports user activity.
-  Amounts are strings above 2^53. NB: `main.jsx` stops keyboard events at `window` (for the game), so `onKeyDown` handlers never
-  run in the app (the old Wallet page too): use `<form onSubmit>` for Enter.
+  Amounts are strings above 2^53. (`main.jsx`'s key guard for the game is a bubble-phase window listener, so React `onKeyDown`
+  handlers work everywhere.)
 - **Use my website passkey** (`link.rs`, `pages/DesktopLink.jsx`, `lib/desktopLink.js`): as designed; X25519 + HKDF-SHA256 +
   AES-256-GCM (WebCrypto has no ChaCha); the page sends the wallet's seed words (made with the WASM engine from the frozen
   passkey.js output), the app restores them with a password chosen in the app. Listener: 127.0.0.1, random port, 5 minutes,
