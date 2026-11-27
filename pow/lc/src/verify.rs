@@ -755,3 +755,49 @@ pub async fn sync(client: &Client, cp: &Checkpoint, rules: &dyn Consensus, judge
     let best = c.branches.into_iter().nth(i).unwrap();
     Ok(Outcome { best, replay, nodes, quorum_met: agreeing >= opts.quorum, banned })
 }
+
+// ---------------------------------------------------------------------------------------------
+// History between two checkpoints (the random old-cycle spot check)
+// ---------------------------------------------------------------------------------------------
+
+/// Fetches the blocks strictly between `lo` and up to `hi` (heights `lo.height + 1 ..= hi.height`) and checks
+/// that they form the chain between the two trusted checkpoints: every `prev_id` links, the first links to
+/// `lo`, the last is `hi`. No rules are applied (the chain between two checkpoints is what both vouch for);
+/// the blocks are authentic, which is what a replay of old history needs. Pick `lo` and `hi` from
+/// [`crate::checkpoints`] a few blocks apart to bound the download.
+pub async fn backfill(lo: &Checkpoint, hi: &Checkpoint, src: &dyn ChainSource, cancel: &dyn Fn() -> bool) -> Result<Vec<Block>, VerifyError> {
+    if hi.height <= lo.height {
+        return Err(VerifyError::Source("backfill needs lo below hi".into()));
+    }
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut next = lo.height + 1;
+    while next <= hi.height {
+        if cancel() {
+            return Err(VerifyError::Cancelled);
+        }
+        let want = (hi.height + 1 - next).min(FETCH_BLOCKS as u64) as u32;
+        let batch = src.blocks(next, want).await.map_err(VerifyError::Source)?;
+        if batch.is_empty() {
+            return Err(VerifyError::Source(format!("the node stopped serving blocks at {next}")));
+        }
+        for r in batch.iter().take(want as usize) {
+            let b = Block::parse(&r.blob).map_err(|e| invalid(next, e.to_string()))?;
+            if b.height != next || r.claims.hash != b.id() {
+                return Err(invalid(next, "the served block is not the one asked for"));
+            }
+            blocks.push(b);
+            next += 1;
+        }
+    }
+    let mut want_id = hi.id;
+    for b in blocks.iter().rev() {
+        if b.id() != want_id {
+            return Err(VerifyError::CheckpointMismatch(format!("block {} does not lead to the checkpoint at {}", b.height, hi.height)));
+        }
+        want_id = b.header.prev_id;
+    }
+    if want_id != lo.id {
+        return Err(VerifyError::CheckpointMismatch(format!("the blocks do not start at the checkpoint at {}", lo.height)));
+    }
+    Ok(blocks)
+}

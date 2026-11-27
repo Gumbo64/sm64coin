@@ -187,11 +187,13 @@ resolver as a fallback.
 
 ### Verification: what a light client checks
 
-`pow/lc/src/verify.rs`, the same code native and in WASM. The transport is not trusted; only these checks are.
+`pow/lc/src/verify.rs` (with `block.rs`, `checkpoints.rs`; implemented, see `pow/lc/README.md`), the same code native and
+in WASM. The transport is not trusted; only these checks are.
 1. **Anchor**: a checkpoint (height, hash) compiled into each release (`checkpoints.rs`, updated at release
    time from a full node). The client never accepts a chain that does not contain it.
 2. **Header chain**: from the anchor, every header's `prev` links, its id is recomputed in Rust (a Rust
-   port of the block id hash, `sm64pow/src/block_id.rs`, golden vectors against monerod), the timestamp and
+   port of the block id hash in `pow/lc/src/block.rs`, checked against the live chain's ids and, with the `replay`
+   feature, against `sm64pow::template`), the timestamp and
    frame-limit rules (`rules.rs`: `next_difficulty`, `StarCycle::max_frames`) hold, and fork choice is the
    v0.4 rule (`longer AND heavier`, the weight from the proof records). Cheap: no emulation.
 3. **Replay the current cycle in full**: every block since the last power-on, with the real perturbation

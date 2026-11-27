@@ -100,7 +100,9 @@ fn find(hay: &[u8], needle: &[u8]) -> usize {
 #[tokio::test]
 async fn a_valid_chain_passes_from_genesis_and_from_a_checkpoint() {
     let c = chain();
+    let t0 = std::time::Instant::now();
     let b = verify(&genesis_cp(&c), c.clone()).await.unwrap();
+    println!("header layer: {} blocks, {} bytes, {:?} (fixtures in memory)", b.blocks.len(), c.iter().map(|x| x.blob.len()).sum::<usize>(), t0.elapsed());
     assert_eq!(b.level, Level::Full);
     assert_eq!(b.tip.height, 16);
     assert_eq!(b.tip.id, c[16].claims.hash);
