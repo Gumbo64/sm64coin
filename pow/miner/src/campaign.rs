@@ -1,6 +1,8 @@
-//! The auto-miner as a library: [`Campaign`] runs the RRT campaign (the `automine --controller rrt` loop) on threads of the
-//! calling process, with no child process, no `rrtrun` binary and no file outside `data_dir`. It is what the Android
-//! app calls (Android cannot spawn sidecar binaries) and what the desktop app can call instead of spawning `automine`.
+//! The auto-miner as a library: [`Campaign`] runs the RRT campaign (the one mining loop: `automine` is a thin command line
+//! over it) on threads of the calling process, with no child process, no `rrtrun` binary and no file outside `data_dir`
+//! (unless [`CampaignConfig::in_process`] is turned off: then each search step runs in an `rrtrun` process, for crash and
+//! memory isolation). It is what the Android app calls (Android cannot spawn sidecar binaries) and what the desktop app
+//! spawns as `automine`.
 //!
 //! ```no_run
 //! use sm64coin_miner::campaign::{Campaign, CampaignConfig, Event};
@@ -22,21 +24,22 @@
 //! c.join();
 //! ```
 //!
-//! What a campaign does (the same as automine's rrt controller): fetch a block template from the daemon, start from the
+//! What a campaign does: fetch a block template from the daemon, start from the
 //! parent's end state (or power-on, by the reset policy), play on to the next progress point with the tree search (steps
 //! run in-process, [`crate::rrt::child::run_step_inproc`]), seal the proof, search on for a shorter run while the run waits
 //! for the time limit (anytime), sign once per seed (`data_dir/signed.json`: never two different runs for a seed) and submit.
 //! Mining validity never depends on the search: the proof is sealed by the shadow replay (`sm64pow::seal_proof_at`).
 //!
-//! One campaign per process (the search's viz mailbox and frame counter are process-wide): [`Campaign::start`] fails while
-//! another runs. The search engine's own console output (`println!`) is not captured; the events carry the miner's log.
+//! A campaign owns its viz mailbox and frame counter (`rrt::vizio::Hub`), so several can run in one process (the search's
+//! "resume this block" memory is the one process-wide piece: it is keyed by the block's seed, so a neighbour costs a resume at
+//! most). The search engine's own console output (`println!`) is not captured; the events carry the miner's log.
 use crate::reset::{self, ResetMode};
 use crate::rh::Attempt;
 use crate::rpc;
-use crate::rrt::{self, RrtOptions, vizio};
-use crate::tracker::Mined;
+use crate::rrt::{self, RrtOptions, vizio::Hub};
+use crate::rh::Mined;
 use anyhow::{Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sm64pow::proof::Start;
 use sm64pow::sm64_binds::SaveState;
 use std::path::PathBuf;
@@ -86,6 +89,34 @@ pub struct CampaignConfig {
     pub max_blocks: u64,
     /// Added to every search's seed (different runs from one template, tests).
     pub salt: u64,
+    /// Run each search step on a thread of this process (default), or in an `rrtrun` process per step (`child`, else next to
+    /// the running executable; needs `rom_path`): a crashing or leaking step then cannot take the miner down.
+    pub in_process: bool,
+    pub child: Option<PathBuf>,
+    /// The ROM's path, for the `rrtrun` steps (they load it themselves).
+    pub rom_path: Option<String>,
+    /// Where the step files, the campaign's memory across blocks and its roadmap live (default `data_dir/rrt-scratch`), and
+    /// the signed-run store (default `data_dir/signed.json`).
+    pub scratch: Option<PathBuf>,
+    pub signed_file: Option<PathBuf>,
+    /// Wall-clock cap of one tree in seconds (0: none), checkpoints in a row before a course is given up, the course
+    /// trees' stall stop in frames (0: off), more tree settings "VAR=value ..", frames a run may take (0: the most any
+    /// difficulty allows).
+    pub step_seconds: f64,
+    pub checkpoints: usize,
+    pub stall: u64,
+    pub extra_env: String,
+    pub frame_cap: usize,
+    /// `when-stuck`: also give up the parent-start search after this many seconds on an "either" template and take
+    /// power-on (0: only when the search itself gives up).
+    pub reset_after: u64,
+    /// Testing the hold policy: submit a waiting run this many seconds early, stamped when it becomes valid (0: off; also
+    /// turns the anytime search off).
+    pub stamp_ahead: u64,
+    /// Testing: seal the first block, save it here as JSON ([`SavedBlock`]) instead of submitting it, and stop.
+    pub save_block: Option<PathBuf>,
+    /// Save each sealed run's pads here as `<height>.m64` (from the block's start state, not from power-on).
+    pub save_dir: Option<PathBuf>,
 }
 
 impl CampaignConfig {
@@ -106,6 +137,20 @@ impl CampaignConfig {
             normalise: Normalise::Exact,
             max_blocks: 0,
             salt: 0,
+            in_process: true,
+            child: None,
+            rom_path: None,
+            scratch: None,
+            signed_file: None,
+            step_seconds: 0.0,
+            checkpoints: 8,
+            stall: 0,
+            extra_env: String::new(),
+            frame_cap: 0,
+            reset_after: 0,
+            stamp_ahead: 0,
+            save_block: None,
+            save_dir: None,
         }
     }
 }
@@ -182,7 +227,7 @@ struct Inner {
     counts: Mutex<(u64, u64)>,
     /// (frames at the last `stats()`, when)
     sample: Mutex<(u64, std::time::Instant)>,
-    base_frames: u64,
+    hub: Arc<Hub>,
     running: AtomicBool,
 }
 
@@ -210,7 +255,25 @@ impl Inner {
     }
 }
 
-static RUNNING: AtomicBool = AtomicBool::new(false);
+/// A sealed block kept for the hold tests (`save_block`, `automine --save-block / --submit-saved / --pick-difficulty`).
+#[derive(Serialize, Deserialize)]
+pub struct SavedBlock {
+    pub template_blob: String,
+    /// v0.3: the template's seed and miner key (secret, hex), to sign at submit.
+    #[serde(default)]
+    pub seed_hash: String,
+    #[serde(default)]
+    pub key_secret: String,
+    /// The key's signature of this one run (hex, 64 bytes): the seed excludes the timestamp, so a restamped block keeps it
+    /// (the web test tooling can't sign in node).
+    #[serde(default)]
+    pub sig: String,
+    pub proof: String,
+    pub frames: u32,
+    pub parent_ts: u64,
+    pub prev_hash: String,
+    pub height: u64,
+}
 
 /// A running campaign. Dropping it stops the campaign and waits for it.
 pub struct Campaign {
@@ -220,14 +283,10 @@ pub struct Campaign {
 
 impl Campaign {
     /// Starts mining on a background thread: loads the ROM, makes `data_dir`, and returns at once (errors of the loop come
-    /// as [`Event::Stopped`]). Fails if the address / ROM / reset policy is unusable or another campaign runs.
+    /// as [`Event::Stopped`]). Fails if the address / ROM / reset policy is unusable.
     pub fn start(cfg: CampaignConfig) -> Result<Campaign> {
         // A test network's address (--testnet / --stagenet) is not "SM6..": the daemon checks it.
         let reset_mode: ResetMode = cfg.reset.parse().map_err(|e: String| anyhow::anyhow!(e))?;
-        if RUNNING.swap(true, Ordering::SeqCst) {
-            bail!("a campaign is already running in this process");
-        }
-        let guard = RunGuard;
         std::fs::create_dir_all(&cfg.data_dir)?;
         sm64pow::init(cfg.rom.clone())?;
         let inner = Arc::new(Inner {
@@ -235,27 +294,24 @@ impl Campaign {
             subs: Mutex::new(Vec::new()),
             state: Mutex::new(State { phase: Phase::Starting, height: 0, detail: String::new() }),
             counts: Mutex::new((0, 0)),
-            sample: Mutex::new((rrt::SIM_FRAMES.load(Ordering::Relaxed), std::time::Instant::now())),
-            base_frames: rrt::SIM_FRAMES.load(Ordering::Relaxed),
+            sample: Mutex::new((0, std::time::Instant::now())),
+            hub: Hub::host(),
             running: AtomicBool::new(true),
         });
         if cfg.viz {
             let i = inner.clone();
-            vizio::enable_inproc(true, Some(Arc::new(move |kind: &str, key: &str, payload: &str| i.emit(Event::Viz { kind: kind.into(), key: key.into(), payload: payload.into() }))));
+            inner.hub.enable(true, Some(Arc::new(move |kind: &str, key: &str, payload: &str| i.emit(Event::Viz { kind: kind.into(), key: key.into(), payload: payload.into() }))));
         }
         let thread = {
             let inner = inner.clone();
             std::thread::Builder::new().name("sm64coin-campaign".into()).stack_size(32 << 20).spawn(move || {
-                let _guard = guard;
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&inner, &cfg, reset_mode)));
                 let err = match r {
                     Ok(Ok(())) => None,
                     Ok(Err(e)) => Some(format!("{e:#}")),
                     Err(_) => Some("the campaign thread panicked".into()),
                 };
-                if cfg.viz {
-                    vizio::disable_inproc();
-                }
+                inner.hub.disable();
                 inner.running.store(false, Ordering::Relaxed);
                 inner.phase(Phase::Stopped, 0, err.clone().unwrap_or_default());
                 inner.emit(Event::Stopped(err));
@@ -290,20 +346,20 @@ impl Campaign {
 
     /// Counters and the search speed since the previous `stats()` call.
     pub fn stats(&self) -> Stats {
-        let n = rrt::SIM_FRAMES.load(Ordering::Relaxed);
+        let n = self.inner.hub.sim_frames();
         let mut s = self.inner.sample.lock().unwrap();
         let fps = (n - s.0) as f64 / s.1.elapsed().as_secs_f64().max(1e-3);
         *s = (n, std::time::Instant::now());
         let c = *self.inner.counts.lock().unwrap();
         let st = self.state();
-        Stats { running: self.inner.running.load(Ordering::Relaxed), frames: n - self.inner.base_frames, fps, blocks_sent: c.0, blocks_rejected: c.1, height: st.height, phase: Some(st.phase) }
+        Stats { running: self.inner.running.load(Ordering::Relaxed), frames: n, fps, blocks_sent: c.0, blocks_rejected: c.1, height: st.height, phase: Some(st.phase) }
     }
 
     /// The page's mailbox, one JSON line as the desktop app sends on the miner's stdin: `{"viz_on": bool}` (the feed's
     /// switch) or `{"mail": {"goal": .., "cmds": [..], "reqs": [..]}}` (the sampling bubble, hybrid commands, node
     /// requests; other keys are ignored). Only has an effect with `viz` on.
     pub fn mailbox(&self, json: &str) {
-        vizio::input(json);
+        self.inner.hub.input(json);
     }
 }
 
@@ -314,14 +370,7 @@ impl Drop for Campaign {
     }
 }
 
-struct RunGuard;
-impl Drop for RunGuard {
-    fn drop(&mut self) {
-        RUNNING.store(false, Ordering::SeqCst);
-    }
-}
-
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
@@ -332,7 +381,7 @@ struct ParentCache {
 }
 
 /// Smallest timestamp such that a run of `frames` is within the limit of a block stamped then (never before `from`).
-fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
+pub fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
     let r = sm64pow::rules();
     let mut ts = from.max(parent_ts);
     if r.max_frames(retarget, ts - parent_ts) >= frames {
@@ -356,17 +405,21 @@ fn valid_from(retarget: u64, parent_ts: u64, frames: u32, from: u64) -> u64 {
 
 /// Watches the daemon (a new block ends the search) and the campaign's stop flag, from its own thread.
 struct Watch {
+    /// Ends the search (a new block, the stop flag, a restart time). `pstop` ends the parent-start search only (the
+    /// `reset_after` deadline) and is raised with `stop` too.
     stop: Arc<AtomicBool>,
+    pstop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     new_tip: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<()>,
 }
 
 impl Watch {
-    /// `deadline` (unix s, 0: none) ends the search too; `power_on_at` (0: none) restarts a "parent" template when it passes.
-    fn spawn(inner: &Arc<Inner>, url: &str, prev: &str, deadline: u64, power_on_at: u64) -> Watch {
-        let (stop, done, new_tip) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
-        let (s, d, n) = (stop.clone(), done.clone(), new_tip.clone());
+    /// `deadline` (unix s, 0: none) ends the search too; `power_on_at` (0: none) restarts a "parent" template when it passes;
+    /// `p_deadline` (0: none) ends the parent-start search (`pstop`) only.
+    fn spawn(inner: &Arc<Inner>, url: &str, prev: &str, deadline: u64, power_on_at: u64, p_deadline: u64) -> Watch {
+        let (stop, pstop, done, new_tip) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (s, ps, d, n) = (stop.clone(), pstop.clone(), done.clone(), new_tip.clone());
         let (inner, url, prev) = (inner.clone(), url.to_string(), prev.to_string());
         let thread = std::thread::spawn(move || {
             let dm = rpc::Daemon::new(&url);
@@ -375,6 +428,7 @@ impl Watch {
                 std::thread::sleep(Duration::from_millis(100));
                 if inner.stopped() {
                     s.store(true, Ordering::Relaxed);
+                    ps.store(true, Ordering::Relaxed);
                     return;
                 }
                 if polled.elapsed() < Duration::from_secs(2) {
@@ -383,16 +437,21 @@ impl Watch {
                 polled = std::time::Instant::now();
                 if (power_on_at != 0 && now() >= power_on_at) || (deadline != 0 && now() >= deadline) {
                     s.store(true, Ordering::Relaxed);
+                    ps.store(true, Ordering::Relaxed);
                     return;
+                }
+                if p_deadline != 0 && now() >= p_deadline {
+                    ps.store(true, Ordering::Relaxed);
                 }
                 if dm.top_hash().map(|h| h != prev).unwrap_or(false) {
                     n.store(true, Ordering::Relaxed);
                     s.store(true, Ordering::Relaxed);
+                    ps.store(true, Ordering::Relaxed);
                     return;
                 }
             }
         });
-        Watch { stop, done, new_tip, thread }
+        Watch { stop, pstop, done, new_tip, thread }
     }
     fn finish(self) -> bool {
         self.done.store(true, Ordering::Relaxed);
@@ -413,7 +472,7 @@ struct Ctx<'a> {
 }
 
 fn run(inner: &Arc<Inner>, cfg: &CampaignConfig, reset_mode: ResetMode) -> Result<()> {
-    let signed_file = cfg.data_dir.join("signed.json").to_string_lossy().into_owned();
+    let signed_file = cfg.signed_file.clone().unwrap_or_else(|| cfg.data_dir.join("signed.json")).to_string_lossy().into_owned();
     let mut daemon = rpc::Daemon::new(&cfg.daemon_url);
     if let Some(v) = &cfg.payout_view_secret {
         daemon = daemon.with_payouts(crate::payout::Payouts::new(&cfg.address, v, &signed_file)?);
@@ -447,10 +506,18 @@ impl Ctx<'_> {
             hub_frames: self.cfg.hub_frames,
             course_frames: self.cfg.course_frames,
             seed: self.attempt.wrapping_mul(7919).wrapping_add(k.wrapping_mul(104729)).wrapping_add(self.cfg.salt),
-            scratch: self.cfg.data_dir.join("rrt-scratch"),
-            in_process: true,
+            scratch: self.cfg.scratch.clone().unwrap_or_else(|| self.cfg.data_dir.join("rrt-scratch")),
+            step_seconds: self.cfg.step_seconds,
+            checkpoints: self.cfg.checkpoints,
+            stall: self.cfg.stall,
+            extra_env: self.cfg.extra_env.clone(),
+            frame_cap: self.cfg.frame_cap,
+            child: self.cfg.child.clone(),
+            rom: self.cfg.rom_path.clone(),
+            in_process: self.cfg.in_process,
+            hub: Some(self.inner.hub.clone()),
             viz: self.cfg.viz,
-            // The exchange only names the steps (sync tags) for hybrid mining; the viz hooks answer it in-process.
+            // The exchange only names the steps (sync tags) for hybrid mining; the hub answers it.
             exchange: self.cfg.viz.then(|| Arc::new(|_: &str, _: &str| None) as rrt::Exchange),
             ..Default::default()
         }
@@ -492,15 +559,18 @@ impl Ctx<'_> {
 
         inner.phase(Phase::Searching, t.height, format!("start {start:?}"));
         let power_on_at = reset::restart_at_power_on_time(self.reset_mode, &t.sm64_start, t.sm64_power_on_at).unwrap_or(0);
-        let w = Watch::spawn(inner, &cfg.daemon_url, &t.tip, 0, power_on_at);
+        let p_deadline = if self.reset_mode == ResetMode::WhenStuck && t.sm64_start == "either" && start == Start::Parent && cfg.reset_after > 0 { now() + cfg.reset_after } else { 0 };
+        let w = Watch::spawn(inner, &cfg.daemon_url, &t.tip, 0, power_on_at, p_deadline);
         let ro = self.rrt_options(0);
         let mut result: Option<Mined> = None;
         let mut no_route = None;
         let log = |m: String| inner.log(format!("  {m}"));
-        let mut r = survive(rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &w.stop, log), inner);
+        let first_stop = if start == Start::Parent { &w.pstop } else { &w.stop };
+        let mut r = survive(rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, first_stop, log), inner);
         let fallback = match &r {
             _ if start == Start::PowerOn => None,
             Attempt::NoRoute(why) => Some(format!("no route from the parent's end state: {why}")),
+            Attempt::Gave(why) if w.pstop.load(Ordering::Relaxed) && !w.stop.load(Ordering::Relaxed) => Some(format!("parent-start search timed out ({why})")),
             Attempt::Gave(why) if t.sm64_start == "either" && !w.stop.load(Ordering::Relaxed) => Some(format!("the parent's end state didn't give progress quickly ({why})")),
             _ => None,
         };
@@ -552,7 +622,26 @@ impl Ctx<'_> {
                 return Ok(false);
             }
         }
-        let (m, proof, frames) = if cfg.anytime {
+        if let Some(dir) = &cfg.save_dir {
+            std::fs::create_dir_all(dir)?;
+            let mut m64 = vec![0u8; 0x400];
+            m64[..4].copy_from_slice(b"M64\x1a");
+            for p in &m.pads {
+                m64.extend_from_slice(&p.button.to_be_bytes());
+                m64.push(p.stick_x as u8);
+                m64.push(p.stick_y as u8);
+            }
+            std::fs::write(dir.join(format!("{}.m64", t.height)), m64)?;
+        }
+        if let Some(f) = &cfg.save_block {
+            let proof = self.normalised(start, parent_state.as_ref(), &seed, &params, &m.pads, proof);
+            let key = t.key.as_ref();
+            let b = SavedBlock { template_blob: t.blocktemplate_blob.clone(), seed_hash: t.sm64_seed_hash.clone(), key_secret: key.map(|k| hex::encode(k.secret)).unwrap_or_default(), sig: match key { Some(k) => hex::encode(sm64pow::mining::sign_proof(k, &seed.0, &proof)?), None => String::new() }, proof: hex::encode(&proof), frames, parent_ts: t.sm64_parent_timestamp, prev_hash: t.prev_hash.clone(), height: t.height };
+            std::fs::write(f, serde_json::to_string(&b)?)?;
+            self.log(format!("  saved block {} ({frames} frames) to {}, not submitted", t.height, f.display()));
+            return Ok(true);
+        }
+        let (m, proof, frames) = if cfg.anytime && cfg.stamp_ahead == 0 {
             match self.improve(&t, start, parent_state.as_ref(), &seed, &params, m, proof)? {
                 Some(x) => x,
                 None => return Ok(false), // a new block landed (or stopped): the run is void
@@ -576,7 +665,12 @@ impl Ctx<'_> {
             ts = ts.max(asked);
             self.log(format!("  {frames} frames is over the current limit; valid at {ts} (in {} s)", ts.saturating_sub(now())));
             inner.phase(Phase::WaitingValid, t.height, format!("valid in {} s", ts.saturating_sub(now())));
-            let ahead = cfg.submit_lead.min(sm64pow::rules::RPC_SUBMIT_AHEAD_SECONDS.saturating_sub(5));
+            let ahead = if cfg.stamp_ahead > 0 {
+                self.log(format!("  test: submitting {} s early, stamped {ts}", cfg.stamp_ahead.min(ts.saturating_sub(now()))));
+                cfg.stamp_ahead
+            } else {
+                cfg.submit_lead.min(sm64pow::rules::RPC_SUBMIT_AHEAD_SECONDS.saturating_sub(5))
+            };
             let mut abandoned = false;
             while now() + ahead < ts {
                 if inner.stopped() {
@@ -667,7 +761,7 @@ impl Ctx<'_> {
             keys.sort();
             keys.dedup();
             ro.guide_keys = keys;
-            let w = Watch::spawn(inner, &self.cfg.daemon_url, &t.tip, deadline, 0);
+            let w = Watch::spawn(inner, &self.cfg.daemon_url, &t.tip, deadline, 0, 0);
             let r = rrt::mine(start, parent, seed, params, &ro, &w.stop, |m| inner.log(format!("    {m}")));
             let stopped = w.stop.load(Ordering::Relaxed);
             if w.finish() || inner.stopped() {

@@ -1,15 +1,10 @@
 pub mod m64;
-pub mod tracker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rpc;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod update;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod beam;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod routes;
 pub mod hook;
 pub mod rh;
 pub mod macros;

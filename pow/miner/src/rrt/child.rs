@@ -248,7 +248,15 @@ pub fn step_config(job: &Job) -> Result<SearchConfig> {
 pub struct StepIo {
     pub exchange: Option<super::Exchange>,
     pub stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Native: the viz hub the step's hooks write to and read from (a campaign's; None: the step process's own).
+    pub hub: Option<VizHub>,
 }
+
+/// The step's viz hub (rrt/vizio.rs); nothing in the browser, whose hooks call the page.
+#[cfg(not(target_arch = "wasm32"))]
+pub type VizHub = Arc<super::vizio::Hub>;
+#[cfg(target_arch = "wasm32")]
+pub type VizHub = ();
 
 /// Runs one tree step in this process, as the process's only one (`rrtrun`, a fresh browser instance): settings
 /// are installed process-wide, the rayon pool is the global one. Call once per process.
@@ -263,7 +271,7 @@ pub fn run_step(job: &Job) -> Result<StepOut> {
     }
     let sc = obrrt_core::config::install(step_config(job)?);
     rayon::ThreadPoolBuilder::new().num_threads(job.threads).build_global().ok();
-    let io = StepIo { exchange: EXCHANGE.get().cloned(), stop: None };
+    let io = StepIo { exchange: EXCHANGE.get().cloned(), stop: None, hub: None };
     run_step_core(job, sc, None, &io, true)
 }
 
@@ -307,12 +315,16 @@ fn run_step_core(job: &Job, sc: &'static SearchConfig, rt: Option<Arc<Runtime>>,
     let generator = guide::wrap(job, obrrt_spec::wrap(Arc::new(Registry))?)?;
     let save = game.save_state();
     let mut engine = Engine::new_hooked(cfg, &crate::hook::hooked(&game)?, job.threads, Vec::new(), crate::hook::hooked_save(&save), root.clone(), generator.clone())?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let vh: VizHub = io.hub.clone().unwrap_or_else(|| super::vizio::global().clone());
+    #[cfg(target_arch = "wasm32")]
+    let vh: VizHub = ();
     if job.viz {
-        engine.on_round = Some(viz::sampler(job, &root, generator.clone()));
+        engine.on_round = Some(viz::sampler(job, &root, generator.clone(), vh));
     } else {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            engine.on_round = Some(viz::progress_file(if own_process { format!("{}.progress", job.out_dir) } else { String::new() }));
+            engine.on_round = Some(viz::progress_file(if own_process { format!("{}.progress", job.out_dir) } else { String::new() }, vh));
         }
     }
     let sync_stats = Arc::new(std::sync::Mutex::new(SyncStats::default()));
@@ -797,7 +809,7 @@ pub mod viz {
     /// (`sm64miner.viz_state(key, bytes)`, key = the viz feed's step key) so the page can start the game at the step's
     /// root and replay only the step's own inputs. The page can also ask for the inputs of a sampled node of this tree
     /// (`sm64miner.viz_req(key)` -> JSON ids; answered with `viz_path(key, id, flat pads)`; page-side only on cross-origin isolated pages).
-    pub fn sampler(job: &Job, root: &St, _generator: Arc<dyn obrrt_core::Generator>) -> Box<dyn FnMut(&Engine) + Send> {
+    pub fn sampler(job: &Job, root: &St, _generator: Arc<dyn obrrt_core::Generator>, hub: VizHub) -> Box<dyn FnMut(&Engine) + Send> {
         let key = format!("{}:{}:{}:{}:{:?}", job.seed, job.frame0, root.level, root.area, job.goal);
         let key_str = key.clone();
         let mut fresh = true; // the page has none of this step's feed yet (first sample, or the feed was switched off)
@@ -819,31 +831,31 @@ pub mod viz {
             }
             // Feed off: only a tiny progress line (frames simulated so far in this step), about once a second,
             // for the page's frames/s readout.
-            if !viz_on() {
+            if !viz_on(&hub) {
                 fresh = true;
                 last = Instant::now();
-                tick(e.total_frames_emulated());
-                emit(&format!("{{\"progress\":1,\"sim_frames\":{}}}", e.total_frames_emulated()));
+                tick(&hub, e.total_frames_emulated());
+                emit(&hub, &format!("{{\"progress\":1,\"sim_frames\":{}}}", e.total_frames_emulated()));
                 return;
             }
             last = Instant::now();
-            tick(e.total_frames_emulated());
+            tick(&hub, e.total_frames_emulated());
             let refresh = std::mem::take(&mut fresh);
             if refresh {
                 if let Ok(st) = crate::sys::fs::read(&job2.state_file) {
-                    send_state(&key, &st);
+                    send_state(&hub, &key, &st);
                     // With it the page can rebuild any node's exact state itself (hybrid mining: the root's perturbation
                     // and the step's sync tag; the node's path comes from the page's tree mirror).
                     if let Ok(p) = serde_json::to_string(&job2.pert) {
-                        send_pert(&key, &serde_json::json!({ "tag": job2.sync_tag, "pert": p }).to_string());
+                        send_pert(&hub, &key, &serde_json::json!({ "tag": job2.sync_tag, "pert": p }).to_string());
                     }
                 }
                 edges = Edges::default();
             }
-            for id in requested(&key) {
+            for id in requested(&hub, &key) {
                 if (id as usize) < e.tree.nodes.len() {
                     let flat: Vec<i32> = e.tree.path(id).iter().flat_map(|p| [p.button as i32, p.stick_x as i32, p.stick_y as i32]).collect();
-                    send_path(&key, id, &flat);
+                    send_path(&hub, &key, id, &flat);
                 }
             }
             let nodes = &e.tree.nodes;
@@ -888,7 +900,7 @@ pub mod viz {
                 msg["clip"] = c.json();
             }
             if !edges.buf.is_empty() {
-                send_edges(&key_str, &edges.buf);
+                send_edges(&hub, &key_str, &edges.buf);
                 edges.buf.clear();
             }
             if let Some(b) = best {
@@ -899,7 +911,7 @@ pub mod viz {
                     msg["pads"] = serde_json::json!(pads);
                 }
             }
-            emit(&msg.to_string());
+            emit(&hub, &msg.to_string());
         })
     }
 
@@ -1087,7 +1099,7 @@ pub mod viz {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn emit(line: &str) {
+    fn emit(_hub: &VizHub, line: &str) {
         #[wasm_bindgen::prelude::wasm_bindgen]
         extern "C" {
             #[wasm_bindgen(js_namespace = sm64miner, js_name = viz)]
@@ -1099,11 +1111,11 @@ pub mod viz {
     /// Native (automine `--viz`, see vizio.rs): the line goes up the child's stdout as a frame; with the feed off the
     /// progress line is not sent (the parent reads the progress file).
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit(line: &str) {
+    fn emit(hub: &VizHub, line: &str) {
         if line.starts_with("{\"progress\"") {
             return;
         }
-        crate::rrt::vizio::frame("viz", "", line);
+        hub.frame("viz", "", line);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1122,52 +1134,52 @@ pub mod viz {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn send_edges(key: &str, bytes: &[u8]) {
+    fn send_edges(_hub: &VizHub, key: &str, bytes: &[u8]) {
         js_viz_edges(key, bytes);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_edges(key: &str, bytes: &[u8]) {
-        crate::rrt::vizio::frame("edges", key, &crate::rrt::vizio::b64(bytes));
+    fn send_edges(hub: &VizHub, key: &str, bytes: &[u8]) {
+        hub.frame("edges", key, &crate::rrt::vizio::b64(bytes));
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn send_state(key: &str, bytes: &[u8]) {
+    fn send_state(_hub: &VizHub, key: &str, bytes: &[u8]) {
         js_viz_state(key, bytes);
     }
     #[cfg(target_arch = "wasm32")]
-    fn send_pert(key: &str, json: &str) {
+    fn send_pert(_hub: &VizHub, key: &str, json: &str) {
         js_viz_pert(key, json);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_pert(key: &str, json: &str) {
-        crate::rrt::vizio::frame("pert", key, json);
+    fn send_pert(hub: &VizHub, key: &str, json: &str) {
+        hub.frame("pert", key, json);
     }
     #[cfg(target_arch = "wasm32")]
-    fn send_path(key: &str, id: u32, flat: &[i32]) {
+    fn send_path(_hub: &VizHub, key: &str, id: u32, flat: &[i32]) {
         js_viz_path(key, id, flat);
     }
     /// The node ids the page asked this step's tree for (empty natively and without the page's board).
     #[cfg(target_arch = "wasm32")]
-    fn requested(key: &str) -> Vec<u32> {
+    fn requested(_hub: &VizHub, key: &str) -> Vec<u32> {
         js_viz_req(key).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_state(key: &str, bytes: &[u8]) {
-        crate::rrt::vizio::frame("state", key, &crate::rrt::vizio::b64(bytes));
+    fn send_state(hub: &VizHub, key: &str, bytes: &[u8]) {
+        hub.frame("state", key, &crate::rrt::vizio::b64(bytes));
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_path(key: &str, id: u32, flat: &[i32]) {
-        crate::rrt::vizio::frame("path", key, &serde_json::json!({ "id": id, "flat": flat }).to_string());
+    fn send_path(hub: &VizHub, key: &str, id: u32, flat: &[i32]) {
+        hub.frame("path", key, &serde_json::json!({ "id": id, "flat": flat }).to_string());
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn requested(key: &str) -> Vec<u32> {
-        crate::rrt::vizio::requested(key)
+    fn requested(hub: &VizHub, key: &str) -> Vec<u32> {
+        hub.requested(key)
     }
 
     /// Native: about once a second the frames this step has simulated so far go into `path` (a bare number), where the
     /// parent (`run_child`) reads them for the miner's frames/s counter ([`super::super::SIM_FRAMES`]).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn progress_file(path: String) -> Box<dyn FnMut(&Engine) + Send> {
+    pub fn progress_file(path: String, hub: VizHub) -> Box<dyn FnMut(&Engine) + Send> {
         let mut last = Instant::now();
         Box::new(move |e: &Engine| {
             if last.elapsed().as_secs_f64() < 1.0 {
@@ -1176,7 +1188,7 @@ pub mod viz {
             last = Instant::now();
             let n = e.total_frames_emulated();
             if path.is_empty() {
-                crate::rrt::vizio::progress(n);
+                hub.progress(n);
             } else {
                 let _ = std::fs::write(&path, n.to_string());
             }
@@ -1185,7 +1197,7 @@ pub mod viz {
 
     /// Whether the page wants the feed now (`sm64miner.viz_on()`, a flag the page can flip).
     #[cfg(target_arch = "wasm32")]
-    fn viz_on() -> bool {
+    fn viz_on(_hub: &VizHub) -> bool {
         #[wasm_bindgen::prelude::wasm_bindgen]
         extern "C" {
             #[wasm_bindgen(js_namespace = sm64miner, js_name = viz_on)]
@@ -1195,15 +1207,15 @@ pub mod viz {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn viz_on() -> bool {
-        crate::rrt::vizio::viz_on()
+    fn viz_on(hub: &VizHub) -> bool {
+        hub.viz_on()
     }
 
     /// Frames simulated so far in the step: native, into the progress file the parent reads (the sampler replaces
     /// `progress_file` when the feed is on); in the page it is the `progress` line / the viz line's `sim_frames`.
-    fn tick(_frames: u64) {
+    fn tick(_hub: &VizHub, _frames: u64) {
         #[cfg(not(target_arch = "wasm32"))]
-        crate::rrt::vizio::progress(_frames);
+        _hub.progress(_frames);
     }
 }
 

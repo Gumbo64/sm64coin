@@ -1,6 +1,5 @@
 //! The automated miner's controller built on the user's rolling-horizon GA
-//! (objective-rrt-v2 `RhController`, the ETA objectives), replacing the beam
-//! search. Every worker game is an `SM64MiningGame` (the search crate's
+//! (objective-rrt-v2 `RhController`, the ETA objectives). Every worker game is an `SM64MiningGame` (the search crate's
 //! `sm64coin` feature), so every rollout is perturbed exactly as the verifier
 //! replays it. Deref trap guard: a shadow `SM64MiningGame` replays each
 //! committed frame through `step` (the real perturbed step), the pads it
@@ -142,7 +141,17 @@ impl Default for RhOptions {
     }
 }
 
-pub use crate::tracker::Mined;
+/// A found run.
+pub struct Mined {
+    pub pads: Vec<GamePad>,
+    pub sim_frames: u64,
+    pub seconds: f64,
+    /// rrt: the keys of the objectives that made the run's path (all stages), for the next search's guide
+    /// (OBRRT_GUIDE_KEYS); empty for rh.
+    pub keys: Vec<String>,
+    /// rrt: the played length at the start of each campaign step (the run's segments, for sharing it).
+    pub starts: Vec<usize>,
+}
 
 /// When the start has settled: Mario is controllable and has either stood
 /// still for [`Calm::STILL`] frames or, because the perturbation pokes the pad
