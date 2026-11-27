@@ -124,6 +124,26 @@ fn list_wallets(d: &Dirs) -> Vec<String> {
     v
 }
 
+/// The KDF rounds a wallet was made with (wallet2 needs the same value to open it, and the sidecar takes it once, at start):
+/// kept next to the wallet as `<name>.kdf`, a plain number (not secret). A wallet without one was made with the default, 1.
+fn kdf_path(dir: &std::path::Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.kdf"))
+}
+
+fn read_kdf(dir: &std::path::Path, name: &str) -> Option<u32> {
+    std::fs::read_to_string(kdf_path(dir, name)).ok().and_then(|s| s.trim().parse::<u32>().ok()).filter(|k| (1..=1_000_000).contains(k))
+}
+
+fn write_kdf(dir: &std::path::Path, name: &str, rounds: u32) -> std::io::Result<()> {
+    std::fs::write(kdf_path(dir, name), format!("{rounds}\n"))
+}
+
+/// The rounds to start the sidecar with for `method` on wallet `name`: create/restore take the page's choice (default 1);
+/// open takes the page's explicit value, else the one stored with the wallet, else 1.
+fn kdf_for(method: &str, asked: Option<u32>, stored: Option<u32>) -> u32 {
+    if method == "open_wallet" { asked.or(stored).unwrap_or(1) } else { asked.unwrap_or(1) }
+}
+
 fn default_daemon(app: &App) -> String {
     let port = app.node_rpc_port().unwrap_or_else(|| crate::desktop::port_env("SM64COIN_RPC_PORT", 16481));
     format!("127.0.0.1:{port}")
@@ -413,10 +433,18 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
             if app.wallet.open.lock().unwrap().is_some() {
                 lock_wallet(app);
             }
-            ensure_sidecar(app, if method == "open_wallet" { None } else { Some(kdf.unwrap_or(1)) })?;
+            let dir = wallets_dir(&app.dirs)?;
+            let rounds = kdf_for(method, kdf, read_kdf(&dir, &name));
+            ensure_sidecar(app, Some(rounds))?;
             let r = call(app, method, p, slow)?;
             if r.get("error").is_none() {
                 remember(app, &name, &pw);
+                // Made here (or opened with an explicit value): remember the rounds, so the next start opens it.
+                if method != "open_wallet" || kdf.is_some() {
+                    if let Err(e) = write_kdf(&dir, &name, rounds) {
+                        eprintln!("wallet: cannot save {name}.kdf: {e}");
+                    }
+                }
             }
             Ok(r)
         }
@@ -521,6 +549,7 @@ pub fn restore_from_seed(app: &AppHandle, name: &str, password: &str, seed: &str
                 let _ = std::fs::remove_file(dir.join(name));
                 let _ = std::fs::remove_file(dir.join(format!("{name}.keys")));
                 let _ = std::fs::remove_file(dir.join(format!("{name}.address.txt")));
+                let _ = std::fs::remove_file(kdf_path(&dir, name));
             }
             return Err(AppError::new("address_mismatch", "the received seed words do not belong to the address that was shown; nothing was imported"));
         }
@@ -551,6 +580,27 @@ pub fn spawn_idle_lock(handle: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kdf_rounds_are_kept_per_wallet() {
+        let dir = std::env::temp_dir().join(format!("sm64coin-kdf-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_kdf(&dir, "w1"), None);
+        write_kdf(&dir, "w1", 64).unwrap();
+        assert_eq!(read_kdf(&dir, "w1"), Some(64));
+        assert_eq!(read_kdf(&dir, "w2"), None);
+        std::fs::write(kdf_path(&dir, "w2"), "junk").unwrap();
+        assert_eq!(read_kdf(&dir, "w2"), None);
+        std::fs::write(kdf_path(&dir, "w2"), "0").unwrap();
+        assert_eq!(read_kdf(&dir, "w2"), None);
+        // open: the page's explicit value, else the stored one, else 1; create/restore: the page's, else 1.
+        assert_eq!(kdf_for("open_wallet", None, Some(64)), 64);
+        assert_eq!(kdf_for("open_wallet", Some(8), Some(64)), 8);
+        assert_eq!(kdf_for("open_wallet", None, None), 1);
+        assert_eq!(kdf_for("create_wallet", None, Some(64)), 1);
+        assert_eq!(kdf_for("restore_deterministic_wallet", Some(32), None), 32);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn digest_against_a_running_sidecar() {
