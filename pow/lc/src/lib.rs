@@ -19,6 +19,10 @@ pub mod http;
 
 #[cfg(feature = "iroh-client")]
 pub mod endpoint;
+#[cfg(feature = "tip-server")]
+pub mod tipfeed;
+#[cfg(feature = "tip-server")]
+pub mod sse;
 #[cfg(feature = "server")]
 pub mod server;
 #[cfg(feature = "relay")]

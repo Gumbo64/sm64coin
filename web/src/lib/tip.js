@@ -52,6 +52,39 @@ export function tipFromPush(j, at = Date.now()) {
   };
 }
 
+/** Silence on an SSE stream after which it is taken for dead (the server sends a `ka` event every 30 s). */
+export const SSE_SILENCE_MS = 95_000;
+
+/**
+ * Follows the tip over Server-Sent Events (`GET <node>/lc/tip`, pow/lc/src/sse.rs): plain HTTPS, no iroh. `h` = the store's handlers.
+ * Returns a stop function. A node without the endpoint (404: the EventSource closes at once) is reported through `deps.onUnsupported(url)`
+ * so it is not tried again this page load. A dropped connection is retried by the browser (EventSource) by itself.
+ */
+export function openSse(url, h, deps = {}) {
+  const ES = deps.EventSource || globalThis.EventSource;
+  const later = deps.setTimeout || ((f, ms) => setTimeout(f, ms));
+  const cancel = deps.clearTimeout || ((t) => clearTimeout(t));
+  if (!ES) return null;
+  let es;
+  try { es = new ES(url); } catch { return null; }
+  let dead = false, opened = false, watchdog = null;
+  const arm = () => { cancel(watchdog); watchdog = later(() => finish('silent'), SSE_SILENCE_MS); };
+  function finish(why) {
+    if (dead) return;
+    dead = true;
+    cancel(watchdog);
+    try { es.close(); } catch { /* closed */ }
+    if (!opened && deps.onUnsupported) deps.onUnsupported(url);
+    h.end(why);
+  }
+  es.onopen = () => { opened = true; arm(); };
+  es.onmessage = (e) => { arm(); try { h.tip(JSON.parse(e.data)); } catch { /* an unreadable record */ } };
+  es.addEventListener('ka', arm);
+  es.onerror = () => { if (es.readyState === 2) finish('closed'); }; // CLOSED: refused (404, CORS, TLS); CONNECTING = the browser retries
+  arm();
+  return () => { if (dead) return; dead = true; cancel(watchdog); try { es.close(); } catch { /* closed */ } };
+}
+
 /**
  * deps: { info() -> get_info result, header(hash) -> block timestamp, sources: [(handlers) => stop | null], onVisible(fn) -> off,
  *         now(), setTimeout, clearTimeout }
@@ -246,6 +279,7 @@ export function createTipStore(deps) {
 // ---- the page's instance -------------------------------------------------------------------------------------------------
 
 let page = null;
+const sseUnsupported = new Set(); // node URLs that answered no /lc/tip this page load
 
 /** The page's tip store, wired to rpc.js, lightnet.js and the platform. */
 export function tipStore() {
@@ -271,6 +305,16 @@ export function tipStore() {
         const p = getPlatform();
         if (!p.tip) return null;
         return p.tip.subscribe((j) => h.tip(j));
+      },
+      // the node in use serves Server-Sent Events (an HTTPS node behind a proxy that forwards /lc/tip): no iroh needed
+      async (h) => {
+        const { getNode } = await import('./rpc.js');
+        const { getPlatform } = await import('../platform/index.js');
+        const node = getNode();
+        if (getPlatform().desktop && !node) return null; // the app's own backend: platform.tip covers it
+        const url = `${node}/lc/tip`;
+        if (sseUnsupported.has(url)) return null;
+        return openSse(url, h, { onUnsupported: (u) => sseUnsupported.add(u) });
       },
       // a browser tab on the light-client network: SubscribeTip over iroh
       async (h) => {

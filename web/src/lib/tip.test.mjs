@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createTipStore, tipFromInfo, tipFromPush, POLL_MS, MIN_REPOLL_MS, PUSH_RETRY_MS } from './tip.js';
+import { openSse, SSE_SILENCE_MS, createTipStore, tipFromInfo, tipFromPush, POLL_MS, MIN_REPOLL_MS, PUSH_RETRY_MS } from './tip.js';
 
 // ---- parsing
 {
@@ -224,5 +224,44 @@ const total = (w) => w.calls.info + w.calls.header;
   w.store.reset();
   await settle();
   assert.deepEqual(seen, ['h5', null, 'other']);
+}
+// ---- Server-Sent Events source (no iroh)
+{
+  class FakeES {
+    static last = null;
+    constructor(url) { this.url = url; this.readyState = 0; this.listeners = {}; FakeES.last = this; }
+    addEventListener(n, f) { this.listeners[n] = f; }
+    close() { this.readyState = 2; this.closed = true; }
+  }
+  const w = world();
+  const got = [], ends = [], unsupported = [];
+  const h = { tip: (j) => got.push(j.hash), end: (why) => ends.push(why) };
+  const deps = { EventSource: FakeES, setTimeout: (f, ms) => { const x = { at: w.t + ms, f }; w.timers.push(x); return x; }, clearTimeout: (x) => { const i = w.timers.indexOf(x); if (i >= 0) w.timers.splice(i, 1); }, onUnsupported: (u) => unsupported.push(u) };
+  // a stream that works: records, keepalives re-arm the watchdog, silence ends it
+  const stop = openSse('https://n.example/lc/tip', h, deps);
+  const es = FakeES.last;
+  assert.equal(es.url, 'https://n.example/lc/tip');
+  es.readyState = 1; es.onopen();
+  es.onmessage({ data: JSON.stringify({ height: 7, hash: 'aa', timestamp: 1, difficulty: '1', cumulative_difficulty: '1' }) });
+  es.onmessage({ data: 'garbage' });
+  assert.deepEqual(got, ['aa']);
+  await w.advance(SSE_SILENCE_MS - 1000);
+  es.listeners.ka(); // keepalive
+  await w.advance(SSE_SILENCE_MS - 1000);
+  assert.deepEqual(ends, [], 'keepalives hold it open');
+  await w.advance(2000);
+  assert.deepEqual(ends, ['silent']);
+  assert.ok(es.closed);
+  assert.deepEqual(unsupported, [], 'it had opened: not "unsupported"');
+  stop();
+  // the browser reconnecting (CONNECTING) is not an end; a refusal before open (404) is "unsupported" and ends
+  const stop2 = openSse('https://m.example/lc/tip', h, deps);
+  const es2 = FakeES.last;
+  es2.readyState = 0; es2.onerror();
+  assert.deepEqual(ends, ['silent']);
+  es2.readyState = 2; es2.onerror();
+  assert.deepEqual(ends, ['silent', 'closed']);
+  assert.deepEqual(unsupported, ['https://m.example/lc/tip']);
+  stop2();
 }
 console.log('tip ok');

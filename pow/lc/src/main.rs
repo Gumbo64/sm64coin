@@ -60,6 +60,13 @@ enum Cmd {
         relay: RelayChoice,
         #[arg(long, default_value = "0.0.0.0:443")]
         relay_bind: SocketAddr,
+        /// Serve the tip over plain HTTP (Server-Sent Events, GET /lc/tip) on this address, e.g. 127.0.0.1:16490; the public HTTPS
+        /// front is the node's reverse proxy (see pow/lc/src/sse.rs). Off by default.
+        #[arg(long)]
+        sse_bind: Option<SocketAddr>,
+        /// Read the client IP of an SSE subscriber from X-Forwarded-For (only when the listener is reachable only through that proxy).
+        #[arg(long)]
+        sse_trust_forwarded: bool,
         #[arg(long)]
         relay_quic_bind: Option<SocketAddr>,
         /// Per-client relay rate limit, KiB/s.
@@ -136,7 +143,7 @@ fn load_or_create_key(dir: &PathBuf) -> std::io::Result<SecretKey> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
     match Cli::parse().cmd {
-        Cmd::Serve { node_rpc, allow_unrestricted_rpc, data_dir, relay, relay_bind, relay_quic_bind, relay_rate_kib, relay_max_clients, relay_monthly_cap_gib, public_host, tls, tls_cert, tls_key, acme_domain, acme_contact, acme_production, discovery, relay_url, no_n0_fallback, bootstrap, https_rpc, bind } => {
+        Cmd::Serve { node_rpc, allow_unrestricted_rpc, data_dir, relay, relay_bind, sse_bind, sse_trust_forwarded, relay_quic_bind, relay_rate_kib, relay_max_clients, relay_monthly_cap_gib, public_host, tls, tls_cert, tls_key, acme_domain, acme_contact, acme_production, discovery, relay_url, no_n0_fallback, bootstrap, https_rpc, bind } => {
             let upstream: Arc<dyn Upstream> = Arc::new(HttpUpstream::new(&node_rpc)?);
             let network = loop {
                 match exec::genesis_hash(&*upstream, Duration::from_secs(5)).await {
@@ -171,6 +178,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cfg = ServerConfig { network, limits: Limits::default(), flags: node_flags::ARCHIVE, version: 1, https_rpc };
             let service = LcService::new(cfg, upstream, secret, hello.clone());
             let router = service.serve(ep.clone());
+            if let Some(bind) = sse_bind {
+                let (a, _task) = sm64coin_lc::sse::serve(service.feed(), sm64coin_lc::sse::SseConfig { bind, trust_forwarded: sse_trust_forwarded, ..Default::default() }).await?;
+                println!("tip stream (SSE): http://{a}/lc/tip");
+                std::mem::forget(_task);
+            }
             println!("endpoint id: {}", ep.id());
 
             let mut list = std::fs::read_to_string(data_dir.join("nodes.json")).ok().and_then(|s| NodeList::from_json(&s).ok()).unwrap_or_default();

@@ -100,6 +100,10 @@ struct Opts {
     #[cfg(feature = "lc")]
     #[arg(long, default_value = "0.0.0.0:443", value_name = "ADDR")]
     lc_relay_bind: std::net::SocketAddr,
+    /// Serve the tip over plain HTTP (Server-Sent Events, GET /lc/tip) here, e.g. 127.0.0.1:16490, behind the node's HTTPS reverse proxy
+    #[cfg(feature = "lc")]
+    #[arg(long, value_name = "ADDR")]
+    lc_sse_bind: Option<std::net::SocketAddr>,
     /// Known light-client servers to learn peers from (iroh:<id>[@relay] or https URL), repeatable
     #[cfg(feature = "lc")]
     #[arg(long = "lc-bootstrap", value_name = "SPEC")]
@@ -490,6 +494,7 @@ fn run(o: Opts) -> Result<(), String> {
         let _lc = if let Some(port) = restricted_port.filter(|_| lc_on) {
             let mut c = sm64coin_launcher::lcserve::LcConfig::new(port, data_dir.join("lc"));
             c.relay_bind = o.lc_relay_bind;
+            c.sse_bind = o.lc_sse_bind;
             c.bootstrap = o.lc_bootstrap.clone();
             if !o.lc_acme_domain.is_empty() {
                 c.tls = sm64coin_lc::relay::TlsMode::Acme { domains: o.lc_acme_domain.clone(), contact: o.lc_acme_contact.clone(), cache_dir: data_dir.join("lc").join("acme"), production: true };

@@ -356,3 +356,23 @@ about 2000 requests an hour per open page. Now the tip is pushed and the limit i
   30 s plus on focus/visibility and after a submit); the desktop/Android Rust side has `lcnet::TipHub` (push or 30 s poll; the app's own node
   is polled locally once a second on desktop) which feeds the page's `tip` event, the verifier (one check per new tip) and the Android
   miner's `TipFeed`. Standalone `automine` against a local node keeps its 2 s local poll.
+
+### Tip push over plain HTTPS (Server-Sent Events): iroh is optional
+
+The tip push does not need iroh. `pow/lc/src/tipfeed.rs` (feature `tip-server`, no iroh) is the one watcher of the local node and the subscriber
+counter; `pow/lc/src/sse.rs` serves it as **`GET /lc/tip`**, `text/event-stream`: an unnamed event per tip (the JSON record of `exec::tip_record`:
+`node, height, hash, timestamp, cumulative_difficulty, difficulty, server_time`) first for the current tip and then for each change, and
+`event: ka` every 30 s. The iroh `SubscribeTip` is the same feed through another door; `LcService::feed()` hands it to the SSE listener.
+
+- **Run it**: `sm64coin-lc serve --sse-bind 127.0.0.1:16490`, or the launcher's `--lc-sse-bind`, or (no iroh in the build at all) the
+  `ssesrv` example. The listener speaks plain HTTP on a local port; the public HTTPS address is the node's reverse proxy, which must not
+  buffer the stream: Caddy `reverse_proxy /lc/tip 127.0.0.1:16490 { flush_interval -1 }`; nginx `location = /lc/tip { proxy_pass http://127.0.0.1:16490; proxy_buffering off; proxy_read_timeout 1h; }`.
+- **Caps**: 4 subscriptions per client IP (`X-Forwarded-For` is read only with `--sse-trust-forwarded`, i.e. when only the proxy can reach the
+  listener), 4096 in all, shared with the iroh subscriptions; beyond them `429`.
+- **CORS / CSP**: the response sends `Access-Control-Allow-Origin: *` (public chain data; an `OPTIONS` preflight is answered `204`). The site's CSP
+  `connect-src` already allows `https:` (and `http://127.0.0.1:*` / `http://localhost:*`), which is what an `EventSource` needs; no change.
+- **Clients choose**: the page (`tip.js`) tries, in order, the app's tip event, SSE at the node in use (`openSse`: a 404 is remembered for the page
+  load), the iroh watch, and the 30 s poll. Rust (`Client::watch_tip`) tries nodes best-first; an HTTP node's `Transport::open_tip_stream` is the SSE
+  reader (`HttpUpstream`), an iroh node's is `SubscribeTip`, and a node that does neither is `Unsupported`, so a list with none of them ends in
+  `WatchEnd::NoPush` and the caller polls. With the `iroh-client` feature off everything above still builds (`cargo test --no-default-features
+  --features tip-server --test sse`).

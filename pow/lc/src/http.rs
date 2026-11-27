@@ -52,6 +52,9 @@ impl Upstream for HttpUpstream {
         let data = tokio::task::spawn_blocking(move || me.post_blocking("/json_rpc", "application/json", body, timeout)).await.map_err(|e| UpError::Unreachable(e.to_string()))??;
         serde_json::from_slice(&data).map_err(|e| UpError::Bad(e.to_string()))
     }
+    async fn tip_stream(&self) -> Option<Result<Box<dyn crate::client::TipStream>, crate::client::TransportError>> {
+        Some(self.open_sse().await)
+    }
     async fn post(&self, path: &str, content_type: &str, body: Vec<u8>, timeout: Duration) -> Result<Vec<u8>, UpError> {
         if !allowlist::path_allowed(path) {
             return Err(UpError::NotAllowed(format!("{path} is not available")));
@@ -59,5 +62,71 @@ impl Upstream for HttpUpstream {
         let me = self.clone();
         let (path, ct) = (path.to_string(), content_type.to_string());
         tokio::task::spawn_blocking(move || me.post_blocking(&path, &ct, body, timeout)).await.map_err(|e| UpError::Unreachable(e.to_string()))?
+    }
+}
+
+/// Where an HTTP node serves its tip stream (Server-Sent Events).
+pub const SSE_PATH: &str = "/lc/tip";
+
+/// A tip subscription over Server-Sent Events: a blocking reader thread parses the events and hands the tips over a channel.
+struct SseStream {
+    rx: tokio::sync::mpsc::UnboundedReceiver<crate::proto::TipInfo>,
+}
+
+#[async_trait::async_trait]
+impl crate::client::TipStream for SseStream {
+    async fn next(&mut self) -> Result<Option<crate::proto::TipInfo>, crate::client::TransportError> {
+        Ok(self.rx.recv().await)
+    }
+}
+
+impl HttpUpstream {
+    /// GET `/lc/tip` (`Accept: text/event-stream`): `Unsupported` when the node has no such endpoint (404/405/501), else a stream
+    /// that ends when the connection does (the caller reconnects). The server sends a `ka` event every 30 s, so 95 s of silence
+    /// is a dead connection.
+    async fn open_sse(&self) -> Result<Box<dyn crate::client::TipStream>, crate::client::TransportError> {
+        use crate::client::TransportError;
+        let url = format!("{}{}", self.base, SSE_PATH);
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(10)).timeout_read(Duration::from_secs(95)).build();
+        let resp = tokio::task::spawn_blocking(move || agent.get(&url).set("Accept", "text/event-stream").call())
+            .await
+            .map_err(|e| TransportError::Connect(e.to_string()))?;
+        let resp = match resp {
+            Ok(r) => r,
+            Err(ureq::Error::Status(404 | 405 | 501, _)) => return Err(TransportError::Unsupported),
+            Err(ureq::Error::Status(c, _)) => return Err(TransportError::Protocol(format!("HTTP {c}"))),
+            Err(e) => return Err(TransportError::Connect(e.to_string())),
+        };
+        if !resp.content_type().starts_with("text/event-stream") {
+            return Err(TransportError::Unsupported);
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::task::spawn_blocking(move || {
+            use std::io::BufRead;
+            let mut lines = std::io::BufReader::new(resp.into_reader()).lines();
+            let (mut event, mut data) = (String::new(), String::new());
+            while let Some(Ok(line)) = lines.next() {
+                if line.is_empty() {
+                    // end of an event: the default (unnamed) ones are tips; `ka` is the keepalive
+                    if event.is_empty() && !data.is_empty() {
+                        if let Some(t) = serde_json::from_str::<Value>(&data).ok().and_then(|j| crate::exec::tip_from_record(&j)) {
+                            if tx.send(t).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    if tx.is_closed() {
+                        return;
+                    }
+                    event.clear();
+                    data.clear();
+                } else if let Some(v) = line.strip_prefix("event:") {
+                    event = v.trim().to_string();
+                } else if let Some(v) = line.strip_prefix("data:") {
+                    data.push_str(v.trim_start());
+                }
+            }
+        });
+        Ok(Box::new(SseStream { rx }))
     }
 }

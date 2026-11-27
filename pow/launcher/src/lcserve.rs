@@ -38,11 +38,13 @@ pub struct LcConfig {
     /// The relay's certificate. Self-signed (the default) keeps the relay off in auto mode (no client trusts it); ACME with
     /// a domain (`--lc-acme-domain`) gets a browser-valid Let's Encrypt one on port 443 (cached in `data_dir/acme`).
     pub tls: TlsMode,
+    /// Serve the tip over plain HTTP (Server-Sent Events at /lc/tip; sm64coin_lc::sse) here, behind the node's HTTPS reverse proxy.
+    pub sse_bind: Option<SocketAddr>,
 }
 
 impl LcConfig {
     pub fn new(node_rpc_port: u16, data_dir: PathBuf) -> Self {
-        LcConfig { node_rpc_port, allow_unrestricted: false, data_dir, relay: RelayChoice::Auto, relay_bind: "0.0.0.0:443".parse().unwrap(), discovery: Discovery::Dht, bootstrap: vec![], n0_fallback: true, tls: TlsMode::SelfSigned }
+        LcConfig { node_rpc_port, allow_unrestricted: false, data_dir, relay: RelayChoice::Auto, relay_bind: "0.0.0.0:443".parse().unwrap(), discovery: Discovery::Dht, bootstrap: vec![], n0_fallback: true, tls: TlsMode::SelfSigned, sse_bind: None }
     }
 }
 
@@ -119,6 +121,11 @@ async fn run(cfg: LcConfig, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::er
     let ep = build_endpoint(EndpointOptions { secret_key: Some(secret.clone()), discovery: cfg.discovery, n0_fallback: cfg.n0_fallback, alpns: vec![ALPN.to_vec()], ..Default::default() }).await?;
     let service = LcService::new(ServerConfig { network, limits: Limits::default(), flags: node_flags::ARCHIVE, version: 1, https_rpc: None }, upstream, secret, hello.clone());
     let router = service.serve(ep.clone());
+    if let Some(bind) = cfg.sse_bind {
+        let (a, task) = sm64coin_lc::sse::serve(service.feed(), sm64coin_lc::sse::SseConfig { bind, ..Default::default() }).await?;
+        println!("Tip stream (SSE): http://{a}/lc/tip");
+        std::mem::forget(task);
+    }
     println!("Light-client service: endpoint id {} (relay {:?}).", ep.id(), cfg.relay);
 
     let mut list = std::fs::read_to_string(cfg.data_dir.join("nodes.json")).ok().and_then(|s| NodeList::from_json(&s).ok()).unwrap_or_default();

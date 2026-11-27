@@ -55,6 +55,9 @@ impl<U: Upstream> Transport for UpstreamTransport<U> {
     async fn request(&self, req: &Request, timeout: Duration) -> Result<Response, TransportError> {
         Ok(exec::run(&self.0, req, timeout).await)
     }
+    async fn open_tip_stream(&self) -> Result<Box<dyn TipStream>, TransportError> {
+        self.0.tip_stream().await.unwrap_or(Err(TransportError::Unsupported))
+    }
 }
 
 /// Builds the transport for a node address (HTTP, iroh ...). The browser supplies its own.
@@ -262,6 +265,15 @@ impl Client {
     }
 }
 
+#[cfg(feature = "iroh-client")]
+async fn nap(d: Duration) {
+    n0_future::time::sleep(d).await
+}
+#[cfg(all(feature = "http", not(feature = "iroh-client")))]
+async fn nap(d: Duration) {
+    tokio::time::sleep(d).await
+}
+
 /// How a tip watch ended.
 #[derive(Debug)]
 pub enum WatchEnd {
@@ -271,13 +283,12 @@ pub enum WatchEnd {
     NoNodes,
 }
 
-#[cfg(feature = "iroh-client")]
+#[cfg(any(feature = "iroh-client", feature = "http"))]
 impl Client {
     /// Follows the chain tip by push: subscribes at the best node, calls `on_tip(node key, tip)` for the current tip and each
     /// change, and on a broken stream reconnects (another node, with backoff up to 30 s). Runs until the future is dropped; it
     /// returns only when no node can push (`WatchEnd::NoPush`: every node answered `Unsupported`) so the caller can poll.
     pub async fn watch_tip<F: FnMut(&str, TipInfo) + MaybeSend>(&self, mut on_tip: F) -> WatchEnd {
-        use n0_future::time::sleep;
         let mut unsupported = std::collections::HashSet::<String>::new();
         let mut backoff = Duration::from_secs(1);
         loop {
@@ -326,7 +337,7 @@ impl Client {
                 }
                 break;
             }
-            sleep(backoff).await;
+            nap(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(30));
         }
     }

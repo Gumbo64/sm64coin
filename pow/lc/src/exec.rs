@@ -48,6 +48,11 @@ pub trait Upstream: MaybeSend + MaybeSync {
     async fn json_rpc(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, UpError>;
     /// POST `path` (an [`allowlist::PATH_ALLOWED`] path); returns the answer body.
     async fn post(&self, path: &str, content_type: &str, body: Vec<u8>, timeout: Duration) -> Result<Vec<u8>, UpError>;
+    /// A tip subscription over this upstream (Server-Sent Events at `/lc/tip` of an HTTP node). None: this upstream cannot
+    /// (the caller polls); `Some(Err(Unsupported))`: the node does not serve it.
+    async fn tip_stream(&self) -> Option<Result<Box<dyn crate::client::TipStream>, crate::client::TransportError>> {
+        None
+    }
 }
 
 fn bin_path(c: WalletBin) -> &'static str {
@@ -124,6 +129,32 @@ pub fn tip_from_info(info: &Value) -> Option<Tip> {
     };
     // `height` is the count of blocks; the tip's height is one less.
     Some(Tip { height: height.saturating_sub(1), hash, cumulative_difficulty: cd })
+}
+
+/// A tip as the JSON record every transport and client shares (the SSE event, the page's `tip` event, lc-wasm's `watch_tip`): the
+/// two big numbers are decimal strings (they can exceed 2^53).
+pub fn tip_record(node: &str, t: &TipInfo) -> Value {
+    json!({
+        "node": node,
+        "height": t.height,
+        "hash": hex::encode(t.hash),
+        "timestamp": t.timestamp,
+        "cumulative_difficulty": t.cumulative_difficulty.to_string(),
+        "difficulty": t.difficulty.to_string(),
+        "server_time": t.server_time,
+    })
+}
+
+/// The inverse of [`tip_record`]; None when a field is missing or unreadable.
+pub fn tip_from_record(j: &Value) -> Option<TipInfo> {
+    Some(TipInfo {
+        height: j.get("height")?.as_u64()?,
+        hash: hex32(j.get("hash")?.as_str()?)?,
+        timestamp: j.get("timestamp")?.as_u64()?,
+        cumulative_difficulty: j.get("cumulative_difficulty")?.as_str()?.parse().ok()?,
+        difficulty: j.get("difficulty")?.as_str()?.parse().ok()?,
+        server_time: j.get("server_time").and_then(|v| v.as_u64()).unwrap_or(0),
+    })
 }
 
 /// The retarget difficulty of the next block in a `get_info` result (`difficulty`, at least 1).
