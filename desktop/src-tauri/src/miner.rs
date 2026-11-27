@@ -85,7 +85,7 @@ impl Miner {
         // The campaign's scratch (its memory across blocks, its roadmap) lasts between runs.
         cmd.arg("--rrt-scratch").arg(d.data.join("miner"));
         cmd.arg("--rh-threads").arg(threads.to_string());
-        let route = d.bundle.join("routes").join("block1-human.m64");
+        let route = d.res.join("routes").join("block1-human.m64");
         if route.is_file() {
             cmd.arg("--route").arg(route);
         }

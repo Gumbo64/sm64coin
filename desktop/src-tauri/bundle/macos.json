@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "category": "public.app-category.games",
+    "shortDescription": "SM64Coin: mine blocks by playing Super Mario 64",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
+    "externalBin": ["stage/binaries/sm64coind", "stage/binaries/sm64coin-wallet-rpc", "stage/binaries/sm64coin-automine", "stage/binaries/rrtrun"],
+    "resources": { "stage/res/seeds.txt": "seeds.txt", "stage/res/routes/*": "routes/" },
+    "macOS": { "files": { "MacOS/lib": "stage/lib" }, "minimumSystemVersion": "11.0" }
+  }
+}

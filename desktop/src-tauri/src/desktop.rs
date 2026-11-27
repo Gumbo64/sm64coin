@@ -35,6 +35,8 @@ impl App {
 pub struct Dirs {
     /// Where sm64coind, sm64coin-automine, rrtrun, seeds.txt, routes/ live (SM64COIN_BUNDLE, else next to the app).
     pub bundle: PathBuf,
+    /// Where seeds.txt and routes/ live: the bundle folder, or (installed app) the resource folder.
+    pub res: PathBuf,
     pub data: PathBuf,
 }
 
@@ -43,7 +45,11 @@ impl Dirs {
         let exe_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
         let bundle = std::env::var_os("SM64COIN_BUNDLE").map(PathBuf::from).unwrap_or(exe_dir);
         let data = std::env::var_os("SM64COIN_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".sm64coin"));
-        Dirs { bundle, data }
+        // Installed app: sidecars sit next to the program (Linux /usr/bin, Windows and macOS: the app folder) and the resources
+        // are /usr/lib/SM64Coin (deb, AppImage), the install folder (Windows) or Contents/Resources (macOS).
+        let exe = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
+        let res = [bundle.clone(), exe.join("../lib/SM64Coin"), exe.join("../Resources")].into_iter().find(|d| d.join("seeds.txt").is_file()).map(|d| sm64coin_launcher::util::plain(d.canonicalize().unwrap_or(d))).unwrap_or_else(|| bundle.clone());
+        Dirs { bundle, res, data }
     }
     pub fn tool(&self, name: &str) -> PathBuf {
         self.bundle.join(format!("{name}{EXE}"))
@@ -152,7 +158,7 @@ async fn rom_bytes(app: AppHandle) -> Res<tauri::ipc::Response> {
 
 fn node_config(d: &Dirs, rom: PathBuf) -> NodeConfig {
     let mut c = NodeConfig::new(d.tool("sm64coind"), rom, d.data.clone());
-    c.seed_files = vec![d.bundle.join("seeds.txt"), d.data.join("seeds.txt")];
+    c.seed_files = vec![d.res.join("seeds.txt"), d.data.join("seeds.txt")];
     c.p2p_port = port_env("SM64COIN_P2P_PORT", 16480);
     c.rpc_port = port_env("SM64COIN_RPC_PORT", 16481);
     c.zmq_port = port_env("SM64COIN_ZMQ_PORT", 16482);
