@@ -19,6 +19,20 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.2: the native miner drives the desktop app's views
+
+Same chain as 0.5.0 and 0.5.1: no reset, upgrade in place.
+
+- **Desktop app: the native miner now feeds the Mine page's visualisations** (the 3D search cloud, the strips, the
+  highlight reel) and hybrid mining (play a stretch by hand, set the sampling bubble) works with it, as it does with
+  the browser miner. Switching the visualisations off leaves only the search running.
+- **Windows portable zip**: `SM64Coin-@VERSION@-windows-x86_64-portable.zip` next to the installer. Unzip anywhere and
+  run `SM64Coin.exe`; the chain, wallets, ROM copy and settings stay in the `data` folder beside it. Needs the
+  Microsoft Edge WebView2 runtime (built into Windows 11 and current Windows 10; the installer would fetch it).
+- Fixes: the 3D cloud no longer goes black after a hand-played session (a leaked WebGL context; the view also
+  recovers if the browser drops its context); a wallet created with more KDF rounds opens again after an app
+  restart; the miner's visualisation channel checks every frame and request at the app boundary.
+
 ### 0.5.1: the SM64Coin desktop app (preview)
 
 Same chain as 0.5.0: no reset, upgrade in place (your blocks and wallet carry over).
