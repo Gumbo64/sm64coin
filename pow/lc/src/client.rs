@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::exec::{self, MaybeSend, MaybeSync, Upstream};
-use crate::nodes::{NodeAddr, NodeList, NodeRecord};
+use crate::nodes::{NodeAddr, NodeList, NodeRecord, Source};
 use crate::proto::*;
 
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +87,8 @@ pub enum ClientError {
     Refused(ErrorKind),
 }
 
+/// New nodes taken from one `/get_public_nodes` answer at most.
+pub const LEARN_PER_ANSWER: usize = 8;
 /// How many nodes a failing read tries before giving up.
 pub const MAX_ATTEMPTS: usize = 4;
 /// Fan-out of submissions (`submit_block`, proofs, `sendrawtransaction`).
@@ -126,6 +128,13 @@ impl Client {
         let now = self.now();
         self.list.lock().unwrap().ban_liar(key, now);
     }
+    /// Adds discovered nodes (a `/get_public_nodes` answer, see [`crate::nodes::parse_public_nodes`]); returns how many were new.
+    pub fn learn(&self, found: Vec<NodeAddr>) -> usize {
+        let now = self.now();
+        let mut list = self.list.lock().unwrap();
+        found.into_iter().take(LEARN_PER_ANSWER).filter(|a| list.add(a.clone(), Source::PublicNodes, now)).count()
+    }
+
     /// Up to `n` distinct node keys, best first (weighted). For callers that ask nodes one by one
     /// ([`Client::ask_node`]), like the light-client verifier's cross-check.
     pub fn pick_keys(&self, n: usize) -> Vec<String> {

@@ -298,6 +298,43 @@ pub fn parse_node_spec(s: &str) -> Option<NodeAddr> {
     None
 }
 
+/// The nodes a node's `/get_public_nodes` answer lists (`white_list` / `gray_list` of `{host, rpc_port}`), as plain-http
+/// `http://ip:port` addresses. Only public IP addresses count (a node cannot point a client at its own LAN or loopback), a
+/// port must be given; the answer is untrusted, so at most `max` are returned. Whether they serve the right chain is for the
+/// client's probe and verification to find out.
+pub fn parse_public_nodes(body: &[u8], max: usize) -> Vec<NodeAddr> {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else { return vec![] };
+    let mut out = Vec::new();
+    for list in ["white_list", "gray_list"] {
+        for n in v.get(list).and_then(|l| l.as_array()).into_iter().flatten() {
+            let (Some(host), Some(port)) = (n.get("host").and_then(|h| h.as_str()), n.get("rpc_port").and_then(|p| p.as_u64())) else { continue };
+            let Ok(ip) = host.parse::<std::net::IpAddr>() else { continue };
+            if port == 0 || port > 65535 || !is_public_ip(ip) {
+                continue;
+            }
+            let url = match ip {
+                std::net::IpAddr::V4(a) => format!("http://{a}:{port}"),
+                std::net::IpAddr::V6(a) => format!("http://[{a}]:{port}"),
+            };
+            let addr = NodeAddr::Http { url };
+            if !out.contains(&addr) && out.len() < max {
+                out.push(addr);
+            }
+        }
+    }
+    out
+}
+
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(a) => !(a.is_private() || a.is_loopback() || a.is_link_local() || a.is_unspecified() || a.is_broadcast() || a.is_multicast() || a.is_documentation() || a.octets()[0] == 0 || (a.octets()[0] == 100 && (64..128).contains(&a.octets()[1]))),
+        std::net::IpAddr::V6(a) => {
+            let s = a.segments();
+            !(a.is_loopback() || a.is_unspecified() || a.is_multicast() || (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80 || a.to_ipv4_mapped().is_some())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,6 +450,16 @@ mod tests {
         assert!(parse_bootstrap(r#"{"url":"https://eboy.au"}"#).unwrap().len() == 1);
         assert!(parse_node_spec(&format!("iroh:{id}")).is_none());
         assert!(parse_node_spec("ftp://x").is_none());
+    }
+
+    #[test]
+    fn public_nodes_answers_give_public_http_addresses_only() {
+        let body = br#"{"white_list":[{"host":"8.8.4.4","rpc_port":18089},{"host":"192.168.1.5","rpc_port":18089},{"host":"127.0.0.1","rpc_port":18089},{"host":"8.8.4.4","rpc_port":18089},{"host":"1.1.1.1","rpc_port":0},{"host":"evil.example","rpc_port":1}],"gray_list":[{"host":"2606:4700::1111","rpc_port":18081},{"host":"fd00::1","rpc_port":1},{"host":"9.9.9.9","rpc_port":18089}]}"#;
+        let v = parse_public_nodes(body, 8);
+        let urls: Vec<String> = v.iter().map(|a| a.key()).collect();
+        assert_eq!(urls, ["http:http://8.8.4.4:18089", "http:http://[2606:4700::1111]:18081", "http:http://9.9.9.9:18089"]);
+        assert_eq!(parse_public_nodes(body, 1).len(), 1);
+        assert!(parse_public_nodes(b"garbage", 8).is_empty());
     }
 
     #[test]

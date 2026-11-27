@@ -1,41 +1,40 @@
 //! The app's light-client network: `sm64coin_lc::client::Client` over a scored `NodeList` (compiled-in bootstrap nodes, the node
-//! the user confirmed, learned ones kept in `nodes.json`), with two transports (HTTP(S) JSON-RPC and iroh) and failover between
-//! all of them. `remote.rs` (the page's `remote_rpc`) and `walletproxy.rs` (the wallet's and the Android miner's daemon) both
+//! the user confirmed, learned ones kept in `nodes.json`), over HTTP(S) JSON-RPC with failover between
+//! them. `remote.rs` (the page's `remote_rpc`) and `walletproxy.rs` (the wallet's and the Android miner's daemon) both
 //! go through here, so there is one list, one set of scores and one "which node is in use".
 //!
 //! Which calls fail over over which transport: every allowlisted call. A request the light-client protocol has a typed message
 //! for (the wallet's binary calls, `get_sm64_cycle`, `get_fee_estimate`, `get_block_headers_range`, a plain `submit_block` ...)
 //! is that message; every other allowlisted JSON-RPC call (`get_info`, `get_sm64_state`, a template with the miner's `sm64_*`
 //! extras, `get_block` by hash ...) is `Request::JsonRpc` and every other wallet path (`/get_transactions`, `/is_key_image_spent`,
-//! `/get_o_indexes.bin` ...) is `Request::Path`; all of them go to any node, HTTP or iroh, and submissions go to three nodes at
+//! `/get_o_indexes.bin` ...) is `Request::Path`; all of them go to any node, and submissions go to three nodes at
 //! once. A node too old for the passthrough requests answers `Unsupported` and the client moves on to the next.
 //!
 //! Verification (lcverify.rs): on startup and on each new tip the chain is checked from the compiled-in checkpoint across up to
 //! five nodes; afterwards reads use only the nodes on the verified best branch, and nodes that lied are banned.
 use serde_json::{Value, json};
 use sm64coin_lc::allowlist;
-use sm64coin_lc::client::{BULK_TIMEOUT, Client, ClientError, Connector, Env, READ_TIMEOUT, SystemEnv, Transport, UpstreamTransport};
-use sm64coin_lc::endpoint::{Discovery, EndpointOptions, build_endpoint};
+use sm64coin_lc::client::{BULK_TIMEOUT, Client, Connector, Env, READ_TIMEOUT, SystemEnv, Transport, UpstreamTransport};
 use sm64coin_lc::exec::Upstream;
 use sm64coin_lc::http::HttpUpstream;
 use sm64coin_lc::nodes::{NodeAddr, NodeList, Source};
-use sm64coin_lc::proto::{ErrorKind, Request, Response, TipInfo, WalletBin, ALPN};
+use sm64coin_lc::proto::{ErrorKind, Request, Response, TipInfo, WalletBin};
 use crate::lcverify::{Verification, Verifier, checkpoint_for};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// v0.5 mainnet's genesis block hash (web/src/lib/nodechain.js `MAINNET_GENESIS`): the `network` of the iroh `Hello`.
+/// v0.5 mainnet's genesis block hash (web/src/lib/nodechain.js `MAINNET_GENESIS`): the verifier's anchor.
 pub const MAINNET_GENESIS: &str = "6b7164fc12bd735bfe29caf87615ec62ca318f78539afae11a13a244eb080482";
 
 /// A node the last call went to.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Used {
-    /// The node's key (`http:https://host` / `iroh:<endpoint id>`).
+    /// The node's key (`http:https://host`).
     pub node: String,
-    /// `https`, `http` or `iroh`.
+    /// `https` or `http`.
     pub transport: &'static str,
     pub method: String,
     pub at_ms: u64,
@@ -57,8 +56,6 @@ pub struct NetStatus {
     /// The loopback daemon the wallet and the native miner use (`http://127.0.0.1:port`), once the proxy runs.
     pub proxy: Option<String>,
     pub used: Option<Used>,
-    /// This app's iroh endpoint id, once the endpoint is up (None: HTTP nodes only so far).
-    pub iroh: Option<String>,
     pub nodes: Vec<NodeInfo>,
     /// What the verifier found (see lcverify.rs): `verified (n nodes agree)`, `conflict`, `unverified`.
     pub verify: Verification,
@@ -66,7 +63,7 @@ pub struct NetStatus {
 
 /// The chain tip, followed once for the whole app and fanned out: to the page (the `tip` event, lctip.rs), to the verifier
 /// (a check per new tip, not a poll) and to the native miner ([`TipHub::feed`]: a new block ends its search). Two sources: the
-/// light-client network (a SubscribeTip push from an iroh node, else a get_info poll every 30 s: [`Net::spawn_tip`]) and,
+/// light-client network (Server-Sent Events from a node that serves `/lc/tip`, else a get_info poll every 30 s: [`Net::tip_task`]) and,
 /// on desktop, the app's own node (polled once a second: it is local; desktop.rs). The local node's tip wins while it keeps
 /// arriving (it is the one this machine's miner builds on).
 pub struct TipHub {
@@ -164,13 +161,11 @@ pub fn transport_of(addr: &NodeAddr) -> &'static str {
     match addr {
         NodeAddr::Http { url } if url.starts_with("https://") => "https",
         NodeAddr::Http { .. } => "http",
-        NodeAddr::Iroh { .. } => "iroh",
     }
 }
 
-/// Builds the transport of a node: HTTP always, iroh once the endpoint is up (before that an iroh node is skipped: failover).
+/// Builds the transport of a node (HTTP(S)).
 struct AppConnector {
-    iroh: RwLock<Option<Arc<dyn Connector>>>,
     http: Mutex<HashMap<String, (HttpUpstream, Arc<dyn Transport>)>>,
 }
 
@@ -189,10 +184,8 @@ impl AppConnector {
 
 impl Connector for AppConnector {
     fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>> {
-        match addr {
-            NodeAddr::Http { url } => self.http_entry(url).map(|e| e.1),
-            NodeAddr::Iroh { .. } => self.iroh.read().unwrap().as_ref()?.transport(addr),
-        }
+        let NodeAddr::Http { url } = addr;
+        self.http_entry(url).map(|e| e.1)
     }
 }
 
@@ -216,13 +209,12 @@ pub struct Net {
     nodes_file: Option<PathBuf>,
     saved_json: Mutex<String>,
     used: Mutex<Option<Used>>,
-    iroh_id: Mutex<Option<String>>,
     proxy: Mutex<Option<String>>,
     verifier: Arc<Verifier>,
     hub: Arc<TipHub>,
     /// Desktop: where to get the ROM for the background replay (None: header layer only).
     rom_finder: Mutex<Option<RomFinder>>,
-    /// The chain's genesis block hash (the iroh `Hello` network and the verifier's anchor).
+    /// The chain's genesis block hash (the verifier's anchor).
     network: [u8; 32],
     /// Timeouts of a read and of a bulk read (the tests shorten them).
     pub read_timeout: Duration,
@@ -251,7 +243,7 @@ impl Net {
         if let Some(s) = saved {
             list.add(NodeAddr::Http { url: s.to_string() }, Source::Manual, now);
         }
-        let conn = Arc::new(AppConnector { iroh: RwLock::new(None), http: Mutex::new(HashMap::new()) });
+        let conn = Arc::new(AppConnector { http: Mutex::new(HashMap::new()) });
         let verifier = Arc::new(Verifier::default());
         // the stored resume point (the app's own data dir; used only if it descends from this release's checkpoint)
         let stored = nodes_file.as_ref().and_then(|f| std::fs::read_to_string(verified_file(f)).ok()).and_then(|s| sm64coin_lc::verify::Resume::from_json(&s).ok());
@@ -265,7 +257,6 @@ impl Net {
             nodes_file,
             saved_json: Mutex::new(String::new()),
             used: Mutex::new(None),
-            iroh_id: Mutex::new(None),
             proxy: Mutex::new(None),
             verifier,
             hub: TipHub::new(),
@@ -281,8 +272,8 @@ impl Net {
         self.hub.clone()
     }
 
-    /// One look at the chain tip through the network (any node, HTTP or iroh): `get_info`, and the tip block's header when the
-    /// tip is not the one the hub holds. The fallback of the push (HTTP-only lists, older servers).
+    /// One look at the chain tip through the network (any node): `get_info`, and the tip block's header when the
+    /// tip is not the one the hub holds. The fallback of the push (nodes without `/lc/tip`).
     pub async fn poll_tip(&self) -> Result<TipInfo, String> {
         use sm64coin_lc::exec::{header_timestamp, tip_info_from};
         let result = |v: Value| -> Result<Value, String> {
@@ -304,12 +295,12 @@ impl Net {
         tip_info_from(&info, timestamp, now_secs()).ok_or_else(|| "unreadable get_info".to_string())
     }
 
-    /// Follows the tip for the hub: by push when a node serves SubscribeTip (`push`: the iroh endpoint is up), else (or when none
-    /// does) a poll every 30 s, trying the push again every ten minutes. Runs for the life of the app.
-    pub async fn tip_task(self: Arc<Self>, push: bool) {
+    /// Follows the tip for the hub: by push when a node serves `GET /lc/tip` (Server-Sent Events), else (or when none does) a
+    /// poll every 30 s, trying the push again every ten minutes. Runs for the life of the app.
+    pub async fn tip_task(self: Arc<Self>) {
         use sm64coin_lc::client::WatchEnd;
         loop {
-            if push {
+            {
                 let hub = self.hub.clone();
                 let end = self.client.watch_tip(|_, t| hub.offer_pushed(t)).await;
                 self.hub.set_pushing(false);
@@ -325,7 +316,7 @@ impl Net {
                     Err(_) => self.hub.set_stranded(true),
                 }
                 tokio::time::sleep(Duration::from_secs(30)).await;
-                if push && std::time::Instant::now() > until {
+                if std::time::Instant::now() > until {
                     break;
                 }
             }
@@ -349,19 +340,6 @@ impl Net {
         *self.proxy.lock().unwrap() = Some(url.to_string());
     }
 
-    /// Brings up the iroh endpoint; from then on iroh nodes are usable. `network` = the genesis block hash.
-    pub async fn start_iroh(&self, opts: EndpointOptions, network: [u8; 32]) -> Result<String, String> {
-        let mut opts = opts;
-        if !opts.alpns.contains(&ALPN.to_vec()) {
-            opts.alpns.push(ALPN.to_vec());
-        }
-        let ep = build_endpoint(opts).await.map_err(|e| e.to_string())?;
-        let id = ep.id().to_string();
-        *self.conn.iroh.write().unwrap() = Some(Arc::new(sm64coin_lc::client::IrohConnector::new(ep, network)));
-        *self.iroh_id.lock().unwrap() = Some(id.clone());
-        Ok(id)
-    }
-
     /// Persists the node list (when it changed).
     pub fn persist(&self) {
         let Some(f) = &self.nodes_file else { return };
@@ -375,59 +353,30 @@ impl Net {
         }
     }
 
-    /// Asks up to three nodes for their lists of light-client servers (iroh nodes answer) and learns the verified ones.
-    pub async fn gossip(&self) -> usize {
+    /// Asks up to two nodes for the public nodes they know (`/get_public_nodes`, Monero's own list of peers that serve a public RPC)
+    /// and adds the ones with a public IP address; the verifier and the chain probe find out which serve the right chain.
+    /// Returns how many were new.
+    pub async fn discover(&self) -> usize {
+        let body = br#"{"white":true,"gray":false}"#.to_vec();
         let mut learned = 0;
-        for _ in 0..3 {
-            match self.client.read(&Request::GetNodes { max: sm64coin_lc::proto::MAX_NODES }, self.read_timeout).await {
-                Ok((_, Response::Nodes(v))) => learned += self.client.learn(&v),
-                Err(ClientError::NoNodes) => break,
+        for _ in 0..2 {
+            match self.client.read(&Request::Path { path: "/get_public_nodes".into(), body: body.clone() }, self.read_timeout).await {
+                Ok((_, Response::Bin(b))) => learned += self.client.learn(sm64coin_lc::nodes::parse_public_nodes(&b, sm64coin_lc::client::LEARN_PER_ANSWER)),
                 _ => {}
             }
         }
         learned
     }
 
-    /// The relays of the iroh nodes we know (compiled-in `iroh:<id>@<relay>` entries, the user's, learned ones): the endpoint's
-    /// home relay is one of them, so a node reachable only through its relay is dialed without any lookup service.
-    fn known_relays(&self) -> Vec<iroh::RelayUrl> {
-        let mut v: Vec<iroh::RelayUrl> = vec![];
-        self.client.with_list(|l| {
-            for r in l.records() {
-                if let NodeAddr::Iroh { relay_url: Some(u), .. } = &r.addr {
-                    if let Ok(u) = u.parse::<iroh::RelayUrl>() {
-                        if !v.contains(&u) && v.len() < 4 {
-                            v.push(u);
-                        }
-                    }
-                }
-            }
-        });
-        v
-    }
-
-    /// Background work of the app: brings the iroh endpoint up (with retries), then verifies the chain (on startup and on every
-    /// new tip), every minute persists the list and every ten minutes learns more nodes. Clients publish nothing and look nothing
-    /// up (discovery `none`, see `app_discovery`): they dial nodes by id and relay URL.
+    /// Background work of the app: follows the tip (push, else poll), verifies the chain (on startup and on every new tip),
+    /// every minute persists the list and every ten minutes looks for more public nodes.
     pub fn spawn_background(self: &Arc<Self>) {
+        tauri::async_runtime::spawn(self.clone().tip_task());
         let me = self.clone();
-        tauri::async_runtime::spawn(async move {
-            let opts = EndpointOptions { discovery: app_discovery(), relays: me.known_relays(), ..Default::default() };
-            let mut tries = 0;
-            while me.start_iroh(opts.clone(), me.network).await.is_err() {
-                tries += 1;
-                if tries > 5 {
-                    tauri::async_runtime::spawn(me.clone().tip_task(false)); // HTTP nodes only: the tip by poll
-                    return me.maintain(false).await;
-                }
-                tokio::time::sleep(Duration::from_secs(30)).await;
-            }
-            tauri::async_runtime::spawn(me.clone().tip_task(true));
-            me.maintain(true).await;
-        });
+        tauri::async_runtime::spawn(async move { me.maintain().await });
     }
 
-    async fn maintain(self: &Arc<Self>, iroh: bool) {
+    async fn maintain(self: &Arc<Self>) {
         let mut n = 0u64;
         let mut last_verify: Option<std::time::Instant> = None;
         let mut rx = self.hub.subscribe();
@@ -436,8 +385,8 @@ impl Net {
             // ten minutes) every 20 s from the clock: no request is made here to learn the tip.
             let pushed = matches!(tokio::time::timeout(Duration::from_secs(if n == 0 { 2 } else { 5 }), rx.changed()).await, Ok(Ok(())));
             if !pushed {
-                if iroh && n % 120 == 0 {
-                    self.gossip().await;
+                if n % 120 == 0 {
+                    self.discover().await;
                 }
                 if n % 12 == 0 {
                     self.persist();
@@ -478,7 +427,7 @@ impl Net {
     }
 
     fn note(&self, key: &str, method: &str) {
-        let transport = if key.starts_with("iroh:") { "iroh" } else if key.starts_with("http:https://") { "https" } else { "http" };
+        let transport = if key.starts_with("http:https://") { "https" } else { "http" };
         *self.used.lock().unwrap() = Some(Used { node: key.to_string(), transport, method: method.to_string(), at_ms: self.env.now_ms() });
     }
 
@@ -490,7 +439,7 @@ impl Net {
                 .map(|r| NodeInfo { key: r.key(), transport: transport_of(&r.addr), source: format!("{:?}", r.source), ok_rate: r.ok_rate, latency_ms: r.ewma_latency_ms, height: r.height, banned: r.is_banned(now) })
                 .collect()
         });
-        NetStatus { proxy: self.proxy.lock().unwrap().clone(), used: self.used.lock().unwrap().clone(), iroh: self.iroh_id.lock().unwrap().clone(), nodes, verify: self.verifier.get() }
+        NetStatus { proxy: self.proxy.lock().unwrap().clone(), used: self.used.lock().unwrap().clone(), nodes, verify: self.verifier.get() }
     }
 
     /// Desktop: turns the background replay of the current cycle on.
@@ -558,7 +507,7 @@ impl Net {
         shape(method, resp)
     }
 
-    /// The chain height (blocks, genesis included) from any node's tip, HTTP or iroh.
+    /// The chain height (blocks, genesis included) from any node's tip.
     pub async fn height(&self) -> Result<u64, String> {
         match self.client.read(&Request::GetTip, self.read_timeout).await.map_err(|e| e.to_string())? {
             (key, Response::Tip(t)) => {
@@ -635,19 +584,6 @@ impl Net {
             };
         }
         Err(format!("{path} is not available"))
-    }
-}
-
-/// Clients use discovery `none`: they never publish themselves (no pkarr / DHT record of this app's endpoint id and addresses
-/// exists, so nobody can look the user up) and resolve nobody; they dial the nodes they know by endpoint id and relay URL (the
-/// compiled-in bootstrap, learned `GetNodes` announcements, nodes the user added). Only serving nodes publish.
-/// `SM64COIN_LC_DISCOVERY` = none | n0 | dht overrides (opt-in; tests and closed networks use none).
-pub fn app_discovery() -> Discovery {
-    match std::env::var("SM64COIN_LC_DISCOVERY").as_deref() {
-        Ok("n0") => Discovery::N0,
-        #[cfg(not(target_os = "android"))]
-        Ok("dht") => Discovery::Dht,
-        _ => Discovery::None,
     }
 }
 

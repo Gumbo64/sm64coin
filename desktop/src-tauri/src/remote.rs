@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The website's public node(s) (web/public/public-node.json, compiled in): the page cannot widen them. `{"url": ..}` or
-/// `{"nodes": [..]}`, entries `https://host` or `iroh:<endpoint id>[@relay]`.
+/// `{"nodes": [..]}`, entries `https://host`.
 const PUBLIC_NODE_JSON: &str = include_str!("../../../web/public/public-node.json");
 
 /// `https://host[:port][/path]` without a trailing slash, or None when `u` is not such an address.
@@ -28,23 +28,20 @@ fn bootstrap_from(json: &str) -> Vec<NodeAddr> {
     parse_bootstrap(json)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|a| match a {
-            NodeAddr::Http { url } => normalize(&url).map(|url| NodeAddr::Http { url }),
-            iroh => Some(iroh),
-        })
+        .filter_map(|NodeAddr::Http { url }| normalize(&url).map(|url| NodeAddr::Http { url }))
         .collect()
 }
 
 /// The first https public node (what the page shows as "the public node").
 #[cfg(test)]
 pub fn public_node() -> Option<String> {
-    bootstrap_nodes().into_iter().find_map(|a| if let NodeAddr::Http { url } = a { Some(url) } else { None })
+    bootstrap_nodes().into_iter().next().map(|NodeAddr::Http { url }| url)
 }
 
 /// The remote nodes `remote_rpc` (and the wallet's `set_daemon`) may reach: the public node(s), and one https node the user
 /// confirmed in a native dialog (`remote_node_set`), kept in the data dir. Never an address the page passes per call.
 /// Behind them is the app's light-client network (`Net`): a call for the public node is answered by whichever bootstrap or
-/// learned node works (failover, HTTP and iroh); a call for the user's own node goes to that node only.
+/// learned node works (failover); a call for the user's own node goes to that node only.
 pub struct Remote {
     public: Vec<String>,
     saved: Mutex<Option<String>>,
@@ -61,7 +58,7 @@ impl Remote {
         Remote::with_net(file, saved.clone(), Net::new(&bootstrap_nodes(), saved.as_deref(), nodes_file))
     }
     pub fn with_net(file: Option<PathBuf>, saved: Option<String>, net: Arc<Net>) -> Remote {
-        let public = bootstrap_nodes().into_iter().filter_map(|a| if let NodeAddr::Http { url } = a { Some(url) } else { None }).collect();
+        let public = bootstrap_nodes().into_iter().map(|NodeAddr::Http { url }| url).collect();
         Remote { public, saved: Mutex::new(saved), file, net, proxy: OnceLock::new() }
     }
     fn is_public(&self, u: &str) -> bool {
@@ -126,7 +123,7 @@ pub async fn remote_rpc(remote: tauri::State<'_, Remote>, url: String, method: S
     remote.rpc(&url, &method, params.unwrap_or_else(|| serde_json::json!({}))).await
 }
 
-/// Which node and transport the app is using, the node list with its scores, the loopback daemon and this app's iroh id.
+/// Which node and transport the app is using, the node list with its scores, the loopback daemon.
 #[tauri::command]
 pub fn net_status(remote: tauri::State<'_, Remote>) -> Res<NetStatus> {
     Ok(remote.net.status())
@@ -141,13 +138,11 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_lists_https_and_iroh_entries() {
-        let id = "ab".repeat(32);
-        let b = bootstrap_from(&format!(r#"{{"url":"https://eboy.au","nodes":["https://eboy.au","https://evil.example@x","iroh:{id}@https://relay.example","iroh:zz"],"comment":"x"}}"#));
+    fn bootstrap_lists_https_entries_only() {
+        let b = bootstrap_from(r#"{"url":"https://eboy.au","nodes":["https://eboy.au","https://evil.example@x","http://plain.example","iroh:abababababababababababababababababababababababababababababababab@https://relay.example"],"comment":"x"}"#);
         assert!(b.contains(&NodeAddr::Http { url: "https://eboy.au".into() }));
-        assert!(b.contains(&NodeAddr::Iroh { endpoint_id: id.clone(), relay_url: Some("https://relay.example".into()), direct: vec![] }));
-        assert_eq!(b.len(), 3, "the url entry repeats nodes[0]; a bad id and a userinfo host are dropped: {b:?}");
-        // the compiled-in file parses, with an https node for the page and every iroh entry (none yet) well-formed
+        assert_eq!(b.len(), 2, "the url entry repeats nodes[0]; an old iroh entry and a userinfo host are dropped, plain http is not https: {b:?}");
+        // the compiled-in file parses, with an https node for the page and every entry well-formed
         let c = bootstrap_nodes();
         assert!(c.iter().any(|a| matches!(a, NodeAddr::Http { .. })));
         let raw: serde_json::Value = serde_json::from_str(PUBLIC_NODE_JSON).unwrap();

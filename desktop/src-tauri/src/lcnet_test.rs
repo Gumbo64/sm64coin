@@ -1,22 +1,18 @@
 //! Failover of the app's light-client network, against ISOLATED nodes only: two `sm64coind --offline --sm64-solo` on fresh data
-//! dirs and loopback ports, each behind an lc service (`LcService`) on a local self-signed relay, static addressing (no
-//! discovery, no n0), plus dead nodes (a closed port, an endpoint that is not there). Nothing here touches the real network or
-//! chain. Needs the daemon and the ROM (the unpacked release bundle in ~/apps/sm64coin-*, or SM64COIND and SM64COIN_ROM);
-//! skips, and says so, without them.
+//! dirs and loopback ports, plus dead nodes (a closed port) and, for the tip push, a tip service (Server-Sent Events) in front of
+//! a node. Nothing here touches the real network or chain. Needs the daemon and the ROM (the unpacked release bundle in
+//! ~/apps/sm64coin-*, or SM64COIND and SM64COIN_ROM); skips, and says so, without them.
 //!
 //!   cargo test --lib lcnet_test -- --nocapture
 use crate::lcnet::{MAINNET_GENESIS, Net};
 use crate::remote::Remote;
 use crate::walletproxy;
-use iroh::{EndpointAddr, SecretKey};
 use serde_json::{Value, json};
-use sm64coin_lc::endpoint::{Discovery, EndpointOptions, build_endpoint};
 use sm64coin_lc::exec::{self, Upstream};
 use sm64coin_lc::http::HttpUpstream;
 use sm64coin_lc::nodes::{NodeAddr, Source};
-use sm64coin_lc::proto::{ALPN, node_flags};
-use sm64coin_lc::relay::{HelloPolicy, RelayConfig, RelayHandle, TlsMode};
-use sm64coin_lc::server::{HelloLog, LcService, Limits, ServerConfig};
+use sm64coin_lc::sse::{SseConfig, serve};
+use sm64coin_lc::tipfeed::{TipFeed, TipFeedConfig};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -91,53 +87,24 @@ fn start_daemon(tag: &str) -> Option<Daemon> {
     Some(Daemon { child, rpc, dir })
 }
 
-/// An lc service in front of `d`, on the local relay; returns what a client needs to reach it.
-struct Server {
-    addr: NodeAddr,
-    _router: iroh::protocol::Router,
-}
-
 fn http_of(d: &Daemon) -> NodeAddr {
     NodeAddr::Http { url: format!("http://127.0.0.1:{}", d.rpc) }
 }
 
-fn relay_opts(relay: &RelayHandle) -> EndpointOptions {
-    EndpointOptions {
-        relays: vec![format!("https://127.0.0.1:{}", relay.https_addr().unwrap().port()).parse().unwrap()],
-        only_trust_certs: vec![relay.self_signed_cert.clone().unwrap()],
-        n0_fallback: false,
-        discovery: Discovery::None,
-        ..Default::default()
-    }
-}
-
-async fn serve(d: &Daemon, relay: &RelayHandle, network: [u8; 32]) -> Server {
-    let secret = SecretKey::generate();
-    let mut o = relay_opts(relay);
-    o.secret_key = Some(secret.clone());
-    o.alpns = vec![ALPN.to_vec()];
-    let relay_url = o.relays[0].to_string();
-    let ep = build_endpoint(o).await.unwrap();
+/// A tip service (the shared watcher and Server-Sent Events, as `sm64coin-lc serve` runs it) in front of `d`, on a loopback port; the
+/// node address a client lists to follow the tip by push. Lives as long as the async runtime.
+async fn tip_service(d: &Daemon) -> NodeAddr {
     let up: Arc<dyn Upstream> = Arc::new(HttpUpstream::new(&format!("http://127.0.0.1:{}", d.rpc)).unwrap());
-    let svc = LcService::new(ServerConfig { network, limits: Limits::default(), flags: node_flags::ARCHIVE, version: 1, https_rpc: None }, up, secret, HelloLog::default());
-    svc.refresh_tip().await;
-    let router = svc.serve(ep.clone());
-    // static addressing: the id, the home relay and the loopback socket
-    let mut a = EndpointAddr::new(ep.id()).with_relay_url(relay_url.parse().unwrap());
-    for b in ep.bound_sockets().into_iter().filter(|b| b.is_ipv4()) {
-        a = a.with_ip_addr(std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), b.port()));
-    }
-    Server { addr: sm64coin_lc::client::from_endpoint_addr(&a), _router: router }
+    let feed = TipFeed::new(up, TipFeedConfig::default());
+    feed.refresh().await;
+    tokio::spawn(feed.clone().run(|| false));
+    let (addr, task) = serve(feed, SseConfig::default()).await.unwrap();
+    std::mem::forget(task);
+    NodeAddr::Http { url: format!("http://{addr}") }
 }
 
 fn dead_http() -> NodeAddr {
     NodeAddr::Http { url: format!("http://127.0.0.1:{}", free_port()) } // nothing listens
-}
-
-fn dead_iroh(relay: &RelayHandle) -> NodeAddr {
-    // a valid endpoint id nobody runs, "behind" the local relay
-    let id = SecretKey::generate().public();
-    NodeAddr::Iroh { endpoint_id: id.to_string(), relay_url: Some(format!("https://127.0.0.1:{}", relay.https_addr().unwrap().port())), direct: vec![] }
 }
 
 fn net_with(list: &[(NodeAddr, Source)]) -> Arc<Net> {
@@ -173,12 +140,12 @@ fn jrpc(url: &str, method: &str, params: Value) -> Value {
 const EMPTY_EPEE: [u8; 10] = [0x01, 0x11, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x01, 0x00];
 
 #[test]
-fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
+fn http_failover_through_remote_and_the_wallet_proxy() {
     let (Some(a), Some(b)) = (start_daemon("a"), start_daemon("b")) else {
         eprintln!("SKIPPED: set SM64COIND and SM64COIN_ROM (or unpack a release bundle in ~/apps)");
         return;
     };
-    // wait for both isolated nodes and take the genesis hash (the `network` of the iroh Hello)
+    // wait for both isolated nodes and take the genesis hash 
     let t0 = std::time::Instant::now();
     let mut network = None;
     for d in [&a, &b] {
@@ -198,9 +165,6 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
     let network = network.unwrap();
     let mainnet = hex::decode(MAINNET_GENESIS).unwrap();
     eprintln!("isolated nodes' genesis {} (mainnet {})", hex::encode(network), hex::encode(&mainnet));
-
-    let relay = tauri::async_runtime::block_on(RelayHandle::spawn(&RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), tls: TlsMode::SelfSigned, hello_policy: HelloPolicy::Off, ..Default::default() }, HelloLog::default())).unwrap();
-    let (sa, sb) = tauri::async_runtime::block_on(async { (serve(&a, &relay, network).await, serve(&b, &relay, network).await) });
 
     // ---------------------------------------------------------------- HTTP: a dead node, then a live one
     {
@@ -256,18 +220,16 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         assert!(net.status().used.unwrap().node.ends_with(&format!(":{}", a.rpc)));
     }
 
-    // ---------------------------------------------------------------- iroh: a dead endpoint, then a live one (and the relay path)
+    // ---------------------------------------------------------------- every kind of call, over a dead node and a live one
     {
-        let net = net_with(&[(dead_iroh(&relay), Source::Bootstrap), (sa.addr.clone(), Source::Bootstrap)]);
-        // before the endpoint is up an iroh node has no transport: the call fails cleanly, and nothing is banned for it forever
-        assert!(tauri::async_runtime::block_on(net.rpc("get_fee_estimate", json!({}))).is_err());
-        let id = tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
-        assert!(net.status().iroh.as_deref() == Some(id.as_str()));
+        let net = net_with(&[(dead_http(), Source::Bootstrap), (http_of(&a), Source::Bootstrap)]);
+        // an isolated node knows no public nodes: discovery finds nothing and does no harm
+        assert_eq!(tauri::async_runtime::block_on(net.discover()), 0);
         let proxy = walletproxy::start(net.clone(), vec![]).unwrap();
         let url = proxy.url();
         let mut ok = 0;
         for _ in 0..8 {
-            // get_fee_estimate and the wallet's binary calls have protocol messages: they fail over between iroh nodes
+            // get_fee_estimate and the wallet's binary calls have protocol messages: they fail over between nodes
             let v = jrpc(&url, "get_fee_estimate", json!({}));
             assert!(v["result"].get("fee").is_some(), "{v}");
             let (code, body) = post(&url, "/gethashes.bin", "application/octet-stream", &EMPTY_EPEE);
@@ -277,15 +239,14 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         }
         assert_eq!(ok, 8);
         let used = net.status().used.unwrap();
-        assert_eq!(used.transport, "iroh", "{used:?}");
-        // the headers of the genesis block through iroh
+        assert_eq!(used.transport, "http", "{used:?}");
+        // the headers of the genesis block
         let v = jrpc(&url, "get_block_headers_range", json!({"start_height": 0, "end_height": 0}));
         assert!(v["result"]["headers"].is_array(), "{v}");
-        std::thread::sleep(Duration::from_secs(5)); // the server's per-peer budget (60 burst, 15/s) refills
-        // calls without a typed message go over iroh too (Request::JsonRpc): the node's own answer, not one made from its tip
+        // calls without a typed message go over HTTP too (Request::JsonRpc): the node's own answer, not one made from its tip
         let v = jrpc(&url, "get_info", json!({}));
         assert!(v["result"]["height"] == 1 && v["result"].get("light").is_none() && v["result"].get("nettype").is_some(), "{v}");
-        assert_eq!(net.status().used.unwrap().transport, "iroh");
+        assert_eq!(net.status().used.unwrap().transport, "http");
         // the wallet's /getheight likewise
         let (code, body) = post(&url, "/getheight", "application/json", b"{}");
         assert_eq!(code, 200);
@@ -295,7 +256,7 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         assert!(v.get("result").is_some() || v["error"]["message"].is_string(), "the node's own answer or its own error: {v}");
         let v = jrpc(&url, "get_block", json!({"height": 0}));
         assert!(v["result"]["blob"].is_string(), "{v}");
-        // wallet paths over iroh: get_transactions, is_key_image_spent, get_o_indexes.bin, pool hashes, get_height, get_info
+        // wallet paths: get_transactions, is_key_image_spent, get_o_indexes.bin, pool hashes, get_height, get_info
         let (code, body) = post(&url, "/get_transactions", "application/json", br#"{"txs_hashes":[],"decode_as_json":false}"#);
         assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
         assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["status"], "OK");
@@ -306,7 +267,6 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
         let (code, body) = post(&url, "/get_height", "application/json", b"{}");
         assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
-        std::thread::sleep(Duration::from_secs(4));
         for m in ["get_version", "hard_fork_info", "get_output_histogram", "get_txpool_backlog", "getblockheadersrange"] {
             let p = if m == "getblockheadersrange" { json!({"start_height": 0, "end_height": 0}) } else { json!({}) };
             let v = jrpc(&url, m, p);
@@ -329,27 +289,22 @@ fn http_and_iroh_failover_through_remote_and_the_wallet_proxy() {
         drop(proxy);
     }
 
-    // ---------------------------------------------------------------- everything at once, both transports
+    // ---------------------------------------------------------------- everything at once
     {
-        let net = net_with(&[(dead_http(), Source::Bootstrap), (dead_iroh(&relay), Source::Bootstrap), (http_of(&b), Source::Bootstrap), (sa.addr.clone(), Source::Bootstrap), (sb.addr.clone(), Source::Bootstrap)]);
-        tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+        let net = net_with(&[(dead_http(), Source::Bootstrap), (dead_http(), Source::Bootstrap), (http_of(&b), Source::Bootstrap)]);
         let proxy = walletproxy::start(net.clone(), vec![]).unwrap();
         let url = proxy.url();
-        let mut transports = std::collections::BTreeSet::new();
         for _ in 0..24 {
             let v = jrpc(&url, "get_info", json!({})); // HTTP only: the live http node
             assert_eq!(v["result"]["height"], 1);
             let v = jrpc(&url, "get_fee_estimate", json!({})); // any live node
             assert!(v["result"].get("fee").is_some());
-            transports.insert(net.status().used.unwrap().transport);
         }
-        eprintln!("transports used for fee estimates: {transports:?}");
         let st = net.status();
-        assert!(st.nodes.iter().filter(|n| n.ok_rate > 0.5).count() >= 3, "the live nodes are scored up: {:?}", st.nodes);
+        assert!(st.nodes.iter().filter(|n| n.ok_rate > 0.5).count() >= 1, "the live node is scored up: {:?}", st.nodes);
         assert!(st.nodes.iter().any(|n| n.banned) || st.nodes.iter().any(|n| n.ok_rate < 0.4), "the dead ones are scored down: {:?}", st.nodes);
         drop(proxy);
     }
-    tauri::async_runtime::block_on(relay.shutdown());
 }
 
 /// The wallet-rpc sidecar (wallet2) syncs through the proxy, with a dead node in the list: what the desktop app does when its own
@@ -473,7 +428,7 @@ fn wait_for(d: &Daemon) -> [u8; 32] {
     }
 }
 
-/// The verifier across HTTP and iroh nodes from the genesis checkpoint (the isolated chain is its own, so the anchor is its
+/// The verifier across nodes from the genesis checkpoint (the isolated chain is its own, so the anchor is its
 /// genesis block, not the release's mainnet checkpoint): agreeing nodes, a node that lies about the anchor (banned, never used
 /// again), nothing reachable (unverified).
 #[test]
@@ -485,8 +440,6 @@ fn verification_follows_the_verified_branch_and_bans_liars() {
     let network = wait_for(&a);
     assert_eq!(wait_for(&b), network);
     let cp = sm64coin_lc::verify::Checkpoint::genesis(network);
-    let relay = tauri::async_runtime::block_on(RelayHandle::spawn(&RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), tls: TlsMode::SelfSigned, hello_policy: HelloPolicy::Off, ..Default::default() }, HelloLog::default())).unwrap();
-    let sb = tauri::async_runtime::block_on(serve(&b, &relay, network));
     let liar = liar_for(&a);
 
     // nothing to ask: unverified, and reads are not restricted
@@ -498,10 +451,9 @@ fn verification_follows_the_verified_branch_and_bans_liars() {
         assert_eq!(v.state, "unverified", "{v:?}");
         assert!(v.label.starts_with("unverified") && v.error.is_some());
     }
-    // two honest nodes (one over iroh)
+    // two honest nodes
     {
-        let net = net_with(&[(http_of(&a), Source::Bootstrap), (sb.addr.clone(), Source::Bootstrap)]);
-        tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+        let net = net_with(&[(http_of(&a), Source::Bootstrap), (http_of(&b), Source::Bootstrap)]);
         tauri::async_runtime::block_on(net.verify_now(Some(cp.clone()))).unwrap();
         let v = net.verification();
         assert_eq!((v.state, v.agree, v.label.as_str()), ("verified", 2, "verified (2 nodes agree)"), "{v:?}");
@@ -509,10 +461,9 @@ fn verification_follows_the_verified_branch_and_bans_liars() {
         assert_eq!(v.height, Some(0));
         assert_eq!(net.status().verify.state, "verified", "net_status carries it");
     }
-    // an honest node, a node that lies about the anchor, a dead one, an iroh node
+    // an honest node, a node that lies about the anchor, a dead one, another honest one
     {
-        let net = net_with(&[(http_of(&a), Source::Bootstrap), (liar.addr.clone(), Source::Bootstrap), (dead_http(), Source::Bootstrap), (sb.addr.clone(), Source::Bootstrap)]);
-        tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+        let net = net_with(&[(http_of(&a), Source::Bootstrap), (liar.addr.clone(), Source::Bootstrap), (dead_http(), Source::Bootstrap), (http_of(&b), Source::Bootstrap)]);
         tauri::async_runtime::block_on(net.verify_now(Some(cp.clone()))).unwrap();
         let v = net.verification();
         assert_eq!((v.state, v.agree), ("conflict", 2), "{v:?}");
@@ -533,27 +484,18 @@ fn verification_follows_the_verified_branch_and_bans_liars() {
             jrpc(&url, "get_fee_estimate", json!({}));
             used.insert(net.status().used.unwrap().node);
         }
-        assert!(used.iter().all(|n| n == &http_of(&a).key() || n == &sb.addr.key()), "only verified nodes served: {used:?}");
+        assert!(used.iter().all(|n| n == &http_of(&a).key() || n == &http_of(&b).key()), "only verified nodes served: {used:?}");
         drop(proxy);
     }
-    tauri::async_runtime::block_on(relay.shutdown());
 }
 
-#[test]
-fn clients_publish_nothing_by_default() {
-    if std::env::var_os("SM64COIN_LC_DISCOVERY").is_none() {
-        assert_eq!(crate::lcnet::app_discovery(), Discovery::None, "apps neither publish their endpoint nor look anyone up");
-    }
-}
-
-/// The whole wallet flow through the proxy over IROH ONLY (the one node is reached through its lc service and a local relay; a
-/// dead HTTP node is in the list too): the native miner (as on Android: its daemon is the proxy) mines to test wallet 1 on an
+/// The whole wallet flow through the proxy over HTTP (the one node, with a dead one in the list too): the native miner (as on Android: its daemon is the proxy) mines to test wallet 1 on an
 /// isolated offline node, wallet-rpc (wallet2) syncs, then sends to test wallet 2, which receives it. Then the verifier checks the
 /// mined chain (header layer; and on desktop the replay of the current cycle) and says "verified". Never touches the real chain.
 ///
 /// Slow (the miner plays the game): SM64COIN_FLOW_BLOCKS (default 24) blocks, SM64COIN_TEST_SECS (default 3600) at most.
 #[test]
-fn wallet_send_flow_over_iroh_with_the_native_miner() {
+fn wallet_send_flow_over_http_with_the_native_miner() {
     use crate::mobile_miner::MobileMiner;
     if std::env::var_os("SM64COIN_FLOW").is_none() {
         eprintln!("SKIPPED: the mining flow takes hours (the miner plays the game for every block, ring size 16 needs ~24 blocks); set SM64COIN_FLOW=1");
@@ -564,10 +506,7 @@ fn wallet_send_flow_over_iroh_with_the_native_miner() {
         return;
     };
     let network = wait_for(&a);
-    let relay = tauri::async_runtime::block_on(RelayHandle::spawn(&RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), tls: TlsMode::SelfSigned, hello_policy: HelloPolicy::Off, ..Default::default() }, HelloLog::default())).unwrap();
-    let sa = tauri::async_runtime::block_on(serve(&a, &relay, network));
-    let net = net_with(&[(dead_http(), Source::Bootstrap), (sa.addr.clone(), Source::Bootstrap)]);
-    tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+    let net = net_with(&[(dead_http(), Source::Bootstrap), (http_of(&a), Source::Bootstrap)]);
     let proxy = walletproxy::start(net.clone(), vec![]).unwrap();
     let wdir = a.dir.join("wallets");
     std::fs::create_dir_all(&wdir).unwrap();
@@ -621,7 +560,7 @@ fn wallet_send_flow_over_iroh_with_the_native_miner() {
     ok(w(make, json!({"filename": "w1", "password": "", "language": "English"})));
     let addr1 = ok(w("get_address", json!({})))["address"].as_str().unwrap().to_string();
 
-    // the native miner, behind the proxy (so its template, state and submit calls all travel over iroh)
+    // the native miner, behind the proxy (so its template, state and submit calls all travel through it)
     let m = MobileMiner::new(a.dir.join("app"));
     {
         use base64::Engine;
@@ -649,18 +588,18 @@ fn wallet_send_flow_over_iroh_with_the_native_miner() {
     }
     assert!(h >= want, "the isolated chain did not reach {want} blocks in time (height {h})");
     if mine {
-        assert!(net.status().used.is_some_and(|u| u.transport == "iroh"), "the miner reached the node over iroh");
+        assert!(net.status().used.is_some_and(|u| u.transport == "http"), "the miner reached the node through the proxy");
     }
 
-    // sync and send over iroh
+    // sync and send
     ok(w("refresh", json!({})));
     let bal = ok(w("get_balance", json!({})));
     let unlocked = bal["unlocked_balance"].as_u64().unwrap();
     assert!(unlocked > 0, "mined coins are unlocked after the 6-block lock: {bal}");
     let sent = ok(w("transfer", json!({"destinations": [{"amount": unlocked / 10, "address": addr2}], "priority": 1, "get_tx_key": true})));
     let txid = sent["tx_hash"].as_str().unwrap().to_string();
-    eprintln!("sent {txid} over iroh");
-    assert_eq!(net.status().used.unwrap().transport, "iroh");
+    eprintln!("sent {txid}");
+    assert_eq!(net.status().used.unwrap().transport, "http");
     // the node took it: it is in the pool (the node's own RPC, not the proxy)
     let pool = ureq::post(&format!("http://127.0.0.1:{}/get_transaction_pool_hashes", a.rpc)).send_json(json!({})).unwrap().into_json::<Value>().unwrap();
     assert!(pool["tx_hashes"].as_array().is_some_and(|l| l.iter().any(|x| x == &json!(txid))), "{pool}");
@@ -695,11 +634,10 @@ fn wallet_send_flow_over_iroh_with_the_native_miner() {
         }
         eprintln!("replay: {:?}", net.verification().replay);
     }
-    tauri::async_runtime::block_on(relay.shutdown());
 }
 
-/// The tip hub against an isolated offline node: followed by SubscribeTip over iroh (the lc service in front of it), and, with an
-/// HTTP-only node list, by the 30 s poll's first look; the verifier's input and the page's `tip` event both read it.
+/// The tip hub against an isolated offline node: followed by push (Server-Sent Events from a tip service in front of it), and, with a
+/// node list that has no tip service, by the 30 s poll's first look; the verifier's input and the page's `tip` event both read it.
 #[test]
 fn the_tip_hub_follows_a_node_by_push_and_by_poll() {
     let Some(a) = start_daemon("tip") else {
@@ -717,12 +655,10 @@ fn the_tip_hub_follows_a_node_by_push_and_by_poll() {
         }
         panic!("no tip within 20 s");
     };
-    // by push, over iroh only
-    let relay = tauri::async_runtime::block_on(RelayHandle::spawn(&RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), tls: TlsMode::SelfSigned, hello_policy: HelloPolicy::Off, ..Default::default() }, HelloLog::default())).unwrap();
-    let sa = tauri::async_runtime::block_on(serve(&a, &relay, network));
-    let net = net_with(&[(sa.addr.clone(), Source::Bootstrap)]);
-    tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
-    tauri::async_runtime::spawn(net.clone().tip_task(true));
+    // by push, from a tip service
+    let sse = tauri::async_runtime::block_on(tip_service(&a));
+    let net = net_with(&[(http_of(&a), Source::Bootstrap), (sse, Source::Bootstrap)]);
+    tauri::async_runtime::spawn(net.clone().tip_task());
     let t = wait_tip(&net);
     assert_eq!((t.height, t.hash), (0, network), "genesis is the tip of a fresh chain");
     assert_eq!(t.difficulty, 1);
@@ -730,12 +666,12 @@ fn the_tip_hub_follows_a_node_by_push_and_by_poll() {
     let json = crate::lctip::tip_json(&t);
     assert_eq!(json["hash"], hex::encode(network));
     assert_eq!(json["difficulty"], "1", "big numbers go to the page as strings");
-    // by poll, over HTTP only (no node serves SubscribeTip there)
+    assert!(net.tip_hub().live_tip_hash().is_some(), "the tip arrived by push");
+    // by poll (the node serves no /lc/tip)
     let net2 = net_with(&[(http_of(&a), Source::Bootstrap)]);
-    tauri::async_runtime::spawn(net2.clone().tip_task(false));
+    tauri::async_runtime::spawn(net2.clone().tip_task());
     let t2 = wait_tip(&net2);
     assert_eq!((t2.height, t2.hash, t2.timestamp), (t.height, t.hash, t.timestamp), "the same tip by either way");
     // the hub is what the verifier reads: stranded is clear while nodes answer
     assert!(!net.tip_hub().stranded());
-    tauri::async_runtime::block_on(relay.shutdown());
 }

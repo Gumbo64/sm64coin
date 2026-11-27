@@ -32,7 +32,7 @@ mod mobile_miner;
 use serde::Serialize;
 
 /// Starts the app's light-client network: the loopback daemon (walletproxy.rs) for the wallet and the native miner, and the
-/// background work (iroh endpoint, node gossip, persistence). The returned proxy must be kept (managed) while the app runs.
+/// background work (tip, verification, node discovery, persistence). The returned proxy must be kept (managed) while the app runs.
 pub(crate) fn start_net(remote: &remote::Remote) -> Result<std::sync::Arc<walletproxy::WalletProxy>, String> {
     let proxy = walletproxy::start(remote.net.clone(), vec![])?;
     remote.set_proxy(&proxy.url());

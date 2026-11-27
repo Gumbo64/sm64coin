@@ -86,7 +86,7 @@ fn now_ms() -> u64 {
 }
 
 fn short(key: &str) -> String {
-    let k = key.strip_prefix("http:").or_else(|| key.strip_prefix("iroh:")).unwrap_or(key);
+    let k = key.strip_prefix("http:").unwrap_or(key);
     let k = k.strip_prefix("https://").unwrap_or(k);
     if k.len() > 24 && !k.contains('.') { format!("{}…", &k[..12]) } else { k.to_string() }
 }
