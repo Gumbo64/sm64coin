@@ -451,6 +451,7 @@ impl Watch {
             let dm = rpc::Daemon::new(&url);
             let mut polled = std::time::Instant::now();
             let mut checked = std::time::Instant::now();
+            let mut confirmed: Option<std::time::Instant> = None;
             while !d.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(100));
                 if inner.stopped() {
@@ -461,12 +462,18 @@ impl Watch {
                 // a pushed tip is read from memory every tick (a new block ends the search within 0.1 s, and costs no request)
                 let pushed = feed.as_ref().and_then(|f| f.tip());
                 let poll_due = pushed.is_none() && polled.elapsed() >= Duration::from_secs(2);
-                let moved_by_push = pushed.as_ref().is_some_and(|h| *h != prev);
-                if !poll_due && !moved_by_push && checked.elapsed() < Duration::from_secs(1) {
+                // A change the feed reports is confirmed by the daemon, the template source (at most once a second): the feed may
+                // follow another node, one block ahead of this daemon (the next template would still be on the old tip: a
+                // restart loop) or on another fork.
+                let confirm_due = pushed.as_ref().is_some_and(|h| *h != prev) && confirmed.is_none_or(|c| c.elapsed() >= Duration::from_secs(1));
+                if !poll_due && !confirm_due && checked.elapsed() < Duration::from_secs(1) {
                     continue;
                 }
                 if poll_due {
                     polled = std::time::Instant::now();
+                }
+                if confirm_due {
+                    confirmed = Some(std::time::Instant::now());
                 }
                 checked = std::time::Instant::now();
                 if (power_on_at != 0 && now() >= power_on_at) || (deadline != 0 && now() >= deadline) {
@@ -477,7 +484,11 @@ impl Watch {
                 if p_deadline != 0 && now() >= p_deadline {
                     ps.store(true, Ordering::Relaxed);
                 }
-                let moved = if pushed.is_some() { moved_by_push } else { poll_due && dm.top_hash().map(|h| h != prev).unwrap_or(false) };
+                let moved = if confirm_due {
+                    dm.top_hash().map(|h| h != prev).unwrap_or(true) // the daemon does not answer: the push alone
+                } else {
+                    poll_due && dm.top_hash().map(|h| h != prev).unwrap_or(false)
+                };
                 if moved {
                     n.store(true, Ordering::Relaxed);
                     s.store(true, Ordering::Relaxed);
@@ -531,10 +542,12 @@ fn run(inner: &Arc<Inner>, cfg: &CampaignConfig, reset_mode: ResetMode) -> Resul
 }
 
 impl Ctx<'_> {
-    /// Has the chain moved on from `tip`? From the feed when it knows the tip (no request), else from the daemon.
+    /// Has the chain moved on from `tip`? No request while the feed says it has not; a change the feed reports (or no feed) is
+    /// asked of the daemon, the template source (the feed may follow another node, ahead of it or on another fork).
     fn tip_moved(&self, tip: &str) -> bool {
         match self.cfg.tip_feed.as_ref().and_then(|f| f.tip()) {
-            Some(h) => h != tip,
+            Some(h) if h == tip => false,
+            Some(_) => self.daemon.top_hash().map(|h| h != tip).unwrap_or(true),
             None => self.daemon.top_hash().map(|h| h != tip).unwrap_or(false),
         }
     }
@@ -905,6 +918,42 @@ mod tests {
         }
         assert!(t0.elapsed() < Duration::from_secs(1), "within a few ticks, not a poll period: {:?}", t0.elapsed());
         assert!(w.finish(), "reported as a new tip");
+    }
+
+    /// A tiny daemon answering every call with `{"result": {"top_block_hash": <top>}}`.
+    fn fake_daemon(top: Arc<Mutex<String>>) -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let body = serde_json::json!({"jsonrpc": "2.0", "id": 0, "result": {"top_block_hash": top.lock().unwrap().clone(), "height": 9}}).to_string();
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        url
+    }
+
+    /// The feed follows a node one block ahead of the miner's daemon: the search goes on (a new template would still be on the
+    /// old tip) until the daemon has the block too.
+    #[test]
+    fn a_pushed_tip_the_daemon_does_not_have_yet_waits_for_the_daemon() {
+        let top = Arc::new(Mutex::new("aa".to_string()));
+        let url = fake_daemon(top.clone());
+        let feed = Arc::new(Feed(Mutex::new(Some("bb".into()))));
+        let w = Watch::spawn(&inner(), &url, Some(feed), "aa", 0, 0, 0);
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!w.stop.load(Ordering::Relaxed), "the daemon is still on aa");
+        *top.lock().unwrap() = "bb".into();
+        let t0 = std::time::Instant::now();
+        while !w.stop.load(Ordering::Relaxed) && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(t0.elapsed() < Duration::from_millis(1500), "{:?}", t0.elapsed());
+        assert!(w.finish());
     }
 
     /// Deadlines still end the search with a feed (they are checked once a second from the clock).
