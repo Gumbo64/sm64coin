@@ -363,6 +363,7 @@ pub fn wallet_activity(app: State<'_, App>) -> Res<()> {
 
 #[tauri::command]
 pub async fn wallet_settings(app: AppHandle, settings: Settings, password: Option<String>, pin: Option<String>) -> Res<Settings> {
+    let (password, pin) = (password.map(Zeroizing::new), pin.map(Zeroizing::new));
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<App>();
         let w = &st.wallet;
@@ -370,7 +371,7 @@ pub async fn wallet_settings(app: AppHandle, settings: Settings, password: Optio
         // Turning a protection off needs the password of the open wallet (a page cannot weaken them by itself).
         let weaker = (old.password_on_send && !settings.password_on_send) || (old.auto_lock_minutes != 0 && (settings.auto_lock_minutes == 0 || settings.auto_lock_minutes > old.auto_lock_minutes));
         if weaker {
-            gate(&st, password.as_deref(), pin.as_deref())?;
+            gate(&st, password.as_ref().map(|p| p.as_str()), pin.as_ref().map(|p| p.as_str()))?;
         }
         let mut s = settings;
         s.auto_lock_minutes = s.auto_lock_minutes.min(24 * 60);
@@ -518,7 +519,7 @@ fn random_password() -> Zeroizing<String> {
 /// is sealed. The password never goes back to the page.
 #[tauri::command]
 pub async fn wallet_pin_enable(app: AppHandle, pin: String, password: Option<String>) -> Res<Value> {
-    let pin = Zeroizing::new(pin);
+    let (pin, password) = (Zeroizing::new(pin), password.map(Zeroizing::new));
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<App>();
         let app: &App = &st;
@@ -528,8 +529,8 @@ pub async fn wallet_pin_enable(app: AppHandle, pin: String, password: Option<Str
         }
         let name = app.wallet.open.lock().unwrap().as_ref().map(|o| o.name.clone()).ok_or_else(|| AppError::new("wallet_not_open", "no wallet is open"))?;
         let path = pin_path(&app.dirs, &name)?;
-        check_password(app, Some(password.as_deref().unwrap_or("")))?;
-        let old = Zeroizing::new(password.unwrap_or_default());
+        let old = password.unwrap_or_default();
+        check_password(app, Some(old.as_str()))?;
         let generated = old.is_empty();
         let secret = if generated { random_password() } else { old.clone() };
         let rec = walletpin::wrap(&secret, &pin, &name, walletpin::PIN_ITER, walletpin::PIN_TRIES, generated).map_err(|e| AppError::new("wallet_pin", e))?;
@@ -572,6 +573,7 @@ pub async fn wallet_pin_open(app: AppHandle, name: String, pin: String) -> Res<V
 /// user's own password simply stays.
 #[tauri::command]
 pub async fn wallet_pin_disable(app: AppHandle, password: Option<String>, pin: Option<String>, new_password: Option<String>) -> Res<Value> {
+    let (password, pin) = (password.map(Zeroizing::new), pin.map(Zeroizing::new));
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<App>();
         let app: &App = &st;
@@ -579,7 +581,7 @@ pub async fn wallet_pin_disable(app: AppHandle, password: Option<String>, pin: O
         let name = app.wallet.open.lock().unwrap().as_ref().map(|o| o.name.clone()).ok_or_else(|| AppError::new("wallet_not_open", "no wallet is open"))?;
         let path = pin_path(&app.dirs, &name)?;
         let rec = walletpin::load(&path);
-        let old = gate(app, password.as_deref(), pin.as_deref())?;
+        let old = gate(app, password.as_ref().map(|p| p.as_str()), pin.as_ref().map(|p| p.as_str()))?;
         let generated = rec.as_ref().is_some_and(|r| r.generated);
         if generated {
             let new = Zeroizing::new(new_password.unwrap_or_default());
