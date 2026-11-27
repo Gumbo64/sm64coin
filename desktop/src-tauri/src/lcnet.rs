@@ -108,6 +108,7 @@ impl TipHub {
         });
     }
     /// The app's own node's tip (desktop).
+    #[cfg_attr(not(desktop), allow(dead_code))]
     pub fn offer_local(&self, t: TipInfo) {
         *self.local_at.lock().unwrap() = Some(std::time::Instant::now());
         self.stranded.store(false, Ordering::Relaxed);
@@ -147,11 +148,13 @@ impl TipHub {
         self.stranded.store(on, Ordering::Relaxed);
     }
     /// The tip's block id (hex), no request.
+    #[cfg_attr(desktop, allow(dead_code))]
     pub fn tip_hash(&self) -> Option<String> {
         self.tx.borrow().as_ref().map(|t| hex::encode(t.hash))
     }
     /// What the native miner's feed reads: the tip while it is live (pushed, or the local node polled each second), else None so
     /// the campaign polls its daemon itself (a 30 s network poll would tell it of a new block up to 30 s late).
+    #[cfg_attr(desktop, allow(dead_code))]
     pub fn live_tip_hash(&self) -> Option<String> {
         if self.pushing.load(Ordering::Relaxed) || self.local_fresh() { self.tip_hash() } else { None }
     }
