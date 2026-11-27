@@ -1,19 +1,14 @@
-//! `--lc`: the light-client service (sm64coin-lc: `LcService` on an iroh endpoint, plus the `RelayController` in `auto` mode)
-//! run in this process next to the node the launcher started. The same code as the standalone `sm64coin-lc serve`
+//! `--lc`: the light-client service (sm64coin-lc: the chain tip pushed over HTTP as Server-Sent Events at `GET /lc/tip`) run in
+//! this process next to the node the launcher started. The same code as the standalone `sm64coin-lc serve`
 //! (pow/lc/src/main.rs), which is what a node run by hand or by systemd uses (packaging/sm64coin-lc.service).
+//! Plain HTTP on a local port; the public HTTPS address is the node's reverse proxy (see `sm64coin_lc::sse`).
 //! Runs on its own thread with its own tokio runtime; nothing here touches the node except its restricted-safe RPC on
-//! 127.0.0.1 (only allowlisted methods are ever forwarded, see `sm64coin_lc::allowlist`).
-use sm64coin_lc::client::{Client, Connector, IrohConnector, SystemEnv};
-use sm64coin_lc::endpoint::{Discovery, EndpointOptions, build_endpoint};
+//! 127.0.0.1 (only allowlisted methods are ever asked, see `sm64coin_lc::allowlist`).
 use sm64coin_lc::exec::{self, Upstream};
 use sm64coin_lc::http::HttpUpstream;
-use sm64coin_lc::nodes::{NodeList, Source, parse_node_spec};
-use sm64coin_lc::peers::{ClientPeers, gossip_once};
-use sm64coin_lc::proto::{ALPN, node_flags};
-use sm64coin_lc::relay::{HelloPolicy, RelayChoice, RelayConfig, RelayController, TlsMode};
-use sm64coin_lc::server::{HelloLog, LcService, Limits, ServerConfig};
+use sm64coin_lc::sse::{SseConfig, serve};
+use sm64coin_lc::tipfeed::{TipFeed, TipFeedConfig};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,26 +20,14 @@ pub struct LcConfig {
     /// Dandelion++ stem transactions in the pool calls.
     pub node_rpc_port: u16,
     pub allow_unrestricted: bool,
-    /// `secret.key`, `nodes.json`, `relay-usage.json` live here.
-    pub data_dir: PathBuf,
-    pub relay: RelayChoice,
-    /// Where the embedded relay listens when it is on (port 443 needs privileges on Linux: a failed bind keeps it off).
-    pub relay_bind: SocketAddr,
-    pub discovery: Discovery,
-    /// `iroh:<id>[@relay]` or https URLs of servers to learn peers from.
-    pub bootstrap: Vec<String>,
-    /// Use n0's public relays (the default; tests and closed networks turn it off).
-    pub n0_fallback: bool,
-    /// The relay's certificate. Self-signed (the default) keeps the relay off in auto mode (no client trusts it); ACME with
-    /// a domain (`--lc-acme-domain`) gets a browser-valid Let's Encrypt one on port 443 (cached in `data_dir/acme`).
-    pub tls: TlsMode,
-    /// Serve the tip over plain HTTP (Server-Sent Events at /lc/tip; sm64coin_lc::sse) here, behind the node's HTTPS reverse proxy.
-    pub sse_bind: Option<SocketAddr>,
+    /// Where the tip stream (`GET /lc/tip`) listens, behind the node's HTTPS reverse proxy. A loopback address trusts the
+    /// proxy's `X-Forwarded-For`.
+    pub sse_bind: SocketAddr,
 }
 
 impl LcConfig {
-    pub fn new(node_rpc_port: u16, data_dir: PathBuf) -> Self {
-        LcConfig { node_rpc_port, allow_unrestricted: false, data_dir, relay: RelayChoice::Auto, relay_bind: "0.0.0.0:443".parse().unwrap(), discovery: Discovery::Dht, bootstrap: vec![], n0_fallback: true, tls: TlsMode::SelfSigned, sse_bind: None }
+    pub fn new(node_rpc_port: u16) -> Self {
+        LcConfig { node_rpc_port, allow_unrestricted: false, sse_bind: "127.0.0.1:16490".parse().unwrap() }
     }
 }
 
@@ -63,24 +46,6 @@ impl Drop for LcHandle {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-fn load_or_create_key(dir: &Path) -> std::io::Result<iroh::SecretKey> {
-    std::fs::create_dir_all(dir)?;
-    let p = dir.join("secret.key");
-    if let Ok(b) = std::fs::read(&p) {
-        if let Ok(a) = <[u8; 32]>::try_from(b.as_slice()) {
-            return Ok(iroh::SecretKey::from_bytes(&a));
-        }
-    }
-    let k = iroh::SecretKey::generate();
-    std::fs::write(&p, k.to_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(k)
 }
 
 /// Starts the service on a background thread; returns at once (the thread waits for the node's RPC itself).
@@ -104,72 +69,39 @@ pub fn start(cfg: LcConfig) -> Result<LcHandle, String> {
 
 async fn run(cfg: LcConfig, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     let upstream: Arc<dyn Upstream> = Arc::new(HttpUpstream::new(&format!("http://127.0.0.1:{}", cfg.node_rpc_port))?);
-    let network = loop {
+    loop {
         if stop.load(Ordering::SeqCst) {
             return Ok(());
         }
         match exec::genesis_hash(&*upstream, Duration::from_secs(5)).await {
-            Ok(g) => break g,
+            Ok(_) => break,
             Err(_) => tokio::time::sleep(Duration::from_secs(3)).await,
         }
-    };
+    }
     if !cfg.allow_unrestricted && exec::node_restricted(&*upstream, Duration::from_secs(5)).await != Some(true) {
         return Err(format!("the node RPC on port {} is not restricted (start sm64coind with --rpc-restricted-bind-port and point the service at that port)", cfg.node_rpc_port).into());
     }
-    let secret = load_or_create_key(&cfg.data_dir)?;
-    let hello = HelloLog::default();
-    let ep = build_endpoint(EndpointOptions { secret_key: Some(secret.clone()), discovery: cfg.discovery, n0_fallback: cfg.n0_fallback, alpns: vec![ALPN.to_vec()], ..Default::default() }).await?;
-    let service = LcService::new(ServerConfig { network, limits: Limits::default(), flags: node_flags::ARCHIVE, version: 1, https_rpc: None }, upstream, secret, hello.clone());
-    let router = service.serve(ep.clone());
-    if let Some(bind) = cfg.sse_bind {
-        let (a, task) = sm64coin_lc::sse::serve(service.feed(), sm64coin_lc::sse::SseConfig::behind_local_proxy(bind)).await?;
-        println!("Tip stream (SSE): http://{a}/lc/tip");
-        std::mem::forget(task);
-    }
-    println!("Light-client service: endpoint id {} (relay {:?}).", ep.id(), cfg.relay);
-
-    let mut list = std::fs::read_to_string(cfg.data_dir.join("nodes.json")).ok().and_then(|s| NodeList::from_json(&s).ok()).unwrap_or_default();
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
-    for b in &cfg.bootstrap {
-        if let Some(a) = parse_node_spec(b) {
-            list.add(a, Source::Bootstrap, now);
-        }
-    }
-    let connector: Arc<dyn Connector> = Arc::new(IrohConnector::new(ep.clone(), network));
-    let client = Arc::new(Client::new(list, connector.clone(), Arc::new(SystemEnv)));
-    let rcfg = RelayConfig {
-        https_bind: cfg.relay_bind,
-        tls: cfg.tls.clone(),
-        hello_policy: HelloPolicy::Probation { slots: 40, secs: 60 },
-        data_dir: Some(cfg.data_dir.clone()),
-        ..Default::default()
-    };
-    let peers = Arc::new(ClientPeers { client: client.clone(), connector, me: ep.id().to_string() });
-    tokio::spawn(RelayController::new(cfg.relay, rcfg, None, hello, service.clone(), ep.clone(), peers).run());
-    let (c2, s2, dir, stop2) = (client.clone(), service.clone(), cfg.data_dir.clone(), stop.clone());
-    tokio::spawn(async move {
-        while !stop2.load(Ordering::SeqCst) {
-            let n = gossip_once(&c2, &s2, 3).await;
-            let _ = n;
-            let _ = std::fs::write(dir.join("nodes.json"), c2.list_json());
-            tokio::time::sleep(Duration::from_secs(600)).await;
-        }
-    });
+    let feed = TipFeed::new(upstream, TipFeedConfig::default());
+    let stop2 = stop.clone();
+    let poller = tokio::spawn(feed.clone().run(move || stop2.load(Ordering::SeqCst)));
+    let (addr, task) = serve(feed, SseConfig::behind_local_proxy(cfg.sse_bind)).await?;
+    println!("Light-client service: tip stream (SSE) at http://{addr}/lc/tip");
     while !stop.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    router.shutdown().await?;
+    task.abort();
+    poller.abort();
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use std::io::{Read, Write};
 
-    /// The service starts against a (fake) node RPC, makes its key and stops; no network (no discovery, no relays, no n0).
+    /// The service starts against a (fake) node RPC, streams the tip over SSE and stops.
     #[test]
-    fn starts_next_to_a_node_and_stops() {
+    fn starts_next_to_a_node_streams_the_tip_and_stops() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         let hash = "ab".repeat(32);
@@ -177,24 +109,39 @@ mod tests {
             for mut req in server.incoming_requests() {
                 let mut b = String::new();
                 let _ = req.as_reader().read_to_string(&mut b);
-                let body = serde_json::json!({"jsonrpc": "2.0", "id": 0, "result": {"block_header": {"hash": hash}, "status": "OK"}}).to_string();
+                let result = if b.contains("get_info") {
+                    serde_json::json!({"height": 5, "top_block_hash": hash, "cumulative_difficulty": 7, "difficulty": 100, "status": "OK"})
+                } else {
+                    serde_json::json!({"block_header": {"hash": hash, "height": 4, "timestamp": 1_700_000_000u64}, "status": "OK"})
+                };
+                let body = serde_json::json!({"jsonrpc": "2.0", "id": 0, "result": result}).to_string();
                 let _ = req.respond(tiny_http::Response::from_string(body));
             }
         });
-        let dir = std::env::temp_dir().join(format!("lcserve-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut c = LcConfig::new(port, dir.clone());
-        (c.relay, c.discovery, c.n0_fallback, c.relay_bind) = (RelayChoice::Off, Discovery::None, false, "127.0.0.1:0".parse().unwrap());
-        c.allow_unrestricted = true; // the fake node answers no get_info
+        let sse_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut c = LcConfig::new(port);
+        c.allow_unrestricted = true; // the fake node says nothing about `restricted`
+        c.sse_bind = format!("127.0.0.1:{sse_port}").parse().unwrap();
         let h = start(c).unwrap();
         let t = std::time::Instant::now();
-        while !dir.join("secret.key").is_file() {
-            assert!(t.elapsed() < Duration::from_secs(20), "the service did not come up");
-            std::thread::sleep(Duration::from_millis(100));
+        let mut got = String::new();
+        while !got.contains("\"height\":4") {
+            assert!(t.elapsed() < Duration::from_secs(20), "no tip from the service: {got:?}");
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", sse_port)) {
+                s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let _ = s.write_all(b"GET /lc/tip HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n");
+                let mut buf = [0u8; 2048];
+                if let Ok(n) = s.read(&mut buf) {
+                    got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+                // the first read may hold only the headers: read once more for the first event
+                if let Ok(n) = s.read(&mut buf) {
+                    got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
         }
-        assert_eq!(std::fs::read(dir.join("secret.key")).unwrap().len(), 32);
         h.stop();
         std::thread::sleep(Duration::from_millis(1500));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

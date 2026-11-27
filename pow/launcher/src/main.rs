@@ -91,32 +91,16 @@ struct Opts {
     /// Also run the automated miner (sm64coin-automine), mining to this address
     #[arg(long, value_name = "SM64...")]
     mine: Option<String>,
-    /// Run the light-client service beside the node (iroh endpoint + relay on demand: phones, apps and browsers read the chain
-    /// through it). `auto` (default) = on with --public. Needs the `lc` build feature.
+    /// Run the light-client service beside the node (the chain tip pushed over HTTP as Server-Sent Events, GET /lc/tip: phones,
+    /// apps and browsers follow the tip through it). `auto` (default) = on with --public. Needs the `lc` build feature.
     #[cfg(feature = "lc")]
     #[arg(long, value_enum, default_value = "auto", num_args = 0..=1, default_missing_value = "on", value_name = "on|off|auto")]
     lc: LcMode,
-    /// Where the light-client relay listens (used when it turns on)
+    /// Where the tip stream (plain HTTP) listens; the public HTTPS address is the node's reverse proxy forwarding /lc/tip to it
+    /// with buffering off
     #[cfg(feature = "lc")]
-    #[arg(long, default_value = "0.0.0.0:443", value_name = "ADDR")]
-    lc_relay_bind: std::net::SocketAddr,
-    /// Serve the tip over plain HTTP (Server-Sent Events, GET /lc/tip) here, e.g. 127.0.0.1:16490, behind the node's HTTPS reverse proxy
-    #[cfg(feature = "lc")]
-    #[arg(long, value_name = "ADDR")]
-    lc_sse_bind: Option<std::net::SocketAddr>,
-    /// Known light-client servers to learn peers from (iroh:<id>[@relay] or https URL), repeatable
-    #[cfg(feature = "lc")]
-    #[arg(long = "lc-bootstrap", value_name = "SPEC")]
-    lc_bootstrap: Vec<String>,
-    /// The light-client relay's domain for a Let's Encrypt certificate (port 443 must be reachable; repeatable). Without
-    /// one the relay stays off: a self-signed relay is never advertised.
-    #[cfg(feature = "lc")]
-    #[arg(long = "lc-acme-domain", value_name = "DOMAIN")]
-    lc_acme_domain: Vec<String>,
-    /// Contact for the Let's Encrypt account (mailto:you@example.org)
-    #[cfg(feature = "lc")]
-    #[arg(long = "lc-acme-contact", value_name = "URI")]
-    lc_acme_contact: Vec<String>,
+    #[arg(long, default_value = "127.0.0.1:16490", value_name = "ADDR")]
+    lc_sse_bind: std::net::SocketAddr,
     /// Extra argument for sm64coind, repeatable
     #[arg(long = "daemon-arg", value_name = "ARG", allow_hyphen_values = true)]
     daemon_args: Vec<String>,
@@ -489,19 +473,11 @@ fn run(o: Opts) -> Result<(), String> {
         }
         let rpc_url = format!("http://127.0.0.1:{}", o.rpc_port);
 
-        // --- light-client service (iroh) ---
+        // --- light-client service (the tip over SSE) ---
         #[cfg(feature = "lc")]
         let _lc = if let Some(port) = restricted_port.filter(|_| lc_on) {
-            let mut c = sm64coin_launcher::lcserve::LcConfig::new(port, data_dir.join("lc"));
-            c.relay_bind = o.lc_relay_bind;
+            let mut c = sm64coin_launcher::lcserve::LcConfig::new(port);
             c.sse_bind = o.lc_sse_bind;
-            c.bootstrap = o.lc_bootstrap.clone();
-            if !o.lc_acme_domain.is_empty() {
-                c.tls = sm64coin_lc::relay::TlsMode::Acme { domains: o.lc_acme_domain.clone(), contact: o.lc_acme_contact.clone(), cache_dir: data_dir.join("lc").join("acme"), production: true };
-            }
-            if o.no_dht {
-                c.discovery = sm64coin_lc::endpoint::Discovery::N0;
-            }
             match sm64coin_launcher::lcserve::start(c) {
                 Ok(h) => Some(h),
                 Err(e) => {
