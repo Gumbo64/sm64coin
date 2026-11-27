@@ -6,6 +6,7 @@
   "platforms": ["android", "iOS"],
   "permissions": [
     "allow-host-info", "allow-remote-rpc", "allow-remote-node-get",
+    "allow-quick-status", "allow-quick-wrap", "allow-quick-unwrap", "allow-quick-forget",
     "allow-rom-put", "allow-miner-start", "allow-miner-stop", "allow-miner-status", "allow-miner-viz-on", "allow-miner-viz-mail",
     "core:event:allow-listen", "core:event:allow-unlisten"
   ]

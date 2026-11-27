@@ -8,8 +8,11 @@
 //! - Like the GUI: the password opens a wallet; it closes after N idle minutes (the page reports user activity with
 //!   `wallet_activity`); sending asks for the password again (setting, default on); showing the seed or keys always does.
 //!   The check is done here against a salted hash kept in memory while the wallet is open, so a page cannot skip it.
-//! - Passwords, seeds and keys are never logged. They travel in the RPC body only, never in arguments or files.
+//! - Quick-unlock (optional, off by default): a PIN seals the wallet password (walletpin.rs); the PIN opens the wallet from here
+//!   (the password never reaches the page) and is accepted wherever the password is asked (send, seed and keys, weakening a setting).
+//! - Passwords, PINs, seeds and keys are never logged. They travel in the RPC body only, never in arguments or files.
 use crate::desktop::{App, Dirs};
+use crate::walletpin::{self, Attempt};
 use crate::{AppError, Res};
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -288,6 +291,43 @@ pub struct WalletInfo {
     settings: Settings,
     /// This user's wallet directory.
     dir: String,
+    /// Wallets with a PIN set, and the wrong tries each still has.
+    pins: Vec<PinInfo>,
+}
+
+#[derive(Serialize)]
+struct PinInfo {
+    name: String,
+    left: u32,
+    /// The wallet's password was made by the PIN setup (turning the PIN off asks for a new one).
+    generated: bool,
+}
+
+fn pins_dir(d: &Dirs) -> Res<PathBuf> {
+    let p = d.data.join("wallet-pins");
+    std::fs::create_dir_all(&p).map_err(|e| AppError::new("wallet_dir", format!("cannot create {}: {e}", p.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(p)
+}
+fn pin_path(d: &Dirs, name: &str) -> Res<PathBuf> {
+    if !valid_name(name) {
+        return Err(AppError::new("bad_name", "a wallet name is letters, digits, - and _ (up to 40)"));
+    }
+    Ok(pins_dir(d)?.join(format!("{name}.pin")))
+}
+fn list_pins(d: &Dirs, wallets: &[String]) -> Vec<PinInfo> {
+    let Ok(dir) = pins_dir(d) else { return vec![] };
+    wallets
+        .iter()
+        .filter_map(|n| {
+            let r = walletpin::load(&dir.join(format!("{n}.pin")))?;
+            Some(PinInfo { name: n.clone(), left: r.tries.clamp(1, 100).saturating_sub(r.fails), generated: r.generated })
+        })
+        .collect()
 }
 
 fn info(app: &App) -> WalletInfo {
@@ -297,10 +337,12 @@ fn info(app: &App) -> WalletInfo {
     if !running {
         *w.open.lock().unwrap() = None; // the sidecar died: nothing is open any more
     }
+    let wallets = list_wallets(&app.dirs);
     WalletInfo {
         available: app.dirs.tool("sm64coin-wallet-rpc").is_file(),
         running,
-        wallets: list_wallets(&app.dirs),
+        pins: list_pins(&app.dirs, &wallets),
+        wallets,
         open: w.open.lock().unwrap().as_ref().map(|o| o.name.clone()),
         settings: w.settings.lock().unwrap().clone(),
         dir: app.dirs.data.join("wallets").display().to_string(),
@@ -320,7 +362,7 @@ pub fn wallet_activity(app: State<'_, App>) -> Res<()> {
 }
 
 #[tauri::command]
-pub async fn wallet_settings(app: AppHandle, settings: Settings, password: Option<String>) -> Res<Settings> {
+pub async fn wallet_settings(app: AppHandle, settings: Settings, password: Option<String>, pin: Option<String>) -> Res<Settings> {
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<App>();
         let w = &st.wallet;
@@ -328,7 +370,7 @@ pub async fn wallet_settings(app: AppHandle, settings: Settings, password: Optio
         // Turning a protection off needs the password of the open wallet (a page cannot weaken them by itself).
         let weaker = (old.password_on_send && !settings.password_on_send) || (old.auto_lock_minutes != 0 && (settings.auto_lock_minutes == 0 || settings.auto_lock_minutes > old.auto_lock_minutes));
         if weaker {
-            check_password(&st, password.as_deref())?;
+            gate(&st, password.as_deref(), pin.as_deref())?;
         }
         let mut s = settings;
         s.auto_lock_minutes = s.auto_lock_minutes.min(24 * 60);
@@ -347,6 +389,36 @@ fn check_password(app: &App, password: Option<&str>) -> Res<()> {
     let o = g.as_ref().ok_or_else(|| AppError::new("wallet_not_open", "no wallet is open"))?;
     let pw = password.ok_or_else(|| AppError::new("password_required", "enter the wallet password"))?;
     if ct_eq(&pw_hash(&o.salt, pw), &o.hash) { Ok(()) } else { Err(AppError::new("wrong_password", "wrong password")) }
+}
+
+/// The password gate with quick-unlock: the password if it is right, else (when the open wallet has a PIN and one was given)
+/// the PIN, which counts as an attempt and opens the sealed password. Returns the verified password.
+fn gate(app: &App, password: Option<&str>, pin: Option<&str>) -> Res<Zeroizing<String>> {
+    if check_password(app, password).is_ok() {
+        return Ok(Zeroizing::new(password.unwrap_or("").to_string()));
+    }
+    let name = app.wallet.open.lock().unwrap().as_ref().map(|o| o.name.clone()).ok_or_else(|| AppError::new("wallet_not_open", "no wallet is open"))?;
+    if let (Some(pin), Ok(path)) = (pin, pin_path(&app.dirs, &name)) {
+        if path.is_file() {
+            let secret = pin_try(&path, &name, pin)?;
+            // the sealed password must still be the wallet's (it is, unless the wallet was changed by hand)
+            check_password(app, Some(secret.as_str()))?;
+            return Ok(secret);
+        }
+    }
+    if password.is_none() {
+        return Err(AppError::new("password_required", "enter the wallet password"));
+    }
+    Err(AppError::new("wrong_password", "wrong password"))
+}
+
+/// One PIN try, as an error the page can show: `wrong_pin` (tries left in the message) or `pin_wiped`.
+fn pin_try(path: &std::path::Path, name: &str, pin: &str) -> Res<Zeroizing<String>> {
+    match walletpin::attempt(path, pin, name).map_err(|e| AppError::new("wallet_pin", e))? {
+        Attempt::Ok(s) => Ok(s),
+        Attempt::Wrong { left } => Err(AppError::new("wrong_pin", format!("Wrong PIN: {left} {} left.", if left == 1 { "try" } else { "tries" }))),
+        Attempt::Wiped => Err(AppError::new("pin_wiped", "The PIN is gone (too many wrong tries): use the wallet password (if the PIN setup made it, restore the wallet from its seed words).")),
+    }
 }
 
 fn remember(app: &App, name: &str, password: &str) {
@@ -390,7 +462,8 @@ fn scrub(v: &mut Value) {
 /// Methods the page may call. Everything else (export_*, sweep, set_attribute, make_integrated_address, ...) is refused.
 const ALLOWED: &[&str] = &[
     "get_version", "get_height", "get_balance", "get_address", "get_transfers", "get_transfer_by_txid", "validate_address", "get_languages",
-    "store", "refresh", "rescan_blockchain", "relay_tx", "transfer", "query_key", "set_daemon", "get_address_book",
+    "store", "refresh", "rescan_blockchain", "relay_tx", "transfer", "query_key", "set_daemon",
+    "get_address_book", "add_address_book", "edit_address_book", "delete_address_book",
     "create_wallet", "open_wallet", "restore_deterministic_wallet", "close_wallet", "change_wallet_password",
 ];
 
@@ -401,6 +474,114 @@ pub fn lock_wallet(app: &App) {
     let _ = call(app, "store", json!({}), Duration::from_secs(60));
     let _ = call(app, "close_wallet", json!({}), Duration::from_secs(60));
     *app.wallet.open.lock().unwrap() = None;
+}
+
+/// `validate_address` answered "valid, on this chain's network".
+fn address_ok(v: &Value) -> bool {
+    let r = v.get("result").unwrap_or(v);
+    r.get("valid").and_then(|x| x.as_bool()) == Some(true) && r.get("nettype").and_then(|x| x.as_str()).is_none_or(|n| n == "mainnet")
+}
+
+/// Address book entries: a label of up to 120 printable characters.
+fn check_book_params(p: &Value) -> Res<()> {
+    if let Some(d) = str_param(p, "description") {
+        if d.chars().count() > 120 || d.chars().any(|c| c.is_control()) {
+            return Err(AppError::new("bad_label", "a label is up to 120 characters, no control characters"));
+        }
+    }
+    Ok(())
+}
+
+fn random_password() -> Zeroizing<String> {
+    // 24 random bytes as 48 hex characters: far above the 8-character minimum, nothing to type or remember
+    Zeroizing::new(hex(&rand_bytes::<24>()))
+}
+
+/// Turns quick-unlock on for the open wallet: `pin` (4-8 digits) seals the wallet password. A wallet without a password gets a
+/// random one (so the wallet file is encrypted from now on; the page is told `generated`); otherwise `password` (the current one)
+/// is sealed. The password never goes back to the page.
+#[tauri::command]
+pub async fn wallet_pin_enable(app: AppHandle, pin: String, password: Option<String>) -> Res<Value> {
+    let pin = Zeroizing::new(pin);
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = app.state::<App>();
+        let app: &App = &st;
+        let _gate = app.wallet.gate.lock().unwrap();
+        if !walletpin::valid_pin(&pin) {
+            return Err(AppError::new("bad_pin", "a PIN is 4 to 8 digits"));
+        }
+        let name = app.wallet.open.lock().unwrap().as_ref().map(|o| o.name.clone()).ok_or_else(|| AppError::new("wallet_not_open", "no wallet is open"))?;
+        let path = pin_path(&app.dirs, &name)?;
+        check_password(app, Some(password.as_deref().unwrap_or("")))?;
+        let old = Zeroizing::new(password.unwrap_or_default());
+        let generated = old.is_empty();
+        let secret = if generated { random_password() } else { old.clone() };
+        let rec = walletpin::wrap(&secret, &pin, &name, walletpin::PIN_ITER, walletpin::PIN_TRIES, generated).map_err(|e| AppError::new("wallet_pin", e))?;
+        walletpin::save(&path, &rec).map_err(|e| AppError::new("wallet_pin", e))?;
+        if generated {
+            let r = call(app, "change_wallet_password", json!({"old_password": old.as_str(), "new_password": secret.as_str()}), Duration::from_secs(120));
+            if !matches!(&r, Ok(v) if v.get("error").is_none()) {
+                walletpin::remove(&path);
+                return Err(AppError::new("wallet_rpc", "could not set the wallet's password"));
+            }
+            let _ = call(app, "store", json!({}), Duration::from_secs(60));
+            remember(app, &name, &secret);
+        }
+        Ok(json!({"generated": generated}))
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
+/// Opens wallet `name` with its PIN (a wrong one is counted; the fifth wipes the PIN).
+#[tauri::command]
+pub async fn wallet_pin_open(app: AppHandle, name: String, pin: String) -> Res<Value> {
+    let pin = Zeroizing::new(pin);
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = app.state::<App>();
+        let path = pin_path(&st.dirs, &name)?;
+        if !path.is_file() {
+            return Err(AppError::new("pin_wiped", "This wallet has no PIN: use the wallet password."));
+        }
+        let secret = pin_try(&path, &name, &pin)?;
+        let r = wallet_call(&app, "open_wallet", json!({"filename": name, "password": secret.as_str()}))?;
+        Ok(r)
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
+/// Turns quick-unlock off for the open wallet. `password` or `pin` proves it is the user. If the PIN setup had made the
+/// wallet's password (`generated`), `new_password` becomes the password ('' = none, like a one-click wallet); otherwise the
+/// user's own password simply stays.
+#[tauri::command]
+pub async fn wallet_pin_disable(app: AppHandle, password: Option<String>, pin: Option<String>, new_password: Option<String>) -> Res<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = app.state::<App>();
+        let app: &App = &st;
+        let _gate = app.wallet.gate.lock().unwrap();
+        let name = app.wallet.open.lock().unwrap().as_ref().map(|o| o.name.clone()).ok_or_else(|| AppError::new("wallet_not_open", "no wallet is open"))?;
+        let path = pin_path(&app.dirs, &name)?;
+        let rec = walletpin::load(&path);
+        let old = gate(app, password.as_deref(), pin.as_deref())?;
+        let generated = rec.as_ref().is_some_and(|r| r.generated);
+        if generated {
+            let new = Zeroizing::new(new_password.unwrap_or_default());
+            if !new.is_empty() && new.len() < 8 {
+                return Err(AppError::new("weak_password", "a password is at least 8 characters (or leave it empty)"));
+            }
+            let r = call(app, "change_wallet_password", json!({"old_password": old.as_str(), "new_password": new.as_str()}), Duration::from_secs(120))?;
+            if r.get("error").is_some() {
+                return Err(AppError::new("wallet_rpc", "could not change the wallet's password"));
+            }
+            let _ = call(app, "store", json!({}), Duration::from_secs(60));
+            remember(app, &name, &new);
+        }
+        walletpin::remove(&path);
+        Ok(json!({"generated": generated}))
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
 }
 
 #[tauri::command]
@@ -419,6 +600,7 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
     let _gate = app.wallet.gate.lock().unwrap();
     // `_password` is for this layer only: it is removed before forwarding.
     let password = p.as_object_mut().and_then(|o| o.remove("_password")).and_then(|v| v.as_str().map(String::from));
+    let pin = p.as_object_mut().and_then(|o| o.remove("_pin")).and_then(|v| v.as_str().map(String::from)).map(Zeroizing::new);
     let kdf = p.as_object_mut().and_then(|o| o.remove("_kdf_rounds")).and_then(|v| v.as_u64()).map(|v| v.clamp(1, 1_000_000) as u32);
     let slow = Duration::from_secs(600);
     match method {
@@ -466,28 +648,44 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
             }
             let mut new_pw: Option<Zeroizing<String>> = None;
             match method {
-                "query_key" => check_password(app, password.as_deref())?, // seed, spend key, view key: always the password
+                "query_key" => {
+                    gate(app, password.as_deref(), pin.as_ref().map(|p| p.as_str()))?; // seed, spend key, view key: always the password (or the PIN)
+                }
                 "change_wallet_password" => {
                     // Set or change the open wallet's password (a wallet made without one has the empty password): the current one is
                     // checked here, the new one is empty-or-8+ like at creation.
-                    check_password(app, password.as_deref())?;
+                    let old = gate(app, password.as_deref(), pin.as_ref().map(|p| p.as_str()))?;
                     let new = Zeroizing::new(str_param(&p, "new_password").unwrap_or("").to_string());
                     if new.is_empty() || new.len() < 8 {
                         return Err(AppError::new("weak_password", "a password is at least 8 characters"));
                     }
-                    let old = Zeroizing::new(password.clone().unwrap_or_default());
+                    if app.dirs.data.join("wallet-pins").join(format!("{}.pin", app.wallet.open.lock().unwrap().as_ref().map(|o| o.name.as_str()).unwrap_or(""))).is_file() {
+                        // the PIN seals the old password: changing it by hand would strand the PIN (turn the PIN off first)
+                        return Err(AppError::new("pin_set", "turn the PIN off before changing the password"));
+                    }
                     p = json!({"old_password": old.as_str(), "new_password": new.as_str()});
                     new_pw = Some(new);
                 }
                 "transfer" => {
                     if app.wallet.settings.lock().unwrap().password_on_send {
-                        check_password(app, password.as_deref())?;
+                        gate(app, password.as_deref(), pin.as_ref().map(|p| p.as_str()))?;
                     }
                     amounts_from_strings(&mut p);
                     // Review first, send second: the page may only build the transaction, then `relay_tx` it.
                     if let Some(o) = p.as_object_mut() {
                         o.insert("do_not_relay".into(), json!(true));
                         o.insert("get_tx_metadata".into(), json!(true));
+                    }
+                }
+                "add_address_book" | "edit_address_book" => {
+                    check_book_params(&p)?;
+                    if let Some(a) = str_param(&p, "address").map(String::from) {
+                        // wallet2 would also resolve an OpenAlias name here: only a plain address of this chain is saved
+                        ensure_sidecar(app, None)?;
+                        let v = call(app, "validate_address", json!({"address": a, "any_net_type": false}), Duration::from_secs(20))?;
+                        if !address_ok(&v) {
+                            return Err(AppError::new("bad_address", "this is not an SM64Coin address"));
+                        }
                     }
                 }
                 "set_daemon" => {
@@ -625,6 +823,155 @@ mod tests {
         assert_eq!(kdf_for("create_wallet", None, Some(64)), 1);
         assert_eq!(kdf_for("restore_deterministic_wallet", Some(32), None), 32);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn address_book_rules() {
+        assert!(address_ok(&json!({"result": {"valid": true, "nettype": "mainnet", "integrated": false}})));
+        assert!(address_ok(&json!({"valid": true})));
+        assert!(!address_ok(&json!({"result": {"valid": false, "nettype": "mainnet"}})));
+        assert!(!address_ok(&json!({"result": {"valid": true, "nettype": "stagenet"}})));
+        assert!(!address_ok(&json!({"error": {"code": -1}})));
+        assert!(check_book_params(&json!({"description": "Alice"})).is_ok());
+        assert!(check_book_params(&json!({"description": "x".repeat(121)})).is_err());
+        assert!(check_book_params(&json!({"description": "a\nb"})).is_err());
+        for m in ["get_address_book", "add_address_book", "edit_address_book", "delete_address_book"] {
+            assert!(ALLOWED.contains(&m), "{m} is whitelisted");
+        }
+        // what stays refused
+        for m in ["export_outputs", "sweep_all", "set_attribute", "make_integrated_address", "get_address_book_entries"] {
+            assert!(!ALLOWED.contains(&m), "{m} is refused");
+        }
+    }
+
+    /// The address book through a real `sm64coin-wallet-rpc` (the sidecar the app drives) beside an ISOLATED node
+    /// (`sm64coind --offline --sm64-solo`, fresh data dir, loopback ports: never the real chain). Skips without the binaries
+    /// (SM64COIND, SM64COIN_WALLET_RPC, SM64COIN_ROM, or an unpacked release bundle in ~/apps).
+    #[test]
+    fn address_book_crud_through_the_sidecar() {
+        use std::process::{Child, Stdio};
+        struct Kill(Child);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                let _ = self.0.kill(); // only the children this test started
+                let _ = self.0.wait();
+            }
+        }
+        let bundle = |name: &str| -> Option<std::path::PathBuf> {
+            let home = std::env::var("HOME").ok()?;
+            let mut dirs: Vec<_> = std::fs::read_dir(format!("{home}/apps")).ok()?.flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("sm64coin-"))).collect();
+            dirs.sort();
+            dirs.into_iter().rev().map(|d| d.join(name)).find(|p| p.is_file())
+        };
+        let pick = |var: &str, name: &str| std::env::var_os(var).map(PathBuf::from).or_else(|| bundle(name));
+        let (Some(daemon), Some(wrpc), Some(rom)) = (pick("SM64COIND", "sm64coind"), pick("SM64COIN_WALLET_RPC", "sm64coin-wallet-rpc"), pick("SM64COIN_ROM", "baserom.us.z64")) else {
+            eprintln!("SKIPPED: set SM64COIND, SM64COIN_WALLET_RPC and SM64COIN_ROM (or unpack a release bundle in ~/apps)");
+            return;
+        };
+        let free = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let dir = std::env::temp_dir().join(format!("sm64coin-ab-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("wallets")).unwrap();
+        let (rpc_port, p2p, zmq, wport) = (free(), free(), free(), free());
+        let _node = Kill(
+            Command::new(&daemon)
+                .args(["--offline", "--sm64-solo", "--no-igd", "--non-interactive", "--data-dir"])
+                .arg(dir.join("node"))
+                .arg("--sm64-rom")
+                .arg(&rom)
+                .args(["--p2p-bind-ip", "127.0.0.1", "--rpc-bind-ip", "127.0.0.1", "--rpc-bind-port", &rpc_port.to_string(), "--p2p-bind-port", &p2p.to_string(), "--zmq-rpc-bind-port", &zmq.to_string(), "--log-file"])
+                .arg(dir.join("node.log"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("start sm64coind"),
+        );
+        let (user, pass) = ("test".to_string(), "test-login-not-a-secret".to_string());
+        let cfg = dir.join("wrpc.conf");
+        std::fs::write(&cfg, format!("rpc-login={user}:{pass}\n")).unwrap();
+        let _w = Kill(
+            Command::new(&wrpc)
+                .arg("--config-file").arg(&cfg).arg("--wallet-dir").arg(dir.join("wallets"))
+                .args(["--rpc-bind-ip", "127.0.0.1", "--rpc-bind-port", &wport.to_string(), "--daemon-address", &format!("127.0.0.1:{rpc_port}"), "--trusted-daemon", "--kdf-rounds", "1", "--non-interactive", "--no-dns", "--log-file"])
+                .arg(dir.join("wrpc.log"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("start wallet-rpc"),
+        );
+        let t0 = Instant::now();
+        let rpc = |method: &str, params: Value| -> Value { digest_post(wport, &user, &pass, &json!({"jsonrpc": "2.0", "id": "0", "method": method, "params": params}).to_string(), Duration::from_secs(60)).unwrap() };
+        while digest_post(wport, &user, &pass, r#"{"jsonrpc":"2.0","id":"0","method":"get_version"}"#, Duration::from_secs(3)).is_err() {
+            assert!(t0.elapsed() < Duration::from_secs(60), "wallet-rpc did not answer");
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let made = rpc("create_wallet", json!({"filename": "ab", "password": "", "language": "English"}));
+        assert!(made.get("error").is_none(), "{made}");
+        let me = rpc("get_address", json!({"account_index": 0}))["result"]["address"].as_str().unwrap().to_string();
+        const A: &str = "SM64RtPqsHM63LZn2u9Myx9HtC4kjhu1h98SRtJz9USB7NZAoCMdZSBD7D1L2DWu9uCYZFUSVKytreuzEMJ6VjBU2tbjKqevFH";
+
+        // validation: what the app's add/edit gate asks first
+        assert!(address_ok(&rpc("validate_address", json!({"address": me, "any_net_type": false}))), "our own address is valid");
+        assert!(!address_ok(&rpc("validate_address", json!({"address": "4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge", "any_net_type": false}))), "a Monero address is not ours");
+        assert!(!address_ok(&rpc("validate_address", json!({"address": "not-an-address", "any_net_type": false}))));
+
+        // empty at first
+        let list = |_: ()| rpc("get_address_book", json!({"entries": []}))["result"]["entries"].as_array().cloned().unwrap_or_default();
+        assert!(list(()).is_empty());
+        // create
+        let added = rpc("add_address_book", json!({"address": A, "description": "Alice"}));
+        assert!(added.get("error").is_none(), "{added}");
+        let i1 = added["result"]["index"].as_u64().unwrap();
+        let added2 = rpc("add_address_book", json!({"address": me, "description": "Me again"}));
+        let i2 = added2["result"]["index"].as_u64().unwrap();
+        assert_ne!(i1, i2);
+        let l = list(());
+        assert_eq!(l.len(), 2);
+        let alice = l.iter().find(|e| e["index"].as_u64() == Some(i1)).unwrap();
+        assert_eq!((alice["address"].as_str().unwrap(), alice["description"].as_str().unwrap()), (A, "Alice"));
+        // update: label only, then address too
+        let e = rpc("edit_address_book", json!({"index": i1, "set_address": false, "address": "", "set_description": true, "description": "Alice B."}));
+        assert!(e.get("error").is_none(), "{e}");
+        let l = list(());
+        let alice = l.iter().find(|e| e["index"].as_u64() == Some(i1)).unwrap();
+        assert_eq!((alice["address"].as_str().unwrap(), alice["description"].as_str().unwrap()), (A, "Alice B."));
+        let e = rpc("edit_address_book", json!({"index": i2, "set_address": true, "address": A, "set_description": false, "description": ""}));
+        assert!(e.get("error").is_none(), "{e}");
+        assert_eq!(list(()).iter().find(|e| e["index"].as_u64() == Some(i2)).unwrap()["address"].as_str().unwrap(), A);
+        // it is stored in the (encrypted) wallet file: store, close, reopen
+        assert!(rpc("store", json!({}))["error"].is_null());
+        assert!(rpc("close_wallet", json!({}))["error"].is_null());
+        assert!(rpc("open_wallet", json!({"filename": "ab", "password": ""}))["error"].is_null());
+        assert_eq!(list(()).len(), 2, "the address book survives a reopen");
+        // delete
+        let d = rpc("delete_address_book", json!({"index": i1}));
+        assert!(d.get("error").is_none(), "{d}");
+        let l = list(());
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0]["description"].as_str().unwrap(), "Me again");
+
+        // quick-unlock's primitives against the real wallet file: a PIN seals a random password that replaces the empty one;
+        // the wallet then opens only with it (and the PIN gives it back), and the address book is still inside
+        let secret = random_password();
+        let pinfile = dir.join("ab.pin");
+        walletpin::save(&pinfile, &walletpin::wrap(&secret, "2468", "ab", 1000, 5, true).unwrap()).unwrap();
+        let c = rpc("change_wallet_password", json!({"old_password": "", "new_password": secret.as_str()}));
+        assert!(c.get("error").is_none(), "{c}");
+        assert!(rpc("store", json!({}))["error"].is_null());
+        assert!(rpc("close_wallet", json!({}))["error"].is_null());
+        assert!(rpc("open_wallet", json!({"filename": "ab", "password": ""}))["error"].is_object(), "the empty password no longer opens it");
+        assert!(matches!(walletpin::attempt(&pinfile, "1111", "ab").unwrap(), Attempt::Wrong { left: 4 }));
+        let Attempt::Ok(got) = walletpin::attempt(&pinfile, "2468", "ab").unwrap() else { panic!("the PIN opens the sealed password") };
+        let o = rpc("open_wallet", json!({"filename": "ab", "password": got.as_str()}));
+        assert!(o.get("error").is_none(), "{o}");
+        assert_eq!(list(()).len(), 1, "the address book is still there");
+        // turning it off: a password of the user's choice (here none) replaces the generated one
+        let c = rpc("change_wallet_password", json!({"old_password": got.as_str(), "new_password": ""}));
+        assert!(c.get("error").is_none(), "{c}");
+        assert!(rpc("store", json!({}))["error"].is_null());
+        assert!(rpc("close_wallet", json!({}))["error"].is_null());
+        assert!(rpc("open_wallet", json!({"filename": "ab", "password": ""}))["error"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
