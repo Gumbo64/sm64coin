@@ -1,0 +1,613 @@
+{
+  "board": {
+    "got": 5,
+    "groups": [
+      {
+        "name": "Bob-omb Battlefield",
+        "short": "BoB",
+        "stars": [
+          {
+            "got": true,
+            "name": "Big Bob-omb on the Summit"
+          },
+          {
+            "got": false,
+            "name": "Footrace with Koopa the Quick"
+          },
+          {
+            "got": false,
+            "name": "Shoot to the Island in the Sky"
+          },
+          {
+            "got": false,
+            "name": "Find the 8 Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Mario Wings to the Sky"
+          },
+          {
+            "got": false,
+            "name": "Behind Chain Chomp's Gate"
+          },
+          {
+            "got": true,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Whomp's Fortress",
+        "short": "WF",
+        "stars": [
+          {
+            "got": false,
+            "name": "Chip Off Whomp's Block"
+          },
+          {
+            "got": false,
+            "name": "To the Top of the Fortress"
+          },
+          {
+            "got": false,
+            "name": "Shoot into the Wild Blue"
+          },
+          {
+            "got": false,
+            "name": "Red Coins on the Floating Isle"
+          },
+          {
+            "got": false,
+            "name": "Fall onto the Caged Island"
+          },
+          {
+            "got": false,
+            "name": "Blast Away the Wall"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Jolly Roger Bay",
+        "short": "JRB",
+        "stars": [
+          {
+            "got": false,
+            "name": "Plunder in the Sunken Ship"
+          },
+          {
+            "got": false,
+            "name": "Can the Eel Come Out to Play?"
+          },
+          {
+            "got": false,
+            "name": "Treasure of the Ocean Cave"
+          },
+          {
+            "got": false,
+            "name": "Red Coins on the Ship Afloat"
+          },
+          {
+            "got": false,
+            "name": "Blast to the Stone Pillar"
+          },
+          {
+            "got": false,
+            "name": "Through the Jet Stream"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Cool, Cool Mountain",
+        "short": "CCM",
+        "stars": [
+          {
+            "got": false,
+            "name": "Slip Slidin' Away"
+          },
+          {
+            "got": false,
+            "name": "Li'l Penguin Lost"
+          },
+          {
+            "got": false,
+            "name": "Big Penguin Race"
+          },
+          {
+            "got": false,
+            "name": "Frosty Slide for 8 Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Snowman's Lost His Head"
+          },
+          {
+            "got": false,
+            "name": "Wall Kicks Will Work"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Big Boo's Haunt",
+        "short": "BBH",
+        "stars": [
+          {
+            "got": false,
+            "name": "Go on a Ghost Hunt"
+          },
+          {
+            "got": false,
+            "name": "Ride Big Boo's Merry-Go-Round"
+          },
+          {
+            "got": false,
+            "name": "Secret of the Haunted Books"
+          },
+          {
+            "got": false,
+            "name": "Seek the 8 Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Big Boo's Balcony"
+          },
+          {
+            "got": false,
+            "name": "Eye to Eye in the Secret Room"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Hazy Maze Cave",
+        "short": "HMC",
+        "stars": [
+          {
+            "got": false,
+            "name": "Swimming Beast in the Cavern"
+          },
+          {
+            "got": false,
+            "name": "Elevate for 8 Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Metal-Head Mario Can Move!"
+          },
+          {
+            "got": false,
+            "name": "Navigating the Toxic Maze"
+          },
+          {
+            "got": false,
+            "name": "A-Maze-Ing Emergency Exit"
+          },
+          {
+            "got": false,
+            "name": "Watch for Rolling Rocks"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Lethal Lava Land",
+        "short": "LLL",
+        "stars": [
+          {
+            "got": false,
+            "name": "Boil the Big Bully"
+          },
+          {
+            "got": false,
+            "name": "Bully the Bullies"
+          },
+          {
+            "got": false,
+            "name": "8-Coin Puzzle with 15 Pieces"
+          },
+          {
+            "got": false,
+            "name": "Red-Hot Log Rolling"
+          },
+          {
+            "got": false,
+            "name": "Hot-Foot-It into the Volcano"
+          },
+          {
+            "got": false,
+            "name": "Elevator Tour in the Volcano"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Shifting Sand Land",
+        "short": "SSL",
+        "stars": [
+          {
+            "got": false,
+            "name": "In the Talons of the Big Bird"
+          },
+          {
+            "got": false,
+            "name": "Shining Atop the Pyramid"
+          },
+          {
+            "got": false,
+            "name": "Inside the Ancient Pyramid"
+          },
+          {
+            "got": false,
+            "name": "Stand Tall on the Four Pillars"
+          },
+          {
+            "got": false,
+            "name": "Free Flying for 8 Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Pyramid Puzzle"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Dire, Dire Docks",
+        "short": "DDD",
+        "stars": [
+          {
+            "got": true,
+            "name": "Board Bowser's Sub"
+          },
+          {
+            "got": false,
+            "name": "Chests in the Current"
+          },
+          {
+            "got": false,
+            "name": "Pole-Jumping for Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Through the Jet Stream"
+          },
+          {
+            "got": false,
+            "name": "The Manta Ray's Reward"
+          },
+          {
+            "got": false,
+            "name": "Collect the Caps..."
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Snowman's Land",
+        "short": "SL",
+        "stars": [
+          {
+            "got": false,
+            "name": "Snowman's Big Head"
+          },
+          {
+            "got": false,
+            "name": "Chill with the Bully"
+          },
+          {
+            "got": false,
+            "name": "In the Deep Freeze"
+          },
+          {
+            "got": false,
+            "name": "Whirl from the Freezing Pond"
+          },
+          {
+            "got": false,
+            "name": "Shell Shreddin' for Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Into the Igloo"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Wet-Dry World",
+        "short": "WDW",
+        "stars": [
+          {
+            "got": false,
+            "name": "Shocking Arrow Lifts!"
+          },
+          {
+            "got": false,
+            "name": "Top o' the Town"
+          },
+          {
+            "got": false,
+            "name": "Secrets in the Shallows & Sky"
+          },
+          {
+            "got": false,
+            "name": "Express Elevator--Hurry Up!"
+          },
+          {
+            "got": false,
+            "name": "Go to Town for Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Quick Race Through Downtown!"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Tall, Tall Mountain",
+        "short": "TTM",
+        "stars": [
+          {
+            "got": false,
+            "name": "Scale the Mountain"
+          },
+          {
+            "got": false,
+            "name": "Mystery of the Monkey Cage"
+          },
+          {
+            "got": false,
+            "name": "Scary 'Shrooms, Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Mysterious Mountainside"
+          },
+          {
+            "got": false,
+            "name": "Breathtaking View from Bridge"
+          },
+          {
+            "got": false,
+            "name": "Blast to the Lonely Mushroom"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Tiny-Huge Island",
+        "short": "THI",
+        "stars": [
+          {
+            "got": false,
+            "name": "Pluck the Piranha Flower"
+          },
+          {
+            "got": false,
+            "name": "The Tip Top of the Huge Island"
+          },
+          {
+            "got": false,
+            "name": "Rematch with Koopa the Quick"
+          },
+          {
+            "got": false,
+            "name": "Five Itty Bitty Secrets"
+          },
+          {
+            "got": false,
+            "name": "Wiggler's Red Coins"
+          },
+          {
+            "got": false,
+            "name": "Make Wiggler Squirm"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Tick Tock Clock",
+        "short": "TTC",
+        "stars": [
+          {
+            "got": false,
+            "name": "Roll into the Cage"
+          },
+          {
+            "got": false,
+            "name": "The Pit and the Pendulums"
+          },
+          {
+            "got": false,
+            "name": "Get a Hand"
+          },
+          {
+            "got": false,
+            "name": "Stomp on the Thwomp"
+          },
+          {
+            "got": false,
+            "name": "Timed Jumps on Moving Bars"
+          },
+          {
+            "got": false,
+            "name": "Stop Time for Red Coins"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Rainbow Ride",
+        "short": "RR",
+        "stars": [
+          {
+            "got": false,
+            "name": "Cruiser Crossing the Rainbow"
+          },
+          {
+            "got": false,
+            "name": "The Big House in the Sky"
+          },
+          {
+            "got": false,
+            "name": "Coins Amassed in a Maze"
+          },
+          {
+            "got": false,
+            "name": "Swingin' in the Breeze"
+          },
+          {
+            "got": false,
+            "name": "Tricky Triangles!"
+          },
+          {
+            "got": false,
+            "name": "Somewhere Over the Rainbow"
+          },
+          {
+            "got": false,
+            "name": "100 Coins"
+          }
+        ]
+      },
+      {
+        "name": "Peach's Castle",
+        "short": "Castle",
+        "stars": [
+          {
+            "got": false,
+            "name": "Toad (basement)"
+          },
+          {
+            "got": true,
+            "name": "Toad (upstairs)"
+          },
+          {
+            "got": false,
+            "name": "Toad (tower)"
+          },
+          {
+            "got": false,
+            "name": "MIPS (first)"
+          },
+          {
+            "got": false,
+            "name": "MIPS (second)"
+          }
+        ]
+      },
+      {
+        "name": "Secret courses and Bowser stages",
+        "short": "Secret",
+        "stars": [
+          {
+            "got": false,
+            "name": "Bowser in the Dark World"
+          },
+          {
+            "got": false,
+            "name": "Bowser in the Fire Sea"
+          },
+          {
+            "got": false,
+            "name": "Bowser in the Sky"
+          },
+          {
+            "got": false,
+            "name": "The Princess's Secret Slide"
+          },
+          {
+            "got": true,
+            "name": "The Princess's Secret Slide: under 21 seconds"
+          },
+          {
+            "got": false,
+            "name": "Cavern of the Metal Cap"
+          },
+          {
+            "got": false,
+            "name": "Tower of the Wing Cap"
+          },
+          {
+            "got": false,
+            "name": "Vanish Cap Under the Moat"
+          },
+          {
+            "got": false,
+            "name": "Wing Mario Over the Rainbow"
+          },
+          {
+            "got": false,
+            "name": "The Secret Aquarium"
+          }
+        ]
+      }
+    ],
+    "switches": [
+      {
+        "got": true,
+        "name": "wing cap switch"
+      },
+      {
+        "got": false,
+        "name": "metal cap switch"
+      },
+      {
+        "got": true,
+        "name": "vanish cap switch"
+      },
+      {
+        "got": true,
+        "name": "Bowser key 1"
+      },
+      {
+        "got": false,
+        "name": "Bowser key 2"
+      }
+    ],
+    "total": 120
+  },
+  "state_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b0000024100000000000000010000000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200"
+}

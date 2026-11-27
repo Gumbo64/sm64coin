@@ -323,6 +323,38 @@ mod tests {
         assert_ne!(HEADLESS, VISUAL, "the two builds lay memory out differently");
     }
 
+    /// A known state for the star board's vectors (pow/perturb/tests/star_board_vectors.json, also checked against the WASM by
+    /// perturb-wasm's test and web/src/lib/starBoard.test.mjs): file 2 holds BoB's summit star and 100 coins, DDD's first star,
+    /// the upstairs Toad, the slide's second star, the wing and vanish switches and the first Bowser key.
+    pub fn star_vector_state() -> Vec<u8> {
+        let n = progress_regions_len(&HEADLESS);
+        let mut b = vec![0u8; n];
+        b[MARIO_NUM_STARS] = 5;
+        b[n - 2] = 2;
+        let f = MARIO_SIZE as usize + 2 * SAVE_FILE_SIZE;
+        let flags = HAVE_WING_CAP | HAVE_VANISH_CAP | HAVE_KEY_1 | 1 | 0b10 << 24;
+        b[f + SAVE_FLAGS..f + SAVE_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+        b[f + COURSE_STARS] = 0b100_0001; // BoB
+        b[f + COURSE_STARS + 8] = 0b1; // DDD
+        b[f + COURSE_STARS + 18] = 0b10; // course 19: the slide
+        b
+    }
+
+    #[test]
+    fn star_board_vectors_are_current() {
+        let b = star_vector_state();
+        assert_eq!(progress(&b).stars, 5);
+        let json = serde_json::json!({"state_hex": b.iter().map(|x| format!("{x:02x}")).collect::<String>(), "board": serde_json::to_value(crate::stars::board(&progress(&b))).unwrap()});
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/star_board_vectors.json");
+        if std::env::var("WRITE_STAR_VECTORS").is_ok() {
+            std::fs::create_dir_all(concat!(env!("CARGO_MANIFEST_DIR"), "/tests")).unwrap();
+            std::fs::write(path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        }
+        let have: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(have, json, "pow/perturb/tests/star_board_vectors.json is stale (WRITE_STAR_VECTORS=1 cargo test regenerates it)");
+        assert_eq!(json["board"]["got"], 5);
+    }
+
     #[test]
     fn progress_counts_stars_keys_and_the_grand_star() {
         let n = progress_regions_len(&HEADLESS);

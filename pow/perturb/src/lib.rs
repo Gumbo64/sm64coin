@@ -42,6 +42,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod sm64;
+pub mod stars;
 
 pub const A_BUTTON: u16 = 0x8000;
 pub const B_BUTTON: u16 = 0x4000;

@@ -8,7 +8,8 @@ import { daemon, NODE_HINT } from '../lib/rpc.js';
 import { newMinerKey, templateParams, signRun } from '../lib/minerkey.js';
 import { rawProof, proofFromRun, seal, toM64, download, bytesToHex, withTimestamp, templateTimestamp } from '../lib/proof.js';
 import { prepareStart } from '../lib/cycle.js';
-import { readProgress } from '../lib/perturb.js';
+import { readProgress, readStarBoard } from '../lib/perturb.js';
+import StarBoard from '../components/StarBoard.jsx';
 import { loadStart } from './automine/startState.js';
 import { withConfig } from '../lib/task.js';
 import { successFor, progressLabel, MAX_RUN_FRAMES } from '../lib/rules.js';
@@ -302,6 +303,7 @@ function Miner() {
             if (!st) st = await prepareStart(engine, t, power, (done, total) => setPhase({ kind: 'ff', done, total }), () => stopped);
           } catch (e) { say(`could not reach the start: ${e}`); await sleep(3000); continue; }
           if (!st) break;
+          try { st.board = readStarBoard(engine); } catch { /* the board is a view: the run goes on without it */ } // the engine is at the block's start here
           setStart(st);
           if (st.cycle) say(`cycle replayed to the tip: ${st.progress.stars} stars, ${st.progress.keys} keys (${st.cycle.blocks.length} blocks)`);
           if (c.restart) continue; // a block landed meanwhile: the cache makes the next start quick
@@ -588,6 +590,7 @@ function Miner() {
                 <CloudView hub={hub} onPlay={reelPlay} onPlayFrom={playFrom} onGoal={(g) => miner.setGoal(g)} goalShare={miner.goalShare} onGoalShare={(x) => miner.setGoalShare(x)} canPlayFrom={canPlayFrom} whyNot={hybridWhy} />
               </React.Suspense>
             )}
+            <StarBoard board={start && start.board} />
             <ControlCard s={s} />
           </>
         )}

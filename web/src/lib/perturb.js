@@ -3,7 +3,7 @@
 // It lives outside the game: before and after each frame we copy the adapter's
 // memory regions (the game clock and a few state fields, at the visual build's
 // addresses) out of the game and hand them over.
-import { WasmPerturber, visual_regions, visual_progress_regions, progress_points } from '../wasm/perturb/sm64coin_perturb_wasm.js';
+import { WasmPerturber, visual_regions, visual_progress_regions, progress_points, star_board } from '../wasm/perturb/sm64coin_perturb_wasm.js';
 import { perturbReady } from './perturbInit.js';
 import { GamePad } from 'sm64-binds-frontend';
 
@@ -46,6 +46,16 @@ export function readProgress(engine) {
   }
   const p = progress_points(gather(engine, PROGRESS_REGIONS, PBUF));
   return { stars: p[0], keys: p[1], grand: p[2] === 1, points: p[3], caps: p[4] };
+}
+
+/**
+ * Which stars the engine's state has, and the cap switches and Bowser keys: {got, total, groups: [{name, short, stars: [{name,
+ * got}]}], switches: [{name, got}]}, read by the same Rust code (pow/perturb/src/stars.rs) from the same save-file bytes the
+ * progress points come from. Needs perturbReady().
+ */
+export function readStarBoard(engine) {
+  if (!PROGRESS_REGIONS) readProgress(engine);
+  return JSON.parse(star_board(gather(engine, PROGRESS_REGIONS, PBUF)));
 }
 
 /** A block's perturbation, for one game from the state the run starts at. */

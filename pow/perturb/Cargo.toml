@@ -6,3 +6,6 @@ description = "SM64Coin's controller perturbation and game adapter, dependency-f
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

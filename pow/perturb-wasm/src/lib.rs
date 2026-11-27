@@ -4,6 +4,7 @@
 //! else is `sm64coin-perturb`, the same code native nodes run.
 
 use sm64coin_perturb::sm64::{HEADLESS, VISUAL, event, features, progress, progress_regions, regions, view};
+use sm64coin_perturb::stars;
 use sm64coin_perturb::{Pad, Perturber, PokeConfig};
 use wasm_bindgen::prelude::*;
 
@@ -115,6 +116,13 @@ pub fn progress_points(bytes: &[u8]) -> Vec<u32> {
     vec![p.stars, p.keys, p.grand_star as u32, p.points(), p.caps as u32]
 }
 
+/// The star board of a state, from the bytes of [`visual_progress_regions`] (or [`headless_progress_regions`]) as JSON:
+/// `{got, total, groups: [{name, short, stars: [{name, got}]}], switches: [{name, got}]}` (pow/perturb/src/stars.rs).
+#[wasm_bindgen]
+pub fn star_board(bytes: &[u8]) -> String {
+    serde_json::to_string(&stars::board(&progress(bytes))).expect("a board serializes")
+}
+
 /// The memory regions to read from the headless build (the one native nodes replay with; the
 /// browser runs the same build in a worker), as `[addr0, len0, ...]`, in order.
 #[wasm_bindgen]
@@ -193,6 +201,16 @@ mod tests {
     /// too, so a rule change cannot slip past either side).
     const DIFFS: [u64; 9] = [1, 2, 1000, 12_345_678, 1_000_000_000, 1u64 << 40, 1_000_000_000_000_000, u64::MAX / 3, u64::MAX];
     const ELAPSED: [u64; 14] = [0, 1, 59, 60, 61, 300, 600, 1200, 1800, 3600, 7200, 86_400, 1_000_000, 10_000_000];
+
+    /// The WASM's star board is the Rust one, on the vectors file the web test reads too.
+    #[test]
+    fn star_board_matches_the_vectors() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../perturb/tests/star_board_vectors.json");
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let hex = v["state_hex"].as_str().unwrap();
+        let bytes: Vec<u8> = (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&star_board(&bytes)).unwrap(), v["board"]);
+    }
 
     #[test]
     fn limit_vectors_match_the_rules() {
