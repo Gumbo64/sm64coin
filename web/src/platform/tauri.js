@@ -85,7 +85,7 @@ const wallet = {
     return { address, seed };
   },
   async restore({ name, password, seed, restoreHeight = 0, seedOffset = '', kdfRounds = 1 }) {
-    const r = await wcall('restore_deterministic_wallet', { name, password, seed: seed.trim().replace(/\s+/g, ' '), restore_height: Number(restoreHeight) || 0, seed_offset: seedOffset || '', _kdf_rounds: kdfRounds });
+    const r = await wcall('restore_deterministic_wallet', { filename: name, password, seed: seed.trim().replace(/\s+/g, ' '), restore_height: Number(restoreHeight) || 0, seed_offset: seedOffset || '', _kdf_rounds: kdfRounds });
     return { address: r.address };
   },
   async address() { return (await wcall('get_address', { account_index: 0 })).address; },
@@ -123,6 +123,17 @@ const wallet = {
   },
 };
 
+// "Use my website passkey": a one-time 127.0.0.1 listener + the system browser at the website's /desktop-link page (see link.rs).
+const link = {
+  /** Starts the listener and opens the browser: {state: 'waiting', url}. `open: false` only returns the URL. */
+  start: (open = true) => cmd('link_start', { open }),
+  /** {state: idle | waiting | received | expired | cancelled | failed, address?, error?} */
+  status: () => cmd('link_status'),
+  cancel: () => cmd('link_cancel'),
+  /** Imports the received wallet under `name` with a password chosen in the app. */
+  async finish({ name, password, kdfRounds = 1 }) { const r = await cmd('link_finish', { name, password, kdfRounds }); if (r && r.error) throw new Error(r.error.message); return r.result || r; },
+};
+
 /** The desktop app: local node, native miner, ROM kept by the app. */
 const desktop = {
   name: 'tauri',
@@ -137,6 +148,7 @@ const desktop = {
   nativeMiner,
   rom,
   wallet,
+  link,
   host: () => cmd('host_info'),
 };
 
@@ -153,6 +165,7 @@ const mobile = {
   nativeMiner: null,
   rom: null,
   wallet: null, // the browser's WASM wallet engine (Wallet page) serves there
+  link: null,
 };
 
 export const tauri = isMobile ? mobile : desktop;

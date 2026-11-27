@@ -386,8 +386,7 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
     let slow = Duration::from_secs(600);
     match method {
         "create_wallet" | "restore_deterministic_wallet" | "open_wallet" => {
-            let name_key = if method == "restore_deterministic_wallet" { "name" } else { "filename" };
-            let name = str_param(&p, name_key).unwrap_or("").to_string();
+            let name = str_param(&p, "filename").unwrap_or("").to_string();
             if !valid_name(&name) {
                 return Err(AppError::new("bad_name", "a wallet name is letters, digits, - and _ (up to 40)"));
             }
@@ -483,6 +482,15 @@ fn amounts_from_strings(p: &mut Value) {
             }
         }
     }
+}
+
+/// Restores a wallet from seed words (also what "Use my website passkey" ends in).
+pub fn restore_from_seed(app: &AppHandle, name: &str, password: &str, seed: &str, height: u64, kdf_rounds: Option<u32>) -> Res<Value> {
+    let r = wallet_call(app, "restore_deterministic_wallet", json!({"filename": name, "password": password, "seed": seed, "restore_height": height, "seed_offset": "", "_kdf_rounds": kdf_rounds.unwrap_or(1)}))?;
+    if let Some(e) = r.get("error") {
+        return Err(AppError::new("wallet_rpc", e.get("message").and_then(|m| m.as_str()).unwrap_or("restore failed")));
+    }
+    Ok(r)
 }
 
 /// Closes the wallet after `auto_lock_minutes` without user activity (the GUI's "lock after N minutes").

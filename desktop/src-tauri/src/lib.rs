@@ -14,6 +14,8 @@ mod desktop;
 mod miner;
 #[cfg(desktop)]
 mod wallet;
+#[cfg(desktop)]
+mod link;
 
 use serde::Serialize;
 

@@ -14,6 +14,7 @@ import MinerLight from './lib/MinerLight.jsx';
 
 // The wallet page is lazy: its engine (a wasm web worker) is fetched only when it is opened.
 const Wallet = React.lazy(() => import('./pages/Wallet.jsx'));
+const DesktopLink = React.lazy(() => import('./pages/DesktopLink.jsx')); // opened by the desktop app: hands the passkey wallet over
 
 // The auto-miner and the manual miner are one page now: /automine (old links, the wallet's) lands on /mine, keeping ?address=.
 function ToMine() {
@@ -47,6 +48,7 @@ export default function App() {
           <Route path="/mine" element={<Mine />} />
           <Route path="/automine" element={<ToMine />} />
           <Route path="/wallet" element={<React.Suspense fallback={<p className="muted">Loading…</p>}><Wallet /></React.Suspense>} />
+          <Route path="/desktop-link" element={<React.Suspense fallback={<p className="muted">Loading…</p>}><DesktopLink /></React.Suspense>} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/info" element={<Info />} />
           <Route path="/network" element={<Network />} />

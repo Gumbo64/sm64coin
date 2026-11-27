@@ -6,7 +6,7 @@
   "permissions": [
     "allow-host-info", "allow-rom-set", "allow-rom-pick", "allow-rom-bytes", "allow-node-start", "allow-node-stop", "allow-node-status", "allow-node-rpc", "allow-remote-rpc",
     "allow-miner-start", "allow-miner-stop", "allow-miner-status",
-    "allow-wallet-state", "allow-wallet-rpc", "allow-wallet-settings", "allow-wallet-activity",
+    "allow-wallet-state", "allow-wallet-rpc", "allow-wallet-settings", "allow-wallet-activity", "allow-link-start", "allow-link-status", "allow-link-cancel", "allow-link-finish",
     "core:event:allow-listen", "core:event:allow-unlisten"
   ]
 }

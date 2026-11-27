@@ -1,7 +1,7 @@
 //! The desktop half of the app: local node, ROM, native miner (and wallet-rpc): everything that needs processes and files.
 //! Compiled for desktop targets only (`cfg(desktop)`, see lib.rs); Android has the remote RPC and nothing else.
 
-use crate::{miner, wallet};
+use crate::{link, miner, wallet};
 use crate::{AppError, Res};
 use serde::Serialize;
 use sm64coin_launcher::node::{APP_ORIGINS, Node, NodeConfig, NodeStatus, SITE_ORIGIN};
@@ -21,6 +21,7 @@ pub struct App {
     starting: Mutex<bool>,
     pub miner: Mutex<Option<miner::Miner>>,
     pub wallet: wallet::Wallet,
+    pub link: link::Link,
 }
 
 impl App {
@@ -299,7 +300,7 @@ fn miner_status(state: State<'_, App>) -> Res<miner::MinerInfo> {
 pub fn run() {
     let dirs = Dirs::detect();
     let wallet = wallet::Wallet::new(&dirs);
-    let app = App { wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
+    let app = App { link: link::Link::default(), wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app)
@@ -320,7 +321,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, miner_start, miner_stop, miner_status])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {
