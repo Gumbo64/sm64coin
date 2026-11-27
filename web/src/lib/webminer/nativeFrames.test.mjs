@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { dispatchFrame, unindent, b64decode } from './nativeFrames.js';
+import { dispatchFrame, unindent, campaignStart, b64decode } from './nativeFrames.js';
 
 const calls = [];
 const hub = new Proxy({}, { get: (_, name) => (...a) => calls.push([name, ...a]) });
@@ -24,5 +24,9 @@ assert.equal(calls[5][2].state, undefined);
 assert.equal(calls.length, 6);
 assert.equal(unindent('  step 3: Bob at frame 1'), 'step 3: Bob at frame 1');
 assert.equal(unindent('    JRB at frame 5 (+1)'), '    JRB at frame 5 (+1)');
+assert.equal(unindent('    step 1: castle at frame 0, budget 2.0 M frames'), 'step 1: castle at frame 0, budget 2.0 M frames'); // the anytime search's
+assert.equal(campaignStart('  start PowerOn at 0 stars 0 keys, ready at frame 1680 (level 16 castle grounds)'), 'power-on');
+assert.equal(campaignStart('    start Parent at 3 stars 0 keys, ready at frame 12 (level 9 BoB)'), 'parent');
+assert.equal(campaignStart('  step 1: castle at frame 0'), null);
 assert.deepEqual([...b64decode('Zm9v')], [102, 111, 111]);
 console.log('nativeFrames ok');
