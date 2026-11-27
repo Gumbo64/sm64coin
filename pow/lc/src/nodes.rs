@@ -116,7 +116,7 @@ impl NodeList {
             return false;
         }
         if self.records.len() >= MAX_NODES as usize {
-            let best = self.best_height();
+            let best = self.best_height(now);
             let victim = self
                 .records
                 .iter()
@@ -177,9 +177,34 @@ impl NodeList {
         }
     }
 
-    /// The best tip height reported by any non-banned candidate.
-    pub fn best_height(&self) -> u64 {
-        self.records.iter().map(|r| r.height).max().unwrap_or(0)
+    /// The reference tip height for the lag rule: the (lower) median of the heights reported by non-banned nodes that
+    /// answered. Not the maximum: one node claiming a huge height must not make every honest node look behind (and so
+    /// leave only itself to be picked).
+    pub fn best_height(&self, now: u64) -> u64 {
+        let mut h: Vec<u64> = self.records.iter().filter(|r| r.last_ok > 0 && !r.is_banned(now)).map(|r| r.height).collect();
+        if h.is_empty() {
+            return 0;
+        }
+        h.sort_unstable();
+        h[(h.len() - 1) / 2]
+    }
+
+    /// A list read back from storage that the page (or anything else) could have written: only records for `keep` keys
+    /// survive (the browser: its bootstrap entries), with their latency and success history; bans, strikes, heights and
+    /// sources are not taken from storage (they are learned again within a minute), so a poisoned list cannot ban the
+    /// real nodes, make them look behind, or add nodes of its own.
+    pub fn sanitize_loaded(&mut self, keep: &[String], now: u64) {
+        self.records.retain(|r| keep.contains(&r.key()));
+        for r in &mut self.records {
+            r.banned_until = 0;
+            r.strikes = 0;
+            r.height = 0;
+            r.source = Source::Bootstrap;
+            r.last_ok = r.last_ok.min(now);
+            r.first_seen = r.first_seen.min(now);
+            r.ok_rate = if r.ok_rate.is_finite() { r.ok_rate.clamp(0.0, 1.0) } else { 0.5 };
+            r.ewma_latency_ms = if r.ewma_latency_ms.is_finite() { r.ewma_latency_ms.clamp(0.0, 60_000.0) } else { 0.0 };
+        }
     }
 
     /// ok_rate x latency factor x freshness (x 1.25 for hand-added nodes), minus a penalty per
@@ -196,7 +221,7 @@ impl NodeList {
     /// Usable nodes, best first: not banned, not more than [`MAX_HEIGHT_LAG`] blocks behind the best
     /// tip seen (a never-asked node, height 0, is kept: it has no lag evidence yet).
     pub fn candidates(&self, now: u64) -> Vec<(&NodeRecord, f64)> {
-        let best = self.best_height();
+        let best = self.best_height(now);
         let mut v: Vec<_> = self
             .records
             .iter()
@@ -317,6 +342,40 @@ mod tests {
         let c = l.candidates(now);
         assert_eq!(c[0].0.key(), http(0).key());
         assert!(c.iter().all(|(r, _)| r.key() != http(2).key()), "10 blocks behind is skipped");
+    }
+
+    #[test]
+    fn one_node_claiming_a_huge_height_does_not_push_the_others_out() {
+        let mut l = NodeList::new();
+        for i in 0..3 {
+            l.add(http(i), Source::Bootstrap, 0);
+        }
+        for i in 0..2 {
+            l.record_ok(&http(i).key(), 50.0, Some(100), 10);
+        }
+        l.record_ok(&http(2).key(), 50.0, Some(1 << 40), 10);
+        let c = l.candidates(10);
+        assert_eq!(c.len(), 3, "the honest pair is not 'behind' the liar's claim");
+        // and a stale node is still skipped
+        l.record_ok(&http(1).key(), 50.0, Some(90), 10);
+        l.add(http(3), Source::Bootstrap, 0);
+        l.record_ok(&http(3).key(), 50.0, Some(100), 10);
+        assert!(l.candidates(10).iter().all(|(r, _)| r.key() != http(1).key()));
+    }
+
+    #[test]
+    fn a_stored_list_cannot_ban_add_or_demote_nodes() {
+        let mut l = NodeList::new();
+        for i in 0..3 {
+            l.add(http(i), Source::Gossip, 0);
+        }
+        l.ban_liar(&http(0).key(), 5);
+        l.record_ok(&http(1).key(), 10.0, Some(1 << 40), 5);
+        let mut loaded = NodeList::from_json(&l.to_json()).unwrap();
+        loaded.sanitize_loaded(&[http(0).key(), http(1).key()], 6);
+        assert_eq!(loaded.len(), 2, "records for nodes not in the bootstrap list are dropped");
+        assert!(loaded.records().iter().all(|r| !r.is_banned(6) && r.height == 0 && r.source == Source::Bootstrap));
+        assert_eq!(loaded.get(&http(1).key()).unwrap().ewma_latency_ms, 10.0, "the score history stays");
     }
 
     #[test]

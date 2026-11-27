@@ -1,7 +1,10 @@
 // The website's light-client network (docs/LIGHT-CLIENTS.md): in a plain browser tab the default (public) node path goes through
 // pow/lc-wasm, which keeps a scored list of nodes (HTTPS nodes now; iroh nodes over a relay when public-node.json lists them),
 // fails over between them, fans submissions out to several nodes, bans a node that lies, and verifies the chain from a
-// checkpoint compiled into the release (headers, ids, timestamps and the consensus rules; no Mario replay in the page).
+// checkpoint compiled into the release (headers, ids, timestamps and the consensus rules; no Mario replay in the page). The
+// first check of a page load starts at that checkpoint, later ones only at the last verified point (kept in the WASM's memory,
+// never in localStorage: the saved node list holds scores only, and the WASM keeps nothing from it but the bootstrap entries'
+// latency and success history, so storage cannot ban the real nodes, add nodes or mark anything verified).
 // The WASM is loaded lazily after the first paint; until it is ready, and when it fails to load or no node answers, lib/rpc.js
 // uses the single public node exactly as before. A node the user chose by hand never goes through here.
 //
@@ -11,6 +14,7 @@ const LIST_KEY = 'sm64coin.lcnodes';
 export const REFRESH_MS = 30_000;
 export const VERIFY_MS = 10 * 60_000;
 const FIRST_VERIFY_MS = 4_000;
+const CATCH_UP_MS = 5_000;
 /** Methods whose result a single node's answer is enough for, sent to several nodes at once. */
 export const SUBMIT_METHODS = new Set(['submit_block', 'submit_sm64_proof']);
 
@@ -79,6 +83,9 @@ export function createLightnet(deps = {}) {
     }
     persist();
     emit();
+    // a check stops after a few hundred blocks (the WASM's per-check cap) and the next one continues from there; only the
+    // blocks after the last verified point are fetched again, so catching up and staying current are both cheap for the nodes
+    if (verifyInfo && verifyInfo.partial) later(verify, CATCH_UP_MS);
     return verifyInfo;
   }
 

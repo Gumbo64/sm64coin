@@ -7,12 +7,15 @@ use serde_json::{Value, json};
 use sm64coin_lc::client::{BULK_TIMEOUT, Client, ClientError, Connector, Env, READ_TIMEOUT};
 use sm64coin_lc::nodes::{NodeAddr, NodeList, Source, parse_bootstrap};
 use sm64coin_lc::proto::{ErrorKind, Request, Response};
-use sm64coin_lc::verify::{Checkpoint, Consensus, CrossCheckOptions, NodeVerdict, VerifyOptions};
+use sm64coin_lc::verify::{Checkpoint, Consensus, CrossCheckOptions, NodeVerdict, Resume, VerifyOptions};
 
 /// Nodes asked by one verification (every one is verified from the anchor; the Pi must not be hammered).
 pub const VERIFY_NODES: usize = 3;
 /// Nodes that must agree on the verified tip.
 pub const VERIFY_QUORUM: usize = 2;
+/// Blocks one verification downloads per node at most (a visitor far behind the compiled checkpoint catches up over
+/// several checks instead of pulling the whole range from every node at once).
+pub const VERIFY_MAX_BLOCKS: u64 = 500;
 /// At most this many unprobed nodes are chain-checked per refresh.
 const PROBE_PER_REFRESH: usize = 6;
 
@@ -26,6 +29,9 @@ pub struct Core {
     probed: Mutex<HashSet<String>>,
     last_verify: Mutex<Option<Value>>,
     verifying: Mutex<bool>,
+    /// Where the next verification starts (memory only: never read from storage, so nothing a page could have written to
+    /// localStorage becomes a trust anchor; a new page load verifies from the compiled checkpoint once).
+    resume: Mutex<Option<Resume>>,
 }
 
 struct Busy<'a>(&'a Mutex<bool>);
@@ -41,9 +47,14 @@ pub fn parse_genesis(s: &str) -> Option<[u8; 32]> {
 
 /// The node list: the saved one (scores, bans) topped up with the bootstrap entries. `keep` filters entries the
 /// platform cannot reach (iroh nodes when no endpoint could be built).
+///
+/// The saved list comes from localStorage, which is not trusted: it keeps only records of current bootstrap entries, and
+/// only their latency and success history (`NodeList::sanitize_loaded`: no bans, heights or extra nodes from storage).
 pub fn build_list(bootstrap_json: &str, saved_json: &str, now: u64, keep: impl Fn(&NodeAddr) -> bool) -> NodeList {
+    let boot: Vec<NodeAddr> = parse_bootstrap(bootstrap_json).unwrap_or_default();
     let mut list = NodeList::from_json(saved_json).unwrap_or_else(|_| NodeList::new());
-    for a in parse_bootstrap(bootstrap_json).unwrap_or_default() {
+    list.sanitize_loaded(&boot.iter().map(|a| a.key()).collect::<Vec<_>>(), now);
+    for a in boot {
         if keep(&a) {
             list.add(a, Source::Bootstrap, now);
         }
@@ -57,7 +68,7 @@ pub fn build_list(bootstrap_json: &str, saved_json: &str, now: u64, keep: impl F
 
 impl Core {
     pub fn new(list: NodeList, connector: Arc<dyn Connector>, env: Arc<dyn Env>, genesis: Option<[u8; 32]>, anchor: Option<Checkpoint>, rules: Box<dyn Consensus>) -> Self {
-        Self { client: Client::new(list, connector, env.clone()), env, genesis, anchor, rules, probed: Default::default(), last_verify: Default::default(), verifying: Default::default() }
+        Self { client: Client::new(list, connector, env.clone()), env, genesis, anchor, rules, probed: Default::default(), last_verify: Default::default(), verifying: Default::default(), resume: Default::default() }
     }
 
     fn now_secs(&self) -> u64 {
@@ -135,11 +146,16 @@ impl Core {
         let opts = CrossCheckOptions {
             nodes: VERIFY_NODES,
             quorum: VERIFY_QUORUM,
-            verify: VerifyOptions { now_secs: Some(self.now_secs()), keep_blocks: 4, ..Default::default() },
+            verify: VerifyOptions { now_secs: Some(self.now_secs()), keep_blocks: 4, max_blocks: Some(VERIFY_MAX_BLOCKS), ..Default::default() },
+            ..Default::default()
         };
-        let res = sm64coin_lc::verify::sync(&self.client, cp, self.rules.as_ref(), None, &opts, &|| false).await;
+        let resume = self.resume.lock().unwrap().clone();
+        let res = sm64coin_lc::verify::sync_resume(&self.client, cp, resume.as_ref(), self.rules.as_ref(), None, &opts, &|| false).await;
         let v = match res {
             Ok(o) => {
+                if o.resume.is_some() {
+                    *self.resume.lock().unwrap() = o.resume.clone();
+                }
                 let ok_keys: Vec<String> = o.nodes.iter().filter(|(_, v)| matches!(v, NodeVerdict::Agrees | NodeVerdict::Behind)).map(|(k, _)| k.clone()).collect();
                 self.client.set_allowed(Some(ok_keys));
                 let level = format!("{:?}", o.best.level).to_lowercase();
@@ -149,11 +165,18 @@ impl Core {
                     "id": hex::encode(o.best.tip.id),
                     "quorum": o.quorum_met,
                     "anchor": cp.height,
+                    "partial": o.partial,
+                    "from": o.best.anchor_height,
+                    "reanchored": o.reanchored,
                     "nodes": o.nodes.iter().map(|(k, v)| json!([k, verdict_str(v)])).collect::<Vec<_>>(),
                     "banned": o.banned,
                 })
             }
-            Err(e) => json!({"level": "failed", "error": e.to_string(), "anchor": cp.height}),
+            Err(e) => {
+                // nothing verified: reads are not restricted to an old verified set (that could leave no node at all)
+                self.client.set_allowed(None);
+                json!({"level": "failed", "error": e.to_string(), "anchor": cp.height})
+            }
         };
         self.record(v)
     }
@@ -313,6 +336,21 @@ mod tests {
         let without = build_list(&boot, &with.to_json(), 2, |a| matches!(a, NodeAddr::Http { .. }));
         assert_eq!(without.len(), 1, "an iroh node is dropped when there is no endpoint, even from the saved list");
         assert!(build_list(r#"{"url":"https://eboy.au"}"#, "garbage", 1, |_| true).len() == 1);
+    }
+
+    #[test]
+    fn a_poisoned_saved_list_cannot_ban_the_bootstrap_nodes_or_add_its_own() {
+        let boot = r#"{"nodes":["https://a.example","https://b.example"]}"#;
+        let mut evil = NodeList::new();
+        evil.add(NodeAddr::Http { url: "https://a.example".into() }, Source::Manual, 1);
+        evil.ban_liar("http:https://a.example", 1);
+        evil.add(NodeAddr::Http { url: "https://evil.example".into() }, Source::Manual, 1);
+        evil.record_ok("http:https://evil.example", 1.0, Some(1 << 40), 1);
+        let list = build_list(boot, &evil.to_json(), 1000, |_| true);
+        assert_eq!(list.len(), 2);
+        assert!(list.get("http:https://evil.example").is_none());
+        assert!(!list.get("http:https://a.example").unwrap().is_banned(1000));
+        assert_eq!(list.get("http:https://a.example").unwrap().source, Source::Bootstrap);
     }
 
     #[test]
