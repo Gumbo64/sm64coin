@@ -1,7 +1,7 @@
 # Reference routes
 
-Unperturbed runs from power-on to a star, used by the automated miner as
-paths to follow through the perturbation (`--route`, tried in order). All
+Unperturbed runs from power-on to a star, once the automated miner's reference
+paths (the beam/tracker controller, removed: the miner is the tree search now). All
 come from the objective-rrt searches in `sm64-AI-binds` (none are TAS
 inputs); most take BoB's "Behind Chain Chomp's Gate" star.
 

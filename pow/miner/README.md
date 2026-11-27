@@ -10,9 +10,9 @@ perturbed game and `sm64pow::seal_proof_at` seals exactly those pads, so any sea
 
 | binary | what |
 | --- | --- |
-| `automine` | the miner CLI (desktop sidecar): template -> search -> seal -> submit. Default: one `rrtrun` process per search step. `--in-process` runs the steps on threads of the same process (no `rrtrun`). `--viz` adds the tree feed on stdout/stdin. |
-| `rrtrun` | one search step as its own process (`rrtrun <job.json> <out.json>`). `rrtrun --inproc ...` runs the same job through the in-process runner (the gate compares the two byte for byte). |
-| `rrtbench`, `rhbench` | benchmarks |
+| `automine` | the miner CLI (desktop sidecar), a thin command line over `campaign::Campaign` (the one mining loop): template -> search -> seal -> submit. The search steps run on threads of the process; `--process` runs each in an `rrtrun` process instead (crash and memory isolation). `--viz` adds the tree feed on stdout/stdin. |
+| `rrtrun` | one search step as its own process (`rrtrun <job.json> <out.json>`; what `automine --process` spawns). `rrtrun --inproc ...` runs the same job through the in-process runner (the gate compares the two byte for byte). |
+| `rrtbench`, `rhbench` | benchmarks (`rhbench`, and the SDK's `make_fixture`, use the rolling-horizon GA of `rh.rs`, which also owns the boot/settle macros) |
 
 ## Step runners (`rrt/child.rs`)
 
@@ -49,7 +49,7 @@ c.stop();  c.join();                    // stop ends the running search at its n
 
 | item | |
 | --- | --- |
-| `CampaignConfig::new(daemon_url, address, rom_bytes, data_dir)` | the rest has defaults: `threads 4`, `viz false`, `reset "when-stuck"`, `anytime true`, `normalise Exact`, `submit_lead 5`, `hub_frames`/`course_frames` as automine, `payout_view_secret None`, `max_blocks 0` |
+| `CampaignConfig::new(daemon_url, address, rom_bytes, data_dir)` | the rest has defaults: `threads 4`, `viz false`, `reset "when-stuck"`, `anytime true`, `normalise Exact`, `submit_lead 5`, `hub_frames`/`course_frames` as automine, `payout_view_secret None`, `max_blocks 0`, `in_process true` (false: an `rrtrun` process per step, needs `rom_path`), and the rest of automine's flags (`scratch`, `signed_file`, `reset_after`, `stamp_ahead`, `save_block`, `save_dir`, ...) |
 | `Campaign::start / stop / join / subscribe / state / stats / mailbox` | as above; dropping a `Campaign` stops and joins it |
 | `Event::Log(String)` | the miner's log lines (the search engine's own console output is not captured) |
 | `Event::State(State{phase, height, detail})` | `Phase`: Starting, WaitingForDaemon, Preparing, Searching, Improving, Sealing, WaitingValid, Idle, Stopped |
@@ -59,7 +59,7 @@ c.stop();  c.join();                    // stop ends the running search at its n
 
 Files written, all under `data_dir`: `signed.json` (one signed run per seed, kept across restarts: never two different runs
 for a seed), `rrt-scratch/` (campaign memory, roadmap, priors, step files; steps delete their own). The campaign is the
-`automine --controller rrt` loop (template, parent end state or power-on by the reset policy, anytime search for a shorter run
+loop `automine` runs (template, parent end state or power-on by the reset policy, anytime search for a shorter run
 while the run waits for the time limit, normalise, sign once, submit); `examples/campaign.rs` is a runnable driver.
 
 Android: `cargo build --release --target aarch64-linux-android -p sm64coin-miner --lib --examples` builds and links (NDK 27, the

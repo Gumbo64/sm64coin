@@ -94,10 +94,6 @@ impl Miner {
         cmd.arg("--rrt-scratch").arg(d.data.join("miner"));
         cmd.arg("--rh-threads").arg(threads.to_string());
         cmd.arg("--viz");
-        let route = d.res.join("routes").join("block1-human.m64");
-        if route.is_file() {
-            cmd.arg("--route").arg(route);
-        }
         let log = log_dir.join("automine.log");
         let (proc, out, err, mut stdin) = Proc::spawn_piped_stdin("miner", cmd, log.clone()).map_err(|e| AppError::new("miner_start", e))?;
         let (to_stdin, lines) = std::sync::mpsc::sync_channel::<String>(STDIN_QUEUE);

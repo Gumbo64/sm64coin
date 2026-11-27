@@ -95,7 +95,7 @@ Android cannot spawn sidecar binaries, so the miner is also a library that runs 
 2. A `miner_start` command: read the ROM bytes from the app's storage (the ROM the user picked; the same file the page
    uploads into IndexedDB), build `CampaignConfig::new(daemon_url, address, rom, app_data_dir.join("miner"))`, set
    `threads` (cores minus one, `viz` from the Mine page's setting) and call `Campaign::start`. The daemon URL is the
-   RPC of a node that serves block templates (the user's own node; whether the public node does is not checked here). Keep the returned `Campaign` in the app state (one per process).
+   RPC of a node that serves block templates (the user's own node; whether the public node does is not checked here). Keep the returned `Campaign` in the app state.
 3. Forward `campaign.subscribe()` on a thread as Tauri events (`miner-log`, `miner-state`, `miner-viz`, `miner-block`,
    `miner-stopped`): the same shapes the desktop's `miner.rs` emits from automine's stdout (`Event::Viz{kind,key,payload}`
    is the `VIZ` line's `kind key payload`), so the Mine page's viz code works unchanged. `miner_stats` returns
@@ -105,8 +105,9 @@ Android cannot spawn sidecar binaries, so the miner is also a library that runs 
 5. `miner_stop` calls `campaign.stop()` (the search ends at its next round, usually within seconds); drop the `Campaign` on
    app exit. Mind the phone: use a foreground service while mining, and few threads (the search is CPU bound).
 
-Desktop keeps the process-per-step model by default (`automine` spawning `rrtrun`); `automine --in-process` runs the steps
-on threads of the miner and does not need `rrtrun`.
+`automine` is a thin command line over `Campaign` and runs the steps on threads of the miner by default (no `rrtrun`
+needed); `automine --process` is the opt-out that spawns one `rrtrun` per step (crash and memory isolation). Each campaign
+owns its viz mailbox and frame counter, so the app and a campaign never share process-wide state.
 
 ## Not done
 
