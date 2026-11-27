@@ -8,6 +8,7 @@
 //!   `sm64coin_miner` Campaign in this process, the ROM handed over once by the page with `rom_put`); no node, no sidecars.
 
 mod lcnet;
+mod lctip;
 mod lcverify;
 mod remote;
 mod walletproxy;
@@ -167,15 +168,19 @@ pub fn run() {
             let data = t.path().app_data_dir()?;
             let remote = remote::Remote::new(None, Some(data.join("nodes.json")));
             t.manage(start_net(&remote)?);
+            let tips = remote.net.tip_hub();
+            lctip::spawn_emitter(t.handle().clone(), tips.clone()); // the page's `tip` events
             t.manage(remote);
-            t.manage(std::sync::Arc::new(mobile_miner::MobileMiner::new(data)));
+            let mm = std::sync::Arc::new(mobile_miner::MobileMiner::new(data));
+            mm.set_tip_feed(std::sync::Arc::new(mobile_miner::HubFeed(tips)));
+            t.manage(mm);
             // tauri.conf.json's window has `create: false` (desktop.rs builds it, for portable mode): build it here too.
             if let Some(cfg) = t.config().app.windows.iter().find(|w| w.label == "main").cloned() {
                 tauri::WebviewWindowBuilder::from_config(t.handle(), &cfg)?.build()?;
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, remote::net_status, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail, link::link_start, link::link_status, link::link_cancel, link::link_take])
+        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, remote::net_status, lctip::tip_get, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail, link::link_start, link::link_status, link::link_cancel, link::link_take])
         .run(tauri::generate_context!())
         .expect("error while running the SM64Coin app");
 }

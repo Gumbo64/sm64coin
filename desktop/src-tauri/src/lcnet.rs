@@ -19,9 +19,10 @@ use sm64coin_lc::endpoint::{Discovery, EndpointOptions, build_endpoint};
 use sm64coin_lc::exec::Upstream;
 use sm64coin_lc::http::HttpUpstream;
 use sm64coin_lc::nodes::{NodeAddr, NodeList, Source};
-use sm64coin_lc::proto::{ErrorKind, Request, Response, WalletBin, ALPN};
+use sm64coin_lc::proto::{ErrorKind, Request, Response, TipInfo, WalletBin, ALPN};
 use crate::lcverify::{Verification, Verifier, checkpoint_for};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -61,6 +62,68 @@ pub struct NetStatus {
     pub nodes: Vec<NodeInfo>,
     /// What the verifier found (see lcverify.rs): `verified (n nodes agree)`, `conflict`, `unverified`.
     pub verify: Verification,
+}
+
+/// The chain tip, followed once for the whole app and fanned out: to the page (the `tip` event, lctip.rs), to the verifier
+/// (a check per new tip, not a poll) and to the native miner ([`TipHub::feed`]: a new block ends its search). Two sources: the
+/// light-client network (a SubscribeTip push from an iroh node, else a get_info poll every 30 s: [`Net::spawn_tip`]) and,
+/// on desktop, the app's own node (polled once a second: it is local; desktop.rs). The local node's tip wins while it keeps
+/// arriving (it is the one this machine's miner builds on).
+pub struct TipHub {
+    tx: tokio::sync::watch::Sender<Option<TipInfo>>,
+    local_at: Mutex<Option<std::time::Instant>>,
+    /// No node answered the last attempts to learn the tip.
+    stranded: AtomicBool,
+}
+
+/// A local tip older than this no longer shadows the network's.
+const LOCAL_FRESH: Duration = Duration::from_secs(10);
+
+impl TipHub {
+    pub fn new() -> Arc<TipHub> {
+        Arc::new(TipHub { tx: tokio::sync::watch::channel(None).0, local_at: Mutex::new(None), stranded: AtomicBool::new(false) })
+    }
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Option<TipInfo>> {
+        self.tx.subscribe()
+    }
+    pub fn current(&self) -> Option<TipInfo> {
+        self.tx.borrow().clone()
+    }
+    /// True while no source could tell the tip (every node failed): the verifier then looks again soon.
+    pub fn stranded(&self) -> bool {
+        self.stranded.load(Ordering::Relaxed)
+    }
+    fn set(&self, t: TipInfo) {
+        // a change is a new block (or a new difficulty): not every poll
+        self.tx.send_if_modified(|cur| {
+            if cur.as_ref().is_some_and(|c| c.hash == t.hash && c.difficulty == t.difficulty) {
+                return false;
+            }
+            *cur = Some(t);
+            true
+        });
+    }
+    /// The app's own node's tip (desktop).
+    pub fn offer_local(&self, t: TipInfo) {
+        *self.local_at.lock().unwrap() = Some(std::time::Instant::now());
+        self.stranded.store(false, Ordering::Relaxed);
+        self.set(t);
+    }
+    /// A tip from the light-client network; ignored while the local node's keeps arriving.
+    pub fn offer_net(&self, t: TipInfo) {
+        self.stranded.store(false, Ordering::Relaxed);
+        if self.local_at.lock().unwrap().is_some_and(|at| at.elapsed() < LOCAL_FRESH) {
+            return;
+        }
+        self.set(t);
+    }
+    pub fn set_stranded(&self, on: bool) {
+        self.stranded.store(on, Ordering::Relaxed);
+    }
+    /// The tip's block id (hex), no request: what the native miner's feed reads.
+    pub fn tip_hash(&self) -> Option<String> {
+        self.tx.borrow().as_ref().map(|t| hex::encode(t.hash))
+    }
 }
 
 pub fn transport_of(addr: &NodeAddr) -> &'static str {
@@ -122,6 +185,7 @@ pub struct Net {
     iroh_id: Mutex<Option<String>>,
     proxy: Mutex<Option<String>>,
     verifier: Arc<Verifier>,
+    hub: Arc<TipHub>,
     /// Desktop: where to get the ROM for the background replay (None: header layer only).
     rom_finder: Mutex<Option<RomFinder>>,
     /// The chain's genesis block hash (the iroh `Hello` network and the verifier's anchor).
@@ -170,11 +234,66 @@ impl Net {
             iroh_id: Mutex::new(None),
             proxy: Mutex::new(None),
             verifier,
+            hub: TipHub::new(),
             rom_finder: Mutex::new(None),
             network: network_genesis(),
             read_timeout: READ_TIMEOUT,
             bulk_timeout: BULK_TIMEOUT,
         })
+    }
+
+    /// The app's tip hub (see [`TipHub`]).
+    pub fn tip_hub(&self) -> Arc<TipHub> {
+        self.hub.clone()
+    }
+
+    /// One look at the chain tip through the network (any node, HTTP or iroh): `get_info`, and the tip block's header when the
+    /// tip is not the one the hub holds. The fallback of the push (HTTP-only lists, older servers).
+    pub async fn poll_tip(&self) -> Result<TipInfo, String> {
+        use sm64coin_lc::exec::{header_timestamp, tip_info_from};
+        let result = |v: Value| -> Result<Value, String> {
+            if let Some(e) = v.get("error") {
+                return Err(e.get("message").and_then(|m| m.as_str()).unwrap_or("error").to_string());
+            }
+            Ok(v.get("result").cloned().unwrap_or(Value::Null))
+        };
+        let info = result(self.rpc("get_info", json!({})).await?)?;
+        let tip = sm64coin_lc::exec::tip_from_info(&info).ok_or("unreadable get_info")?;
+        let known = self.hub.current().filter(|k| k.hash == tip.hash);
+        let timestamp = match known {
+            Some(k) => k.timestamp,
+            None => {
+                let h = result(self.rpc("get_last_block_header", json!({})).await?)?;
+                header_timestamp(&h, tip.hash).ok_or("tip moved")?
+            }
+        };
+        tip_info_from(&info, timestamp, now_secs()).ok_or_else(|| "unreadable get_info".to_string())
+    }
+
+    /// Follows the tip for the hub: by push when a node serves SubscribeTip (`push`: the iroh endpoint is up), else (or when none
+    /// does) a poll every 30 s, trying the push again every ten minutes. Runs for the life of the app.
+    pub async fn tip_task(self: Arc<Self>, push: bool) {
+        use sm64coin_lc::client::WatchEnd;
+        loop {
+            if push {
+                let hub = self.hub.clone();
+                match self.client.watch_tip(|_, t| hub.offer_net(t)).await {
+                    WatchEnd::NoPush => {}
+                    WatchEnd::NoNodes => self.hub.set_stranded(true),
+                }
+            }
+            let until = std::time::Instant::now() + Duration::from_secs(600);
+            loop {
+                match self.poll_tip().await {
+                    Ok(t) => self.hub.offer_net(t),
+                    Err(_) => self.hub.set_stranded(true),
+                }
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                if push && std::time::Instant::now() > until {
+                    break;
+                }
+            }
+        }
     }
 
     /// The user's confirmed node changed (or was forgotten).
@@ -262,10 +381,12 @@ impl Net {
             while me.start_iroh(opts.clone(), me.network).await.is_err() {
                 tries += 1;
                 if tries > 5 {
-                    return me.maintain(false).await; // HTTP nodes only
+                    tauri::async_runtime::spawn(me.clone().tip_task(false)); // HTTP nodes only: the tip by poll
+                    return me.maintain(false).await;
                 }
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
+            tauri::async_runtime::spawn(me.clone().tip_task(true));
             me.maintain(true).await;
         });
     }
@@ -273,18 +394,23 @@ impl Net {
     async fn maintain(self: &Arc<Self>, iroh: bool) {
         let mut n = 0u64;
         let mut last_verify: Option<std::time::Instant> = None;
+        let mut rx = self.hub.subscribe();
         loop {
-            tokio::time::sleep(Duration::from_secs(if n == 0 { 2 } else { 5 })).await;
-            if iroh && n % 120 == 0 {
-                self.gossip().await;
+            // The chain is checked when the hub announces a new tip (push), and the timed conditions (an unverified result,
+            // ten minutes) every 20 s from the clock: no request is made here to learn the tip.
+            let pushed = matches!(tokio::time::timeout(Duration::from_secs(if n == 0 { 2 } else { 5 }), rx.changed()).await, Ok(Ok(())));
+            if !pushed {
+                if iroh && n % 120 == 0 {
+                    self.gossip().await;
+                }
+                if n % 12 == 0 {
+                    self.persist();
+                }
             }
-            if n % 12 == 0 {
-                self.persist();
-            }
-            if n % 4 == 0 {
+            if pushed || n % 4 == 0 {
                 // verify: the first time, when the tip moved, after an unverified result (every minute), and at least every ten minutes
                 let v = self.verifier.get();
-                let tip = self.client.read(&Request::GetTip, self.read_timeout).await.ok().and_then(|(_, r)| if let Response::Tip(t) = r { Some(t) } else { None });
+                let tip = self.hub.current().map(|t| sm64coin_lc::proto::Tip { height: t.height, hash: t.hash, cumulative_difficulty: t.cumulative_difficulty });
                 let moved = match (&tip, v.height) {
                     (Some(t), Some(h)) => t.height > h || (t.height == h && Some(hex::encode(t.hash)) != v.tip),
                     (Some(_), None) => true,
@@ -293,7 +419,7 @@ impl Net {
                 let since = last_verify.map(|t| t.elapsed());
                 // no verified node answers any more: check again soon (the check asks any node, and either finds the new verified
                 // set or lifts the restriction), so the restriction never leaves the app without a node for long
-                let stranded = tip.is_none() && v.state != "unverified";
+                let stranded = (tip.is_none() || self.hub.stranded()) && v.state != "unverified";
                 let due = match since {
                     None => true,
                     Some(e) => {
@@ -309,7 +435,9 @@ impl Net {
                     self.persist();
                 }
             }
-            n += 1;
+            if !pushed {
+                n += 1;
+            }
         }
     }
 
@@ -557,6 +685,37 @@ mod unit {
         let net = Net::new(&[NodeAddr::Http { url: "https://a.example".into() }], None, None);
         let e = tauri::async_runtime::block_on(net.rpc("sm64_board_join", json!({}))).unwrap_err();
         assert!(e.contains("only sent to the node you chose"), "{e}");
+    }
+
+    fn tip(h: u8, ts: u64) -> TipInfo {
+        TipInfo { height: h as u64, hash: [h; 32], timestamp: ts, cumulative_difficulty: 1, difficulty: 1000, server_time: ts }
+    }
+
+    #[test]
+    fn the_tip_hub_notifies_only_changes_and_the_local_node_shadows_the_network() {
+        let hub = TipHub::new();
+        let mut rx = hub.subscribe();
+        assert!(hub.current().is_none() && hub.tip_hash().is_none());
+        hub.offer_net(tip(1, 10));
+        assert!(rx.has_changed().unwrap());
+        rx.borrow_and_update();
+        hub.offer_net(tip(1, 10)); // the same block again (a poll, a reconnect): no change
+        assert!(!rx.has_changed().unwrap());
+        hub.offer_net(tip(2, 20));
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(hub.tip_hash().unwrap(), hex::encode([2u8; 32]));
+        rx.borrow_and_update();
+        // the app's own node speaks: its tip is used, the network's is ignored while it keeps arriving
+        hub.offer_local(tip(3, 30));
+        hub.offer_net(tip(4, 40));
+        assert_eq!(hub.current().unwrap().height, 3);
+        hub.offer_local(tip(5, 50));
+        assert_eq!(hub.current().unwrap().height, 5);
+        // stranded: set by a failed attempt, cleared by any tip
+        hub.set_stranded(true);
+        assert!(hub.stranded());
+        hub.offer_local(tip(5, 50));
+        assert!(!hub.stranded());
     }
 
     #[test]

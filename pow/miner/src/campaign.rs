@@ -59,8 +59,17 @@ pub enum Normalise {
     Replay,
 }
 
+/// Where a campaign learns of a new block without asking the daemon: the app follows the chain tip once (pushed by the
+/// light-client network, or the local node polled for everyone) and hands the miner a feed. `tip()` is the chain tip's block
+/// id (hex) as last seen, or None while unknown (the campaign then polls the daemon itself, as without a feed).
+pub trait TipFeed: Send + Sync {
+    fn tip(&self) -> Option<String>;
+}
+
 #[derive(Clone)]
 pub struct CampaignConfig {
+    /// The tip source (see [`TipFeed`]); None: the campaign polls `get_info` every 2 s (a node of its own on this machine).
+    pub tip_feed: Option<Arc<dyn TipFeed>>,
     /// The daemon's RPC URL (the template source), e.g. `http://127.0.0.1:16481`.
     pub daemon_url: String,
     /// The address the block reward is paid to (`SM64...`).
@@ -122,6 +131,7 @@ pub struct CampaignConfig {
 impl CampaignConfig {
     pub fn new(daemon_url: &str, address: &str, rom: Vec<u8>, data_dir: PathBuf) -> CampaignConfig {
         CampaignConfig {
+            tip_feed: None,
             daemon_url: daemon_url.into(),
             address: address.into(),
             rom,
@@ -433,13 +443,14 @@ struct Watch {
 impl Watch {
     /// `deadline` (unix s, 0: none) ends the search too; `power_on_at` (0: none) restarts a "parent" template when it passes;
     /// `p_deadline` (0: none) ends the parent-start search (`pstop`) only.
-    fn spawn(inner: &Arc<Inner>, url: &str, prev: &str, deadline: u64, power_on_at: u64, p_deadline: u64) -> Watch {
+    fn spawn(inner: &Arc<Inner>, url: &str, feed: Option<Arc<dyn TipFeed>>, prev: &str, deadline: u64, power_on_at: u64, p_deadline: u64) -> Watch {
         let (stop, pstop, done, new_tip) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (s, ps, d, n) = (stop.clone(), pstop.clone(), done.clone(), new_tip.clone());
         let (inner, url, prev) = (inner.clone(), url.to_string(), prev.to_string());
         let thread = std::thread::spawn(move || {
             let dm = rpc::Daemon::new(&url);
             let mut polled = std::time::Instant::now();
+            let mut checked = std::time::Instant::now();
             while !d.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(100));
                 if inner.stopped() {
@@ -447,10 +458,17 @@ impl Watch {
                     ps.store(true, Ordering::Relaxed);
                     return;
                 }
-                if polled.elapsed() < Duration::from_secs(2) {
+                // a pushed tip is read from memory every tick (a new block ends the search within 0.1 s, and costs no request)
+                let pushed = feed.as_ref().and_then(|f| f.tip());
+                let poll_due = pushed.is_none() && polled.elapsed() >= Duration::from_secs(2);
+                let moved_by_push = pushed.as_ref().is_some_and(|h| *h != prev);
+                if !poll_due && !moved_by_push && checked.elapsed() < Duration::from_secs(1) {
                     continue;
                 }
-                polled = std::time::Instant::now();
+                if poll_due {
+                    polled = std::time::Instant::now();
+                }
+                checked = std::time::Instant::now();
                 if (power_on_at != 0 && now() >= power_on_at) || (deadline != 0 && now() >= deadline) {
                     s.store(true, Ordering::Relaxed);
                     ps.store(true, Ordering::Relaxed);
@@ -459,7 +477,8 @@ impl Watch {
                 if p_deadline != 0 && now() >= p_deadline {
                     ps.store(true, Ordering::Relaxed);
                 }
-                if dm.top_hash().map(|h| h != prev).unwrap_or(false) {
+                let moved = if pushed.is_some() { moved_by_push } else { poll_due && dm.top_hash().map(|h| h != prev).unwrap_or(false) };
+                if moved {
                     n.store(true, Ordering::Relaxed);
                     s.store(true, Ordering::Relaxed);
                     ps.store(true, Ordering::Relaxed);
@@ -512,6 +531,14 @@ fn run(inner: &Arc<Inner>, cfg: &CampaignConfig, reset_mode: ResetMode) -> Resul
 }
 
 impl Ctx<'_> {
+    /// Has the chain moved on from `tip`? From the feed when it knows the tip (no request), else from the daemon.
+    fn tip_moved(&self, tip: &str) -> bool {
+        match self.cfg.tip_feed.as_ref().and_then(|f| f.tip()) {
+            Some(h) => h != tip,
+            None => self.daemon.top_hash().map(|h| h != tip).unwrap_or(false),
+        }
+    }
+
     fn log(&self, m: impl Into<String>) {
         self.inner.log(m);
     }
@@ -576,7 +603,7 @@ impl Ctx<'_> {
         inner.phase(Phase::Searching, t.height, format!("start {start:?}"));
         let power_on_at = reset::restart_at_power_on_time(self.reset_mode, &t.sm64_start, t.sm64_power_on_at).unwrap_or(0);
         let p_deadline = if self.reset_mode == ResetMode::WhenStuck && t.sm64_start == "either" && start == Start::Parent && cfg.reset_after > 0 { now() + cfg.reset_after } else { 0 };
-        let w = Watch::spawn(inner, &cfg.daemon_url, &t.tip, 0, power_on_at, p_deadline);
+        let w = Watch::spawn(inner, &cfg.daemon_url, cfg.tip_feed.clone(), &t.tip, 0, power_on_at, p_deadline);
         let ro = self.rrt_options(0);
         let mut result: Option<Mined> = None;
         let mut no_route = None;
@@ -612,7 +639,7 @@ impl Ctx<'_> {
                 inner.phase(Phase::Idle, t.height, why);
                 while now() < wake.min(now() + 3600) && !inner.stopped() {
                     inner.sleep(2);
-                    if self.daemon.top_hash().map(|h| h != t.tip).unwrap_or(false) {
+                    if self.tip_moved(&t.tip) {
                         break;
                     }
                 }
@@ -693,7 +720,7 @@ impl Ctx<'_> {
                     return Ok(false);
                 }
                 inner.sleep(1);
-                if now() % 3 == 0 && self.daemon.top_hash().map(|h| h != t.tip).unwrap_or(false) {
+                if (self.cfg.tip_feed.is_some() || now() % 3 == 0) && self.tip_moved(&t.tip) {
                     self.log("  new block on the network: abandoning the waiting run");
                     abandoned = true;
                     break;
@@ -709,7 +736,7 @@ impl Ctx<'_> {
         }
         if let Err(prev) = self.signed.may_sign(&t.sm64_seed_hash, &proof) {
             self.log(format!("  already signed a different run ({} frames) for this seed: not signing a second one; waiting for a new block", prev.frames));
-            while self.daemon.top_hash().map(|h| h == t.tip).unwrap_or(true) && !inner.stopped() {
+            while !self.tip_moved(&t.tip) && !inner.stopped() {
                 inner.sleep(2);
             }
             return Ok(false);
@@ -777,7 +804,7 @@ impl Ctx<'_> {
             keys.sort();
             keys.dedup();
             ro.guide_keys = keys;
-            let w = Watch::spawn(inner, &self.cfg.daemon_url, &t.tip, deadline, 0, 0);
+            let w = Watch::spawn(inner, &self.cfg.daemon_url, self.cfg.tip_feed.clone(), &t.tip, deadline, 0, 0);
             let r = rrt::mine(start, parent, seed, params, &ro, &w.stop, |m| inner.log(format!("    {m}")));
             let stopped = w.stop.load(Ordering::Relaxed);
             if w.finish() || inner.stopped() {
@@ -834,4 +861,62 @@ fn survive(r: Result<Attempt>, inner: &Arc<Inner>) -> Attempt {
         inner.log(format!("  attempt failed: {e:#}"));
         Attempt::Gave(format!("error: {e:#}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Feed(Mutex<Option<String>>);
+    impl TipFeed for Feed {
+        fn tip(&self) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    fn inner() -> Arc<Inner> {
+        Arc::new(Inner {
+            stop: AtomicBool::new(false),
+            subs: Mutex::new(Vec::new()),
+            state: Mutex::new(State { phase: Phase::Starting, height: 0, detail: String::new() }),
+            counts: Mutex::new((0, 0)),
+            sample: Mutex::new((0, std::time::Instant::now())),
+            hub: Hub::host(),
+            running: AtomicBool::new(true),
+            ended: Mutex::new(None),
+        })
+    }
+
+    /// With a tip feed the watch needs no daemon at all (the URL here answers nothing): a new block in the feed ends the search
+    /// at once, the same block (or an unknown tip) does not.
+    #[test]
+    fn a_pushed_tip_ends_the_search_without_asking_the_daemon() {
+        let feed = Arc::new(Feed(Mutex::new(Some("aa".into()))));
+        let w = Watch::spawn(&inner(), "http://127.0.0.1:1", Some(feed.clone()), "aa", 0, 0, 0);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!w.stop.load(Ordering::Relaxed), "the tip is the one the search is for");
+        *feed.0.lock().unwrap() = None; // unknown: the watch falls back to polling the (dead) daemon, which says nothing
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!w.stop.load(Ordering::Relaxed));
+        *feed.0.lock().unwrap() = Some("bb".into());
+        let t0 = std::time::Instant::now();
+        while !w.stop.load(Ordering::Relaxed) && t0.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(t0.elapsed() < Duration::from_secs(1), "within a few ticks, not a poll period: {:?}", t0.elapsed());
+        assert!(w.finish(), "reported as a new tip");
+    }
+
+    /// Deadlines still end the search with a feed (they are checked once a second from the clock).
+    #[test]
+    fn the_power_on_time_still_ends_the_search_with_a_feed() {
+        let feed = Arc::new(Feed(Mutex::new(Some("aa".into()))));
+        let w = Watch::spawn(&inner(), "http://127.0.0.1:1", Some(feed), "aa", 0, now() + 1, 0);
+        let t0 = std::time::Instant::now();
+        while !w.stop.load(Ordering::Relaxed) && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(w.stop.load(Ordering::Relaxed));
+        assert!(!w.finish(), "not a new tip");
+    }
 }

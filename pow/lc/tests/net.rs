@@ -580,6 +580,54 @@ async fn end_to_end_against_an_isolated_offline_node() {
 #[allow(dead_code)]
 fn _unused(_: NodeAddr) {}
 
+/// A real node behind the service: the pushed tip is the node's (block, timestamp, difficulty), and the limit a client computes
+/// from it with the Rust rules is the number the node itself reports for a block found now.
+#[cfg(feature = "consensus")]
+#[tokio::test(flavor = "multi_thread")]
+async fn tip_push_from_a_real_node_gives_the_nodes_own_limit() {
+    let Some(d) = start_daemon() else { return };
+    let url = format!("http://127.0.0.1:{}", d.rpc);
+    let up = Arc::new(HttpUpstream::new(&url).unwrap());
+    let mut genesis = Err(String::new());
+    for _ in 0..40 {
+        genesis = sm64coin_lc::exec::genesis_hash(&*up, Duration::from_secs(2)).await;
+        if genesis.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let network = genesis.expect("the offline node answers");
+    let secret = SecretKey::generate();
+    let ep = build_endpoint(EndpointOptions { secret_key: Some(secret.clone()), n0_fallback: false, alpns: vec![ALPN.to_vec()], ..Default::default() }).await.unwrap();
+    let svc = LcService::new(ServerConfig { network, limits: fast_limits(), flags: 0, version: 1, https_rpc: None }, up.clone(), secret, HelloLog::default());
+    svc.refresh_tip().await;
+    let router = svc.serve(ep.clone());
+    let c = client_ep(None).await;
+    let t = IrohTransport::new(c.clone(), direct_addr(&ep), network);
+    let mut st = t.open_tip_stream().await.expect("a real node's service pushes");
+    let tip = next_tip(&mut st).await;
+    assert_eq!((tip.height, tip.hash), (0, network));
+    let info = up.json_rpc("get_info", json!({}), T).await.unwrap()["result"].clone();
+    let hdr = up.json_rpc("get_last_block_header", json!({}), T).await.unwrap()["result"]["block_header"].clone();
+    assert_eq!(tip.timestamp, hdr["timestamp"].as_u64().unwrap());
+    assert_eq!(tip.difficulty, info["difficulty"].as_u64().unwrap());
+    // the limit from the pushed tip and the clock = the node's get_info number (retry across a second boundary)
+    let mut same = false;
+    for _ in 0..5 {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let mine = sm64pow::rules().max_frames(tip.difficulty, now.saturating_sub(tip.timestamp));
+        let theirs = up.json_rpc("get_info", json!({}), T).await.unwrap()["result"]["sm64_max_frames"].as_u64().unwrap() as u32;
+        if mine == theirs {
+            same = true;
+            break;
+        }
+    }
+    assert!(same, "the local limit equals the node's");
+    drop(st);
+    c.close().await;
+    router.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn gossip_floods_and_garbage_announcements_are_contained() {
     use sm64coin_lc::endpoint::sign_announcement;

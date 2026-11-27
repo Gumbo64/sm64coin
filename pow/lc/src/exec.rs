@@ -126,32 +126,46 @@ pub fn tip_from_info(info: &Value) -> Option<Tip> {
     Some(Tip { height: height.saturating_sub(1), hash, cumulative_difficulty: cd })
 }
 
+/// The retarget difficulty of the next block in a `get_info` result (`difficulty`, at least 1).
+pub fn difficulty_from_info(info: &Value) -> u64 {
+    info.get("difficulty").and_then(|v| v.as_u64()).unwrap_or(1).max(1)
+}
+
+/// The timestamp of the block `hash` out of a `get_last_block_header` / `get_block_header_by_hash` result; None when it is
+/// another block (the tip moved between the two calls) or unreadable.
+pub fn header_timestamp(header: &Value, hash: [u8; 32]) -> Option<u64> {
+    let bh = header.get("block_header").unwrap_or(header);
+    if bh.get("hash").and_then(|x| x.as_str()).and_then(hex32) != Some(hash) {
+        return None;
+    }
+    bh.get("timestamp").and_then(|x| x.as_u64())
+}
+
+/// A [`TipInfo`] from a `get_info` result and the tip block's timestamp. `now`: the caller's clock in unix seconds.
+pub fn tip_info_from(info: &Value, timestamp: u64, now: u64) -> Option<TipInfo> {
+    let t = tip_from_info(info)?;
+    Some(TipInfo { height: t.height, hash: t.hash, timestamp, cumulative_difficulty: t.cumulative_difficulty, difficulty: difficulty_from_info(info), server_time: now })
+}
+
 /// The tip with what a client needs to compute the time limit locally ([`TipInfo`]): `get_info` for the block, difficulty and
 /// cumulative difficulty, and (only when the tip changed from `known`) `get_last_block_header` for its timestamp. `now` is the
 /// caller's clock in unix seconds.
 pub async fn tip_info(up: &dyn Upstream, known: Option<&TipInfo>, now: u64, t: Duration) -> Result<TipInfo, ErrorKind> {
-    let info = rpc(up, "get_info", json!({}), t).await.map_err(|r| match r {
+    let err = |r: Response, what: &str| match r {
         Response::Error(e) => e,
-        _ => ErrorKind::Upstream("get_info".into()),
-    })?;
+        _ => ErrorKind::Upstream(what.into()),
+    };
+    let info = rpc(up, "get_info", json!({}), t).await.map_err(|r| err(r, "get_info"))?;
     let tip = tip_from_info(&info).ok_or_else(|| ErrorKind::Upstream("unreadable get_info".into()))?;
-    let difficulty = info.get("difficulty").and_then(|v| v.as_u64()).unwrap_or(1).max(1);
     let timestamp = match known {
         Some(k) if k.hash == tip.hash => k.timestamp,
         _ => {
-            let h = rpc(up, "get_last_block_header", json!({}), t).await.map_err(|r| match r {
-                Response::Error(e) => e,
-                _ => ErrorKind::Upstream("get_last_block_header".into()),
-            })?;
-            let bh = h.get("block_header").unwrap_or(&h);
-            if bh.get("hash").and_then(|x| x.as_str()).and_then(hex32) != Some(tip.hash) {
-                // the tip moved between the two calls: the next poll sees the new one
-                return Err(ErrorKind::Upstream("tip moved".into()));
-            }
-            bh.get("timestamp").and_then(|x| x.as_u64()).ok_or_else(|| ErrorKind::Upstream("no timestamp".into()))?
+            let h = rpc(up, "get_last_block_header", json!({}), t).await.map_err(|r| err(r, "get_last_block_header"))?;
+            // the tip may have moved between the two calls: the next poll sees the new one
+            header_timestamp(&h, tip.hash).ok_or_else(|| ErrorKind::Upstream("tip moved".into()))?
         }
     };
-    Ok(TipInfo { height: tip.height, hash: tip.hash, timestamp, cumulative_difficulty: tip.cumulative_difficulty, difficulty, server_time: now })
+    tip_info_from(&info, timestamp, now).ok_or_else(|| ErrorKind::Upstream("unreadable get_info".into()))
 }
 
 /// Answers a request from the node behind `up`. `Hello`, `GetNodes` and `Probe` are not node calls

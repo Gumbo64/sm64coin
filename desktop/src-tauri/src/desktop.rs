@@ -429,6 +429,14 @@ pub fn run() {
                 b.build()?;
             }
             wallet::spawn_idle_lock(t.handle().clone());
+            // The chain tip: followed once in Rust (the app's own node polled here, the light-client network's push or poll in
+            // lcnet.rs) and told to the page as `tip` events; the verifier and the miner read the same hub.
+            {
+                let hub = t.state::<crate::remote::Remote>().net.tip_hub();
+                crate::lctip::spawn_emitter(t.handle().clone(), hub.clone());
+                let hh = t.handle().clone();
+                crate::lctip::spawn_local_poll(hub, move || hh.state::<App>().node_rpc_port());
+            }
             let h = t.handle().clone();
             std::thread::spawn(move || {
                 let st = h.state::<App>();
@@ -440,7 +448,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, crate::remote::net_status, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, crate::remote::net_status, crate::lctip::tip_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {

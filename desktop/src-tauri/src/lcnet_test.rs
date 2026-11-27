@@ -697,3 +697,45 @@ fn wallet_send_flow_over_iroh_with_the_native_miner() {
     }
     tauri::async_runtime::block_on(relay.shutdown());
 }
+
+/// The tip hub against an isolated offline node: followed by SubscribeTip over iroh (the lc service in front of it), and, with an
+/// HTTP-only node list, by the 30 s poll's first look; the verifier's input and the page's `tip` event both read it.
+#[test]
+fn the_tip_hub_follows_a_node_by_push_and_by_poll() {
+    let Some(a) = start_daemon("tip") else {
+        eprintln!("SKIPPED: set SM64COIND and SM64COIN_ROM (or unpack a release bundle in ~/apps)");
+        return;
+    };
+    let network = wait_for(&a);
+    let wait_tip = |net: &Arc<Net>| {
+        let hub = net.tip_hub();
+        for _ in 0..80 {
+            if let Some(t) = hub.current() {
+                return t;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("no tip within 20 s");
+    };
+    // by push, over iroh only
+    let relay = tauri::async_runtime::block_on(RelayHandle::spawn(&RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), tls: TlsMode::SelfSigned, hello_policy: HelloPolicy::Off, ..Default::default() }, HelloLog::default())).unwrap();
+    let sa = tauri::async_runtime::block_on(serve(&a, &relay, network));
+    let net = net_with(&[(sa.addr.clone(), Source::Bootstrap)]);
+    tauri::async_runtime::block_on(net.start_iroh(relay_opts(&relay), network)).unwrap();
+    tauri::async_runtime::spawn(net.clone().tip_task(true));
+    let t = wait_tip(&net);
+    assert_eq!((t.height, t.hash), (0, network), "genesis is the tip of a fresh chain");
+    assert_eq!(t.difficulty, 1);
+    assert!(t.server_time > 1_700_000_000, "the server stamps its clock (the genesis block itself is timestamped 0)");
+    let json = crate::lctip::tip_json(&t);
+    assert_eq!(json["hash"], hex::encode(network));
+    assert_eq!(json["difficulty"], "1", "big numbers go to the page as strings");
+    // by poll, over HTTP only (no node serves SubscribeTip there)
+    let net2 = net_with(&[(http_of(&a), Source::Bootstrap)]);
+    tauri::async_runtime::spawn(net2.clone().tip_task(false));
+    let t2 = wait_tip(&net2);
+    assert_eq!((t2.height, t2.hash, t2.timestamp), (t.height, t.hash, t.timestamp), "the same tip by either way");
+    // the hub is what the verifier reads: stranded is clear while nodes answer
+    assert!(!net.tip_hub().stranded());
+    tauri::async_runtime::block_on(relay.shutdown());
+}

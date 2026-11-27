@@ -67,6 +67,16 @@ struct Running {
 pub struct MobileMiner {
     data: PathBuf,
     cur: Mutex<Option<Running>>,
+    /// Where the campaign learns of a new block without polling the (remote) daemon: the app's tip hub.
+    feed: Mutex<Option<Arc<dyn sm64coin_miner::campaign::TipFeed>>>,
+}
+
+/// The app's tip hub as the campaign's tip feed.
+pub struct HubFeed(pub Arc<crate::lcnet::TipHub>);
+impl sm64coin_miner::campaign::TipFeed for HubFeed {
+    fn tip(&self) -> Option<String> {
+        self.0.tip_hash()
+    }
 }
 
 fn now_ms() -> u64 {
@@ -80,7 +90,12 @@ fn plausible_address(a: &str) -> bool {
 
 impl MobileMiner {
     pub fn new(data: PathBuf) -> MobileMiner {
-        MobileMiner { data, cur: Mutex::new(None) }
+        MobileMiner { data, cur: Mutex::new(None), feed: Mutex::new(None) }
+    }
+
+    /// Gives campaigns a tip feed (the app's tip hub): they then watch the chain by push instead of polling `get_info`.
+    pub fn set_tip_feed(&self, feed: Arc<dyn sm64coin_miner::campaign::TipFeed>) {
+        *self.feed.lock().unwrap() = Some(feed);
     }
 
     pub fn rom_path(&self) -> PathBuf {
@@ -137,6 +152,7 @@ impl MobileMiner {
         let threads = threads.unwrap_or_else(|| cores.saturating_sub(1).clamp(1, 4)).clamp(1, cores.max(1));
         let mut cfg = CampaignConfig::new(daemon, address, rom, self.data.join("miner"));
         cfg.threads = threads;
+        cfg.tip_feed = self.feed.lock().unwrap().clone();
         cfg.viz = true; // the feed exists; `viz_on` switches it (off it only counts frames), as on the desktop
         let campaign = Arc::new(Campaign::start(cfg).map_err(|e| AppError::new("miner_start", format!("{e:#}")))?);
         let rx = campaign.subscribe();

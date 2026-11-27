@@ -333,3 +333,26 @@ HTTP RPC is never removed: old apps and third-party wallets keep working.
   is never advertised (`--tls acme --acme-domain ... --acme-production`, or `--lc-acme-domain` in the launcher); the
   monthly byte count is written atomically and on shutdown.
 - **View key**: `sm64_board_join` is `allowlist::PINNED_ONLY`, never sent by failover.
+
+## Tip push (protocol minor 2)
+
+A miner page used to ask `get_info` every 2 s and a fresh template every 5 s (the time limit grows with the time since the parent):
+about 2000 requests an hour per open page. Now the tip is pushed and the limit is computed locally.
+
+- **`Request::SubscribeTip`** (variant 16, feature bit `TIP_PUSH`): the answer stream stays open and carries `Response::TipPush(TipInfo)`
+  frames (the current tip first, then one per change: `height`, `hash`, `timestamp`, `cumulative_difficulty`, retarget `difficulty`,
+  the server's clock) and a `Response::Keepalive` every 30 s. The client ends it by closing the stream; no frame for 75 s means a dead
+  path and a reconnect. An older server answers `Unsupported` (one frame, stream finished), and the client polls instead
+  (`Client::watch_tip` returns `WatchEnd::NoPush`). HTTP nodes cannot push: the same.
+- **One watcher per server**: `LcService` polls its local node once (1 s while anybody is subscribed, 5 s otherwise; `get_info`, plus
+  `get_last_block_header` only when the tip changed) and fans the result out through a `watch` channel, so a thousand subscribers cost the
+  node what one does. Limits: 2 subscriptions per endpoint, 4096 in all (`Busy` beyond), a subscription needs the `Hello` first.
+  monerod's ZMQ pub feed (`--zmq-pub`, topic `json-minimal-chain_main`) would replace the 1 s local poll; it carries no timestamp or
+  difficulty, so a header call per block would stay. Not wired: the poll is local and cheap.
+- **The limit is computed, not fetched**: `rules_max_frames` / `rules_due_elapsed` in `pow/perturb-wasm` compile `pow/sm64pow/src/rules.rs`
+  itself (`#[path]`), so the page, the apps and the node use one function; `pow/sm64pow/tests/limit_vectors.json` pins the numbers for both
+  builds. `limit(now) = max_frames(difficulty, now - tip.timestamp)`; a run's valid-at is `parent timestamp + due_elapsed(difficulty, frames)`.
+- **Clients**: the page has one tip store (`web/src/lib/tip.js`: push from lc-wasm `watch_tip` or the app's `tip` event, else `get_info` every
+  30 s plus on focus/visibility and after a submit); the desktop/Android Rust side has `lcnet::TipHub` (push or 30 s poll; the app's own node
+  is polled locally once a second on desktop) which feeds the page's `tip` event, the verifier (one check per new tip) and the Android
+  miner's `TipFeed`. Standalone `automine` against a local node keeps its 2 s local poll.
