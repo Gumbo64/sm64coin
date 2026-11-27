@@ -12,6 +12,8 @@ mod remote;
 mod desktop;
 #[cfg(desktop)]
 mod miner;
+#[cfg(desktop)]
+mod wallet;
 
 use serde::Serialize;
 

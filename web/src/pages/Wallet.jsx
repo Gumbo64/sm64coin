@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { getNode } from '../lib/rpc.js';
+import { getPlatform } from '../platform/index.js';
+import WalletDesktop from './WalletDesktop.jsx';
 import { loadStored, saveStored, forgetStored } from '../lib/wallet/store.js';
 import * as eng from '../lib/wallet/engine.js';
 import { BLOCK_TARGET_SECONDS } from '../lib/rules.js';
@@ -37,7 +39,12 @@ const copy = (t) => navigator.clipboard && navigator.clipboard.writeText(t);
 const wrongPw = (e) => new Error(/password/i.test(e.message || '') ? 'Wrong password (or this is not a wallet file).' : e.message);
 const isAddress = (a) => /^SM6[a-zA-Z0-9]{90,110}$/.test((a || '').trim());
 
+// The desktop app has its own wallet (the wallet-rpc sidecar); the browser build uses the WASM engine below.
 export default function Wallet() {
+  return getPlatform().wallet ? <WalletDesktop /> : <WebWallet />;
+}
+
+function WebWallet() {
   const [stage, setStage] = useState('loading'); // loading | none | locked | open
   const [rec, setRec] = useState(null);
   const [err, setErr] = useState('');

@@ -1,7 +1,7 @@
 //! The desktop half of the app: local node, ROM, native miner (and wallet-rpc): everything that needs processes and files.
 //! Compiled for desktop targets only (`cfg(desktop)`, see lib.rs); Android has the remote RPC and nothing else.
 
-use crate::miner;
+use crate::{miner, wallet};
 use crate::{AppError, Res};
 use serde::Serialize;
 use sm64coin_launcher::node::{APP_ORIGINS, Node, NodeConfig, NodeStatus, SITE_ORIGIN};
@@ -20,6 +20,14 @@ pub struct App {
     /// A start is in progress (the DHT lookup takes seconds).
     starting: Mutex<bool>,
     pub miner: Mutex<Option<miner::Miner>>,
+    pub wallet: wallet::Wallet,
+}
+
+impl App {
+    /// The RPC port of the node this app started, if any.
+    pub fn node_rpc_port(&self) -> Option<u16> {
+        self.node.lock().unwrap().as_ref().map(|n| n.rpc_port)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -41,7 +49,7 @@ impl Dirs {
     }
 }
 
-fn port_env(name: &str, default: u16) -> u16 {
+pub fn port_env(name: &str, default: u16) -> u16 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
@@ -290,7 +298,8 @@ fn miner_status(state: State<'_, App>) -> Res<miner::MinerInfo> {
 
 pub fn run() {
     let dirs = Dirs::detect();
-    let app = App { dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
+    let wallet = wallet::Wallet::new(&dirs);
+    let app = App { wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(app)
@@ -299,6 +308,7 @@ pub fn run() {
             // SIGTERM / SIGINT / console close: leave through the normal exit path, which stops the miner and the node.
             let hx = t.handle().clone();
             let _ = ctrlc::set_handler(move || hx.exit(0));
+            wallet::spawn_idle_lock(t.handle().clone());
             let h = t.handle().clone();
             std::thread::spawn(move || {
                 let st = h.state::<App>();
@@ -310,13 +320,14 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, miner_start, miner_stop, miner_status])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, miner_start, miner_stop, miner_status])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {
             if let tauri::RunEvent::Exit = ev {
                 // Reverse order: miner first, then the node (its stop waits for a clean database close).
                 let st = h.state::<App>();
+                st.wallet.shutdown();
                 if let Some(mut m) = st.miner.lock().unwrap().take() {
                     m.stop();
                 }

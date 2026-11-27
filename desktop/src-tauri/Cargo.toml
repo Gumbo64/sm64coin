@@ -31,6 +31,14 @@ sm64coin-launcher = { path = "../../pow/launcher", default-features = false, fea
 sm64coin-launcher = { path = "../../pow/launcher", features = ["desktop", "tls"] }
 tauri-plugin-dialog = "2"
 ctrlc = { version = "3", features = ["termination"] }
+ureq = { version = "2", default-features = false, features = ["json"] }
+md-5 = "0.10"
+sha2 = "0.10"
+getrandom = "0.2"
+base64 = "0.22"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
 
 [profile.release]
 opt-level = "s"

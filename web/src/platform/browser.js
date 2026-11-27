@@ -8,5 +8,6 @@ export const browser = {
   node: null,
   nativeMiner: null,
   rom: null,
+  wallet: null, // the Wallet page uses the WASM engine (lib/wallet/engine.js)
   host: null,
 };

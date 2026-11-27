@@ -32,6 +32,17 @@ mod job {
         }
     }
 }
+/// Windows: children get no console window (the desktop app has none; the CLI sends their output to log files anyway).
+fn no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 pub struct Proc {
     pub name: &'static str,
     pub child: Child,
@@ -45,6 +56,7 @@ impl Proc {
         let out = File::create(&log).map_err(|e| format!("cannot write {}: {e}", log.display()))?;
         let err = out.try_clone().map_err(|e| e.to_string())?;
         cmd.stdin(Stdio::null()).stdout(out).stderr(err);
+        no_window(&mut cmd);
         let child = cmd.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
         #[cfg(windows)]
         job::adopt(&child);
@@ -54,6 +66,7 @@ impl Proc {
     /// progress); `log` is only the path `tail` reads, the caller may write it.
     pub fn spawn_piped(name: &'static str, mut cmd: Command, log: PathBuf) -> Result<(Proc, std::process::ChildStdout, std::process::ChildStderr), String> {
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        no_window(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
         #[cfg(windows)]
         job::adopt(&child);
