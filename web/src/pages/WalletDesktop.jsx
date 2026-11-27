@@ -94,7 +94,7 @@ function Unlock({ st, note, run, adopt, busy }) {
         {st.wallets.length > 1 && <select value={name} onChange={(e) => setName(e.target.value)}>{st.wallets.map((n) => <option key={n}>{n}</option>)}</select>}
         {st.wallets.length === 1 && <b>{name}</b>}
       </p>
-      {/* a form, not onKeyDown: main.jsx stops keyboard events at window (for the game), so Enter never reaches React key handlers */}
+      {/* a form: Enter submits it */}
       <form onSubmit={(e) => { e.preventDefault(); if (pw && !busy) go(); }}>
         <input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
         <button type="submit" disabled={busy || !pw}>Open</button>
@@ -115,7 +115,8 @@ function Onboard({ st, run, setFresh, adopt, busy, first }) {
   const [offset, setOffset] = useState('');
   const [kdf, setKdf] = useState('1');
   const [adv, setAdv] = useState(false);
-  if (!mode) return <div className="card"><button onClick={() => setMode('create')}>Create another wallet…</button>{' '}<button onClick={() => setMode('restore')}>Restore from seed…</button></div>;
+  if (!mode) return <div className="card"><button onClick={() => setMode('create')}>Create another wallet…</button>{' '}<button onClick={() => setMode('restore')}>Restore from seed…</button>{' '}<button onClick={() => setMode('passkey')}>Use my website passkey…</button></div>;
+  if (mode === 'passkey') return <Passkey st={st} run={run} adopt={adopt} busy={busy} first={first} back={() => setMode(first ? 'create' : null)} />;
   const nameOk = /^[A-Za-z0-9_-]{1,40}$/.test(name) && !st.wallets.includes(name);
   const pwOk = pw.length >= 8 && pw === pw2;
   const ok = nameOk && pwOk && (mode === 'create' || seed.trim().split(/\s+/).length >= 24);
@@ -132,12 +133,13 @@ function Onboard({ st, run, setFresh, adopt, busy, first }) {
         <div className="controls">
           <button className={mode === 'create' ? '' : 'linkish'} onClick={() => setMode('create')}>New wallet</button>
           <button className={mode === 'restore' ? '' : 'linkish'} onClick={() => setMode('restore')}>Restore from seed words</button>
+          <button className={mode === 'passkey' ? '' : 'linkish'} onClick={() => setMode('passkey')}>Use my website passkey</button>
         </div>
       )}
       <p><input placeholder="wallet name" value={name} onChange={(e) => setName(e.target.value)} />{!nameOk && name && <span className="muted"> letters, digits, - _ (not used yet)</span>}</p>
       {mode === 'restore' && (
         <>
-          <p><textarea className="wide mono" rows={3} placeholder="25 seed words" value={seed} onChange={(e) => setSeed(e.target.value)} /></p>
+          <p><textarea className="wide mono" style={{ background: "var(--bg-input, #0b0f19)", color: "inherit", border: "1px solid #2a2f45", borderRadius: 6, padding: 8 }} rows={3} placeholder="25 seed words" value={seed} onChange={(e) => setSeed(e.target.value)} /></p>
           <p><input placeholder="restore height" size={12} value={height} onChange={(e) => setHeight(e.target.value)} /> <span className="muted">block to scan from (0 = the start: always right, slower)</span></p>
         </>
       )}
@@ -340,6 +342,73 @@ function Settings({ w, st, run, refresh }) {
           <p><input type="password" placeholder="wallet password (only to weaken)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}<button onClick={save}>Save</button></p>
         </>
       )}
+    </div>
+  );
+}
+
+/** Hand-off of the website's passkey wallet (see lib/desktopLink.js): the browser derives it, the app restores it under a password chosen here. */
+function Passkey({ st, run, adopt, busy, back }) {
+  const p = getPlatform();
+  const [name, setName] = useState(st.wallets.includes('passkey') ? '' : 'passkey');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [link, setLink] = useState(null); // {state, url}
+  const [got, setGot] = useState(''); // the address that arrived: the user compares it with the browser page before importing
+  const nameOk = /^[A-Za-z0-9_-]{1,40}$/.test(name) && !st.wallets.includes(name);
+  const ok = nameOk && pw.length >= 8 && pw === pw2;
+  const waiting = link && link.state === 'waiting';
+
+  useEffect(() => {
+    if (!waiting) return undefined;
+    const t = setInterval(async () => {
+      const s = await p.link.status().catch(() => null);
+      if (!s) return;
+      if (s.state === 'received') {
+        clearInterval(t);
+        setLink(null);
+        setGot(s.address || '');
+      } else if (s.state !== 'waiting') { clearInterval(t); setLink({ state: s.state, error: s.error }); }
+    }, 1500);
+    return () => clearInterval(t);
+  }, [waiting]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const start = () => run('Opening your browser', async () => setLink(await p.link.start(true)));
+  const cancel = async () => { await p.link.cancel().catch(() => {}); setLink(null); setGot(''); };
+  const finish = () => run('Restoring the passkey wallet (this scans the chain)', async () => {
+    await p.link.finish({ name, password: pw, address: got });
+    setPw(''); setPw2(''); setGot(''); adopt('');
+  });
+  return (
+    <div className="card">
+      <h2>Use my website passkey</h2>
+      <p className="muted">Your browser opens the SM64Coin site, where you use your passkey; the wallet is then handed to this app (encrypted, over 127.0.0.1) and kept here under the password you choose now. Needs the passkey you made on the website.</p>
+      {got && (
+        <>
+          <p>The app received this wallet:</p>
+          <p className="mono break"><b>{got}</b></p>
+          <p>Is it the address your browser page shows? Import it only if it is the same. If it is not, or the page said sending failed, press Cancel: something else on this computer answered first.</p>
+          <button disabled={busy} onClick={finish}>Same address: import it</button>{' '}
+          <button className="linkish" onClick={cancel}>Cancel</button>
+        </>
+      )}
+      {!waiting && !got && (
+        <>
+          <p><input placeholder="wallet name" value={name} onChange={(e) => setName(e.target.value)} /></p>
+          <p><input type="password" placeholder="password for this app (8+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+            <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} /></p>
+          <button disabled={busy || !ok} onClick={start}>Open the browser</button>{' '}
+          <button className="linkish" onClick={back}>back</button>
+        </>
+      )}
+      {waiting && (
+        <>
+          {link.error && <p className="walleterr">{link.error}</p>}
+          <p>Waiting for the browser… Use your passkey on the page that opened (this wait ends after 5 minutes).</p>
+          <p className="muted">If no browser opened, copy this link into it: <span className="mono break">{link.url}</span> <button onClick={() => copy(link.url)}>Copy</button></p>
+          <button onClick={cancel}>Cancel</button>
+        </>
+      )}
+      {link && !waiting && link.state !== 'idle' && <p className="walleterr">{link.error || `The link ${link.state}.`}</p>}
     </div>
   );
 }

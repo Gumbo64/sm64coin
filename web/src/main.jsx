@@ -7,24 +7,21 @@ import { autoSync } from './lib/webminer/sync.js';
 import { frameBuster } from './lib/security.js';
 import './index.css';
 
-// The game (emscripten) listens for keys on the whole window and cancels the
-// ones it maps (WASD, I, J, ...), which would swallow typing in text fields.
-// Keyboard events that aren't for the game are kept away from it: this
-// capture-phase listener on window runs first, and stopping propagation there
-// keeps the event from reaching the game's listener; typing itself (the
-// default action) still happens.
-const editable = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
-// The game's listeners also outlive the mining page (it is a single-page app),
-// and it blocks shortcuts such as Ctrl+C; so keys only reach the game on the
-// mining page and the block replay, and never with Ctrl/Alt/Meta held (the game doesn't use them).
-// The replay viewer (a block's page with ?replay) has its own hotkeys on window (play, seek, speed, stars), so keys
-// reach it there too.
+// The game (emscripten SDL) listens for keys on the whole window (bubble phase) and cancels the ones it maps (WASD, I, J, ...),
+// which would swallow typing in text fields; its listeners also outlive the mining page (it is a single-page app) and block
+// shortcuts such as Ctrl+C. So keys only reach the game on the mining page and the block replay (whose viewer has its own
+// hotkeys on window: play, seek, speed, stars), never from a text field, and never with Ctrl/Alt/Meta held.
+// The guard is a window listener in the BUBBLE phase, added here before the game (and the pages' own window hotkeys) add
+// theirs: stopImmediatePropagation() then keeps the event from those later window listeners, while React (whose listeners
+// sit on the root element, which the event passes first) still sees every key, so onKeyDown handlers work on every page.
+// Typing itself (the default action) is never cancelled here.
+const editable = (el) => !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
 const gamePage = () => location.pathname.startsWith(`${BASE}/mine`)
   || (location.pathname.startsWith(`${BASE}/block/`) && new URLSearchParams(location.search).has('replay'));
 const keysForGame = (e) => gamePage() && !editable(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey;
 for (const type of ['keydown', 'keyup', 'keypress']) {
-  window.addEventListener(type, (e) => { if (!keysForGame(e)) e.stopPropagation(); }, true);
+  window.addEventListener(type, (e) => { if (!keysForGame(e)) e.stopImmediatePropagation(); });
 }
 
 // A tab open across a deploy still runs the old build, whose lazily loaded pages (Wallet-<hash>.js, ...) the host no longer

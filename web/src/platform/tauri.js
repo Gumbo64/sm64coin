@@ -95,7 +95,7 @@ const wallet = {
     return { address, seed };
   },
   async restore({ name, password, seed, restoreHeight = 0, seedOffset = '', kdfRounds = 1 }) {
-    const r = await wcall('restore_deterministic_wallet', { name, password, seed: seed.trim().replace(/\s+/g, ' '), restore_height: Number(restoreHeight) || 0, seed_offset: seedOffset || '', _kdf_rounds: kdfRounds });
+    const r = await wcall('restore_deterministic_wallet', { filename: name, password, seed: seed.trim().replace(/\s+/g, ' '), restore_height: Number(restoreHeight) || 0, seed_offset: seedOffset || '', _kdf_rounds: kdfRounds });
     return { address: r.address };
   },
   async address() { return (await wcall('get_address', { account_index: 0 })).address; },
@@ -133,6 +133,18 @@ const wallet = {
   },
 };
 
+// "Use my website passkey": a one-time 127.0.0.1 listener + the system browser at the website's /desktop-link page (see link.rs).
+const link = {
+  /** Starts the listener and opens the browser: {state: 'waiting', url}. `open: false` only returns the URL. */
+  start: (open = true) => cmd('link_start', { open }),
+  /** {state: idle | waiting | received | expired | cancelled | failed, address?, error?} */
+  status: () => cmd('link_status'),
+  cancel: () => cmd('link_cancel'),
+  /** Imports the received wallet under `name` with a password chosen in the app. `address`: the received address the user
+   *  compared with the browser page (Rust also checks the restored wallet has it). */
+  async finish({ name, password, address, kdfRounds = 1 }) { const r = await cmd('link_finish', { name, password, address, kdfRounds }); if (r && r.error) throw new Error(r.error.message); return r.result || r; },
+};
+
 /** The desktop app: local node, native miner, ROM kept by the app. */
 const desktop = {
   name: 'tauri',
@@ -140,13 +152,20 @@ const desktop = {
   mobile: false,
   /** JSON-RPC to the local node: resolves with the whole `{result}` / `{error}` answer (whitelisted methods only). */
   rpc: (method, params) => cmd('node_rpc', { method, params: params || {} }),
-  /** The same, against a remote node over https (the public node fallback). */
+  /** The same, against a remote node over https: only the public node or the one saved with remoteNode.set (Rust checks). */
   remoteRpc: (url, method, params) => cmd('remote_rpc', { url, method, params: params || {} }),
+  /** The https node the user picked on the Network page: `get()` -> {public, saved}; `set(url)` asks the user in a native
+   *  dialog and resolves with the saved URL (rejects with code 'cancelled'); `set(null)` forgets it. */
+  remoteNode: {
+    get: () => cmd('remote_node_get'),
+    set: (url) => cmd('remote_node_set', { url: url || null }),
+  },
   nodeUrl: () => nodeRpcUrl,
   node,
   nativeMiner,
   rom,
   wallet,
+  link,
   host: () => cmd('host_info'),
 };
 
@@ -162,7 +181,9 @@ const mobile = {
   node: null,
   nativeMiner: null,
   rom: null,
+  remoteNode: { get: desktop.remoteNode.get, set: null }, // the public node only (no native confirmation dialog there)
   wallet: null, // the browser's WASM wallet engine (Wallet page) serves there
+  link: null,
 };
 
 export const tauri = isMobile ? mobile : desktop;

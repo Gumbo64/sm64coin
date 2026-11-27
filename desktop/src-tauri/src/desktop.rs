@@ -1,7 +1,7 @@
 //! The desktop half of the app: local node, ROM, native miner (and wallet-rpc): everything that needs processes and files.
 //! Compiled for desktop targets only (`cfg(desktop)`, see lib.rs); Android has the remote RPC and nothing else.
 
-use crate::{miner, wallet};
+use crate::{link, miner, wallet};
 use crate::{AppError, Res};
 use serde::Serialize;
 use sm64coin_launcher::node::{APP_ORIGINS, Node, NodeConfig, NodeStatus, SITE_ORIGIN};
@@ -21,6 +21,7 @@ pub struct App {
     starting: Mutex<bool>,
     pub miner: Mutex<Option<miner::Miner>>,
     pub wallet: wallet::Wallet,
+    pub link: link::Link,
 }
 
 impl App {
@@ -34,6 +35,8 @@ impl App {
 pub struct Dirs {
     /// Where sm64coind, sm64coin-automine, rrtrun, seeds.txt, routes/ live (SM64COIN_BUNDLE, else next to the app).
     pub bundle: PathBuf,
+    /// Where seeds.txt and routes/ live: the bundle folder, or (installed app) the resource folder.
+    pub res: PathBuf,
     pub data: PathBuf,
 }
 
@@ -42,7 +45,11 @@ impl Dirs {
         let exe_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
         let bundle = std::env::var_os("SM64COIN_BUNDLE").map(PathBuf::from).unwrap_or(exe_dir);
         let data = std::env::var_os("SM64COIN_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".sm64coin"));
-        Dirs { bundle, data }
+        // Installed app: sidecars sit next to the program (Linux /usr/bin, Windows and macOS: the app folder) and the resources
+        // are /usr/lib/SM64Coin (deb, AppImage), the install folder (Windows) or Contents/Resources (macOS).
+        let exe = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
+        let res = [bundle.clone(), exe.join("../lib/SM64Coin"), exe.join("../Resources")].into_iter().find(|d| d.join("seeds.txt").is_file()).map(|d| sm64coin_launcher::util::plain(d.canonicalize().unwrap_or(d))).unwrap_or_else(|| bundle.clone());
+        Dirs { bundle, res, data }
     }
     pub fn tool(&self, name: &str) -> PathBuf {
         self.bundle.join(format!("{name}{EXE}"))
@@ -151,7 +158,7 @@ async fn rom_bytes(app: AppHandle) -> Res<tauri::ipc::Response> {
 
 fn node_config(d: &Dirs, rom: PathBuf) -> NodeConfig {
     let mut c = NodeConfig::new(d.tool("sm64coind"), rom, d.data.clone());
-    c.seed_files = vec![d.bundle.join("seeds.txt"), d.data.join("seeds.txt")];
+    c.seed_files = vec![d.res.join("seeds.txt"), d.data.join("seeds.txt")];
     c.p2p_port = port_env("SM64COIN_P2P_PORT", 16480);
     c.rpc_port = port_env("SM64COIN_RPC_PORT", 16481);
     c.zmq_port = port_env("SM64COIN_ZMQ_PORT", 16482);
@@ -256,6 +263,38 @@ async fn node_rpc(app: AppHandle, method: String, params: Option<serde_json::Val
         .map_err(|e| AppError::new("internal", e.to_string()))?
 }
 
+/// Saves the https node the user picked on the Network page as the one `remote_rpc` and the wallet may also use, after the user
+/// confirms it in a native dialog (the page cannot widen the list by itself). `None` forgets it (no question asked).
+#[tauri::command]
+async fn remote_node_set(app: AppHandle, url: Option<String>) -> Res<Option<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let remote = app.state::<crate::remote::Remote>();
+        let Some(url) = url.filter(|u| !u.trim().is_empty()) else {
+            remote.set_saved(None)?;
+            return Ok(None);
+        };
+        let u = crate::remote::normalize(&url).ok_or_else(|| AppError::new("bad_url", "a remote node must be an https:// address"))?;
+        if remote.allowed(&u).is_some() {
+            return Ok(Some(u));
+        }
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let ok = app
+            .dialog()
+            .message(format!("Read the chain from the node at\n\n{u}\n\nand send your wallet's requests there? That node sees which blocks and transactions this app asks about."))
+            .title("Use this node?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Use it".into(), "Cancel".into()))
+            .blocking_show();
+        if !ok {
+            return Err(AppError::new("cancelled", "the node was not confirmed"));
+        }
+        remote.set_saved(Some(u.clone()))?;
+        Ok(Some(u))
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
 #[tauri::command]
 fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: Option<usize>, viz: Option<bool>) -> Res<miner::MinerInfo> {
     let rpc_port = {
@@ -316,13 +355,37 @@ fn miner_status(state: State<'_, App>) -> Res<miner::MinerInfo> {
     Ok(state.miner.lock().unwrap().as_mut().map(|m| m.info()).unwrap_or_else(miner::MinerInfo::idle))
 }
 
+/// Is `url` the app's own page (tauri://localhost on Linux/macOS, http(s)://tauri.localhost on Windows)?
+fn app_url(url: &tauri::Url) -> bool {
+    url.scheme() == "tauri" || (matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost")) || url.as_str() == "about:blank"
+}
+
+/// The window never leaves the app's own pages: a link to a web page opens in the system browser instead (the app's
+/// capabilities only apply to its own origin anyway; this keeps a remote page from posing as the app).
+fn nav_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("nav-guard")
+        .on_navigation(|_, url| {
+            if app_url(url) {
+                return true;
+            }
+            if matches!(url.scheme(), "http" | "https") {
+                let _ = link::open_browser(url.as_str());
+            }
+            false
+        })
+        .build()
+}
+
 pub fn run() {
     let dirs = Dirs::detect();
     let wallet = wallet::Wallet::new(&dirs);
-    let app = App { wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
+    let app = App { link: link::Link::default(), wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
+    let remote = crate::remote::Remote::new(Some(app.dirs.data.join("remote-node.txt")));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(nav_guard())
         .manage(app)
+        .manage(remote)
         .setup(|t| {
             // The node starts with the app when the ROM is there (the UI asks for it otherwise, then calls node_start).
             // SIGTERM / SIGINT / console close: leave through the normal exit path, which stops the miner and the node.
@@ -340,7 +403,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {
@@ -356,4 +419,14 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_app_pages() {
+        let ok = |u: &str| super::app_url(&u.parse().unwrap());
+        assert!(ok("tauri://localhost/wallet") && ok("http://tauri.localhost/") && ok("https://tauri.localhost/mine"));
+        assert!(!ok("https://sm64coin.pages.dev/") && !ok("https://tauri.localhost.evil.example/") && !ok("file:///etc/passwd"));
+    }
 }

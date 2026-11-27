@@ -92,7 +92,7 @@ impl Miner {
         cmd.arg("--rrt-scratch").arg(d.data.join("miner"));
         cmd.arg("--rh-threads").arg(threads.to_string());
         cmd.arg("--viz");
-        let route = d.bundle.join("routes").join("block1-human.m64");
+        let route = d.res.join("routes").join("block1-human.m64");
         if route.is_file() {
             cmd.arg("--route").arg(route);
         }

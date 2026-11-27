@@ -19,6 +19,23 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.1: the SM64Coin desktop app (preview)
+
+Same chain as 0.5.0: no reset, upgrade in place (your blocks and wallet carry over).
+
+- **New: the SM64Coin desktop app** (`SM64Coin_*`): the website's pages in a native window, with a local
+  full node, the native auto-miner (several times faster than the browser) and a wallet on Monero's
+  `wallet-rpc` (password to open, auto-lock after 10 idle minutes, password before sending and before
+  showing your seed). Linux: `.deb` or `.AppImage` (portable: `chmod +x` and run); Windows: `*-setup.exe`;
+  macOS: `.dmg`. "Use my website passkey" brings a passkey wallet over from the website through your
+  browser; or restore with your seed words.
+  **Preview:** the installers are not code-signed yet (Windows: "More info, Run anyway"; macOS: right-click,
+  Open), and only the Linux build has been tested by hand. The classic wallet app stays in the bundles below.
+- **Public nodes behind a proxy or tunnel no longer go dark**: the node never bans loopback RPC clients
+  (a few stale browser submissions had banned every visitor of eboy.au).
+- Website: Enter works again in password and name boxes; a footer says which code is Monero's
+  ([what changed](https://github.com/Gumbo64/sm64coin/blob/main/docs/MONERO-FORK.md)).
+
 ### 0.5.0: a new chain
 
 **0.5 starts a new chain** (new network ids and genesis block; heights restart at 0). 0.4 coins and blocks do not

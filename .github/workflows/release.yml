@@ -482,27 +482,188 @@ jobs:
           path: ci-logs
           if-no-files-found: ignore
 
-  publish:
-    name: Publish release
-    # The draft is made whenever Linux built, with whatever bundles exist: one platform without
-    # a runner (macOS capacity) doesn't block the rest. "Re-run failed jobs" adds it later.
-    if: ${{ always() && github.ref_type == 'tag' && needs.build-linux.result == 'success' }}
-    needs: [build-linux, build-windows, build-macos]
+  # ---- Desktop app (Tauri 2, desktop/): installers around the same programs the bundles carry ----------------------
+  # The app is the website in a webview (web/ built with `--mode desktop`, base '/') plus the bundle's sm64coind, wallet-rpc,
+  # automine and rrtrun as sidecars (bundle.externalBin, named per target triple; desktop/stage-sidecars.sh stages them from the
+  # per-platform bundle built above, with only the shared libraries they need). The user brings their own ROM.
+  # UNSIGNED for now. TODO before a public release: Windows code signing (bundle.windows.signCommand / a certificate),
+  # macOS Developer ID signing + notarization (APPLE_CERTIFICATE, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID; the .dmg is only
+  # ad-hoc signed through the sidecars' package.sh), tauri-plugin-updater with a signing key, Linux aarch64 and an .rpm.
+  web-desktop:
+    name: Desktop frontend
+    needs: wallet-engine
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fetch the replay player and its dependencies (sibling checkouts)
+        run: scripts/ci-prepare.sh --web
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pow/perturb-wasm
+            pow/webminer
+          key: wasm
+      - name: Toolchain for the web miner (clang, llvm, private repo access)
+        continue-on-error: true
+        env:
+          SM64_AI_BINDS_TOKEN: ${{ secrets.SM64_AI_BINDS_TOKEN }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm
+          if [ -n "$SM64_AI_BINDS_TOKEN" ]; then
+            git config --global url."https://x-access-token:${SM64_AI_BINDS_TOKEN}@github.com/Gumbo64/".insteadOf "https://github.com/Gumbo64/"
+          fi
+      - name: Browser WASM modules (perturbation, web miner)
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          REQUIRE_WEBMINER: "1"
+        run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - name: Wallet engine (wasm; the desktop app uses wallet-rpc, the engine serves the passkey link page and the browser)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: wallet-engine
+          path: web/public/wallet
+      - run: npm ci
+        working-directory: web
+      - run: npx vite build --mode desktop
+        working-directory: web
+        env:
+          VITE_SM64COIN_VERSION: ${{ env.VERSION }}
+          VITE_GIT_SHA: ${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist-desktop
+          path: web/dist-desktop
+          if-no-files-found: error
+
+  desktop:
+    name: Desktop ${{ matrix.platform }}
+    needs: [web-desktop, build-linux, build-windows, build-macos]
+    if: ${{ !cancelled() }}   # each platform needs its own bundle job; one platform failing does not stop the others
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-22.04      # glibc 2.35, like the bundles
+            triple: x86_64-unknown-linux-gnu
+            config: linux
+            bundles: deb,appimage
+            archive: tar.gz
+          - platform: windows-x86_64
+            runner: windows-2022
+            triple: x86_64-pc-windows-msvc
+            config: windows
+            bundles: nsis
+            archive: zip
+          - platform: macos-arm64
+            runner: macos-15
+            triple: aarch64-apple-darwin
+            config: macos
+            bundles: dmg
+            archive: tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - name: Linux packages for Tauri (webkit2gtk 4.1, GTK, appindicator)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf file xdg-utils
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            desktop/src-tauri
+          key: desktop-${{ matrix.platform }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: bundle-archive
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist-desktop
+          path: web/dist-desktop
+      - name: Unpack the release bundle and stage the sidecars
+        run: |
+          mkdir bundle
+          if [ "${{ matrix.archive }}" = zip ]; then 7z x -y -obundle bundle-archive/*.zip >/dev/null; else tar xzf bundle-archive/*.tar.gz -C bundle; fi
+          SRC="$(ls -d bundle/sm64coin-*/ | head -1)"
+          desktop/stage-sidecars.sh "$SRC" "${{ matrix.triple }}"
+      - name: "Version of the app (tags only, v1.2.3 becomes 1.2.3)"
+        if: github.ref_type == 'tag'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            jq --arg v "$v" '.version = $v' desktop/src-tauri/tauri.conf.json > tauri.conf.tmp && mv tauri.conf.tmp desktop/src-tauri/tauri.conf.json
+          fi
+      - name: Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.6
+      - name: Build the installers
+        working-directory: desktop/src-tauri
+        env:
+          NO_STRIP: "true"   # linuxdeploy (AppImage) cannot strip newer ELF sections
+        run: tauri build --target ${{ matrix.triple }} --config bundle/${{ matrix.config }}.json --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: |
+            desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/deb/*.deb
+            desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/${{ matrix.triple }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    # The draft is made whenever Linux built, with whatever bundles exist: one platform without
+    # a runner (macOS capacity) doesn't block the rest. "Re-run failed jobs" adds it later.
+    # The desktop installers are optional: publish waits for that job but runs whatever its result (always()), and its
+    # download step below is continue-on-error, so the node/wallet bundles are published without them if it failed.
+    if: ${{ always() && github.ref_type == 'tag' && needs.build-linux.result == 'success' }}
+    needs: [build-linux, build-windows, build-macos, desktop]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - name: Desktop installers (whatever was built)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: assets
+          merge-multiple: true
       - uses: actions/download-artifact@v4
         with:
           pattern: bundle-*
           path: assets
           merge-multiple: true
       - name: Checksums
-        run: cd assets && sha256sum sm64coin-* > SHA256SUMS && cat SHA256SUMS
+        run: cd assets && sha256sum $(ls sm64coin-* SM64Coin_* 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
       - name: Release notes
         env:
-          MISSING: ${{ needs.build-windows.result != 'success' && 'Windows ' || '' }}${{ needs.build-macos.result != 'success' && 'macOS' || '' }}
+          MISSING: ${{ needs.build-windows.result != 'success' && 'Windows ' || '' }}${{ needs.build-macos.result != 'success' && 'macOS ' || '' }}${{ needs.desktop.result != 'success' && '(some) desktop app installers' || '' }}
         run: |
           sed "s/@TAG@/${GITHUB_REF_NAME}/g; s/@VERSION@/${GITHUB_REF_NAME#v}/g" packaging/release-notes.md > notes.md
           if [ -n "$MISSING" ]; then printf '\n**Not built this time:** %s (no runner or a failed build; re-run the failed jobs to add it).\n' "$MISSING" >> notes.md; fi

@@ -60,10 +60,19 @@ pub fn call_url(base: &str, method: &str, params: serde_json::Value, timeout: Du
         return Err("a remote node must be an https:// address".into());
     }
     let body = serde_json::json!({"jsonrpc": "2.0", "id": 0, "method": method, "params": params}).to_string();
-    let (code, _, data) = forward("POST", base.trim_end_matches('/'), "/json_rpc", Some("application/json"), None, body.as_bytes(), timeout)?;
-    if code != 200 {
-        return Err(format!("node answered HTTP {code}"));
+    // No redirects: the allowed node must answer itself (a 3xx must not lead the call to another host, or to plain http).
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let res = agent.post(&format!("{}/json_rpc", base.trim_end_matches('/'))).timeout(timeout).set("content-type", "application/json").send_string(&body);
+    let resp = match res {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(format!("upstream unavailable: {e}")),
+    };
+    if resp.status() != 200 {
+        return Err(format!("node answered HTTP {}", resp.status()));
     }
+    let mut data = Vec::new();
+    let _ = resp.into_reader().take(MAX_RESPONSE).read_to_end(&mut data);
     serde_json::from_slice(&data).map_err(|e| format!("bad answer from the node: {e}"))
 }
 

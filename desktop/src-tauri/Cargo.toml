@@ -37,8 +37,10 @@ sha2 = "0.10"
 getrandom = "0.2"
 base64 = "0.22"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-chacha20poly1305 = "0.10"
+aes-gcm = "0.10"
+tiny_http = "0.12"
 hkdf = "0.12"
+zeroize = "1"
 
 [profile.release]
 opt-level = "s"
