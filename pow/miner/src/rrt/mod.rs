@@ -38,6 +38,8 @@
 //! `sm64pow::chain`.
 pub mod child;
 pub mod plan;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod vizio;
 
 use crate::rh::{Attempt, Mined, boot, settle};
 use anyhow::{Result, bail};
@@ -412,12 +414,32 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
     job.out_dir = format!("{}.run", base.display());
     let (jf, of, lf) = (format!("{}.job.json", base.display()), format!("{}.out.json", base.display()), format!("{}.log", base.display()));
     crate::sys::fs::write(&jf, serde_json::to_string(&job)?)?;
-    let mut child = std::process::Command::new(child_exe(o)?)
-        .arg(&jf)
-        .arg(&of)
-        .stdout(crate::sys::fs::File::create(&lf)?)
-        .stderr(crate::sys::fs::File::options().append(true).open(&lf)?)
-        .spawn()?;
+    let viz = o.viz && vizio::enabled();
+    let mut cmd = std::process::Command::new(child_exe(o)?);
+    let logfile = crate::sys::fs::File::create(&lf)?;
+    cmd.arg(&jf).arg(&of).stderr(crate::sys::fs::File::options().append(true).open(&lf)?);
+    // With the visualisation feed (automine --viz) the child's stdout is a pipe: viz frames go up, the rest to the log as always;
+    // its stdin carries the page's requests down (vizio.rs). Otherwise unchanged.
+    let mut logger = None;
+    let mut child = if viz {
+        let mut child = cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn()?;
+        if let Some(i) = child.stdin.take() {
+            vizio::attach(i);
+        }
+        let out = child.stdout.take().expect("piped");
+        let mut file = crate::sys::fs::File::options().append(true).create(true).open(&lf)?;
+        logger = Some(std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for line in std::io::BufReader::new(out).lines().map_while(|l| l.ok()) {
+                if !vizio::child_line(&line) {
+                    let _ = writeln!(file, "{line}");
+                }
+            }
+        }));
+        child
+    } else {
+        cmd.stdout(logfile).spawn()?
+    };
     let pf = format!("{}.progress", job.out_dir);
     let mut counted = 0u64; // this step's frames already in SIM_FRAMES
     let mut polled = std::time::Instant::now();
@@ -438,11 +460,20 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
             let _ = std::fs::remove_file(&pf);
             let _ = child.kill();
             let _ = child.wait();
+            if viz {
+                vizio::detach();
+            }
             let _ = crate::sys::fs::remove_file(&state);
             bail!("stopped");
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    if viz {
+        vizio::detach();
+        if let Some(l) = logger {
+            let _ = l.join();
+        }
+    }
     let _ = crate::sys::fs::remove_file(&state);
     let _ = crate::sys::fs::remove_dir_all(&job.out_dir);
     let _ = std::fs::remove_file(&pf);

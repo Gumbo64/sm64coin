@@ -257,7 +257,7 @@ async fn node_rpc(app: AppHandle, method: String, params: Option<serde_json::Val
 }
 
 #[tauri::command]
-fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: Option<usize>) -> Res<miner::MinerInfo> {
+fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: Option<usize>, viz: Option<bool>) -> Res<miner::MinerInfo> {
     let rpc_port = {
         let g = state.node.lock().unwrap();
         g.as_ref().map(|n| n.rpc_port).ok_or_else(|| AppError::new("node_not_running", "start the local node first"))?
@@ -269,7 +269,7 @@ fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: 
             return Err(AppError::new("already_running", "the native miner is already running"));
         }
     }
-    let m = miner::Miner::start(&app, &state.dirs, &rom, rpc_port, address.trim(), threads)?;
+    let m = miner::Miner::start(&app, &state.dirs, &rom, rpc_port, address.trim(), threads, viz.unwrap_or(true))?;
     let mut m = m; let info = m.info();
     *g = Some(m);
     Ok(info)
@@ -289,6 +289,26 @@ async fn miner_stop(app: AppHandle) -> Res<miner::MinerInfo> {
     })
     .await
     .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
+/// The page switches the miner's visualisation feed on or off (the search keeps running; off it only counts frames).
+#[tauri::command]
+fn miner_viz_on(state: State<'_, App>, on: bool) -> Res<()> {
+    if let Some(m) = state.miner.lock().unwrap().as_ref() {
+        m.send(&serde_json::json!({ "viz_on": on }));
+    }
+    Ok(())
+}
+
+/// The page's mailbox for the running searches (pow/miner/src/rrt/vizio.rs): an object with any of `goal` (the sampling
+/// bubble {level, area, pos, radius, share} or null), `cmds` (hybrid commands: node state requests, played segments) and
+/// `reqs` (node path requests). Keys replace; the miner keeps the latest and gives it to every step.
+#[tauri::command]
+fn miner_viz_mail(state: State<'_, App>, mail: serde_json::Map<String, serde_json::Value>) -> Res<()> {
+    if let Some(m) = state.miner.lock().unwrap().as_ref() {
+        m.send(&serde_json::json!({ "mail": mail }));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -320,7 +340,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, miner_start, miner_stop, miner_status])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {

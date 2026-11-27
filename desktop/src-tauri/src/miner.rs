@@ -7,6 +7,7 @@ use sm64coin_launcher::proc::Proc;
 use sm64coin_launcher::util::lower_priority;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
+use std::process::ChildStdin;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -52,7 +53,12 @@ pub struct Miner {
     address: String,
     threads: usize,
     started_ms: u64,
+    /// The miner's stdin: the visualisation feed's requests go down it (`--viz`, pow/miner/src/rrt/vizio.rs).
+    stdin: Arc<Mutex<ChildStdin>>,
 }
+
+/// The mark in front of a visualisation frame on the miner's stdout (rrt/vizio.rs): `MARK worker TAB kind TAB key TAB payload`.
+const VIZ_MARK: &str = "\u{1}VIZ\t";
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -68,7 +74,7 @@ fn field(line: &str, key: &str) -> Option<f64> {
 }
 
 impl Miner {
-    pub fn start(app: &AppHandle, d: &Dirs, rom: &Path, rpc_port: u16, address: &str, threads: Option<usize>) -> Result<Miner, AppError> {
+    pub fn start(app: &AppHandle, d: &Dirs, rom: &Path, rpc_port: u16, address: &str, threads: Option<usize>, viz_on: bool) -> Result<Miner, AppError> {
         if !plausible_address(address) {
             return Err(AppError::new("bad_address", "enter your SM64... address (the wallet's primary address) first"));
         }
@@ -85,12 +91,14 @@ impl Miner {
         // The campaign's scratch (its memory across blocks, its roadmap) lasts between runs.
         cmd.arg("--rrt-scratch").arg(d.data.join("miner"));
         cmd.arg("--rh-threads").arg(threads.to_string());
+        cmd.arg("--viz");
         let route = d.bundle.join("routes").join("block1-human.m64");
         if route.is_file() {
             cmd.arg("--route").arg(route);
         }
         let log = log_dir.join("automine.log");
-        let (proc, out, err) = Proc::spawn_piped("miner", cmd, log.clone()).map_err(|e| AppError::new("miner_start", e))?;
+        let (proc, out, err, mut stdin) = Proc::spawn_piped_stdin("miner", cmd, log.clone()).map_err(|e| AppError::new("miner_start", e))?;
+        let _ = writeln!(stdin, "{}", serde_json::json!({ "viz_on": viz_on }));
         lower_priority(&proc.child);
         let shared = Arc::new(Mutex::new(Shared::default()));
         let file = Arc::new(Mutex::new(std::fs::File::create(&log).ok()));
@@ -101,6 +109,14 @@ impl Miner {
             let (shared, file, app) = (shared.clone(), file.clone(), app.clone());
             readers.push(std::thread::spawn(move || {
                 for line in BufReader::new(r).lines().map_while(Result::ok) {
+                    // A visualisation frame (not a log line): to the page as `miner-viz` {w, kind, key, data}; bytes stay base64.
+                    if let Some(rest) = line.strip_prefix(VIZ_MARK) {
+                        let mut p = rest.splitn(4, '\t');
+                        if let (Some(w), Some(kind), Some(key), Some(data)) = (p.next(), p.next(), p.next(), p.next()) {
+                            let _ = app.emit("miner-viz", &serde_json::json!({ "w": w.parse::<u32>().unwrap_or(0), "kind": kind, "key": key, "data": data }));
+                        }
+                        continue;
+                    }
                     if let Some(f) = file.lock().unwrap().as_mut() {
                         let _ = writeln!(f, "{line}");
                     }
@@ -138,7 +154,7 @@ impl Miner {
                 let _ = app.emit("miner-state", &serde_json::json!({"running": false}));
             });
         }
-        let m = Miner { proc, shared, address: address.to_string(), threads, started_ms: now_ms() };
+        let m = Miner { proc, shared, address: address.to_string(), threads, started_ms: now_ms(), stdin: Arc::new(Mutex::new(stdin)) };
         let _ = app.emit("miner-state", &serde_json::json!({"running": true}));
         Ok(m)
     }
@@ -163,6 +179,11 @@ impl Miner {
             exit_code,
             lines: s.lines.iter().cloned().collect(),
         }
+    }
+
+    /// One JSON line to the miner's stdin (`{"viz_on": bool}` or `{"mail": {...}}`).
+    pub fn send(&self, v: &serde_json::Value) {
+        let _ = writeln!(self.stdin.lock().unwrap(), "{v}");
     }
 
     pub fn stop(&mut self) {

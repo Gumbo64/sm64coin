@@ -63,7 +63,7 @@ export default function ControlCard({ s }) {
         {!running && !sync.on && sync.state !== 'unsupported' && sync.state !== 'blocked' && <button type="button" className="ui-btn" style={{ width: '100%', marginTop: 4 }} onClick={() => enableSync()} title="Workers share their work and clicking a node plays it instantly; reloads the page once, it stays where it is">{sync.state === 'disabled' || sync.state === 'off' ? 'Enable worker sync (reloads once)' : 'Retry (reloads once)'}</button>}
         {running && !sync.on && <span className="muted small"> (stop auto-mining to change it)</span>}
       </div>
-      {running ? <button className="ui-big" onClick={() => miner.stop()}>Stop auto-mining</button>
+      {running ? <button className="ui-big" onClick={() => (s.native ? miner.stopNative() : miner.stop())}>Stop auto-mining</button>
         : <button className="ui-big" onClick={() => miner.start()} disabled={!isAddress(address)}>Start auto-mining</button>}
       <div className="ui-stat">
         <span><b>{running && fps > 0 ? `${fmtRate(fps)} frames/s` : '—'}</b></span>

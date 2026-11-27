@@ -65,13 +65,25 @@ impl Proc {
     /// Like `spawn`, but stdout and stderr come back as pipes for the caller to read (e.g. to stream
     /// progress); `log` is only the path `tail` reads, the caller may write it.
     pub fn spawn_piped(name: &'static str, mut cmd: Command, log: PathBuf) -> Result<(Proc, std::process::ChildStdout, std::process::ChildStderr), String> {
-        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::null());
+        let (p, o, e, _) = Self::spawn_io(name, cmd, log)?;
+        Ok((p, o, e))
+    }
+    /// `spawn_piped` with stdin a pipe too (the desktop app talks to the miner's visualisation feed through it).
+    pub fn spawn_piped_stdin(name: &'static str, mut cmd: Command, log: PathBuf) -> Result<(Proc, std::process::ChildStdout, std::process::ChildStderr, std::process::ChildStdin), String> {
+        cmd.stdin(Stdio::piped());
+        let (p, o, e, i) = Self::spawn_io(name, cmd, log)?;
+        Ok((p, o, e, i.ok_or("no stdin")?))
+    }
+    fn spawn_io(name: &'static str, mut cmd: Command, log: PathBuf) -> Result<(Proc, std::process::ChildStdout, std::process::ChildStderr, Option<std::process::ChildStdin>), String> {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         no_window(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| format!("cannot start {name}: {e}"))?;
         #[cfg(windows)]
         job::adopt(&child);
         let (o, e) = (child.stdout.take().ok_or("no stdout")?, child.stderr.take().ok_or("no stderr")?);
-        Ok((Proc { name, child, log, stop_url: None }, o, e))
+        let i = child.stdin.take();
+        Ok((Proc { name, child, log, stop_url: None }, o, e, i))
     }
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))

@@ -765,10 +765,12 @@ pub mod viz {
             if !viz_on() {
                 fresh = true;
                 last = Instant::now();
+                tick(e.total_frames_emulated());
                 emit(&format!("{{\"progress\":1,\"sim_frames\":{}}}", e.total_frames_emulated()));
                 return;
             }
             last = Instant::now();
+            tick(e.total_frames_emulated());
             let refresh = std::mem::take(&mut fresh);
             if refresh {
                 if let Ok(st) = crate::sys::fs::read(&job2.state_file) {
@@ -1037,8 +1039,15 @@ pub mod viz {
         js_viz(line);
     }
 
+    /// Native (automine `--viz`, see vizio.rs): the line goes up the child's stdout as a frame; with the feed off the
+    /// progress line is not sent (the parent reads the progress file).
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit(_line: &str) {}
+    fn emit(line: &str) {
+        if line.starts_with("{\"progress\"") {
+            return;
+        }
+        crate::rrt::vizio::frame("viz", "", line);
+    }
 
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen::prelude::wasm_bindgen]
@@ -1060,7 +1069,9 @@ pub mod viz {
         js_viz_edges(key, bytes);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_edges(_key: &str, _bytes: &[u8]) {}
+    fn send_edges(key: &str, bytes: &[u8]) {
+        crate::rrt::vizio::frame("edges", key, &crate::rrt::vizio::b64(bytes));
+    }
 
     #[cfg(target_arch = "wasm32")]
     fn send_state(key: &str, bytes: &[u8]) {
@@ -1071,7 +1082,9 @@ pub mod viz {
         js_viz_pert(key, json);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_pert(_key: &str, _json: &str) {}
+    fn send_pert(key: &str, json: &str) {
+        crate::rrt::vizio::frame("pert", key, json);
+    }
     #[cfg(target_arch = "wasm32")]
     fn send_path(key: &str, id: u32, flat: &[i32]) {
         js_viz_path(key, id, flat);
@@ -1082,12 +1095,16 @@ pub mod viz {
         js_viz_req(key).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_state(_key: &str, _bytes: &[u8]) {}
+    fn send_state(key: &str, bytes: &[u8]) {
+        crate::rrt::vizio::frame("state", key, &crate::rrt::vizio::b64(bytes));
+    }
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_path(_key: &str, _id: u32, _flat: &[i32]) {}
+    fn send_path(key: &str, id: u32, flat: &[i32]) {
+        crate::rrt::vizio::frame("path", key, &serde_json::json!({ "id": id, "flat": flat }).to_string());
+    }
     #[cfg(not(target_arch = "wasm32"))]
-    fn requested(_key: &str) -> Vec<u32> {
-        Vec::new()
+    fn requested(key: &str) -> Vec<u32> {
+        crate::rrt::vizio::requested(key)
     }
 
     /// Native: about once a second the frames this step has simulated so far go into `path` (a bare number), where the
@@ -1117,7 +1134,14 @@ pub mod viz {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn viz_on() -> bool {
-        true
+        crate::rrt::vizio::viz_on()
+    }
+
+    /// Frames simulated so far in the step: native, into the progress file the parent reads (the sampler replaces
+    /// `progress_file` when the feed is on); in the page it is the `progress` line / the viz line's `sim_frames`.
+    fn tick(_frames: u64) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::rrt::vizio::progress(_frames);
     }
 }
 

@@ -10,6 +10,7 @@ const KEEP_MS = 10 * 60 * 1000;
 export class Hybrid {
   constructor() {
     this.board = null;
+    this.sender = null; // the desktop app's native miner: (mail) => bool, instead of the shared board
     this.slots = 0;
     this.cmds = [];
     this.goal = null; // {level, area, pos}
@@ -19,7 +20,14 @@ export class Hybrid {
   }
 
   /** Whether commands can reach the workers (a round is running on a cross-origin-isolated page). */
-  get available() { return !!this.board; }
+  get available() { return !!this.board || !!this.sender; }
+
+  /** The native miner's channel (lib/webminer/nativeFeed.js): the mailbox goes down its stdin, answers come back as hybrid_out frames. */
+  attachSender(fn) {
+    this.sender = fn;
+    this.cmds = [];
+    this.post();
+  }
 
   attach(board, slots) {
     this.board = board;
@@ -32,14 +40,16 @@ export class Hybrid {
 
   detach() {
     this.board = null;
+    this.sender = null;
     for (const w of this.waiting.values()) { clearTimeout(w.timer); w.reject(new Error('the miner stopped')); }
     this.waiting.clear();
   }
 
   post() {
-    if (!this.board) return false;
+    if (!this.board && !this.sender) return false;
     const now = Date.now();
     this.cmds = this.cmds.filter((c) => now - c.at < KEEP_MS);
+    if (!this.board) return this.sender({ goal: this.goal, cmds: this.cmds });
     return patchMail(this.board, this.slots, { goal: this.goal, cmds: this.cmds });
   }
 
@@ -50,7 +60,7 @@ export class Hybrid {
   }
 
   send(cmd, { timeout = 120000, onReply = null } = {}) {
-    if (!this.board) return Promise.reject(new Error('hybrid mining needs the running auto-miner with worker sync (cross-origin isolation)'));
+    if (!this.available) return Promise.reject(new Error('hybrid mining needs the running auto-miner with worker sync (cross-origin isolation)'));
     const id = this.nextId++;
     this.cmds.push({ ...cmd, id, at: Date.now() });
     if (!this.post()) { this.cmds.pop(); return Promise.reject(new Error('the command does not fit the mailbox')); }

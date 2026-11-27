@@ -51,6 +51,8 @@ export default function NativeMiner() {
   const romOk = host ? host.rom.found : true;
   const nodeUp = !!(node && node.answering);
   const th = Number(threads) || undefined;
+  // While the native miner runs, its search drives the page's visualisations (lib/webminer/nativeFeed.js).
+  useEffect(() => { if (running) miner.attachNative(p.nativeMiner); }, [running, p]);
 
   return (
     <SideCard title="Native miner" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
@@ -88,7 +90,7 @@ export default function NativeMiner() {
       <Toolbar label="Native miner">
         {running
           ? <ToolBtn disabled={busy} onClick={() => run(() => p.nativeMiner.stop())}>Stop native miner</ToolBtn>
-          : <ToolBtn disabled={busy || !isAddress(address || '') || !nodeUp} title={nodeUp ? '' : 'the local node must be running'} onClick={() => run(async () => { setLines([]); await p.nativeMiner.start({ address, threads: th }); })}>Start native miner</ToolBtn>}
+          : <ToolBtn disabled={busy || !isAddress(address || '') || !nodeUp} title={nodeUp ? '' : 'the local node must be running'} onClick={() => run(async () => { setLines([]); await p.nativeMiner.start({ address, threads: th, viz: miner.vizOn }); })}>Start native miner</ToolBtn>}
         {node && !node.running && !node.starting && romOk && <ToolBtn disabled={busy} onClick={() => run(() => p.node.start())}>Start node</ToolBtn>}
         {node && node.running && !running && <ToolBtn disabled={busy} onClick={() => run(() => p.node.stop())}>Stop node</ToolBtn>}
       </Toolbar>

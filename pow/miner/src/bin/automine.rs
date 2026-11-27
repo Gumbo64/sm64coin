@@ -42,6 +42,11 @@ struct Args {
     /// star from power-on only).
     #[arg(long, default_value = "rrt")]
     controller: String,
+    /// The desktop app's visualisation feed: the search trees are sampled and sent up on stdout as `\x01VIZ` frames, the page's
+    /// requests (feed on/off, sampling bubble, node requests, hybrid commands) are read from stdin as JSON lines (rrt/vizio.rs).
+    /// Without it stdin/stdout carry nothing extra.
+    #[arg(long)]
+    viz: bool,
     /// Reset cycle (power-on start) policy, when the chain allows it (template sm64_start "either"):
     /// `never` (only when the chain forces it), `when-stuck` (search the parent's end state first; take
     /// power-on if that finds no route / gives up / times out / the parent has 120 stars; and restart when
@@ -347,6 +352,14 @@ fn main() -> Result<()> {
             (last, at) = (n, std::time::Instant::now());
         }
     });
+    if a.viz {
+        sm64coin_miner::rrt::vizio::enable(true);
+        std::thread::spawn(|| {
+            for line in std::io::stdin().lines().map_while(Result::ok) {
+                sm64coin_miner::rrt::vizio::input(&line);
+            }
+        });
+    }
     let mut mined = 0u64;
     let reset_mode: reset::ResetMode = a.reset.parse().map_err(|e: String| anyhow::anyhow!(e))?;
     println!("reset cycle policy: {:?} (--reset), parent-search time limit {} s", reset_mode, a.reset_after);
@@ -477,7 +490,12 @@ fn main() -> Result<()> {
         let mut no_route = None;
         if a.controller == "rrt" || a.controller == "rh" {
             let o = rh::RhOptions { pop: a.rh_pop, horizon: a.rh_horizon, commit: a.rh_commit, threads: a.rh_threads, seed: attempt + a.salt, frame_cap: a.rh_frames, max_retries: if t.sm64_start == "either" { 3 } else { 40 }, ..Default::default() };
-            let ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
+            let mut ro = rrt::RrtOptions { threads: a.rh_threads, hub_frames: a.rrt_hub_frames, course_frames: a.rrt_course_frames, step_seconds: a.rrt_step_seconds, checkpoints: a.rrt_checkpoints, stall: a.rrt_stall, extra_env: a.rrt_env.clone(), seed: attempt.wrapping_mul(7919) + a.salt, frame_cap: a.rh_frames, scratch: a.rrt_scratch.clone().into(), rom: Some(a.rom.clone()), ..Default::default() };
+            if a.viz {
+                // The desktop app's visualisation feed (rrt/vizio.rs). The exchange only names the steps (sync tags) for hybrid mining.
+                ro.viz = true;
+                ro.exchange = Some(std::sync::Arc::new(|_: &str, _: &str| None));
+            }
             let use_rrt = a.controller == "rrt";
             let first_stop = if start == Start::Parent { pstop.clone() } else { stop.clone() };
             let mut r = if use_rrt { survive(rrt::mine(start, parent_state.as_ref(), &seed, &params, &ro, &first_stop, |m| println!("  {m}"))) } else { survive(rh::mine(start, parent_state.as_ref(), &seed, &params, &o, &first_stop, |m| println!("  {m}"))) };
