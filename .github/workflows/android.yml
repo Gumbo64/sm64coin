@@ -16,14 +16,14 @@ on:
     inputs:
       version:
         description: 'Version of the app (x.y.z; versionCode = major*1000000 + minor*1000 + patch)'
-        default: '0.5.1'
+        default: '0.5.3'
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  VERSION: ${{ inputs.version || '0.5.1' }}
+  VERSION: ${{ inputs.version || '0.5.3' }}
 
 jobs:
   wallet-engine:
@@ -71,6 +71,10 @@ jobs:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
           REQUIRE_WEBMINER: "1"
         run: npm install -g wasm-pack@0.13.1 && scripts/build-wasm.sh
+      - name: Forget the private repo token (nothing after this needs it)
+        if: ${{ always() }}
+        run: |
+          git config --global --name-only --get-regexp '^url\.https://x-access-token' | while read -r k; do git config --global --unset-all "$k"; done || true
       - name: Wallet engine (wasm); the app's wallet is the website's
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -111,12 +115,12 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           [ -n "$ANDROID_KEYSTORE_BASE64" ] || { echo "secret ANDROID_KEYSTORE_BASE64 is not set" >&2; exit 1; }
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks"   # pasted from a phone: strip any whitespace
+          trap 'rm -f "$RUNNER_TEMP/release.jks"' EXIT   # the keystore never outlives this step, failed or not
+          (umask 077; printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks")   # pasted from a phone: strip any whitespace
           export ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
           unsigned="$(ls desktop/src-tauri/gen/android/app/build/outputs/apk/*/release/*unsigned.apk | head -1)"
           mkdir -p out
           desktop/android-sign.sh "$unsigned" "out/sm64coin-${APP_VERSION}-android.apk"
-          rm -f "$RUNNER_TEMP/release.jks"
           ls -l out
       - uses: actions/upload-artifact@v4
         with:
