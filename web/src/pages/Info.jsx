@@ -116,6 +116,13 @@ export default function Info() {
         included) and open TCP port 16480.
       </p>
 
+      <h3>Is there an Android app?</h3>
+      <p>
+        Yes: an APK (arm64, Android 7+) on the <a href={`${REPO}/releases/latest`} target="_blank" rel="noreferrer">release
+        page</a>. It reads the chain from the public node and uses this website's wallet and your own ROM. To install it and get updates
+        automatically, <a href="obtainium://add/https://github.com/Gumbo64/sm64coin">add it to Obtainium</a>.
+      </p>
+
       <h3>Can I create my own auto-miner?</h3>
       <p>
         Yes. Write your own mining bot with the Rust and Python SDKs: see the <a href={`${REPO}#writing-your-own-bot`} target="_blank" rel="noreferrer">README</a>.

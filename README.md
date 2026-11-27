@@ -61,6 +61,14 @@ Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet R
 
 Releases (https://github.com/Gumbo64/sm64coin/releases) hold one archive per platform (Linux x86_64, Linux aarch64/Raspberry Pi). Unpack it, copy your US ROM next to it as `baserom.us.z64` (or into `~/.sm64coin/`), open the wallet app (`sm64coin-wallet-gui`; `SM64Coin-Wallet.app` on macOS, `sm64coin-wallet-gui.exe` on Windows). It creates or restores a wallet and starts its own node, which syncs from the seed nodes; the Mining page has Start (automated miner) and Play to mine (website). Servers without the wallet app run `sm64coin-node` (a script around `sm64coind`: finds the ROM, resolves `seeds.txt`, `--help` lists the options) and can use `sm64coin-node.service` (systemd); open TCP 16480. The old `sm64coin` launcher is no longer shipped (source kept in `pow/launcher`). Release process and gaps: `packaging/RELEASING.md`.
 
+### Android
+
+The release also holds `sm64coin-<version>-android.apk` (arm64 phones, Android 7+): the website in an app, reading the chain from the
+public node, with the website's wallet and your own ROM picked from the phone. Easiest: install [Obtainium](https://obtainium.imranr.dev/)
+and tap **[Add to Obtainium](obtainium://add/https://github.com/Gumbo64/sm64coin)**, which installs it and keeps it up to date; or download
+the APK from the release and open it (allow "install unknown apps" for your browser). It is signed with the SM64Coin release key, SHA-256
+`63:10:2D:9D:EE:E7:3F:03:D2:CF:EB:6A:61:E6:77:B1:4E:2A:4B:92:55:60:D2:8B:D5:53:ED:42:4E:45:9A:C4`; check it with `apksigner verify --print-certs`.
+
 ## Requirements
 
 A US SM64 ROM at `./baserom.us.z64` (sha1 `9bef1128717f958171a4afac3ed78ee2bb4e86ce`, git-ignored), the usual Monero build dependencies, Rust, Node.
