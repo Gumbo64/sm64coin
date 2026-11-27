@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { openSse, SSE_SILENCE_MS, createTipStore, tipFromInfo, tipFromPush, POLL_MS, MIN_REPOLL_MS, PUSH_RETRY_MS } from './tip.js';
+import { openSse, SSE_SILENCE_MS, createTipStore, tipFromInfo, tipFromPush, POLL_MS, MIN_REPOLL_MS, PUSH_RETRY_MS, PUSH_RETRY_MAX_MS, FALLBACK_JITTER_MS } from './tip.js';
 
 // ---- parsing
 {
@@ -14,7 +14,7 @@ import { openSse, SSE_SILENCE_MS, createTipStore, tipFromInfo, tipFromPush, POLL
 }
 
 // ---- a fake world: clock, timers, node
-function world({ sources = [], visible = true } = {}) {
+function world({ sources = [], visible = true, random = () => 0.5 } = {}) {
   const w = { t: 0, timers: [], calls: { info: 0, header: 0 }, chain: { height: 5, hash: 'h5', ts: 1000, difficulty: 1000 }, visibleFns: [], failInfo: false };
   w.advance = async (ms) => {
     const end = w.t + ms;
@@ -32,6 +32,7 @@ function world({ sources = [], visible = true } = {}) {
   w.mine = (hash, ts) => { w.chain = { height: w.chain.height + 1, hash, ts, difficulty: w.chain.difficulty }; };
   w.store = createTipStore({
     now: () => w.t,
+    random,
     setTimeout: (f, ms) => { const x = { at: w.t + ms, f }; w.timers.push(x); return x; },
     clearTimeout: (x) => { const i = w.timers.indexOf(x); if (i >= 0) w.timers.splice(i, 1); },
     info: async () => { w.calls.info++; if (w.failInfo) throw new Error('down'); return { height: w.chain.height + 1, top_block_hash: w.chain.hash, wide_difficulty: `0x${w.chain.difficulty.toString(16)}`, wide_cumulative_difficulty: '0x1' }; },
@@ -140,7 +141,7 @@ const total = (w) => w.calls.info + w.calls.header;
   await settle();
   assert.equal(w.store.status().mode, 'poll');
   assert.equal(stopped, 0);
-  await w.advance(PUSH_RETRY_MS + 10);
+  await w.advance(PUSH_RETRY_MS * 1.25 + 10);
   assert.equal(w.store.status().mode, 'push', 'the push source came back');
 }
 
@@ -260,8 +261,72 @@ const total = (w) => w.calls.info + w.calls.header;
   es2.readyState = 0; es2.onerror();
   assert.deepEqual(ends, ['silent']);
   es2.readyState = 2; es2.onerror();
-  assert.deepEqual(ends, ['silent', 'closed']);
+  assert.deepEqual(ends, ['silent', 'unsupported']);
   assert.deepEqual(unsupported, ['https://m.example/lc/tip']);
   stop2();
+}
+
+// ---- the node's clock: pushed server times correct this device's clock (a phone 40 s fast sends a held run on time)
+{
+  let handlers = null;
+  const w = world({ sources: [async (_w, h) => { handlers = h; return () => {}; }] });
+  w.t = 1_800_000_000_000; // our clock (ms)
+  w.store.subscribe(() => {});
+  await settle();
+  assert.equal(w.store.now(), w.t, 'nothing heard: our clock');
+  // the server's clock is 40 s behind ours (this device is 40 s fast)
+  handlers.tip({ height: 6, hash: 'h6', timestamp: 1, difficulty: '1000', cumulative_difficulty: '1', server_time: 1_800_000_000 - 40 });
+  assert.ok(Math.abs(w.store.now() - (w.t - 40_000 + 500)) < 1, `node clock ${w.store.now() - w.t}`);
+  await w.advance(10_000);
+  assert.ok(Math.abs(w.store.now() - (w.t - 39_500)) < 1, 'the offset holds as time passes');
+  // a keepalive's clock (SSE) updates it; within the tolerance it is taken as none
+  handlers.clock(Math.floor(w.t / 1000));
+  assert.equal(w.store.clockOffset(), 0);
+  handlers.clock(0); // an old server's keepalive data ("1"): ignored
+  assert.equal(w.store.clockOffset(), 0);
+}
+
+// ---- a push that ends: the fallback poll is jittered, retries back off (with jitter) and reset on a pushed tip
+{
+  let handlers = null, opens = 0;
+  const w = world({ random: () => 0.9, sources: [async (_w, h) => { opens++; handlers = h; return () => {}; }] });
+  w.store.subscribe(() => {});
+  await settle();
+  const i0 = w.calls.info;
+  handlers.end('closed');
+  await settle();
+  assert.equal(w.calls.info, i0, 'no poll in the same instant');
+  await w.advance(FALLBACK_JITTER_MS);
+  assert.equal(w.calls.info, i0 + 1, 'polled after the jitter');
+  // the retries: 60 s, 120 s, 240 s ... (x1.2 here), capped
+  const gaps = [];
+  for (let k = 0; k < 6; k++) {
+    const t0 = w.t, o = opens;
+    while (opens === o) await w.advance(1000);
+    gaps.push(w.t - t0);
+    handlers.end('closed');
+    await settle();
+  }
+  assert.ok(gaps[1] > gaps[0] * 1.8 && gaps[2] > gaps[1] * 1.8, `backoff ${gaps}`);
+  assert.ok(gaps.at(-1) <= PUSH_RETRY_MAX_MS * 1.25 + 1000, `capped ${gaps}`);
+  // a pushed tip resets the backoff
+  while (opens === 7) await w.advance(1000);
+  handlers.tip({ height: 9, hash: 'z', timestamp: 1, difficulty: '1', cumulative_difficulty: '1' });
+  const t0 = w.t, o = opens;
+  handlers.end('closed');
+  while (opens === o) await w.advance(1000);
+  assert.ok(w.t - t0 <= PUSH_RETRY_MS * 1.25 + 1000, 'back to the first delay');
+}
+
+// ---- a source that is not there (SSE 404) moves on to the next one in seconds, not a minute
+{
+  let first = 0, second = 0;
+  const w = world({ sources: [async (_w, h) => { if (first++ === 0) { setTimeout(() => h.end('unsupported')); return () => {}; } return null; }, async () => { second++; return null; }] });
+  w.store.subscribe(() => {});
+  await settle();
+  await new Promise((r) => setTimeout(r, 5));
+  await settle();
+  await w.advance(3_100);
+  assert.ok(second >= 1, 'the next source was tried within seconds');
 }
 console.log('tip ok');

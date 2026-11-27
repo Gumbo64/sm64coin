@@ -8,6 +8,10 @@
 //         with the right tip) and after a submit (`noteSubmit`).
 // A tip is {height, hash, timestamp, difficulty, cumulativeDifficulty, serverTime?, at}: with the clock that is all the time limit
 // needs (lib/limit.js: the Rust rules in WASM), so nothing polls for a growing limit any more.
+// The clock: a pushed tip (and an SSE keepalive) carries the server's clock at sending, so `now()` is the NODE's clock even when
+// this device's is off; a held run is sent and stamped by it (a phone 40 s fast would otherwise send 45 s before due, past the
+// node's 30 s submit window, and lose the run). get_info's adjusted_time is not the node's clock (a median of block stamps):
+// a poll leaves the clock alone.
 //
 // The store is plain JS with injected dependencies (tip.test.mjs drives it with fakes); `tip` is the page's instance, wired to
 // rpc.js / lightnet.js / the platform lazily on first use.
@@ -17,8 +21,14 @@ import { e2eHook } from './e2e.js';
 export const POLL_MS = 30_000;
 /** Polls closer together than this are one (focus + visibility fire together). */
 export const MIN_REPOLL_MS = 1_500;
-/** A push source that ended is tried again after this long. */
+/** A push source that ended is tried again after this long (doubling per failed try up to PUSH_RETRY_MAX_MS, each +-25 %
+ *  jittered, so a server restart does not bring every page back in the same second). */
 export const PUSH_RETRY_MS = 60_000;
+export const PUSH_RETRY_MAX_MS = 10 * 60_000;
+/** A push that ended falls back to polling after a random delay up to this long (not all pages at once). */
+export const FALLBACK_JITTER_MS = 5_000;
+/** Clock offsets smaller than this are taken as none (the server's clock comes in whole seconds). */
+export const CLOCK_TOLERANCE_MS = 1_500;
 
 const big = (v, d = 0n) => { try { return typeof v === 'bigint' ? v : BigInt(v); } catch { return d; } };
 
@@ -75,11 +85,12 @@ export function openSse(url, h, deps = {}) {
     cancel(watchdog);
     try { es.close(); } catch { /* closed */ }
     if (!opened && deps.onUnsupported) deps.onUnsupported(url);
-    h.end(why);
+    h.end(opened ? why : 'unsupported');
   }
   es.onopen = () => { opened = true; arm(); };
   es.onmessage = (e) => { arm(); try { h.tip(JSON.parse(e.data)); } catch { /* an unreadable record */ } };
-  es.addEventListener('ka', arm);
+  // the keepalive's data is the server's clock (unix s; older servers send 1)
+  es.addEventListener('ka', (e) => { arm(); const s = Number(e && e.data); if (s > 1e9 && h.clock) h.clock(s); });
   es.onerror = () => { if (es.readyState === 2) finish('closed'); }; // CLOSED: refused (404, CORS, TLS); CONNECTING = the browser retries
   arm();
   return () => { if (dead) return; dead = true; cancel(watchdog); try { es.close(); } catch { /* closed */ } };
@@ -93,6 +104,7 @@ export function openSse(url, h, deps = {}) {
  */
 export function createTipStore(deps) {
   const now = deps.now || (() => Date.now());
+  const random = deps.random || Math.random;
   const later = deps.setTimeout || ((f, ms) => setTimeout(f, ms));
   const cancel = deps.clearTimeout || ((t) => clearTimeout(t));
   const listeners = new Set();
@@ -109,6 +121,16 @@ export function createTipStore(deps) {
   let inflight = null;
   let lastPoll = 0;
   let seq = 0;
+  let retries = 0; // push retries since the last pushed tip (the backoff)
+  let fallbackTimer = null;
+  let offsetMs = 0; // the node's clock minus ours, from pushed server times (0 until one is heard)
+  const jitter = (ms, f = 0.25) => Math.round(ms * (1 - f + 2 * f * random()));
+  /** A reading of the node's clock (unix s, whole seconds) taken just now: the node's clock is about half a second past it. */
+  function noteClock(serverSec) {
+    if (!(serverSec > 1e9)) return;
+    const off = serverSec * 1000 + 500 - now();
+    offsetMs = Math.abs(off) < CLOCK_TOLERANCE_MS ? 0 : off;
+  }
   const stats = { polls: 0, pushes: 0, headers: 0, infos: 0 };
 
   const emit = () => listeners.forEach((f) => { try { f(tip); } catch { /* a listener must not break the store */ } });
@@ -158,20 +180,27 @@ export function createTipStore(deps) {
   function startPoll() {
     mode = 'poll';
     refresh('start', true).then(() => { if (refs > 0 && mode === 'poll') schedulePoll(); });
-    if (!offVisible && deps.onVisible) offVisible = deps.onVisible(() => { if (refs > 0 && mode === 'poll') refresh('visible'); });
+    // A tab coming back looks once, push or poll (a sleeping tab's stream may have died unnoticed); MIN_REPOLL_MS merges events.
+    if (!offVisible && deps.onVisible) offVisible = deps.onVisible(() => { if (refs > 0 && mode !== 'idle') refresh('visible'); });
   }
 
   const handlers = {
     tip: (j) => {
       const t = tipFromPush(j, now());
-      if (t) { stats.pushes++; error = null; apply(t); }
+      if (t) { stats.pushes++; error = null; retries = 0; noteClock(t.serverTime); apply(t); }
     },
-    end: () => {
+    clock: (s) => noteClock(s),
+    end: (why) => {
       pushStop = null;
       if (refs > 0) {
-        startPoll();
+        // Poll meanwhile, but not at once: every page of a server that went away would ask its node in the same second.
+        mode = 'poll';
+        cancel(fallbackTimer);
+        fallbackTimer = later(() => { fallbackTimer = null; if (refs > 0 && mode === 'poll') startPoll(); }, Math.round(FALLBACK_JITTER_MS * random()));
         cancel(retryTimer);
-        retryTimer = later(() => { retryTimer = null; kick(); }, PUSH_RETRY_MS);
+        // a source that is not there at all (no /lc/tip) is skipped from now on: the next one is tried soon, not in a minute
+        const wait = why === 'unsupported' ? jitter(2_000, 0.5) : jitter(Math.min(PUSH_RETRY_MS * 2 ** retries++, PUSH_RETRY_MAX_MS));
+        retryTimer = later(() => { retryTimer = null; kick(); }, wait);
       }
     },
   };
@@ -186,6 +215,7 @@ export function createTipStore(deps) {
         mode = 'push';
         cancel(pollTimer); pollTimer = null;
         cancel(retryTimer); retryTimer = null;
+        cancel(fallbackTimer); fallbackTimer = null;
         return;
       }
       if (stop) { try { stop(); } catch { /* already stopped */ } }
@@ -206,6 +236,7 @@ export function createTipStore(deps) {
   function end() {
     cancel(pollTimer); pollTimer = null;
     cancel(retryTimer); retryTimer = null;
+    cancel(fallbackTimer); fallbackTimer = null;
     if (pushStop) { try { pushStop(); } catch { /* stopped */ } pushStop = null; }
     if (offVisible) { offVisible(); offVisible = null; }
     mode = 'idle';
@@ -214,6 +245,11 @@ export function createTipStore(deps) {
   return {
     /** The current tip (the same object until it changes), or null before the first one. */
     get: () => tip,
+    /** The node's clock in ms (ours corrected by the server time pushed with tips and keepalives; ours until one is heard).
+     *  What a held run's send time and its block's stamp are reckoned by: the node judges them by its own clock. */
+    now: () => now() + offsetMs,
+    /** The node's clock minus ours, in ms (0: none known or within CLOCK_TOLERANCE_MS). */
+    clockOffset: () => offsetMs,
     /** Calls `fn(tip)` on each change; the first subscriber starts the following, the last stop ends it. `immediate`: also now. */
     subscribe(fn, { immediate = false } = {}) {
       listeners.add(fn);
@@ -266,10 +302,10 @@ export function createTipStore(deps) {
     refresh: (force = true) => refresh('manual', force),
     kick,
     /** {mode, error, seq, ...counters}: how the tip is being followed. */
-    status: () => ({ mode, error, seq, refs, ...stats }),
+    status: () => ({ mode, error, seq, refs, offsetMs, ...stats }),
     /** Forgets everything (the node changed). */
     reset() {
-      tip = null; info = null; error = null; inflight = null; lastPoll = 0;
+      tip = null; info = null; error = null; inflight = null; lastPoll = 0; offsetMs = 0; retries = 0;
       if (refs > 0) { end(); begin(); }
       listeners.forEach((f) => { try { f(null); } catch { /* listener */ } });
     },
@@ -329,6 +365,9 @@ export function tipStore() {
   rpc().then((m) => m.onNodeChange && m.onNodeChange(() => page.reset())).catch(() => {});
   return page;
 }
+
+/** The node's clock, unix seconds (fractional): see the store's `now`. */
+export const nodeNow = () => tipStore().now() / 1000;
 
 /** The current tip (null until known), re-rendering on each new block. Also keeps the store following while mounted. */
 const subscribeStable = (fn) => tipStore().subscribe(fn);
