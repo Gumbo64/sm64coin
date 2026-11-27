@@ -183,6 +183,8 @@ class MinerController {
     this.walletAddress = a; lsSet('sm64coin.walletAddress', a);
     if (force || !isAddress(this.address) || this.address === prev) this.setAddress(a); else this.emit(true);
   }
+  /** The wallet `a` left this device (forgotten): it is no longer labelled as this device's wallet (the mining address stays). */
+  forgetWallet(a) { if (!a || a === this.walletAddress) { this.walletAddress = ''; lsSet('sm64coin.walletAddress', ''); this.emit(true); } }
   setAddress(a) { this.address = a; if (isAddress(a)) lsSet('sm64coin.address', a); this.emit(true); }
   setCount(n) { this.count = Math.max(1, Math.min(32, Number(n) || 1)); this.emit(true); }
   setMode(m) { this.mode = m; lsSet('sm64coin.resetMode', m); this.emit(true); }

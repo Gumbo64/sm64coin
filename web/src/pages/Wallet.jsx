@@ -144,6 +144,7 @@ function WebWallet() {
     wRef.current = null; setW(null); setSnap(null); setSeed('');
     if (x) { try { await x.close(false); } catch { /* closing */ } }
     await forgetStored();
+    miner.forgetWallet(rec?.address || address);
     setRec(null); setStage('none');
   };
 
@@ -214,7 +215,7 @@ function Onboard({ run, adopt, busy }) {
       const cache = mode === 'desktop' && cacheFile ? await readFile(cacheFile) : undefined;
       try { wallet = await eng.openFiles(keysData, cache, pw); } catch (e) { throw wrongPw(e); }
     }
-    await adopt(wallet, true);
+    await adopt(wallet, true, false, !pw); // left empty (with the warning shown): a wallet without a password
   });
 
   const ready = okPw && (
@@ -327,8 +328,9 @@ function MobileHandoff({ run, adopt, busy, close }) {
     const r = await p.link.take(got);
     const wallet = await eng.restoreFromSeed(r.seed, pw, r.height || 0, {});
     if ((await wallet.getPrimaryAddress()) !== got) { try { await wallet.close(false); } catch { /* closing */ } throw new Error('The restored wallet has another address than the one shown: not kept.'); }
+    const none = !pw;
     setPw(''); setPw2('');
-    await adopt(wallet, true);
+    await adopt(wallet, true, false, none);
   });
   return (
     <div>
