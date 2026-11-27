@@ -15,13 +15,14 @@ assert.equal(hasIrohNodes({ url: 'https://x' }), false);
 
 // --- a fake wasm module
 function fakeModule({ rpc, submit, allow = (m) => m !== 'stop_daemon', createFails = false } = {}) {
-  const log = { created: null, rpcs: [], refreshes: 0, verifies: 0, bans: [] };
+  const log = { watches: [], created: null, rpcs: [], refreshes: 0, verifies: 0, bans: [] };
   class LightClient {
     static async create(boot, genesis, saved) { if (createFails) throw new Error('no wasm'); log.created = { boot: JSON.parse(boot), genesis, saved }; return new LightClient(); }
     static allowed(m) { return allow(m); }
     async rpc(m, p) { log.rpcs.push([m, JSON.parse(p)]); return rpc ? rpc(m, p) : JSON.stringify({ jsonrpc: '2.0', id: 0, result: { m } }); }
     async submit(m, p) { return submit(m, p); }
     async refresh() { log.refreshes++; }
+    watch_tip(onTip, onEnd) { const w = { onTip, onEnd, stopped: 0, freed: 0, stop() { w.stopped++; }, free() { w.freed++; } }; log.watches.push(w); return w; }
     async verify() { log.verifies++; return JSON.stringify({ level: 'full', height: 7, at: 1 }); }
     list_json() { return '{"records":[]}'; }
     status() { return JSON.stringify({ now: 100, iroh: true, allowed: ['http:https://a.example'], list: { records: [
@@ -114,5 +115,29 @@ const settle = () => new Promise((r) => setImmediate(r));
   const ln = createLightnet({ loadWasm: async () => mod, storage: bad, ...timers() });
   await ln.start({}); await settle();
   assert.equal(ln.state(), 'ready');
+}
+// --- tip push: not available before the network is ready; then the records arrive parsed, the end is reported, stop frees the watch
+{
+  const { mod, log } = fakeModule();
+  const ln = createLightnet({ loadWasm: async () => mod, genesis: 'g', storage: storage(), ...timers() });
+  assert.equal(ln.watchTip(() => {}, () => {}), null, 'not ready: the caller polls');
+  await ln.start({}); await settle();
+  const got = [], ended = [];
+  const stop = ln.watchTip((t) => got.push(t), (why) => ended.push(why));
+  assert.equal(typeof stop, 'function');
+  const w = log.watches[0];
+  w.onTip(JSON.stringify({ height: 7, hash: 'ab', timestamp: 5, difficulty: '1000', cumulative_difficulty: '9', server_time: 6, node: 'n' }));
+  w.onTip('not json');
+  w.onEnd('nopush');
+  assert.deepEqual(got.map((t) => t.height), [7]);
+  assert.deepEqual(ended, ['nopush']);
+  stop();
+  assert.deepEqual([w.stopped, w.freed], [1, 1]);
+  // a module from before tip push (no watch_tip): null, so the store polls
+  const old = fakeModule();
+  delete old.mod.LightClient.prototype.watch_tip;
+  const ln2 = createLightnet({ loadWasm: async () => old.mod, genesis: 'g', storage: storage(), ...timers() });
+  await ln2.start({}); await settle();
+  assert.equal(ln2.watchTip(() => {}, () => {}), null);
 }
 console.log('lightnet ok');

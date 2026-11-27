@@ -5,6 +5,7 @@ export const browser = {
   desktop: false,
   rpc: null, // lib/rpc.js uses fetch
   nodeUrl: () => '',
+  tip: null, // lib/tip.js: the light-client network's push, else a slow poll
   node: null,
   nativeMiner: null,
   rom: null,

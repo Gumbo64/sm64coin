@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, advanceAfter, nextStep, LAUNCH_TIMESTAMP } from './mineflow.js';
+import { startNow, decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, advanceAfter, nextStep, LAUNCH_TIMESTAMP } from './mineflow.js';
 
 // launch applies on mainnet only; validAt never precedes it
 assert.equal(launchFor({ mainnet: true }), LAUNCH_TIMESTAMP);
@@ -79,3 +79,11 @@ assert.equal(nextStep({ used: true, confirmed: 'lost' }), 'advance');           
 assert.equal(nextStep({ used: true, tipChanged: true }), 'advance');
 assert.equal(nextStep({ used: true }), 'wait');                                    // sent, no answer yet
 assert.equal(nextStep({ held: true, used: true, confirmed: 'accepted' }), 'advance'); // a held run that was sent meanwhile
+
+// the start mode the page works out itself (no fresh template needed for it)
+assert.equal(startNow({ sm64_start: 'parent', sm64_power_on_at: 1000 }, 999), 'parent');
+assert.equal(startNow({ sm64_start: 'parent', sm64_power_on_at: 1000 }, 1000), 'either');
+assert.equal(startNow({ sm64_start: 'either', sm64_power_on_at: 1000 }, 5), 'either');
+assert.equal(startNow({ sm64_start: 'power-on', sm64_power_on_at: 0 }, 5), 'power-on');
+assert.equal(startNow({ sm64_start: 'parent', sm64_power_on_at: 0 }, 5), 'parent', 'no restart allowed: stays');
+console.log('startNow ok');

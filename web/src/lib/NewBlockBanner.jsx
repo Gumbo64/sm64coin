@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { daemon } from './rpc.js';
+import { useTip } from './tip.js';
 import { coins } from './format.js';
-import useInterval from './useInterval.js';
 
 // Top popups: green "+X SM64 mined" for your own block (see payout.js), and a
 // short notice when anyone else's block lands (mining restarts on it; the
@@ -27,16 +26,13 @@ export default function NewBlockBanner() {
     return () => window.removeEventListener('sm64coin-mined', onMined);
   }, []);
 
-  useInterval(async () => {
-    try {
-      const i = await daemon('get_info');
-      const h = i.top_block_hash;
-      if (top.current && h !== top.current && !mine.current.has(i.height - 1)) {
-        show({ kind: 'block', height: i.height - 1 }, 6000);
-      }
-      top.current = h;
-    } catch { /* daemon hiccup */ }
-  }, 2000);
+  // A new tip, by push (or the store's slow poll): not the first one seen, and not your own block.
+  const tip = useTip();
+  useEffect(() => {
+    if (!tip) return;
+    if (top.current && tip.hash !== top.current && !mine.current.has(tip.height)) show({ kind: 'block', height: tip.height }, 6000);
+    top.current = tip.hash;
+  }, [tip && tip.hash]);
 
   if (!msg) return null;
   if (msg.kind === 'mined') {

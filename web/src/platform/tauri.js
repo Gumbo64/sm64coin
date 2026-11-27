@@ -38,6 +38,20 @@ const net = {
   verified: () => (netInfo && netInfo.verify && netInfo.verify.label) || '',
 };
 
+/** The chain tip, followed in Rust (desktop/src-tauri/src/lctip.rs): the local node polled once for everybody, or the light-client
+ *  network's SubscribeTip push, whichever is available. `subscribe(fn)` calls `fn(record)` with the current tip at once (if one is
+ *  known) and with each new one: {height, hash, timestamp, difficulty, cumulative_difficulty, server_time, node} (strings for the
+ *  two big numbers). Returns a stop function. The page's tip store (lib/tip.js) is the only caller. */
+const tip = {
+  current: () => cmd('tip_get'),
+  subscribe(fn) {
+    let off = null, dead = false;
+    listen('tip', (e) => { if (!dead) fn(e.payload); }).then((u) => { if (dead) u(); else off = u; });
+    cmd('tip_get').then((j) => { if (!dead && j) fn(j); }).catch(() => {});
+    return () => { dead = true; if (off) off(); };
+  },
+};
+
 const nativeMiner = {
   start: ({ address, threads, viz } = {}) => cmd('miner_start', { address, threads, viz }),
   stop: () => cmd('miner_stop'),
@@ -217,6 +231,7 @@ const desktop = {
   },
   nodeUrl: () => nodeRpcUrl,
   net,
+  tip,
   node,
   nativeMiner,
   rom,

@@ -4,7 +4,7 @@ import { Viewer } from 'sm64-binds-frontend/replay';
 import 'sm64-binds-frontend/replay.css';
 import { CyclePlayer } from '../lib/cyclePlayer.js';
 import { eventName } from '../lib/CycleTimeline.jsx';
-import { daemon } from '../lib/rpc.js';
+import { tipStore } from '../lib/tip.js';
 import { rawToPads } from '../lib/proof.js';
 import { withConfig } from '../lib/task.js';
 import { successFor } from '../lib/rules.js';
@@ -36,7 +36,7 @@ export default function BlockReplay({ block, cycle, panel }) {
   const [won, setWon] = useState(null);
   const [err, setErr] = useState(null);
   useEffect(() => {
-    daemon('get_info').then((info) => {
+    tipStore().fresh().then(() => tipStore().info()).then((info) => {
       const w = successFor(info.sm64_rules);
       if (w) setWon(() => w);
       else setErr(`this page doesn't know the success condition of rules "${info.sm64_rules}" (see web/src/lib/rules.js)`);

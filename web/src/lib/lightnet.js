@@ -138,6 +138,15 @@ export function createLightnet(deps = {}) {
     return j.result;
   }
 
+  /** Follows the chain tip by push over iroh (pow/lc-wasm `watch_tip`): `onTip(record)` for the current tip and each change,
+   *  `onEnd(why)` when no listed node can push ('nopush': HTTPS-only list or older servers) so the caller polls. Returns a stop
+   *  function, or null when the network is not ready. */
+  function watchTip(onTip, onEnd) {
+    if (state !== 'ready' || !lc || typeof lc.watch_tip !== 'function') return null;
+    const w = lc.watch_tip((j) => { try { onTip(JSON.parse(j)); } catch { /* unreadable record */ } }, (why) => { try { onEnd(why); } catch { /* the caller's */ } });
+    return () => { try { w.stop(); w.free(); } catch { /* already stopped */ } };
+  }
+
   /** What the Network page shows: state, nodes with scores, verification. */
   function status() {
     const base = { state, failure, verify: verifyInfo };
@@ -158,7 +167,7 @@ export function createLightnet(deps = {}) {
   }
 
   return {
-    start, call, available, status, refresh, verify,
+    start, call, available, status, refresh, verify, watchTip,
     state: () => state,
     onChange: (f) => { listeners.add(f); return () => listeners.delete(f); },
     banLiar: (key) => { if (lc) { lc.ban_liar(key); persist(); emit(); } },

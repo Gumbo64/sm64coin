@@ -53,53 +53,7 @@ export function restartDelay(points) {
   return Math.min(RESTART_BASE_SECONDS + points * RESTART_POINT_SECONDS, Math.max(RESTART_MAX_SECONDS, RESTART_BASE_SECONDS));
 }
 
-// The time limit (StarCycle::max_frames in pow/sm64pow/src/rules.rs, the same
-// integer arithmetic; display only, the template's sm64_max_frames is
-// authoritative): at retarget difficulty `d`, `elapsed` seconds after the
-// parent's timestamp. One difficulty halving (8 levels of 2%) per 60 s.
+// The time limit itself (StarCycle::max_frames) is not here: lib/limit.js calls the Rust function through the perturbation WASM.
+// What stays is constants for display (the node's get_info / template numbers are authoritative):
+// MIN_RUN_FRAMES: the shortest limit (min_frames in rules.rs).
 export const MIN_RUN_FRAMES = 20 * 30;
-// START_HALVINGS: the limit starts that many halvings below the retarget's (StarCycle::start_halvings).
-const SHRINK_PERCENT = 98n, DECAY_HALVING = 60n, DECAY_GRACE = 0n, START_HALVINGS = 20n;
-export function level8(d) {
-  let v = BigInt(d);
-  if (v <= 1n) return 0n;
-  let msb = 0n;
-  while ((v >> (msb + 1n)) > 0n) msb += 1n;
-  const frac = msb >= 3n ? (v >> (msb - 3n)) & 7n : (v << (3n - msb)) & 7n;
-  return msb * 8n + frac;
-}
-export function maxFrames(d, elapsed) {
-  const t = DECAY_HALVING;
-  const e = BigInt(Math.max(0, Math.floor(elapsed)));
-  const decay = (e > DECAY_GRACE ? e - DECAY_GRACE : 0n) * 8n;
-  let level = (level8(d) + 8n * START_HALVINGS) * t - decay;
-  if (level < 0n) level = 0n;
-  const whole = level / t, frac = level % t;
-  let frames = BigInt(MAX_RUN_FRAMES);
-  const min = BigInt(MIN_RUN_FRAMES);
-  for (let i = 0n; i < whole; i++) {
-    frames = (frames * SHRINK_PERCENT) / 100n;
-    if (frames <= min) return MIN_RUN_FRAMES;
-  }
-  frames = (frames * (100n * t - (100n - SHRINK_PERCENT) * frac)) / (100n * t);
-  return Number(frames > min ? frames : min);
-}
-
-// v0.4 proof archive window (docs/V0.4-DESIGN.md decision 3): a run is archivable as a proof for a height if it would
-// have become valid at most ARCHIVE_SECONDS of auction time after the winner's due time (records::window_frames).
-export const ARCHIVE_SECONDS = 60;
-/** The first second after the parent a run of `frames` fits the limit at retarget difficulty `d` (null: never). */
-export function dueElapsed(d, frames) {
-  if (maxFrames(d, 2 ** 40) < frames) return null;
-  let lo = 0, hi = 2 ** 40;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (maxFrames(d, mid) >= frames) hi = mid; else lo = mid + 1;
-  }
-  return lo;
-}
-/** The longest run within `seconds` of auction time after a winner of `winnerFrames` at retarget difficulty `d`. */
-export function windowFrames(d, winnerFrames, seconds = ARCHIVE_SECONDS) {
-  const due = dueElapsed(d, winnerFrames);
-  return due === null ? winnerFrames : Math.max(maxFrames(d, due + seconds), winnerFrames);
-}

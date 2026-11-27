@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { maxFrames, MAX_RUN_FRAMES, MIN_RUN_FRAMES } from './rules.js';
+import { maxFrames } from './limit.js';
+import { MAX_RUN_FRAMES, MIN_RUN_FRAMES } from './rules.js';
 import { LAUNCH_TIMESTAMP } from './mineflow.js';
 
 // The frame-length auction for the block being mined: the time limit growing

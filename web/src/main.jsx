@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import { resolveNode } from './lib/rpc.js';
+import { limitReady } from './lib/limit.js';
 import { initPlatform } from './platform/index.js';
 import { autoSync } from './lib/webminer/sync.js';
 import { frameBuster } from './lib/security.js';
@@ -37,9 +38,10 @@ window.addEventListener('vite:preloadError', (e) => {
   location.reload();
 });
 
+// The time limit (lib/limit.js) is the Rust rules in a small WASM (250 KB): loaded with the node choice, before the first render.
 // Your own node, else the public one (public-node.json) for this visit: decided before the
 // first page asks the chain anything (at most a few seconds).
 // Worker sync is on by default: the first visit of a session may reload once (before anything renders) so the page comes
 // back cross-origin isolated (lib/webminer/sync.js).
 // Framed by another page: stop before anything runs (the headers' frame-ancestors 'none' does the same where the host can send them).
-if (!frameBuster()) initPlatform().then(() => autoSync()).then((reloading) => { if (!reloading) resolveNode().finally(() => createRoot(document.getElementById('root')).render(<App />)); });
+if (!frameBuster()) initPlatform().then(() => autoSync()).then((reloading) => { if (!reloading) Promise.all([resolveNode().catch(() => {}), limitReady().catch((e) => console.error('time-limit module failed to load', e))]).then(() => createRoot(document.getElementById('root')).render(<App />)); });

@@ -4,7 +4,7 @@
 // same seed (a second different signed run is equivocation: honest nodes avoid the block). Pure logic, no browser
 // APIs (bestRun.test.mjs drives it with a fake clock).
 
-import { windowFrames } from '../rules.js';
+import { windowFrames } from '../limit.js';
 
 /** Default seconds before a run is valid at which it is submitted (stamped with the second it becomes valid). */
 export const DEFAULT_LEAD = 5;

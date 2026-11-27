@@ -6,6 +6,7 @@ import { Toolbar, ToolBtn, GearBtn } from '../components/ui.jsx';
 import { runsAt, groupRuns, limitShift, replayOptions } from '../lib/blockRuns.js';
 import { blockProof, splitProof, SIG_BYTES } from '../lib/replay/core.js';
 import { daemon } from '../lib/rpc.js';
+import { tipStore } from '../lib/tip.js';
 import { getCycle } from '../lib/replay/client.js';
 import { rawToPads, toMupenM64, download } from '../lib/proof.js';
 import { coins, short, when, frames } from '../lib/format.js';
@@ -17,7 +18,7 @@ import BlockReplay from './BlockReplay.jsx';
 // `upTo` (the cycle up to this block) for a block off the main chain or when the node can't say.
 async function fullCycle(upTo) {
   try {
-    let hash = (await daemon('get_info')).top_block_hash;
+    let hash = (await tipStore().fresh())?.hash; // the store's tip: no request of its own
     for (let i = 0; i < 50 && hash; i++) {
       const c = await getCycle(hash);
       const blocks = c.blocks || [];

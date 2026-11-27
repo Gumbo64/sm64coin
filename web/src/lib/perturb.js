@@ -3,11 +3,11 @@
 // It lives outside the game: before and after each frame we copy the adapter's
 // memory regions (the game clock and a few state fields, at the visual build's
 // addresses) out of the game and hand them over.
-import init, { WasmPerturber, visual_regions, visual_progress_regions, progress_points } from '../wasm/perturb/sm64coin_perturb_wasm.js';
+import { WasmPerturber, visual_regions, visual_progress_regions, progress_points } from '../wasm/perturb/sm64coin_perturb_wasm.js';
+import { perturbReady } from './perturbInit.js';
 import { GamePad } from 'sm64-binds-frontend';
 
-let ready = null;
-export const perturbReady = () => (ready ??= init());
+export { perturbReady };
 
 const pairs = (r) => { const out = []; for (let i = 0; i < r.length; i += 2) out.push([r[i], r[i + 1]]); return out; };
 

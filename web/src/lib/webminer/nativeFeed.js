@@ -3,6 +3,7 @@
 // pow/miner/src/rrt/vizio.rs) and go to the same hub / hybrid handlers the controller gives the workers' messages. The native
 // miner is one campaign, so one worker (index 0). Requests go the other way through the platform's mailbox (nm.vizMail).
 import { daemon } from '../rpc.js';
+import { tipStore } from '../tip.js';
 import { newMinerKey, templateParams } from '../minerkey.js';
 import { hybrid } from './controller.js';
 import { dispatchFrame, unindent } from './nativeFrames.js';
@@ -28,13 +29,16 @@ export class NativeFeed {
     this.offs.push(nm.onState((s) => { if (s && s.running === false) this.stop(); }));
     hub.requester = (w, key, nid) => this.ask(w, key, nid);
     this.round(true);
-    this.watch = setInterval(() => this.poll(), 5000);
+    // the tip comes from the page's store (the app pushes it); a 2 s local check catches one that came while no template was ready
+    this.offTip = tipStore().subscribe(() => this.poll());
+    this.watch = setInterval(() => this.poll(), 2000);
   }
 
   stop() {
     if (this.dead) return;
     this.dead = true;
     clearInterval(this.watch);
+    if (this.offTip) this.offTip();
     this.offs.forEach((f) => f());
     hybrid.detach();
     this.hub.roster = null;
@@ -46,16 +50,19 @@ export class NativeFeed {
   async round(first = false) {
     const { miner, hub } = this;
     let t = null;
+    this.rounding = true;
     try {
-      const tip = (await daemon('get_info')).top_block_hash || '';
+      const tip = (await tipStore().latest())?.hash || '';
       const key = await newMinerKey();
       t = await daemon('get_block_template', templateParams(miner.address, key, {}));
       t.tip = tip || t.prev_hash;
       t.minerKey = key;
     } catch (e) {
+      this.rounding = false;
       if (first && !this.dead) setTimeout(() => this.round(true), 5000);
       return;
     }
+    this.rounding = false;
     if (this.dead) return;
     this.template = t;
     hub.newRound({ template: t, starts: ['parent'], parentRaw: null });
@@ -64,12 +71,10 @@ export class NativeFeed {
     for (const f of this.queue.splice(0)) dispatchFrame(hub, f);
   }
 
-  async poll() {
-    if (this.dead || !this.template) return;
-    try {
-      const i = await daemon('get_info');
-      if (i.top_block_hash !== this.template.tip) this.round();
-    } catch { /* node hiccup */ }
+  poll() {
+    if (this.dead || !this.template || this.rounding) return;
+    const tip = tipStore().get(); // memory only: no request
+    if (tip && tip.hash !== this.template.tip) this.round();
   }
 
   onFrame(f) {

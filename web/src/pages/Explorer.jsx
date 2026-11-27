@@ -1,17 +1,22 @@
 import { MAX_RUN_FRAMES } from '../lib/rules.js';
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import CycleTimeline, { RecentCycles, eventName } from '../lib/CycleTimeline.jsx';
 import { daemon, NODE_HINT } from '../lib/rpc.js';
 import { getCycle, blockSummary } from '../lib/replay/client.js';
 import { coins, short, ago, frames } from '../lib/format.js';
-import useInterval from '../lib/useInterval.js';
+import { useTip, useTipInfo, tipStore } from '../lib/tip.js';
+import { limitNow } from '../lib/limit.js';
 
 const PAGE = 25;
 
 export default function Explorer() {
-  const [info, setInfo] = useState(null);
-  const [task, setTask] = useState(null);
+  const tip = useTip();
+  const info = useTipInfo();
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => { const id = setInterval(() => setNow(Date.now() / 1000), 1000); return () => clearInterval(id); }, []);
+  // the task a block found now has to meet: the page's own clock and the Rust rules (lib/limit.js), not a polled number
+  const task = info && info.sm64_max_frames && tip ? { ...info, difficulty: info.sm64_difficulty, sm64_max_frames: limitNow(tip, now) } : null;
   const [blocks, setBlocks] = useState([]);
   // Proof sizes and run lengths come from get_block (headers don't carry
   // them); blocks never change, so cache them by hash.
@@ -28,27 +33,31 @@ export default function Explorer() {
   const [q, setQ] = useState('');
   const nav = useNavigate();
 
-  useInterval(async () => {
-    try {
-      const i = await daemon('get_info');
-      setInfo(i);
-      const top = i.height - 1;
-      const start = Math.max(0, top - PAGE + 1);
-      const r = await daemon('get_block_headers_range', { start_height: start, end_height: top });
-      const hs = [...r.headers].reverse();
-      setBlocks(hs);
-      fillProgress(hs.filter((h) => h.height > 0));
-      const missing = hs.filter((h) => h.height > 0 && !proofs.current[h.hash]);
-      // blockSummary: fetched once per block and kept in IndexedDB (lib/replay/client.js).
-      Promise.all(missing.map((h) => blockSummary(h.hash)
-        .then((x) => { proofs.current[h.hash] = x; })
-        .catch(() => {})))
-        .then(() => { if (missing.length) bump((x) => x + 1); });
-      // get_info carries the task a block found now would have to meet.
-      setTask(i.sm64_max_frames ? { ...i, difficulty: i.sm64_difficulty } : null);
-      setErr(null);
-    } catch (e) { setErr(String(e)); }
-  }, 5000);
+  // The block list is read once per new tip (the store follows the tip by push or a slow poll), and again after an error.
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!tip) return undefined;
+    let live = true;
+    (async () => {
+      try {
+        const top = tip.height;
+        const start = Math.max(0, top - PAGE + 1);
+        const r = await daemon('get_block_headers_range', { start_height: start, end_height: top });
+        if (!live) return;
+        const hs = [...r.headers].reverse();
+        setBlocks(hs);
+        fillProgress(hs.filter((h) => h.height > 0));
+        const missing = hs.filter((h) => h.height > 0 && !proofs.current[h.hash]);
+        // blockSummary: fetched once per block and kept in IndexedDB (lib/replay/client.js).
+        Promise.all(missing.map((h) => blockSummary(h.hash)
+          .then((x) => { proofs.current[h.hash] = x; })
+          .catch(() => {})))
+          .then(() => { if (missing.length) bump((x) => x + 1); });
+        setErr(null);
+      } catch (e) { if (live) { setErr(String(e)); setTimeout(() => setRetry((x) => x + 1), 10000); } }
+    })();
+    return () => { live = false; };
+  }, [tip && tip.hash, retry]);
 
   // One get_sm64_cycle per cycle on the page (not per row): every block adds exactly one progress
   // point and the reply names each block's event, so the stars/keys after every block of a cycle
@@ -99,7 +108,7 @@ export default function Explorer() {
 
   return (
     <>
-      {err && <div className="card error">Daemon unreachable: {err}. {NODE_HINT}</div>}
+      {(err || (!tip && tipStore().status().error)) && <div className="card error">Daemon unreachable: {String(err || tipStore().status().error)}. {NODE_HINT}</div>}
       <CycleTimeline />
       {info && (
         <div className="stats">

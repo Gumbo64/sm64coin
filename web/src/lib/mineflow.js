@@ -19,6 +19,12 @@ export function launchFor(info, override = 0) {
   return info && info.mainnet ? LAUNCH_TIMESTAMP : 0;
 }
 
+/** A template's start mode at unix second `nowS`: a "parent" template turns "either" at its `sm64_power_on_at` (what the node's
+ *  template says at that timestamp), so the page works it out from the clock instead of asking for a new template. */
+export function startNow(t, nowS) {
+  return t.sm64_start === 'parent' && t.sm64_power_on_at && nowS >= t.sm64_power_on_at ? 'either' : t.sm64_start;
+}
+
 /** When a run is valid: the node's answer (`sm64_valid_at`, 0 = now), never before the chain's launch. */
 export const effectiveValidAt = (nodeValidAt, launch) => Math.max(nodeValidAt || 0, launch || 0);
 

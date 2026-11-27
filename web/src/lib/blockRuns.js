@@ -10,7 +10,7 @@
 //    of {timestamp, frames, hash?, miner?, pads?}. Read here as long as it is that array; any
 //    other shape yields no dots rather than a broken page. (Stamps are unix seconds; `t` seconds
 //    after the parent is also accepted, for a node that does the subtraction.)
-import { maxFrames } from './rules.js';
+import { maxFrames } from './limit.js';
 
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
 

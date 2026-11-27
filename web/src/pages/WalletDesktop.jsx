@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { daemon, nodeInUse, onNodeChange } from '../lib/rpc.js';
+import { nodeInUse, onNodeChange } from '../lib/rpc.js';
+import { tipStore, useTip } from '../lib/tip.js';
 import { fmt, fmtShort, parseAmount } from '../lib/wallet/engine.js';
 import Identicon from '../components/Identicon.jsx';
 import { miner } from '../lib/webminer/controller.js';
@@ -183,13 +184,15 @@ function Open({ st, w, address, setAddress, run, refresh }) {
   const [txs, setTxs] = useState([]);
   const [heights, setHeights] = useState({ wallet: 0, chain: 0 });
   const [shown, setShown] = useState(false); // the balance is revealed
+  useTip(); // keeps the tip store following while this page is open
   const hide = st.settings.hide_balance && !shown;
 
   const poll = useCallback(async () => {
     try {
       const [b, t, h] = await Promise.all([w.balance(), w.transfers(), w.height()]);
       let chain = 0;
-      try { chain = (await daemon('get_info')).height; } catch { /* node down */ }
+      const tip = tipStore().get();
+      if (tip) chain = tip.height + 1; // the page's tip store (push or slow poll), not a get_info of its own
       setBal(b); setTxs(t); setHeights({ wallet: h, chain });
     } catch (e) { if (e.code === 'wallet_not_open' || e.code === 'wallet_not_running') refresh(); }
   }, [w, refresh]);

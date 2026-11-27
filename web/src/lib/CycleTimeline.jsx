@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { daemon, NODE_HINT } from './rpc.js';
 import { getCycle } from './replay/client.js';
 import { restartDelay } from './rules.js';
+import { useTip } from './tip.js';
 
 // The current cycle as a timeline, after sm64-viewer's (frontend/src/components/
 // Timeline.jsx): the strip shows the cycle's played inputs (stick in grey,
@@ -79,30 +80,27 @@ export function CycleStrip({ cycle, highlight, playhead }) {
 export function useCycle() {
   const [cycle, setCycle] = useState(null);
   const [err, setErr] = useState('');
+  const tip = useTip();
+  const [again, setAgain] = useState(0);
+  // Read once per new tip (the store follows the tip by push or a slow poll; the block's timestamp comes with it), and again
+  // 10 s after a failure.
   useEffect(() => {
-    let top = null, stop = false, busy = false;
-    const poll = async () => {
-      // One request at a time: on a slow node a cycle takes longer than the poll interval, and
-      // overlapping requests for the same tip piled up until the node never caught up.
-      if (busy) return;
-      busy = true;
+    if (!tip) return undefined;
+    let stop = false, retry = null;
+    (async () => {
       try {
-        const info = await daemon('get_info');
-        if (info.top_block_hash === top) return;
-        const [c, h] = await Promise.all([
-          getCycle(info.top_block_hash),
-          daemon('get_block_header_by_hash', { hash: info.top_block_hash }),
-        ]);
+        const c = await getCycle(tip.hash);
         if (stop) return;
-        top = info.top_block_hash;
-        setCycle({ ...decodeCycle(c), tipTime: h.block_header.timestamp, tipHeight: h.block_header.height, top });
+        setCycle({ ...decodeCycle(c), tipTime: tip.timestamp, tipHeight: tip.height, top: tip.hash });
         setErr('');
-      } catch (e) { setErr(String(e.message || e)); } finally { busy = false; }
-    };
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => { stop = true; clearInterval(id); };
-  }, []);
+      } catch (e) {
+        if (stop) return;
+        setErr(String(e.message || e));
+        retry = setTimeout(() => setAgain((x) => x + 1), 10000);
+      }
+    })();
+    return () => { stop = true; clearTimeout(retry); };
+  }, [tip && tip.hash, again]);
   return [cycle, err];
 }
 
@@ -269,16 +267,15 @@ function summary(c, current) {
 export function RecentCycles() {
   const nav = useNavigate();
   const [cycles, setCycles] = useState(null);
+  const tip = useTip();
+  const [again, setAgain] = useState(0);
   useEffect(() => {
-    let top = null, stop = false, busy = false;
-    const poll = async () => {
-      if (busy) return; // one walk at a time (see useCycle)
-      busy = true;
+    if (!tip) return undefined;
+    let stop = false, retry = null;
+    (async () => {
       try {
-        const info = await daemon('get_info');
-        if (info.top_block_hash === top) return;
         const out = [];
-        let hash = info.top_block_hash;
+        let hash = tip.hash;
         for (let i = 0; i < CYCLES_SHOWN && hash; i++) {
           let s = i > 0 ? [...doneCycles.values()].find((d) => d.endHash === hash) : null;
           if (!s) {
@@ -293,13 +290,11 @@ export function RecentCycles() {
           out.push({ ...s, current: i === 0 });
           hash = s.prev;
         }
-        if (!stop) { top = info.top_block_hash; setCycles(out); }
-      } catch { /* keep the last list */ } finally { busy = false; }
-    };
-    poll();
-    const id = setInterval(poll, 10000);
-    return () => { stop = true; clearInterval(id); };
-  }, []);
+        if (!stop) setCycles(out);
+      } catch { if (!stop) retry = setTimeout(() => setAgain((x) => x + 1), 10000); /* keep the last list */ }
+    })();
+    return () => { stop = true; clearTimeout(retry); };
+  }, [tip && tip.hash, again]);
   return (
     <aside className="card cycles">
       <h3>Recent cycles</h3>

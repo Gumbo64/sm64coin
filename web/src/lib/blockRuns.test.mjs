@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { runsAt, groupRuns, limitShift, tailFrame, replayOptions, recordRuns } from './blockRuns.js';
-import { maxFrames } from './rules.js';
+import { maxFrames } from './limit.js';
+import { loadLimit } from './limit.testwasm.mjs';
+
+if (!(await loadLimit())) { console.log('blockRuns: skipped (perturb wasm not built: scripts/build-wasm.sh)'); process.exit(0); }
 
 const blk = (hash, ts, frames, extra = {}) => ({ block_header: { hash, height: 7, prev_hash: 'p', timestamp: ts }, sm64_frames: frames, miner_tx_hash: 'm', ...extra });
 const w = blk('w', 1000, 900);

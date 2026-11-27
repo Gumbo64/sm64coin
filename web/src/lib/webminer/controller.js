@@ -6,6 +6,9 @@
 // lib/webminer/useMiner.js. Mining starts and stops only through start() / stop() (the page's buttons),
 // and stops when the tab closes.
 import { daemon } from '../rpc.js';
+import { tipStore } from '../tip.js';
+import { validAtFor } from '../limit.js';
+import { launchFor } from '../mineflow.js';
 import { getCycle } from '../replay/client.js';
 import { hexToBytes, seal, withTimestamp, templateTimestamp } from '../proof.js';
 import { newMinerKey, templateParams, signRun } from '../minerkey.js';
@@ -259,6 +262,7 @@ class MinerController {
     c.pool = [];
     hybrid.detach();
     clearInterval(c.watch);
+    if (c.offTip) { c.offTip(); c.offTip = null; }
     clearInterval(c.tick);
     this.c = null;
     this.running = false;
@@ -312,26 +316,31 @@ class MinerController {
     this.running = true;
     this.phase = 'loading';
     this.error = null;
-    // A new tip: the template is stale, start over on the new one.
-    c.watch = setInterval(async () => {
-      try {
-        // A parent-only template turns "either" at sm64_power_on_at: refresh it to learn that.
-        // Not while a run is held: the refresh would drop it (and it is valid soon anyway).
-        if (c.template && c.restartAt && now() >= c.restartAt && c.pool.some(Boolean) && !c.best) {
-          c.restartAt = 0;
-          this.say('the stall time passed: refreshing the template (power-on start now allowed)');
-          this.round(c);
-          return;
-        }
-        const i = await daemon('get_info');
-        if (c.template && i.top_block_hash !== (c.template.tip || c.template.prev_hash) && c.pool.some(Boolean)) {
-          this.say(`new block ${i.height - 1} on the chain: restarting on the new template`);
-          // v0.4 stage B: a run held for the old tip lost its height; it is still a proof for it.
-          if (c.best && c.submitting !== c.template && !this.noSubmit) this.publishProof(c.template, c.best);
-          this.round(c);
-        }
-      } catch { /* node hiccup */ }
-    }, 5000);
+    // A new tip: the template is stale, start over on the new one. The tip comes from the page's tip store (pushed by the
+    // light-client network or the app, else a 30 s poll): no get_info of its own. The check also runs on a local 1 s timer,
+    // which makes no request: a tip that arrived while the workers were still loading is caught as soon as they run.
+    const checkTip = () => {
+      const tip = tipStore().get();
+      if (!tip || !c.template || c.stopped || !c.pool.some(Boolean)) return;
+      if (tip.hash !== (c.template.tip || c.template.prev_hash)) {
+        this.say(`new block ${tip.height} on the chain: restarting on the new template`);
+        // v0.4 stage B: a run held for the old tip lost its height; it is still a proof for it.
+        if (c.best && c.submitting !== c.template && !this.noSubmit) this.publishProof(c.template, c.best);
+        this.round(c);
+      }
+    };
+    c.offTip = tipStore().subscribe(checkTip);
+    c.watch = setInterval(() => {
+      // A parent-only template turns "either" at sm64_power_on_at: refresh it to learn that.
+      // Not while a run is held: the refresh would drop it (and it is valid soon anyway).
+      if (c.template && c.restartAt && now() >= c.restartAt && c.pool.some(Boolean) && !c.best) {
+        c.restartAt = 0;
+        this.say('the stall time passed: refreshing the template (power-on start now allowed)');
+        this.round(c);
+        return;
+      }
+      checkTip();
+    }, 1000);
     c.tick = setInterval(() => this.emit(), 1000); // the light's frames/s
     this.emit(true);
     this.round(c);
@@ -354,7 +363,7 @@ class MinerController {
       // The tip BEFORE the template: a node that builds around an equivocated tip gives a template whose prev_hash is not
       // the tip, so "a new block landed" means the tip moved from this, not from prev_hash.
       let tip = '';
-      try { tip = (await daemon('get_info')).top_block_hash || ''; } catch { /* the template call will say */ }
+      try { tip = (await tipStore().latest()).hash || ''; } catch { /* the template call will say */ }
       // v0.4: the payout address this template commits for its proofs (a subaddress per template if a provider gives one).
       const payout = this.payoutAddress();
       const params = templateParams(address, key, { sm64_payout_address: payout });
@@ -584,8 +593,9 @@ class MinerController {
     try {
       const h = await holdUntilValid({
         best: () => c.best,
-        validAt: async (frames) => (await daemon('get_block_template', templateParams(this.address, t.minerKey, { sm64_frames: frames }))).sm64_valid_at,
-        tip: async () => (await daemon('get_info')).top_block_hash,
+        // when a run is valid: the Rust rules from the template's own parent timestamp and difficulty (no template request)
+        validAt: async (frames) => validAtFor({ timestamp: t.sm64_parent_timestamp, difficulty: BigInt(t.sm64_retarget_difficulty || t.difficulty || 1) }, frames, launchFor(await tipStore().info().catch(() => null))),
+        tip: async () => tipStore().get()?.hash,
         tipHash: t.tip || t.prev_hash,
         lead: this.lead,
         current: () => !c.stopped && c.template === t,
@@ -613,8 +623,8 @@ class MinerController {
       c.pool = [];
       c.status.forEach((s) => { clearTimeout(s.relaunch); s.relaunch = null; });
       this.setPhase('submitting');
-      const info = await daemon('get_info');
-      if (info.top_block_hash !== (t.tip || t.prev_hash)) {
+      const cur = await tipStore().latest(2000); // the last look before sending: free while the tip is pushed
+      if (cur.hash !== (t.tip || t.prev_hash)) {
         say('a new block landed first; the run was for the old tip');
         hub.submission('stale', { height: t.height, frames: r.frames });
         await this.publishProof(t, r);
@@ -633,7 +643,7 @@ class MinerController {
       }
       this.signed.record(t.sm64_seed_hash, r.proof, r.frames);
       const sig = await signRun(t.minerKey, t.sm64_seed_hash, proof);
-      if (!this.noSubmit) await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
+      if (!this.noSubmit) { await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]); tipStore().noteSubmit(); }
       if (this.noSubmit) { this.blockMined(t, r, say); return; }
       // The node took it (it may hold it until it is due): "mined" is announced only once the block is in the chain.
       hub.submission('sent', { height: t.height, frames: r.frames });

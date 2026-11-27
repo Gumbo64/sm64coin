@@ -33,7 +33,9 @@ import { levelName } from './automine/levels.js';
 import { localInputs } from './automine/localNode.js';
 import { announceMined } from '../lib/payout.js';
 import { signedSeeds } from '../lib/webminer/bestRun.js';
-import { decideAfterWin, effectiveValidAt, launchFor, refusedBeforeClaim, refusalReason, confirmBlock, advanceAfter, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
+import { tipStore } from '../lib/tip.js';
+import { limitNow, validAtFor } from '../lib/limit.js';
+import { decideAfterWin, effectiveValidAt, launchFor, startNow, refusedBeforeClaim, refusalReason, confirmBlock, advanceAfter, REWIND_DEFAULT, REWIND_CHOICES } from '../lib/mineflow.js';
 import { ALL_STARS, secondsUntilAllowed } from '../lib/resetPolicy.js';
 import { e2e, e2eHook } from '../lib/e2e.js';
 
@@ -126,37 +128,38 @@ function Miner() {
     let head = null;
     const c = ctl.current;
     const setLim = (n) => { setLimit(n); if (rec.current) rec.current.setLimit(n); };
-    // Cheap per-frame kill check; timers watch the chain.
-    const timer = setInterval(async () => {
-      try {
-        const i = await daemon('get_info');
-        const launch = launchFor(i, e2e() ? Number(window.__launchAt || 0) : 0);
-        c.launch = launch;
-        setLaunchAt(launch > Date.now() / 1000 ? launch : 0);
-        if (head && i.top_block_hash !== head) {
-          if (c.cur && c.used.has(c.cur.sm64_seed_hash)) {
-            // This template's run is sent: the block (yours, usually) landed on top of it. Move on to the next block's template at once.
-            if (advanceAfter({ used: true, tipChanged: true })) { c.restart = true; say(`new block ${i.height - 1} on the chain: moving on to the next block`); }
-          } else { c.restart = true; say(`new block ${i.height - 1} on the chain: new template; your cycle continues from its end`); }
-        }
-      } catch { /* daemon hiccup */ }
-    }, 2000);
-    // The time limit grows every second from the parent's timestamp, and the chain
-    // may become stalled: re-read both from a fresh template every ~5 s while
-    // the tip is unchanged (only these fields: this attempt keeps its own template).
-    let refreshing = false; // one template request at a time (a busy node answers slower than 5 s)
-    const refresh = setInterval(async () => {
-      if (!head || !isAddress(addr.current) || refreshing) return;
-      refreshing = true;
-      try {
-        const t = await daemon('get_block_template', { wallet_address: addr.current, reserve_size: 0 });
-        if (t.prev_hash !== head) return;
-        c.tipTemplate = t;
-        setLim(t.sm64_max_frames);
-        setStartMode(t.sm64_start);
-        setPowerOnAt(t.sm64_power_on_at || 0);
-      } catch { /* daemon hiccup */ } finally { refreshing = false; }
-    }, 5000);
+    // A new block ends the attempt. The tip comes from the page's tip store (pushed by the light-client network or the app, else
+    // a 30 s poll) and is checked again every second from memory: no request here.
+    const tipChanged = () => {
+      const i = tipStore().get();
+      if (!i || !head || i.hash === head || c.restart) return;
+      if (c.cur && c.used.has(c.cur.sm64_seed_hash)) {
+        // This template's run is sent: the block (yours, usually) landed on top of it. Move on to the next block's template at once.
+        if (advanceAfter({ used: true, tipChanged: true })) { c.restart = true; say(`new block ${i.height} on the chain: moving on to the next block`); }
+      } else { c.restart = true; say(`new block ${i.height} on the chain: new template; your cycle continues from its end`); }
+    };
+    const offTip = tipStore().subscribe(tipChanged);
+    // The chain's launch (mainnet) is a property of the node: read once.
+    tipStore().info().then((i) => { c.launch = launchFor(i, e2e() ? Number(window.__launchAt || 0) : 0); }).catch(() => {});
+    const timer = setInterval(() => {
+      tipChanged();
+      if (e2e() && window.__launchAt) c.launch = Number(window.__launchAt);
+      setLaunchAt(c.launch > Date.now() / 1000 ? c.launch : 0);
+    }, 1000);
+    // The time limit grows every second from the parent's timestamp, and a parent-only template turns "either" at
+    // sm64_power_on_at: both are computed here, from this template's parent timestamp and difficulty with the Rust rules
+    // (lib/limit.js), once a second from memory. The page used to ask the node for a fresh template every 5 s for them.
+    const refresh = setInterval(() => {
+      const t = c.cur;
+      if (!head || !t || t.prev_hash !== head) return;
+      const nowS = Date.now() / 1000;
+      const n = limitNow({ timestamp: t.sm64_parent_timestamp, difficulty: t.sm64_retarget_difficulty || 1 }, nowS);
+      const start = startNow(t, nowS);
+      c.tipTemplate = { ...t, sm64_max_frames: n, sm64_start: start };
+      setLim(n);
+      setStartMode(start);
+      setPowerOnAt(t.sm64_power_on_at || 0);
+    }, 1000);
     const kill = async () => stopped || c.restart;
     // Seals and submits a finished run on its own template (a newer one has other mempool transactions, which would
     // change the seed), stamped when it is valid. Returns {sent}: whether the node took the block (it may still hold it
@@ -185,6 +188,7 @@ function Miner() {
       try {
         const sig = await signRun(t.minerKey, seed, proof);
         await daemon('submit_block', [seal(withTimestamp(t.blocktemplate_blob, ts), proof, sig)]);
+        tipStore().noteSubmit();
       } catch (e) {
         const reason = refusalReason(e);
         if (refusedBeforeClaim(e)) {
@@ -310,9 +314,8 @@ function Miner() {
               // When does a run this long become valid? (The limit grows with time; never before the chain's launch.)
               let validAt = 0;
               try {
-                const q = await daemon('get_block_template', templateParams(t.paysTo, t.minerKey, { sm64_frames: nFrames }));
-                validAt = q.sm64_valid_at || 0;
-              } catch (e) { say(`could not ask when the run is valid: ${e}`); }
+                validAt = validAtFor({ timestamp: t.sm64_parent_timestamp, difficulty: t.sm64_retarget_difficulty || 1 }, nFrames);
+              } catch (e) { say(`could not work out when the run is valid: ${e}`); }
               if (stopped) break;
               validAt = effectiveValidAt(validAt, c.launch);
               const p = c.pending && c.pending.t.prev_hash === t.prev_hash ? c.pending : null;
@@ -348,7 +351,7 @@ function Miner() {
         }
       } finally { engine.set_audio_enabled(0); release(); }
     })();
-    return () => { stopped = true; clearInterval(timer); clearInterval(refresh); clearInterval(pendingTimer); setClock(null); setPhase({ kind: 'loading' }); };
+    return () => { stopped = true; offTip(); clearInterval(timer); clearInterval(refresh); clearInterval(pendingTimer); setClock(null); setPhase({ kind: 'loading' }); };
   }, [engine, manualActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const paying = task ? task.paysTo : address;
