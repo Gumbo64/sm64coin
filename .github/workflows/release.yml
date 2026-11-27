@@ -690,6 +690,19 @@ jobs:
           pattern: bundle-*
           path: assets
           merge-multiple: true
+      - name: Flatten the desktop installers
+        # The desktop artifacts keep their build paths (desktop/src-tauri/target/<triple>/release/bundle/...);
+        # the release takes only assets/*, so move the installers up. Fail if the desktop job succeeded but
+        # no installer arrived (v0.5.1 shipped without them because of this).
+        env:
+          DESKTOP_OK: ${{ needs.desktop.result == 'success' && 'yes' || '' }}
+        run: |
+          find assets -mindepth 2 -type f \( -name 'SM64Coin*' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o -name '*-setup.exe' \) -exec mv -t assets {} +
+          find assets -mindepth 1 -type d -empty -delete
+          ls -la assets
+          if [ -n "$DESKTOP_OK" ] && [ -z "$(ls assets | grep -E '\.(deb|AppImage|dmg|exe)$|portable\.zip$')" ]; then
+            echo "::error::the desktop job succeeded but no installer is in assets/"; exit 1
+          fi
       - name: Checksums
         run: cd assets && sha256sum $(ls sm64coin-* SM64Coin_* SM64Coin-* 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
       - name: Release notes
