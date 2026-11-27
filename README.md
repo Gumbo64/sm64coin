@@ -94,7 +94,7 @@ For an interactive wallet: `scripts/wallet-cli.sh`.
 
 ### Script settings (environment)
 
-`NODE_DATA` (./data/node), `WALLET_DIR` (./data/wallets), `RUN_DIR` (./run: `node.pid`, `node.log`, `wallet-rpc.pid`, ...), `ROM`, `P2P_PORT`, `RPC_PORT`, `ZMQ_PORT`, `WALLET_PORT`, `WEB_PORT`, `DAEMON_URL`, `WALLET_URL`, `SOLO`, `PEERS`, `EXTRA_ARGS` (extra sm64coind flags), `ROUTE` (automine reference route). Extra arguments to `scripts/automine.sh` after the address are passed to `automine` (see `--help`: `--candidates`, `--horizon`, `--commit`, `--blocks`, `--save-dir`).
+`NODE_DATA` (./data/node), `WALLET_DIR` (./data/wallets), `RUN_DIR` (./run: `node.pid`, `node.log`, `wallet-rpc.pid`, ...), `ROM`, `P2P_PORT`, `RPC_PORT`, `ZMQ_PORT`, `WALLET_PORT`, `WEB_PORT`, `DAEMON_URL`, `WALLET_URL`, `SOLO`, `PEERS`, `EXTRA_ARGS` (extra sm64coind flags), `THREADS` (automine search threads, default 4). Extra arguments to `scripts/automine.sh` after the address are passed to `automine` (see `--help`: `--rh-threads`, `--reset`, `--blocks`, `--save-dir`, `--process`).
 
 Other targets: `make test` (`cargo test -p sm64pow`), `make clean-data` (stops and deletes `data/` and this project's pid/log files).
 
