@@ -71,6 +71,8 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
   const [mirror, setMirror] = useState(false);
   const [sel, setSel] = useState(null);
   const [err, setErr] = useState('');
+  // Bumped when the WebGL context was lost and not given back: the view is built again on a new context.
+  const [glGen, setGlGen] = useState(0);
   const cfg = useRef({ mode, zone, geom, edges, mirror });
   cfg.current = { mode, zone, geom, edges, mirror };
   const cb = useRef({});
@@ -100,7 +102,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
   }, [man?.at]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    let dead = false, raf = 0, cleanup = () => {};
+    let dead = false, raf = 0, cleanup = () => {}, lostTimer = 0;
     (async () => {
       try {
         const THREE = await import('three');
@@ -111,6 +113,26 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
         renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
         el.appendChild(renderer.domElement);
         const dom = renderer.domElement;
+        // The browser can take the context away (too many contexts open, e.g. the game's next to it, a GPU reset, a webview
+        // that was hidden): without preventDefault it is gone for good and the view stays black. Keep it restorable; three
+        // re-uploads its buffers and programs on restore, and the cloud is rebuilt. If no restore comes, build the view
+        // again on a new context.
+        let lost = false;
+        dom.addEventListener('webglcontextlost', (e) => {
+          e.preventDefault();
+          lost = true;
+          clearTimeout(lostTimer);
+          lostTimer = setTimeout(() => { if (!dead && lost) setGlGen((g) => g + 1); }, 2500);
+        });
+        dom.addEventListener('webglcontextrestored', () => {
+          lost = false;
+          clearTimeout(lostTimer);
+          if (dead) return;
+          for (const g of [geo, mgeo, egeo, chainGeo, trail.geometry]) for (const a of Object.values(g.attributes)) a.needsUpdate = true;
+          if (geomMesh) geomMesh.traverse((o) => { if (o.geometry) for (const a of Object.values(o.geometry.attributes)) a.needsUpdate = true; if (o.material) o.material.needsUpdate = true; });
+          hub.cloudChanged = true;
+          resize();
+        });
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0e1015);
         const camera = new THREE.PerspectiveCamera(50, 1, 1, 1e6);
@@ -582,7 +604,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
           renderer.setSize(w, h);
           camera.aspect = w / h;
           camera.updateProjectionMatrix();
-          renderer.render(scene, camera); // setSize clears the canvas: redraw at once (the frame loop skips off-screen views)
+          if (!lost) renderer.render(scene, camera); // setSize clears the canvas: redraw at once (the frame loop skips off-screen views)
         };
         resize();
         const ro = new ResizeObserver(resize);
@@ -617,18 +639,20 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
             const s = age < 12 ? 1 + 0.25 * Math.sin(age * 6) : 1;
             finishG.scale.setScalar(s);
           }
+          if (lost) return;
           controls.update();
           renderer.render(scene, camera);
         };
         frame();
         cleanup = () => {
           cancelAnimationFrame(raf);
+          clearTimeout(lostTimer);
           ro.disconnect();
           controls.dispose();
           geo.dispose(); mat.dispose(); mgeo.dispose(); egeo.dispose();
           if (geomMesh) geomMesh.traverse((o) => o.geometry?.dispose());
           renderer.dispose();
-          renderer.forceContextLoss?.();
+          if (!lost) { try { renderer.forceContextLoss?.(); } catch { /* already gone */ } }
           renderer.domElement.remove();
           gl.current = null;
         };
@@ -638,7 +662,7 @@ export default function CloudView({ hub, onPlay, onPlayFrom, onGoal, goalShare =
       } catch (e) { setErr(String(e.message || e)); }
     })();
     return () => { dead = true; cleanup(); };
-  }, []);
+  }, [glGen]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { gl.current?.applyGeom(); }, [geom]);
   useEffect(() => { gl.current?.applyMirror(); }, [mirror]);
 

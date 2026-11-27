@@ -2,13 +2,15 @@
 //! streamed to the webview as `miner-log` events (one line each); `miner-state` fires on start and exit.
 use crate::AppError;
 use crate::desktop::Dirs;
+use crate::vizfeed;
 use serde::Serialize;
 use sm64coin_launcher::proc::Proc;
 use sm64coin_launcher::util::lower_priority;
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::Path;
 use std::process::Command;
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
@@ -52,7 +54,13 @@ pub struct Miner {
     address: String,
     threads: usize,
     started_ms: u64,
+    /// Lines for the miner's stdin (the visualisation feed's requests, `--viz`, pow/miner/src/rrt/vizio.rs), written by a
+    /// thread of their own so that a command never blocks on a full pipe (and never while holding the app's miner lock).
+    to_stdin: SyncSender<String>,
 }
+
+/// Lines waiting for the miner's stdin before `send` reports it busy.
+const STDIN_QUEUE: usize = 16;
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -68,7 +76,7 @@ fn field(line: &str, key: &str) -> Option<f64> {
 }
 
 impl Miner {
-    pub fn start(app: &AppHandle, d: &Dirs, rom: &Path, rpc_port: u16, address: &str, threads: Option<usize>) -> Result<Miner, AppError> {
+    pub fn start(app: &AppHandle, d: &Dirs, rom: &Path, rpc_port: u16, address: &str, threads: Option<usize>, viz_on: bool) -> Result<Miner, AppError> {
         if !plausible_address(address) {
             return Err(AppError::new("bad_address", "enter your SM64... address (the wallet's primary address) first"));
         }
@@ -85,22 +93,56 @@ impl Miner {
         // The campaign's scratch (its memory across blocks, its roadmap) lasts between runs.
         cmd.arg("--rrt-scratch").arg(d.data.join("miner"));
         cmd.arg("--rh-threads").arg(threads.to_string());
+        cmd.arg("--viz");
         let route = d.res.join("routes").join("block1-human.m64");
         if route.is_file() {
             cmd.arg("--route").arg(route);
         }
         let log = log_dir.join("automine.log");
-        let (proc, out, err) = Proc::spawn_piped("miner", cmd, log.clone()).map_err(|e| AppError::new("miner_start", e))?;
+        let (proc, out, err, mut stdin) = Proc::spawn_piped_stdin("miner", cmd, log.clone()).map_err(|e| AppError::new("miner_start", e))?;
+        let (to_stdin, lines) = std::sync::mpsc::sync_channel::<String>(STDIN_QUEUE);
+        let _ = to_stdin.try_send(serde_json::json!({ "viz_on": viz_on }).to_string());
+        std::thread::spawn(move || {
+            for l in lines {
+                if writeln!(stdin, "{l}").and_then(|_| stdin.flush()).is_err() {
+                    break; // the miner exited
+                }
+            }
+        });
         lower_priority(&proc.child);
         let shared = Arc::new(Mutex::new(Shared::default()));
         let file = Arc::new(Mutex::new(std::fs::File::create(&log).ok()));
         let started = Instant::now();
         let _ = started;
         let mut readers = Vec::new();
-        for r in [Box::new(out) as Box<dyn std::io::Read + Send>, Box::new(err)] {
+        for (frames, r) in [(true, Box::new(out) as Box<dyn std::io::Read + Send>), (false, Box::new(err))] {
             let (shared, file, app) = (shared.clone(), file.clone(), app.clone());
             readers.push(std::thread::spawn(move || {
-                for line in BufReader::new(r).lines().map_while(Result::ok) {
+                // Lines are read with a size cap and decoded lossily: the reader must keep draining the pipe whatever comes.
+                let mut r = BufReader::with_capacity(1 << 16, r);
+                let mut buf = Vec::new();
+                let mut dropped = 0u64;
+                while let Ok(Some(fits)) = vizfeed::read_line_capped(&mut r, &mut buf, vizfeed::MAX_LINE) {
+                    let line = String::from_utf8_lossy(&buf);
+                    if line.starts_with(&vizfeed::VIZ_MARK[..4]) {
+                        // A visualisation frame (stdout only), never a log line: to the page as `miner-viz` {w, kind, key, data},
+                        // bytes stay base64. A malformed or oversized one is dropped (counted in the log).
+                        match vizfeed::parse_frame(&line).filter(|_| frames && fits) {
+                            Some(f) => {
+                                let _ = app.emit("miner-viz", &serde_json::json!({ "w": f.w, "kind": f.kind, "key": f.key, "data": f.data }));
+                            }
+                            None => {
+                                dropped += 1;
+                                if dropped.is_power_of_two() {
+                                    if let Some(f) = file.lock().unwrap().as_mut() {
+                                        let _ = writeln!(f, "(dropped {dropped} malformed visualisation frame(s))");
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    let line = if fits { line.into_owned() } else { format!("{line}... (line cut at {} bytes)", vizfeed::MAX_LINE) };
                     if let Some(f) = file.lock().unwrap().as_mut() {
                         let _ = writeln!(f, "{line}");
                     }
@@ -138,7 +180,7 @@ impl Miner {
                 let _ = app.emit("miner-state", &serde_json::json!({"running": false}));
             });
         }
-        let m = Miner { proc, shared, address: address.to_string(), threads, started_ms: now_ms() };
+        let m = Miner { proc, shared, address: address.to_string(), threads, started_ms: now_ms(), to_stdin };
         let _ = app.emit("miner-state", &serde_json::json!({"running": true}));
         Ok(m)
     }
@@ -162,6 +204,26 @@ impl Miner {
             accepted: s.accepted,
             exit_code,
             lines: s.lines.iter().cloned().collect(),
+        }
+    }
+
+    /// The feed on or off (the search goes on).
+    pub fn viz_on(&self, on: bool) -> Result<(), AppError> {
+        self.send(serde_json::json!({ "viz_on": on }))
+    }
+
+    /// The page's mailbox, checked against the schema the search reads (vizfeed::clean_mail) before it goes down.
+    pub fn mail(&self, mail: &serde_json::Map<String, serde_json::Value>) -> Result<(), AppError> {
+        let m = vizfeed::clean_mail(mail).map_err(|e| AppError::new("bad_mail", e))?;
+        self.send(serde_json::json!({ "mail": m }))
+    }
+
+    /// One JSON line for the miner's stdin; never blocks (the writer thread drains the queue).
+    fn send(&self, v: serde_json::Value) -> Result<(), AppError> {
+        match self.to_stdin.try_send(v.to_string()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(AppError::new("miner_busy", "the native miner is not reading its requests; try again")),
+            Err(TrySendError::Disconnected(_)) => Err(AppError::new("miner_not_running", "the native miner has exited")),
         }
     }
 

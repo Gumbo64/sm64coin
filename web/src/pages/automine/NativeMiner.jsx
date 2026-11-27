@@ -8,11 +8,19 @@ import { SideCard, GearBtn, Toolbar, ToolBtn, Row, useStored } from '../../compo
 // browser's WASM auto-miner. Also shows the local node and, until the ROM is found, asks for its path.
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const KEEP = 200;
-// What this webview supports (the WASM workers want SharedArrayBuffer, the game WebGL).
+// What this webview supports (the WASM workers want SharedArrayBuffer, the game WebGL). Probed once, and the probe's context
+// is released at once: a context per render piled up until the browser dropped the oldest live one (the 3D cloud went black).
+let caps = null;
 const webviewCaps = () => {
+  if (caps) return caps;
   let gl = false;
-  try { gl = !!document.createElement('canvas').getContext('webgl2'); } catch { /* none */ }
-  return `crossOriginIsolated ${!!globalThis.crossOriginIsolated} · SharedArrayBuffer ${typeof SharedArrayBuffer !== 'undefined'} · WebGL2 ${gl}`;
+  try {
+    const c = document.createElement('canvas').getContext('webgl2');
+    gl = !!c;
+    c?.getExtension('WEBGL_lose_context')?.loseContext();
+  } catch { /* none */ }
+  caps = `crossOriginIsolated ${!!globalThis.crossOriginIsolated} · SharedArrayBuffer ${typeof SharedArrayBuffer !== 'undefined'} · WebGL2 ${gl}`;
+  return caps;
 };
 
 function usePolled(fn, ms) {
@@ -51,6 +59,8 @@ export default function NativeMiner() {
   const romOk = host ? host.rom.found : true;
   const nodeUp = !!(node && node.answering);
   const th = Number(threads) || undefined;
+  // While the native miner runs, its search drives the page's visualisations (lib/webminer/nativeFeed.js).
+  useEffect(() => { if (running) miner.attachNative(p.nativeMiner); }, [running, p]);
 
   return (
     <SideCard title="Native miner" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
@@ -88,7 +98,7 @@ export default function NativeMiner() {
       <Toolbar label="Native miner">
         {running
           ? <ToolBtn disabled={busy} onClick={() => run(() => p.nativeMiner.stop())}>Stop native miner</ToolBtn>
-          : <ToolBtn disabled={busy || !isAddress(address || '') || !nodeUp} title={nodeUp ? '' : 'the local node must be running'} onClick={() => run(async () => { setLines([]); await p.nativeMiner.start({ address, threads: th }); })}>Start native miner</ToolBtn>}
+          : <ToolBtn disabled={busy || !isAddress(address || '') || !nodeUp} title={nodeUp ? '' : 'the local node must be running'} onClick={() => run(async () => { setLines([]); await p.nativeMiner.start({ address, threads: th, viz: miner.vizOn }); })}>Start native miner</ToolBtn>}
         {node && !node.running && !node.starting && romOk && <ToolBtn disabled={busy} onClick={() => run(() => p.node.start())}>Start node</ToolBtn>}
         {node && node.running && !running && <ToolBtn disabled={busy} onClick={() => run(() => p.node.stop())}>Stop node</ToolBtn>}
       </Toolbar>

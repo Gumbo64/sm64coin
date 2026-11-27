@@ -98,6 +98,7 @@ class MinerController {
     hybrid.onLog = (slot, text) => this.say(`worker ${slot + 1}: ${text}`);
     subscribePlayFromStart((on) => { this.playFromStart = on; this.emit(true); });
     this.running = false;
+    this.native = null; // the desktop app's native miner feeding the views (nativeFeed.js)
     this.log = [];
     this.workers = [];
     this.stats = { rounds: 0, found: 0, accepted: 0, proofs: 0, proofsPooled: 0 };
@@ -118,7 +119,7 @@ class MinerController {
   subscribe = (fn) => { this.subs.add(fn); return () => this.subs.delete(fn); };
   getSnapshot = () => this.snap;
   makeSnap() {
-    return { address: this.address, linkAddress: this.linkAddress, count: this.count, mode: this.mode, vizOn: this.vizOn, playFromStart: this.playFromStart, hybridOK: hybrid.available, running: this.running, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
+    return { address: this.address, linkAddress: this.linkAddress, count: this.count, mode: this.mode, vizOn: this.vizOn, playFromStart: this.playFromStart, hybridOK: hybrid.available, running: this.running || !!this.native, native: !!this.native, log: this.log, workers: this.workers, stats: this.stats, fps: this.fps(), status: this.status() };
   }
   /** Wakes the views: at most 4 times a second, at once when `now`. */
   emit(now = false) {
@@ -129,11 +130,12 @@ class MinerController {
   /** The header light's state: {kind, label, title}. kinds: idle loading mining found accepted error reset. */
   status() {
     const st = this.statusKind();
-    return { ...st, on: this.running };
+    return { ...st, on: this.running || !!this.native };
   }
 
   /** Smoothed total simulated frames per second (moving average over RATE_WINDOW s); mock workers fall back to the hub's. */
   fps() {
+    if (this.native) return this.native.fps;
     return this.rate.fps() || this.hub.workers.reduce((s, w) => s + (w.fps || 0), 0);
   }
 
@@ -143,6 +145,7 @@ class MinerController {
     const fps = this.fps();
     const rate = fps > 0 ? `, ${fmtRate(fps)} fr/s` : '';
     if (this.flash && this.flash.until > t) return this.flash.kind === 'accepted' ? { kind: 'accepted', label: '★ block!', title: 'Block accepted' } : { kind: 'error', label: 'rejected', title: 'The block was rejected' };
+    if (this.native && !this.running) return { kind: 'mining', label: this.native.fps > 0 ? `${fmtRate(this.native.fps)} fr/s` : 'native', title: 'Native miner mining' };
     if (!this.running) return { kind: 'idle', label: 'off', title: 'Auto-miner off (click to open the Auto-mine page)' };
     if (this.error && this.error.until > t) return { kind: 'error', label: 'error', title: `Auto-miner error: ${this.error.text}` };
     if (this.phase === 'found') return { kind: 'found', label: 'run found', title: 'A run was found: sealing it' };
@@ -176,6 +179,7 @@ class MinerController {
     this.vizOn = on;
     lsSet('sm64coin.viz', on ? '1' : '0');
     this.hub.setEnabled(on);
+    if (this.native) this.native.setViz(on);
     const c = this.c;
     if (c) {
       if (c.board) setVizFlag(c.board, c.count, on); // live, through the shared board
@@ -185,6 +189,7 @@ class MinerController {
   }
   /** Asks worker `w`'s search for the inputs of node `nid` of its step `key` (through the board: isolated pages only); false without one. */
   askNode(w, key, nid) {
+    if (this.native) return this.native.ask(w, key, nid);
     const c = this.c;
     if (!c || !c.board) return false;
     c.reqs = [...(c.reqs || []).slice(-40), { id: (c.reqSeq = (c.reqSeq || 0) + 1), slot: w, key, nid }];
@@ -252,7 +257,39 @@ class MinerController {
     this.emit(true);
   }
 
+  // ----- the native miner (desktop app): its search drives the same views -----
+  /** The native miner runs (`nm` = platform.nativeMiner): its samples, node requests and hybrid commands go through the same hub and hybrid channel. */
+  async attachNative(nm) {
+    if (this.native || this.nativeBusy) return;
+    this.nativeBusy = true;
+    try {
+      if (this.running) this.stop();
+      const { NativeFeed } = await import('./nativeFeed.js');
+      const f = new NativeFeed(this, nm);
+      this.native = f;
+      this.workers = [{ salt: 0, line: 'native miner', runs: 0, fails: 0, start: 'parent' }];
+      this.phase = 'mining';
+      this.hub.setEnabled(this.vizOn);
+      f.start();
+      this.emit(true);
+    } finally { this.nativeBusy = false; }
+  }
+  /** The Stop button while the native miner drives the views. */
+  stopNative() { if (this.native) this.native.nm.stop().catch((e) => this.say(`stopping the native miner failed: ${e.message || e}`)); }
+  nativeStopped(f) {
+    if (this.native !== f) return;
+    this.native = null;
+    this.workers = [];
+    this.phase = 'idle';
+    this.hub.roster = null;
+    this.emit(true);
+  }
+  /** A new template of the native miner's round (the stats and the worker row). */
+  nativeRound(t) { this.stats = { ...this.stats, rounds: this.stats.rounds + 1 }; this.say(`native miner: block ${t.height}`); }
+  nativeLine(line) { if (this.workers[0]) { this.workers = [{ ...this.workers[0], line }]; this.emit(); } }
+
   start() {
+    if (this.native) { this.say('the native miner is running: stop it first'); return; }
     if (!isAddress(this.address)) { this.say('enter your SM64… address first'); return; }
     this.stop();
     mark('start-pressed');

@@ -23,11 +23,15 @@ Environment: `SM64COIN_BUNDLE` (sidecar folder, default: next to the app), `SM64
 shared with the CLI), `SM64COIN_{P2P,RPC,ZMQ}_PORT` (defaults 16480-2; a free port nearby is used if taken, a node
 already answering on the RPC port is reused and left running), `SM64COIN_NO_DHT`.
 
+**Portable mode**: a file named `portable` next to the program puts all the app's data (chain, wallets and their `<name>.kdf`
+rounds, ROM copy, settings, `remote-node.txt`, logs, the webview's own storage) in `data/` beside it instead of
+`~/.sm64coin` (`SM64COIN_DATA_DIR` still wins). The release's `SM64Coin-<version>-windows-x86_64-portable.zip` ships with it.
+
 ## What exists
 
 Commands (all return `{code, message}` errors; `capabilities/default.json` grants exactly these, plus event listen):
 `host_info`, `rom_set(path)`, `rom_pick` (system file dialog, the dialog plugin is used from Rust only), `rom_bytes` (feeds the in-page game: no second upload), `remote_rpc(url, method, params)` (the same RPC whitelist over https, only to the public node compiled in from `web/public/public-node.json` or the one https node the user confirmed in a native dialog through `remote_node_set` on the Network page, saved as `remote-node.txt` in the data dir; no redirects), `remote_node_get`, `node_start/stop/status`, `node_rpc(method, params)` (whitelist `rpc::allowed`, no CORS,
-no HTTP from the webview), `miner_start({address, threads})/miner_stop/miner_status`; events `miner-log`, `miner-state`.
+no HTTP from the webview), `miner_start({address, threads, viz})/miner_stop/miner_status`, `miner_viz_on(on)`, `miner_viz_mail(mail)` (the visualisation feed: `automine --viz`, frames checked and the mailbox rebuilt from its schema in `vizfeed.rs`); events `miner-log`, `miner-state`, `miner-viz`.
 The node starts with the app when a ROM is found and is stopped on quit (also on SIGTERM/SIGINT). The miner runs at
 low priority against the local node. The Mine page shows a "Native miner" card (threads under the gear, local node
 status, log); the WASM auto-miner stays available.

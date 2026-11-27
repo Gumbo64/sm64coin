@@ -38,18 +38,36 @@ pub struct Dirs {
     /// Where seeds.txt and routes/ live: the bundle folder, or (installed app) the resource folder.
     pub res: PathBuf,
     pub data: PathBuf,
+    /// Portable mode (a file named `portable` next to the program): `data` is the `data/` folder beside it, and so is the
+    /// webview's own storage (the page's settings).
+    pub portable: bool,
+}
+
+/// The marker file next to the program that switches portable mode on.
+pub const PORTABLE_MARK: &str = "portable";
+
+/// Where the app keeps its data (chain, wallets, ROM copy, settings, remote-node.txt), and whether that is portable mode:
+/// `SM64COIN_DATA_DIR` if set; else `<exe dir>/data` when a file named `portable` sits next to the program; else `~/.sm64coin`.
+pub fn data_dir(env: Option<std::ffi::OsString>, exe_dir: &Path, home: &Path) -> (PathBuf, bool) {
+    if let Some(d) = env.filter(|d| !d.is_empty()) {
+        return (PathBuf::from(d), false);
+    }
+    if exe_dir.join(PORTABLE_MARK).is_file() {
+        return (exe_dir.join("data"), true);
+    }
+    (home.join(".sm64coin"), false)
 }
 
 impl Dirs {
     fn detect() -> Dirs {
         let exe_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
+        let (data, portable) = data_dir(std::env::var_os("SM64COIN_DATA_DIR"), &sm64coin_launcher::util::plain(exe_dir.clone()), &home());
         let bundle = std::env::var_os("SM64COIN_BUNDLE").map(PathBuf::from).unwrap_or(exe_dir);
-        let data = std::env::var_os("SM64COIN_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".sm64coin"));
         // Installed app: sidecars sit next to the program (Linux /usr/bin, Windows and macOS: the app folder) and the resources
         // are /usr/lib/SM64Coin (deb, AppImage), the install folder (Windows) or Contents/Resources (macOS).
         let exe = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
         let res = [bundle.clone(), exe.join("../lib/SM64Coin"), exe.join("../Resources")].into_iter().find(|d| d.join("seeds.txt").is_file()).map(|d| sm64coin_launcher::util::plain(d.canonicalize().unwrap_or(d))).unwrap_or_else(|| bundle.clone());
-        Dirs { bundle, res, data }
+        Dirs { bundle, res, data, portable }
     }
     pub fn tool(&self, name: &str) -> PathBuf {
         self.bundle.join(format!("{name}{EXE}"))
@@ -80,6 +98,8 @@ struct HostInfo {
     platform: &'static str,
     data_dir: String,
     bundle_dir: String,
+    /// Portable mode: data/ next to the program (a file named `portable` beside it).
+    portable: bool,
     has_node_binary: bool,
     has_miner_binary: bool,
     rom: RomInfo,
@@ -93,6 +113,7 @@ fn host_info(app: State<'_, App>) -> Res<HostInfo> {
         platform: std::env::consts::OS,
         data_dir: d.data.display().to_string(),
         bundle_dir: d.bundle.display().to_string(),
+        portable: d.portable,
         has_node_binary: d.tool("sm64coind").is_file(),
         has_miner_binary: d.tool("sm64coin-automine").is_file(),
         rom: rom_info(d),
@@ -296,7 +317,7 @@ async fn remote_node_set(app: AppHandle, url: Option<String>) -> Res<Option<Stri
 }
 
 #[tauri::command]
-fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: Option<usize>) -> Res<miner::MinerInfo> {
+fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: Option<usize>, viz: Option<bool>) -> Res<miner::MinerInfo> {
     let rpc_port = {
         let g = state.node.lock().unwrap();
         g.as_ref().map(|n| n.rpc_port).ok_or_else(|| AppError::new("node_not_running", "start the local node first"))?
@@ -308,7 +329,7 @@ fn miner_start(app: AppHandle, state: State<'_, App>, address: String, threads: 
             return Err(AppError::new("already_running", "the native miner is already running"));
         }
     }
-    let m = miner::Miner::start(&app, &state.dirs, &rom, rpc_port, address.trim(), threads)?;
+    let m = miner::Miner::start(&app, &state.dirs, &rom, rpc_port, address.trim(), threads, viz.unwrap_or(true))?;
     let mut m = m; let info = m.info();
     *g = Some(m);
     Ok(info)
@@ -328,6 +349,26 @@ async fn miner_stop(app: AppHandle) -> Res<miner::MinerInfo> {
     })
     .await
     .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
+/// The page switches the miner's visualisation feed on or off (the search keeps running; off it only counts frames).
+#[tauri::command]
+fn miner_viz_on(state: State<'_, App>, on: bool) -> Res<()> {
+    match state.miner.lock().unwrap().as_ref() {
+        Some(m) => m.viz_on(on),
+        None => Ok(()),
+    }
+}
+
+/// The page's mailbox for the running searches (pow/miner/src/rrt/vizio.rs): an object with any of `goal` (the sampling
+/// bubble {level, area, pos, radius, share} or null), `cmds` (hybrid commands: node state requests, played segments) and
+/// `reqs` (node path requests). Keys replace; the miner keeps the latest and gives it to every step.
+#[tauri::command]
+fn miner_viz_mail(state: State<'_, App>, mail: serde_json::Map<String, serde_json::Value>) -> Res<()> {
+    match state.miner.lock().unwrap().as_ref() {
+        Some(m) => m.mail(&mail),
+        None => Err(AppError::new("miner_not_running", "the native miner is not running")),
+    }
 }
 
 #[tauri::command]
@@ -371,6 +412,17 @@ pub fn run() {
             // SIGTERM / SIGINT / console close: leave through the normal exit path, which stops the miner and the node.
             let hx = t.handle().clone();
             let _ = ctrlc::set_handler(move || hx.exit(0));
+            // The window (tauri.conf.json, `create: false`): built here so that in portable mode the webview keeps its
+            // storage (localStorage, IndexedDB: the page's settings) in data/ as well.
+            if let Some(cfg) = t.config().app.windows.iter().find(|w| w.label == "main").cloned() {
+                let mut b = tauri::WebviewWindowBuilder::from_config(t.handle(), &cfg)?;
+                let st = t.state::<App>();
+                if st.dirs.portable {
+                    let _ = std::fs::create_dir_all(&st.dirs.data);
+                    b = b.data_directory(st.dirs.data.join("webview"));
+                }
+                b.build()?;
+            }
             wallet::spawn_idle_lock(t.handle().clone());
             let h = t.handle().clone();
             std::thread::spawn(move || {
@@ -383,7 +435,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {
@@ -403,6 +455,29 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn portable_data_dir() {
+        use super::data_dir;
+        use std::path::Path;
+        let root = std::env::temp_dir().join(format!("sm64coin-portable-test-{}", std::process::id()));
+        let exe = root.join("app");
+        std::fs::create_dir_all(&exe).unwrap();
+        let home = Path::new("/home/someone");
+        // Installed: the user's data dir.
+        assert_eq!(data_dir(None, &exe, home), (home.join(".sm64coin"), false));
+        // A folder named `portable` is not the marker.
+        std::fs::create_dir_all(exe.join("portable")).unwrap();
+        assert_eq!(data_dir(None, &exe, home), (home.join(".sm64coin"), false));
+        std::fs::remove_dir(exe.join("portable")).unwrap();
+        // The marker file: data/ next to the program.
+        std::fs::write(exe.join("portable"), b"").unwrap();
+        assert_eq!(data_dir(None, &exe, home), (exe.join("data"), true));
+        // SM64COIN_DATA_DIR wins over both (an empty value does not count).
+        assert_eq!(data_dir(Some("/srv/x".into()), &exe, home), ("/srv/x".into(), false));
+        assert_eq!(data_dir(Some("".into()), &exe, home), (exe.join("data"), true));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn only_app_pages() {
         let ok = |u: &str| super::app_url(&u.parse().unwrap());

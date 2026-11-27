@@ -17,6 +17,10 @@ fn main() -> Result<()> {
         });
     }
     let job: sm64coin_miner::rrt::child::Job = serde_json::from_str(&std::fs::read_to_string(&a[1])?)?;
+    if job.viz {
+        // The desktop app's feed (automine --viz): stdin/stdout carry it (rrt/vizio.rs).
+        sm64coin_miner::rrt::vizio::child_start(format!("{}.progress", job.out_dir));
+    }
     let out = sm64coin_miner::rrt::child::run_step(&job)?;
     std::fs::write(&a[2], serde_json::to_string(&out)?)?;
     Ok(())

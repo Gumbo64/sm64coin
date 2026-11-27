@@ -148,7 +148,7 @@ function Onboard({ st, run, setFresh, adopt, busy, first }) {
       <p><button className="linkish" onClick={() => setAdv(!adv)}>{adv ? '▾' : '▸'} advanced</button></p>
       {adv && (
         <p>
-          <input placeholder="password hashing rounds" size={10} value={kdf} onChange={(e) => setKdf(e.target.value)} /> <span className="muted">KDF rounds (default 1; more makes a stolen wallet file harder to crack and opening slower: the same count is needed nowhere else, it is stored in the file)</span>
+          <input placeholder="password hashing rounds" size={10} value={kdf} onChange={(e) => setKdf(e.target.value)} /> <span className="muted">KDF rounds (default 1; more makes a stolen wallet file harder to crack and opening slower: this app remembers the count next to the wallet file, as &lt;name&gt;.kdf, and opens it with it)lt;namethe same count is needed nowhere else, it is stored in the file)gt;.kdf)</span>
           {mode === 'restore' && <><br /><input type="password" placeholder="seed offset passphrase (optional)" value={offset} onChange={(e) => setOffset(e.target.value)} /></>}
         </p>
       )}

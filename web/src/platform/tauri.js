@@ -26,7 +26,7 @@ const node = {
 };
 
 const nativeMiner = {
-  start: ({ address, threads } = {}) => cmd('miner_start', { address, threads }),
+  start: ({ address, threads, viz } = {}) => cmd('miner_start', { address, threads, viz }),
   stop: () => cmd('miner_stop'),
   status: () => cmd('miner_status'),
   /** fn(line) for each output line; returns a function that stops listening. */
@@ -35,6 +35,16 @@ const nativeMiner = {
     listen('miner-log', (e) => fn(e.payload)).then((u) => { if (dead) u(); else off = u; });
     return () => { dead = true; if (off) off(); };
   },
+  /** The visualisation feed (the same data the WASM workers post, see lib/webminer/nativeFeed.js): fn({w, kind, key, data}). */
+  subscribeViz(fn) {
+    let off = null, dead = false;
+    listen('miner-viz', (e) => fn(e.payload)).then((u) => { if (dead) u(); else off = u; });
+    return () => { dead = true; if (off) off(); };
+  },
+  /** Switches the feed on or off (the search goes on; off it only counts frames). */
+  vizOn: (on) => cmd('miner_viz_on', { on }),
+  /** The page's mailbox for the searches: any of {goal, cmds, reqs} (keys replace; see rrt/vizio.rs). */
+  vizMail: (mail) => cmd('miner_viz_mail', { mail }),
   /** fn() when the miner starts or exits. */
   onState(fn) {
     let off = null, dead = false;
