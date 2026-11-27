@@ -229,6 +229,8 @@ struct Inner {
     sample: Mutex<(u64, std::time::Instant)>,
     hub: Arc<Hub>,
     running: AtomicBool,
+    /// How the campaign ended, once it has (taken under `subs`' lock, so a late `subscribe` still gets its `Stopped`).
+    ended: Mutex<Option<Option<String>>>,
 }
 
 impl Inner {
@@ -237,6 +239,12 @@ impl Inner {
     }
     fn log(&self, m: impl Into<String>) {
         self.emit(Event::Log(m.into()));
+    }
+    /// The last event: `Stopped`, to every subscriber now and to any that subscribes later.
+    fn end(&self, err: Option<String>) {
+        let mut subs = self.subs.lock().unwrap();
+        *self.ended.lock().unwrap() = Some(err.clone());
+        subs.retain(|s| s.send(Event::Stopped(err.clone())).is_ok());
     }
     fn phase(&self, phase: Phase, height: u64, detail: impl Into<String>) {
         let s = State { phase, height, detail: detail.into() };
@@ -297,6 +305,7 @@ impl Campaign {
             sample: Mutex::new((0, std::time::Instant::now())),
             hub: Hub::host(),
             running: AtomicBool::new(true),
+            ended: Mutex::new(None),
         });
         if cfg.viz {
             let i = inner.clone();
@@ -314,7 +323,7 @@ impl Campaign {
                 inner.hub.disable();
                 inner.running.store(false, Ordering::Relaxed);
                 inner.phase(Phase::Stopped, 0, err.clone().unwrap_or_default());
-                inner.emit(Event::Stopped(err));
+                inner.end(err);
             })?
         };
         Ok(Campaign { inner, thread: Mutex::new(Some(thread)) })
@@ -332,10 +341,17 @@ impl Campaign {
         }
     }
 
-    /// The events from now on (a channel per call; a dropped receiver is forgotten).
+    /// The events from now on (a channel per call; a dropped receiver is forgotten). A campaign that has already ended (e.g. a
+    /// setup error right after `start`, before the caller subscribed) sends its `Stopped` at once, so no caller waits forever.
     pub fn subscribe(&self) -> Receiver<Event> {
         let (tx, rx) = channel();
-        self.inner.subs.lock().unwrap().push(tx);
+        let mut subs = self.inner.subs.lock().unwrap();
+        match self.inner.ended.lock().unwrap().clone() {
+            Some(err) => {
+                let _ = tx.send(Event::Stopped(err));
+            }
+            None => subs.push(tx),
+        }
         rx
     }
 
