@@ -11,7 +11,7 @@ import { prepareStart } from '../lib/cycle.js';
 import { readProgress } from '../lib/perturb.js';
 import { loadStart } from './automine/startState.js';
 import { withConfig } from '../lib/task.js';
-import { successFor, MAX_RUN_FRAMES } from '../lib/rules.js';
+import { successFor, progressLabel, MAX_RUN_FRAMES } from '../lib/rules.js';
 import { coins, frames } from '../lib/format.js';
 import PlayView from '../components/PlayView.jsx';
 import EngineSlot, { acquireEngine } from '../components/EngineSlot.jsx';
@@ -292,7 +292,8 @@ function Miner() {
           // (slots kept) for a shorter run, until the run is sent, the tip changes, or the player asks for a new template.
           while (done && !stopped && !c.restart) {
             const nFrames = done.pads.length;
-            say(`goal reached after ${nFrames} frames (${frames(nFrames)})`);
+            const got = progressLabel(st.progress, readProgress(engine)); // the engine is at the run's last frame
+            say(`goal reached after ${nFrames} frames (${frames(nFrames)})${got ? `: ${got}` : ''}`);
             const used = c.used.has(t.sm64_seed_hash);
             if (used) {
               say(`practice run: ${nFrames} frames; not submitted (this template's run is already sent). Start a new template (▶| new) for the next block.`);
@@ -403,7 +404,7 @@ function Miner() {
     const info = { w: sel.w, step: sel.step, nid: null, parentSlot: sel.slot, pos: res.pos, level: msg.level, area: msg.area, stars: msg.stars, frame: sel.frame + res.frames, trail: res.trail, frames: res.frames, note: 'adding it to the search tree…' };
     hub.playedSegment(info);
     hub.toast(res.won
-      ? `goal reached: you got the next star or key after ${res.frames} frames (${(res.frames / 30).toFixed(1)} s) from node ${sel.id}. Adding it to the search trees; the auto-miner sends it as its best run`
+      ? `goal reached: you got ${res.got || 'the next progress point'} after ${res.frames} frames (${(res.frames / 30).toFixed(1)} s) from node ${sel.id}. Adding it to the search trees; the auto-miner sends it as its best run`
       : `played ${res.frames} frames (${(res.frames / 30).toFixed(1)} s) from node ${sel.id}: adding it to the search trees`, res.won ? 'found' : 'info');
     let first = true, added = 0;
     const onReply = (slot, m) => {
@@ -534,7 +535,7 @@ function Miner() {
       <p className="ui-oneline">
         Play Super Mario 64 yourself to mine blocks, or let your browser play for you (Start in the Auto-mine card).
         <InfoPop>
-          Manual mining: you play the block's next star or key, from where the previous block ended; every attempt is sealed to a block template.
+          Manual mining: you play the block's next star, Bowser key or cap switch, from where the previous block ended; every attempt is sealed to a block template.
           Auto-mining: the same campaign search as the native <code>sm64coin-automine</code> (objective-RRT, compiled to WebAssembly), one per worker; it uses a lot of CPU and keeps running while you visit other pages.
           While it runs, this page shows its search: click a node of the cloud and <b>Play from here</b> to play on by hand; the segment you play becomes a high-weight node the search builds on. <b>Play from the start</b> turns hybrid mining off.
         </InfoPop>
@@ -777,7 +778,7 @@ function Help() {
         carries on through the whole 70-star run, one block at a time, whoever mines them. The Grand Star ends the
         cycle and the next block starts again from power-on. When you open this page the game is brought to the
         chain's current state first (the cycle's inputs are replayed fast; you'll see a progress bar), then you play
-        your block from there. <b>Goal: get your next star or key</b> within the time limit.</p>
+        your block from there. <b>Goal: get your next star, key or cap switch</b> within the time limit.</p>
       <p>The controller is randomly poked while you play (the pokes come from the block template's seed and Mario's
         position and speed), so every attempt is different. The pokes are the same at every difficulty.</p>
       <p><b>The time limit grows continuously.</b> Difficulty is only the time limit. From the moment the last block
