@@ -108,7 +108,7 @@ events leave through an `Emit` closure, so the host can test it) with the comman
   x86-64 Linux only, and the userfaultfd dirty-page tracker is Linux-only, so on Android it compiles the WebAssembly at
   start and copies whole memories). wasmer 6.1 has Android trap handling. Whether Android's policies allow it on a device is
   untested (anonymous mmap+mprotect(PROT_EXEC) is allowed for apps, as other JITs rely on).
-- Host test: `cargo test --lib mobile_miner -- --nocapture` in `src-tauri` starts an isolated `sm64coind --offline
+- Host test: `CARGO_PROFILE_DEV_OPT_LEVEL=3 cargo test --lib mobile_miner -- --nocapture` in `src-tauri` starts an isolated `sm64coind --offline
   --sm64-solo` (fresh dir, loopback ports) and mines a block through the same core (needs `SM64COIND` and `SM64COIN_ROM`, or an
   unpacked bundle in `~/apps`; it skips without them).
 - Build: `ring` needs the NDK's clang (`cargo tauri android build` sets it); release profile builds the engine crates at opt-level 3.

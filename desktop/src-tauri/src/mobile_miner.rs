@@ -254,7 +254,8 @@ impl MobileMiner {
 /// Host-side test of the Android miner core: the same calls the Tauri commands make (rom_put, start, status, viz_on, viz_mail,
 /// stop), against an ISOLATED node that this test starts itself: `sm64coind --offline --sm64-solo` on a fresh data dir and
 /// loopback ports, never networked, never the real chain. It needs the daemon and a ROM, so it skips (and says so) without them:
-///   SM64COIND=<path of sm64coind>  SM64COIN_ROM=<US ROM .z64>  cargo test --lib mobile_miner -- --nocapture
+///   SM64COIND=<path of sm64coind>  SM64COIN_ROM=<US ROM .z64>  CARGO_PROFILE_DEV_OPT_LEVEL=3 cargo test --lib mobile_miner -- --nocapture
+/// (optimised: an unoptimised search did not finish the first block in 20 minutes; optimised, 2 threads took 505 s)
 /// (the defaults are the unpacked release bundle in ~/apps/sm64coin-*-linux-x86_64). `SM64COIN_TEST_SECS` bounds the wait for
 /// the block (default 1200).
 #[cfg(test)]
