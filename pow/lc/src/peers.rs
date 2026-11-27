@@ -23,10 +23,9 @@ impl PeerSource for ClientPeers {
         addrs
             .into_iter()
             .filter_map(|a| match &a {
-                NodeAddr::Iroh { endpoint_id, direct, .. } if *endpoint_id != self.me => {
-                    let ip = direct.iter().find_map(|d| d.parse::<std::net::SocketAddr>().ok()).map(|s| s.ip());
-                    Some((endpoint_id.clone(), ip, self.connector.transport(&a)?))
-                }
+                // the peer's address comes from the connection the probe uses (Transport::remote_ip), never from what the peer
+                // announced about itself
+                NodeAddr::Iroh { endpoint_id, .. } if *endpoint_id != self.me => Some((endpoint_id.clone(), None, self.connector.transport(&a)?)),
                 _ => None,
             })
             .collect()

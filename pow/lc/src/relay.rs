@@ -78,6 +78,10 @@ pub struct RelayConfig {
     pub hello_policy: HelloPolicy,
     /// Where the monthly usage is kept (`relay-usage.json`); None = memory only.
     pub data_dir: Option<PathBuf>,
+    /// Advertise a relay with a self-signed certificate in `Auto` mode. Off by default: no client trusts such a relay (iroh
+    /// checks relay certificates against the web PKI, browsers too), so advertising it would only make the node harder to
+    /// reach. Tests that pin the certificate turn it on.
+    pub advertise_self_signed: bool,
 }
 
 impl Default for RelayConfig {
@@ -93,6 +97,7 @@ impl Default for RelayConfig {
             monthly_cap_bytes: Some(2 << 40),
             hello_policy: HelloPolicy::Probation { slots: 40, secs: 60 },
             data_dir: None,
+            advertise_self_signed: false,
         }
     }
 }
@@ -133,6 +138,15 @@ impl Usage {
         self.bytes += counter_total.saturating_sub(self.last_counter);
         self.last_counter = counter_total;
         self.bytes
+    }
+}
+
+/// Writes `relay-usage.json` atomically (temp file + rename): a crash mid-write must not reset the month's count to zero
+/// (an unreadable file is read as no usage, which would lift the cap).
+pub fn save_usage(dir: &std::path::Path, u: &Usage) {
+    let tmp = dir.join("relay-usage.json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string(u).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join("relay-usage.json"));
     }
 }
 
@@ -224,6 +238,7 @@ pub struct RelayHandle {
     /// DER of the self-signed certificate (`TlsMode::SelfSigned`), for clients that must trust it.
     pub self_signed_cert: Option<Vec<u8>>,
     usage: Arc<Mutex<Usage>>,
+    data_dir: Option<PathBuf>,
     _sweeper: AbortOnDrop,
 }
 
@@ -319,13 +334,13 @@ impl RelayHandle {
                     over_cap.store(cap.is_some_and(|c| used >= c), Ordering::Relaxed);
                     if tick % 12 == 0 {
                         if let Some(d) = &dir {
-                            let _ = std::fs::write(d.join("relay-usage.json"), serde_json::to_string(&*usage.lock().unwrap()).unwrap_or_default());
+                            save_usage(d, &usage.lock().unwrap());
                         }
                     }
                 }
             })
         };
-        Ok(Self { server, gate, over_cap, self_signed_cert: der, usage, _sweeper: AbortOnDrop(sweeper) })
+        Ok(Self { server, gate, over_cap, self_signed_cert: der, usage, data_dir: cfg.data_dir.clone(), _sweeper: AbortOnDrop(sweeper) })
     }
     pub fn https_addr(&self) -> Option<SocketAddr> {
         self.server.https_addr()
@@ -348,6 +363,9 @@ impl RelayHandle {
         self.usage.lock().unwrap().bytes
     }
     pub async fn shutdown(self) {
+        if let Some(d) = &self.data_dir {
+            save_usage(d, &self.usage.lock().unwrap());
+        }
         let _ = self.server.shutdown().await;
     }
 }
@@ -370,10 +388,14 @@ pub enum Verdict {
     Unreachable(String),
 }
 
-fn slash16(ip: IpAddr) -> Option<[u8; 2]> {
+/// The network a peer address is in, for "two different networks": IPv4 /16, IPv6 /32.
+fn network_of(ip: IpAddr) -> [u8; 4] {
     match ip {
-        IpAddr::V4(v) => Some([v.octets()[0], v.octets()[1]]),
-        _ => None,
+        IpAddr::V4(v) => [4, v.octets()[0], v.octets()[1], 0],
+        IpAddr::V6(v) => {
+            let o = v.octets();
+            [o[0], o[1], o[2], o[3]]
+        }
     }
 }
 
@@ -385,8 +407,9 @@ pub fn is_non_public(ip: IpAddr) -> bool {
     }
 }
 
-/// Two reachable answers from different peers (different /16 where the peers' addresses are known),
-/// agreeing on the observed public IP, enable the relay. Anything else keeps it off.
+/// Two reachable answers from different peers at known public addresses in different networks (IPv4 /16, IPv6 /32),
+/// agreeing on the observed public (not private, not CGNAT) IP, enable the relay. A peer whose address is not known (only
+/// relayed to us) does not count: two endpoint ids are free to make, two networks are not. Anything else keeps it off.
 pub fn decide(outcomes: &[ProbeOutcome]) -> Verdict {
     let ok: Vec<&ProbeOutcome> = outcomes.iter().filter(|o| o.reachable && o.observed.is_some_and(|i| !is_non_public(i))).collect();
     let mut peers = std::collections::HashSet::new();
@@ -398,21 +421,22 @@ pub fn decide(outcomes: &[ProbeOutcome]) -> Verdict {
             return Verdict::Unreachable("peers see different public addresses".into());
         }
         observed = Some(ip);
-        peers.insert(o.peer_id.clone());
-        match o.peer_ip.and_then(slash16) {
-            Some(n) => {
-                nets.insert(n);
-            }
-            None => {
-                nets.insert([0, 0]); // unknown network: counts once
-                nets.insert([peers.len() as u8, 0xff]);
+        if let Some(p) = o.peer_ip.filter(|p| !is_non_public(*p)) {
+            if nets.insert(network_of(p)) {
+                peers.insert(o.peer_id.clone());
             }
         }
     }
     match observed {
         Some(observed) if peers.len() >= 2 && nets.len() >= 2 => Verdict::Reachable { observed },
-        _ => Verdict::Unreachable(format!("{} of {} peers could connect back", ok.len(), outcomes.len())),
+        _ => Verdict::Unreachable(format!("{} of {} peers could connect back ({} from distinct public networks)", ok.len(), outcomes.len(), nets.len())),
     }
+}
+
+/// The public IPs this endpoint knows for itself (its own address discovery through the relays). The probes' observed IP
+/// must be one of them when there are any, so peers cannot talk the node into advertising someone else's address.
+pub fn own_public_ips(ep: &iroh::Endpoint) -> Vec<IpAddr> {
+    ep.addr().addrs.iter().filter_map(|t| if let iroh::TransportAddr::Ip(a) = t { Some(a.ip()) } else { None }).filter(|i| !is_non_public(*i)).collect()
 }
 
 /// Asks each peer to connect back to us on `tcp_port`.
@@ -420,8 +444,9 @@ pub async fn probe_peers(peers: &[(String, Option<IpAddr>, Arc<dyn Transport>)],
     let futs = peers.iter().map(|(id, ip, t)| async move {
         let r = t.request(&Request::Probe { tcp_port }, Duration::from_secs(15)).await;
         match r {
-            Ok(Response::Probe { observed, reachable }) => ProbeOutcome { peer_ip: *ip, peer_id: id.clone(), observed: observed.and_then(|o| o.parse().ok()), reachable },
-            Ok(Response::Error(ErrorKind::Busy { .. })) | Ok(_) | Err(_) => ProbeOutcome { peer_ip: *ip, peer_id: id.clone(), observed: None, reachable: false },
+            // the address the connection to the peer actually uses beats any address the peer announced
+            Ok(Response::Probe { observed, reachable }) => ProbeOutcome { peer_ip: t.remote_ip().or(*ip), peer_id: id.clone(), observed: observed.and_then(|o| o.parse().ok()), reachable },
+            Ok(Response::Error(ErrorKind::Busy { .. })) | Ok(_) | Err(_) => ProbeOutcome { peer_ip: t.remote_ip().or(*ip), peer_id: id.clone(), observed: None, reachable: false },
         }
     });
     futures_util::future::join_all(futs).await
@@ -499,6 +524,11 @@ impl RelayController {
                 self.advertise(&host).await;
             }
             RelayChoice::Auto => {
+                if matches!(self.cfg.tls, TlsMode::SelfSigned) && !self.cfg.advertise_self_signed {
+                    self.stop().await;
+                    self.state = RelayState::Failed("no browser-valid certificate: start with --tls acme (--acme-domain, --acme-production) or --tls pem".into());
+                    return &self.state;
+                }
                 if self.handle.is_none() {
                     match RelayHandle::spawn(&self.cfg, self.hello.clone()).await {
                         Ok(h) => self.handle = Some(h),
@@ -510,7 +540,18 @@ impl RelayController {
                 }
                 let port = self.handle.as_ref().and_then(|h| h.https_addr()).map(|a| a.port()).unwrap_or(0);
                 let peers = self.peers.peers().await;
-                match decide(&probe_peers(&peers, port).await) {
+                let verdict = match decide(&probe_peers(&peers, port).await) {
+                    Verdict::Reachable { observed } => {
+                        let own = own_public_ips(&self.endpoint);
+                        if own.is_empty() || own.contains(&observed) {
+                            Verdict::Reachable { observed }
+                        } else {
+                            Verdict::Unreachable(format!("peers report {observed}, this endpoint knows itself as {own:?}"))
+                        }
+                    }
+                    v => v,
+                };
+                match verdict {
                     Verdict::Reachable { observed } => {
                         let host = self.public_host.clone().unwrap_or_else(|| observed.to_string());
                         self.advertise(&host).await;

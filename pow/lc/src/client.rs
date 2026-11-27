@@ -25,6 +25,10 @@ pub enum TransportError {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: MaybeSend + MaybeSync {
     async fn request(&self, req: &Request, timeout: Duration) -> Result<Response, TransportError>;
+    /// The peer's IP on the path in use, when the transport has a direct one (None: relayed, HTTP, unknown).
+    fn remote_ip(&self) -> Option<std::net::IpAddr> {
+        None
+    }
 }
 
 /// The existing JSON-RPC over HTTP(S) as a [`Transport`] (same answers as the iroh service gives).
@@ -73,6 +77,8 @@ pub enum ClientError {
     Refused(ErrorKind),
 }
 
+/// New nodes taken from one `GetNodes` answer at most.
+pub const LEARN_PER_ANSWER: usize = 8;
 /// How many nodes a failing read tries before giving up.
 pub const MAX_ATTEMPTS: usize = 4;
 /// Fan-out of submissions (`submit_block`, proofs, `sendrawtransaction`).
@@ -112,14 +118,18 @@ impl Client {
         let now = self.now();
         self.list.lock().unwrap().ban_liar(key, now);
     }
-    /// Adds the verified announcements of `GetNodes` (invalid / expired ones are dropped).
+    /// Adds the verified announcements of `GetNodes` (invalid / expired ones are dropped). At most [`MAX_NODES`] of an answer
+    /// are looked at (a signature check each) and at most [`LEARN_PER_ANSWER`] new nodes are taken from it, so one server
+    /// cannot fill the list with endpoint ids of its own.
     pub fn learn(&self, ann: &[NodeAnnouncement]) -> usize {
         let now = self.now();
         let mut list = self.list.lock().unwrap();
         ann.iter()
-            .filter(|a| a.verify(now).is_ok())
+            .take(MAX_NODES as usize)
+            .filter(|a| a.validate().is_ok() && a.verify(now).is_ok())
             .filter_map(|a| announcement_addr(a))
             .filter(|addr| list.add(addr.clone(), Source::Gossip, now))
+            .take(LEARN_PER_ANSWER)
             .count()
     }
 
@@ -334,6 +344,16 @@ mod iroh_transport {
             })
             .await
             .map_err(|_| TransportError::Timeout)?
+        }
+        fn remote_ip(&self) -> Option<std::net::IpAddr> {
+            let g = self.conn.try_lock().ok()?;
+            let c = g.as_ref()?;
+            let paths = c.paths();
+            let ip = paths.iter().find_map(|p| match p.remote_addr() {
+                TransportAddr::Ip(a) if p.is_selected() => Some(a.ip()),
+                _ => None,
+            });
+            ip
         }
     }
 

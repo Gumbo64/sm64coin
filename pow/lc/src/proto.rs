@@ -331,7 +331,37 @@ impl Request {
     }
 }
 
+/// Size limits of an announcement's fields (signed garbage is still garbage).
+pub const MAX_ANNOUNCED_ADDRS: usize = 8;
+pub const MAX_ANNOUNCED_URL: usize = 256;
+
 impl NodeAnnouncement {
+    /// Field checks that need no key: the relay and https URLs are short `https://` URLs (the relay may be plain http only on
+    /// loopback, for tests), at most [`MAX_ANNOUNCED_ADDRS`] direct addresses that parse as `ip:port`, none of them
+    /// unspecified or multicast.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let url_ok = |u: &str| u.len() <= MAX_ANNOUNCED_URL && !u.contains(|c: char| c.is_whitespace() || c == '@') && (u.starts_with("https://") || u.starts_with("http://127.0.0.1") || u.starts_with("http://localhost") || u.starts_with("http://[::1]"));
+        if self.relay_url.as_deref().is_some_and(|u| !url_ok(u)) {
+            return Err("bad relay url");
+        }
+        if self.https_rpc.as_deref().is_some_and(|u| !u.starts_with("https://") || !url_ok(u)) {
+            return Err("bad https_rpc");
+        }
+        if self.direct_addrs.len() > MAX_ANNOUNCED_ADDRS {
+            return Err("too many addresses");
+        }
+        for a in &self.direct_addrs {
+            let s: std::net::SocketAddr = a.parse().map_err(|_| "bad direct address")?;
+            if s.ip().is_unspecified() || s.ip().is_multicast() || s.port() == 0 {
+                return Err("bad direct address");
+            }
+        }
+        if self.signature.len() != 64 {
+            return Err("bad signature length");
+        }
+        Ok(())
+    }
+
     /// Checks the signature (made by the endpoint's own key) and the expiry.
     pub fn verify(&self, now: u64) -> Result<(), &'static str> {
         if self.is_expired(now) {

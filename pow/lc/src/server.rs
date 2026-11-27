@@ -37,6 +37,17 @@ impl Bucket {
             Err((((cost - self.tokens) / refill_per_sec) * 1000.0).ceil().clamp(1.0, 60_000.0) as u32)
         }
     }
+    /// Charges `cost` after the fact (an answer turned out large): the bucket may go into debt, down to `-capacity`, and
+    /// the next requests wait until it refills.
+    pub fn debit(&mut self, cost: f64, capacity: f64) {
+        self.tokens = (self.tokens - cost).max(-capacity);
+    }
+}
+
+/// Extra cost of an answer of `bytes` (one token per 256 KiB above the first): a passthrough call is priced by what it
+/// returned, not only by its name (`/get_outs.bin`, `getblocks.bin`, `get_transactions` can be large).
+pub fn answer_cost(bytes: usize) -> f64 {
+    (bytes.saturating_sub(256 << 10) as f64) / (256 << 10) as f64
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +64,10 @@ pub struct Limits {
     pub bulk_timeout: Duration,
     /// Malformed requests tolerated on one connection before it is closed.
     pub max_malformed: u32,
+    /// Connections one IP may hold at once (relayed connections, which show no IP, are only under `max_connections`).
+    pub max_conns_per_ip: usize,
+    /// Requests that arrive over a relay show no IP: they share one budget of this many times an IP's.
+    pub relayed_budget_mult: f64,
 }
 
 impl Default for Limits {
@@ -66,6 +81,8 @@ impl Default for Limits {
             upstream_timeout: Duration::from_secs(15),
             bulk_timeout: Duration::from_secs(60),
             max_malformed: 3,
+            max_conns_per_ip: 16,
+            relayed_budget_mult: 20.0,
         }
     }
 }
@@ -112,6 +129,9 @@ struct Inner {
     endpoint: RwLock<Option<Endpoint>>,
     peer_buckets: Mutex<HashMap<EndpointId, Bucket>>,
     ip_buckets: Mutex<HashMap<IpAddr, Bucket>>,
+    /// The shared budget of requests that show no IP (relayed).
+    relayed_bucket: Mutex<Option<Bucket>>,
+    ip_conns: Mutex<HashMap<IpAddr, usize>>,
     tip: RwLock<(u64, [u8; 32])>,
     relay_advertised: RwLock<bool>,
     known: Mutex<Vec<NodeAnnouncement>>,
@@ -144,6 +164,8 @@ impl LcService {
             endpoint: RwLock::new(None),
             peer_buckets: Default::default(),
             ip_buckets: Default::default(),
+            relayed_bucket: Default::default(),
+            ip_conns: Default::default(),
             tip: RwLock::new((0, [0; 32])),
             relay_advertised: RwLock::new(false),
             known: Default::default(),
@@ -204,13 +226,23 @@ impl LcService {
 
     /// Remembers another server's announcement (verified, unexpired, at most [`MAX_NODES`]).
     pub fn add_known(&self, a: NodeAnnouncement) -> bool {
-        if a.verify(now_secs()).is_err() || a.endpoint_id == *self.0.secret.public().as_bytes() {
+        let now = now_secs();
+        if a.validate().is_err() || a.verify(now).is_err() || a.endpoint_id == *self.0.secret.public().as_bytes() {
             return false;
         }
         let mut k = self.0.known.lock().unwrap();
-        k.retain(|x| x.endpoint_id != a.endpoint_id && !x.is_expired(now_secs()));
+        k.retain(|x| !x.is_expired(now));
+        if let Some(x) = k.iter_mut().find(|x| x.endpoint_id == a.endpoint_id) {
+            // a fresher statement of the same node replaces the old one
+            if a.expires > x.expires {
+                *x = a;
+            }
+            return true;
+        }
         if k.len() >= MAX_NODES as usize {
-            k.remove(0);
+            // full of unexpired entries: keep what we know (fresh endpoint ids cost nothing, so a flood of them must not
+            // push known servers out); a slot frees when one expires
+            return false;
         }
         k.push(a);
         true
@@ -240,8 +272,39 @@ impl LcService {
             if let Err(r) = b.take(cost as f64, l.burst * 2.0, l.refill_per_sec * 2.0, now) {
                 retry = retry.max(r);
             }
+        } else {
+            // relayed: no IP to key on, and endpoint ids are free, so all of them share one (larger) budget
+            let m = l.relayed_budget_mult;
+            let mut g = self.0.relayed_bucket.lock().unwrap();
+            let b = g.get_or_insert_with(|| Bucket::new(l.burst * m, now));
+            if let Err(r) = b.take(cost as f64, l.burst * m, l.refill_per_sec * m, now) {
+                retry = retry.max(r);
+            }
         }
         if retry > 0 { Err(retry) } else { Ok(()) }
+    }
+
+    /// Charges the size of an answer after the fact (see [`answer_cost`]) to the same budgets as [`Self::charge`].
+    fn debit(&self, id: EndpointId, ip: Option<IpAddr>, cost: f64) {
+        if cost <= 0.0 {
+            return;
+        }
+        let l = &self.0.cfg.limits;
+        if let Some(b) = self.0.peer_buckets.lock().unwrap().get_mut(&id) {
+            b.debit(cost, l.burst);
+        }
+        match ip {
+            Some(ip) => {
+                if let Some(b) = self.0.ip_buckets.lock().unwrap().get_mut(&ip) {
+                    b.debit(cost, l.burst * 2.0);
+                }
+            }
+            None => {
+                if let Some(b) = self.0.relayed_bucket.lock().unwrap().as_mut() {
+                    b.debit(cost, l.burst * l.relayed_budget_mult);
+                }
+            }
+        }
     }
 
     /// Answers one decoded request.
@@ -336,6 +399,7 @@ impl LcService {
             Ok(f) => f,
             Err(_) => encode_frame(&Response::Error(ErrorKind::TooLarge), MAX_FRAME).expect("small"),
         };
+        self.debit(conn.remote_id(), ip, answer_cost(resp.len()));
         let _ = send.write_all(&resp).await;
         let _ = send.finish();
         // Let the answer leave before a closing connection drops it.
@@ -362,14 +426,35 @@ impl ProtocolHandler for LcService {
             conn.close(1u32.into(), b"server full");
             return Ok(());
         }
-        self.0.stats.connections.fetch_add(1, Ordering::Relaxed);
-        struct Guard(Arc<Inner>);
+        struct Guard(Arc<Inner>, Option<IpAddr>);
         impl Drop for Guard {
             fn drop(&mut self) {
                 self.0.conns.fetch_sub(1, Ordering::AcqRel);
+                if let Some(ip) = self.1 {
+                    let mut m = self.0.ip_conns.lock().unwrap();
+                    if let Some(n) = m.get_mut(&ip) {
+                        *n = n.saturating_sub(1);
+                        if *n == 0 {
+                            m.remove(&ip);
+                        }
+                    }
+                }
             }
         }
-        let _g = Guard(self.0.clone());
+        let ip = observed_ip(&conn);
+        if let Some(ip) = ip {
+            let mut m = self.0.ip_conns.lock().unwrap();
+            let n = m.entry(ip).or_insert(0);
+            if *n >= cfg.max_conns_per_ip {
+                drop(m);
+                self.0.conns.fetch_sub(1, Ordering::AcqRel);
+                conn.close(1u32.into(), b"too many connections from this address");
+                return Ok(());
+            }
+            *n += 1;
+        }
+        let _g = Guard(self.0.clone(), ip);
+        self.0.stats.connections.fetch_add(1, Ordering::Relaxed);
         conn.set_max_concurrent_bi_streams(MAX_STREAMS_PER_CONN.into());
         conn.set_max_concurrent_uni_streams(0u32.into());
         let hello_done = Arc::new(std::sync::atomic::AtomicBool::new(false));

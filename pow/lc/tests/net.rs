@@ -419,7 +419,11 @@ async fn relay_controller_auto_enable_and_disable() {
     let yes = |pubip: &str| -> Arc<dyn Transport> { Arc::new(Canned(Response::Probe { observed: Some(pubip.into()), reachable: true })) };
     let no: Arc<dyn Transport> = Arc::new(Canned(Response::Probe { observed: Some("203.0.113.9".into()), reachable: false }));
     let s = fake_srv(None, Limits::default()).await;
-    let rcfg = RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), ..Default::default() };
+    let rcfg = RelayConfig { https_bind: ([127, 0, 0, 1], 0).into(), advertise_self_signed: true, ..Default::default() };
+    // a self-signed relay is never advertised by the self-test (nobody would trust it) unless allowed
+    let peers = Arc::new(FixedPeers(vec![("a".into(), ip("198.51.100.1"), yes("203.0.113.9")), ("b".into(), ip("192.0.2.1"), yes("203.0.113.9"))]));
+    let mut ctl = RelayController::new(RelayChoice::Auto, RelayConfig { advertise_self_signed: false, ..rcfg.clone() }, None, HelloLog::default(), s.svc.clone(), s.ep.clone(), peers);
+    assert!(matches!(ctl.step().await, RelayState::Failed(_)));
 
     // two reachable answers from different /16s: relay enabled and advertised
     let peers = Arc::new(FixedPeers(vec![("a".into(), ip("198.51.100.1"), yes("203.0.113.9")), ("b".into(), ip("192.0.2.1"), yes("203.0.113.9"))]));
@@ -452,6 +456,13 @@ fn reachability_decision() {
     assert!(matches!(decide(&[o("a", "1.1.1.1", "192.168.0.5", true), o("b", "2.2.2.2", "192.168.0.5", true)]), Verdict::Unreachable(_)), "private IP");
     assert!(matches!(decide(&[o("a", "1.1.1.1", "8.8.8.8", true), o("b", "2.2.2.2", "9.9.9.9", true)]), Verdict::Unreachable(_)), "disagreement");
     assert!(is_non_public("100.64.1.1".parse().unwrap()), "CGNAT");
+    // peers whose address is unknown (relayed) or private do not count as networks
+    let u = |id: &str, obs: &str| ProbeOutcome { peer_ip: None, peer_id: id.into(), observed: Some(obs.parse().unwrap()), reachable: true };
+    assert!(matches!(decide(&[u("a", "8.8.8.8"), u("b", "8.8.8.8")]), Verdict::Unreachable(_)), "two relayed sybils");
+    assert!(matches!(decide(&[o("a", "1.1.1.1", "8.8.8.8", true), u("b", "8.8.8.8")]), Verdict::Unreachable(_)));
+    assert!(matches!(decide(&[o("a", "10.0.0.1", "8.8.8.8", true), o("b", "1.1.1.1", "8.8.8.8", true)]), Verdict::Unreachable(_)), "private peer");
+    assert!(matches!(decide(&[o("a", "1.1.1.1", "100.100.1.1", true), o("b", "2.2.2.2", "100.100.1.1", true)]), Verdict::Unreachable(_)), "CGNAT observed");
+    assert!(matches!(decide(&[o("a", "2001:db8:1::1", "8.8.8.8", true), o("b", "2001:db9::1", "8.8.8.8", true)]), Verdict::Reachable { .. }), "IPv6 /32s");
 }
 
 #[test]
@@ -563,3 +574,49 @@ async fn end_to_end_against_an_isolated_offline_node() {
 
 #[allow(dead_code)]
 fn _unused(_: NodeAddr) {}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gossip_floods_and_garbage_announcements_are_contained() {
+    use sm64coin_lc::endpoint::sign_announcement;
+    let s = fake_srv(None, Limits::default()).await;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let ann = |relay: &str| {
+        let k = SecretKey::generate();
+        let addr = EndpointAddr::new(k.public()).with_relay_url(relay.parse().unwrap());
+        sign_announcement(&k, &addr, None, 1, 0, 1, now)
+    };
+    // the server's known set fills up and then keeps what it has (fresh ids are free; they must not push servers out)
+    let first = ann("https://relay.example.org");
+    assert!(s.svc.add_known(first.clone()));
+    for _ in 0..80 {
+        s.svc.add_known(ann("https://relay.example.org"));
+    }
+    let known = match s.svc.announcement() {
+        Some(_) => {
+            let c = client_ep(None).await;
+            let t = IrohTransport::new(c.clone(), direct_addr(&s.ep), GENESIS);
+            let r = t.request(&Request::GetNodes { max: MAX_NODES }, T).await.unwrap();
+            c.close().await;
+            match r {
+                Response::Nodes(v) => v,
+                other => panic!("{other:?}"),
+            }
+        }
+        None => vec![],
+    };
+    assert!(known.len() <= MAX_NODES as usize);
+    assert!(known.iter().any(|a| a.endpoint_id == first.endpoint_id), "the first known server is kept");
+    // signed garbage is refused: a non-https relay, too many addresses
+    let mut bad = ann("https://relay.example.org");
+    bad.relay_url = Some("http://evil.example".into());
+    assert!(bad.validate().is_err());
+    let mut many = ann("https://relay.example.org");
+    many.direct_addrs = (0..20).map(|i| format!("192.0.2.{i}:1000")).collect();
+    assert!(many.validate().is_err());
+    assert!(!s.svc.add_known(many));
+    // a client takes at most a few new nodes from one answer
+    let client = Client::new(NodeList::new(), Arc::new(IrohConnector::new(client_ep(None).await, GENESIS)), Arc::new(SystemEnv));
+    let flood: Vec<_> = (0..50).map(|_| ann("https://relay.example.org")).collect();
+    assert_eq!(client.learn(&flood), LEARN_PER_ANSWER);
+    s.router.shutdown().await.unwrap();
+}
