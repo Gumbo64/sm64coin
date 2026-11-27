@@ -12,7 +12,8 @@ export const looksLikeAddress = (a) => /^SM6[a-zA-Z0-9]{90,110}$/.test((a || '')
 export function checkLabel(label) {
   const v = String(label ?? '').trim();
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(v)) return { ok: false, value: v, error: 'A label has no control characters.' };
+  // control characters, and the invisible ones that reorder or hide text (bidi overrides / isolates, zero-width): wallet.rs refuses the same
+  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/.test(v)) return { ok: false, value: v, error: 'A label has no control characters.' };
   if ([...v].length > MAX_LABEL) return { ok: false, value: v, error: `A label is up to ${MAX_LABEL} characters.` };
   return { ok: true, value: v, error: '' };
 }

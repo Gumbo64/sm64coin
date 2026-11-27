@@ -482,14 +482,30 @@ fn address_ok(v: &Value) -> bool {
     r.get("valid").and_then(|x| x.as_bool()) == Some(true) && r.get("nettype").and_then(|x| x.as_str()).is_none_or(|n| n == "mainnet")
 }
 
+/// Invisible characters that reorder or hide text (bidi overrides and isolates, zero-width ones): a label must not use them to
+/// look like another one.
+fn is_hidden_format(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+}
+
 /// Address book entries: a label of up to 120 printable characters.
 fn check_book_params(p: &Value) -> Res<()> {
     if let Some(d) = str_param(p, "description") {
-        if d.chars().count() > 120 || d.chars().any(|c| c.is_control()) {
+        if d.chars().count() > 120 || d.chars().any(|c| c.is_control() || is_hidden_format(c)) {
             return Err(AppError::new("bad_label", "a label is up to 120 characters, no control characters"));
         }
     }
     Ok(())
+}
+
+/// The address an address-book call saves, to be validated first: always for an add; for an edit only when it sets the address
+/// (a label-only edit sends `address: ""` with `set_address: false`).
+fn book_address(method: &str, p: &Value) -> Option<String> {
+    let sets = method == "add_address_book" || p.get("set_address").and_then(|v| v.as_bool()) == Some(true);
+    if !sets {
+        return None;
+    }
+    Some(str_param(p, "address").unwrap_or("").to_string())
 }
 
 fn random_password() -> Zeroizing<String> {
@@ -621,6 +637,12 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
             ensure_sidecar(app, Some(rounds))?;
             let r = call(app, method, p, slow)?;
             if r.get("error").is_none() {
+                if method != "open_wallet" {
+                    // a new wallet under the name of an old one (deleted by hand): the old wallet's PIN must not stay
+                    if let Ok(pp) = pin_path(&app.dirs, &name) {
+                        walletpin::remove(&pp);
+                    }
+                }
                 remember(app, &name, &pw);
                 // Made here (or opened with an explicit value): remember the rounds, so the next start opens it.
                 if method != "open_wallet" || kdf.is_some() {
@@ -679,7 +701,7 @@ fn wallet_call(handle: &AppHandle, method: &str, mut p: Value) -> Res<Value> {
                 }
                 "add_address_book" | "edit_address_book" => {
                     check_book_params(&p)?;
-                    if let Some(a) = str_param(&p, "address").map(String::from) {
+                    if let Some(a) = book_address(method, &p) {
                         // wallet2 would also resolve an OpenAlias name here: only a plain address of this chain is saved
                         ensure_sidecar(app, None)?;
                         let v = call(app, "validate_address", json!({"address": a, "any_net_type": false}), Duration::from_secs(20))?;
@@ -835,6 +857,12 @@ mod tests {
         assert!(check_book_params(&json!({"description": "Alice"})).is_ok());
         assert!(check_book_params(&json!({"description": "x".repeat(121)})).is_err());
         assert!(check_book_params(&json!({"description": "a\nb"})).is_err());
+        assert!(check_book_params(&json!({"description": "Alice\u{202e}ecilA"})).is_err(), "a bidi override");
+        assert!(check_book_params(&json!({"description": "Zoë 💰 東京"})).is_ok());
+        // a label-only edit (what the page's Rename sends) has no address to check; an add or an address edit always has one
+        assert_eq!(book_address("edit_address_book", &json!({"index": 0, "set_address": false, "address": "", "set_description": true, "description": "x"})), None);
+        assert_eq!(book_address("edit_address_book", &json!({"index": 0, "set_address": true, "address": "SM6x"})).as_deref(), Some("SM6x"));
+        assert_eq!(book_address("add_address_book", &json!({"description": "x"})).as_deref(), Some(""), "an add without an address is checked (and refused)");
         for m in ["get_address_book", "add_address_book", "edit_address_book", "delete_address_book"] {
             assert!(ALLOWED.contains(&m), "{m} is whitelisted");
         }

@@ -28,6 +28,8 @@ assert.ok(looksLikeAddress(A) && !looksLikeAddress('4AdU...') && !looksLikeAddre
 assert.deepEqual(checkLabel('  Alice '), { ok: true, value: 'Alice', error: '' });
 assert.equal(checkLabel('x'.repeat(MAX_LABEL + 1)).ok, false);
 assert.equal(checkLabel('a\nb').ok, false);
+assert.equal(checkLabel('Alice\u202eecilA').ok, false, 'a bidi override');
+assert.equal(checkLabel('Zoë 💰 東京').ok, true);
 assert.equal(checkLabel(undefined).ok, true);
 assert.equal(shortAddress(A), `${A.slice(0, 8)}…${A.slice(-6)}`);
 assert.deepEqual(normalize([{ index: 2, address: 'z', description: 'bob' }, { index: 0, address: 'y', description: '' }, { index: 1, address: 'x', description: 'Alice' }]).map((e) => e.index), [1, 2, 0], 'by label, unlabelled last');
