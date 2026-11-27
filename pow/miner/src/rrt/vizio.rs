@@ -57,19 +57,30 @@ fn send(link: &mut Link, line: &str) {
     }
 }
 
-/// A line from the miner's own stdin (the desktop app): `{"viz_on": bool}` or `{"mail": {...}}`.
+/// The mailbox keys the search reads (the desktop app checks each one's schema, desktop/src-tauri/src/vizfeed.rs).
+const MAIL_KEYS: &[&str] = &["goal", "cmds", "reqs"];
+/// The browser's mailbox is 2 MB (web/src/lib/webminer/board.js); a line over this is ignored.
+const MAX_INPUT: usize = 4 << 20;
+
+/// A line from the miner's own stdin (the desktop app): `{"viz_on": bool}` or `{"mail": {...}}`. Only those two shapes
+/// (and only the known mailbox keys) pass, re-serialised, to the step's child.
 pub fn input(line: &str) {
+    if line.len() > MAX_INPUT {
+        return;
+    }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
     let mut l = LINK.lock().unwrap();
     if let Some(b) = v.get("viz_on").and_then(|b| b.as_bool()) {
         l.viz_on = b;
+        send(&mut l, &serde_json::json!({ "viz_on": b }).to_string());
     }
     if let Some(m) = v.get("mail").and_then(|m| m.as_object()) {
-        for (k, x) in m {
+        let m: serde_json::Map<String, serde_json::Value> = m.iter().filter(|(k, _)| MAIL_KEYS.contains(&k.as_str())).map(|(k, x)| (k.clone(), x.clone())).collect();
+        for (k, x) in &m {
             l.mail.insert(k.clone(), x.clone());
         }
+        send(&mut l, &serde_json::json!({ "mail": m }).to_string());
     }
-    send(&mut l, line);
 }
 
 /// A new step's child: its stdin, and the current state replayed to it.
@@ -86,15 +97,20 @@ pub fn detach() {
 }
 
 /// A line of a step child's stdout: a viz frame is forwarded (true), anything else is the step's log (false).
+/// A frame is `MARK TAB kind TAB key TAB payload` with one of these kinds (child.rs `viz`, [`exchange`]); a line that merely
+/// starts with the mark is the step's log.
+const KINDS: &[&str] = &["viz", "state", "edges", "pert", "path", "hybrid_out"];
+
 pub fn child_line(line: &str) -> bool {
-    match line.strip_prefix(MARK) {
-        Some(rest) => {
-            let out = std::io::stdout();
-            let _ = writeln!(out.lock(), "{MARK}\t0{rest}");
-            true
-        }
-        None => false,
+    let Some(rest) = line.strip_prefix(MARK).and_then(|r| r.strip_prefix('\t')) else { return false };
+    let mut p = rest.splitn(3, '\t');
+    let (Some(kind), Some(_key), Some(_payload)) = (p.next(), p.next(), p.next()) else { return false };
+    if !KINDS.contains(&kind) {
+        return false;
     }
+    let out = std::io::stdout();
+    let _ = writeln!(out.lock(), "{MARK}\t0\t{rest}");
+    true
 }
 
 // ---------------------------------------------------------------- child (rrtrun)
@@ -215,5 +231,19 @@ mod tests {
         assert!(!l.viz_on);
         assert_eq!(l.mail.get("goal").unwrap()["level"], 9);
         assert!(l.mail.contains_key("cmds"));
+        drop(l);
+        super::input(r#"{"mail":{"evil":1}}"#);
+        assert!(!super::LINK.lock().unwrap().mail.contains_key("evil"));
+    }
+
+    #[test]
+    fn only_well_formed_frames_are_forwarded() {
+        assert!(super::child_line("\u{1}VIZ\tviz\t\t{}"));
+        assert!(super::child_line("\u{1}VIZ\tstate\tk\tZm9v"));
+        assert!(!super::child_line("\u{1}VIZ"));
+        assert!(!super::child_line("\u{1}VIZnot a frame"));
+        assert!(!super::child_line("\u{1}VIZ\tother\tk\tx"));
+        assert!(!super::child_line("\u{1}VIZ\tviz\tk"));
+        assert!(!super::child_line("root: frame 0"));
     }
 }

@@ -333,10 +333,10 @@ async fn miner_stop(app: AppHandle) -> Res<miner::MinerInfo> {
 /// The page switches the miner's visualisation feed on or off (the search keeps running; off it only counts frames).
 #[tauri::command]
 fn miner_viz_on(state: State<'_, App>, on: bool) -> Res<()> {
-    if let Some(m) = state.miner.lock().unwrap().as_ref() {
-        m.send(&serde_json::json!({ "viz_on": on }));
+    match state.miner.lock().unwrap().as_ref() {
+        Some(m) => m.viz_on(on),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// The page's mailbox for the running searches (pow/miner/src/rrt/vizio.rs): an object with any of `goal` (the sampling
@@ -344,10 +344,10 @@ fn miner_viz_on(state: State<'_, App>, on: bool) -> Res<()> {
 /// `reqs` (node path requests). Keys replace; the miner keeps the latest and gives it to every step.
 #[tauri::command]
 fn miner_viz_mail(state: State<'_, App>, mail: serde_json::Map<String, serde_json::Value>) -> Res<()> {
-    if let Some(m) = state.miner.lock().unwrap().as_ref() {
-        m.send(&serde_json::json!({ "mail": mail }));
+    match state.miner.lock().unwrap().as_ref() {
+        Some(m) => m.mail(&mail),
+        None => Err(AppError::new("miner_not_running", "the native miner is not running")),
     }
-    Ok(())
 }
 
 #[tauri::command]

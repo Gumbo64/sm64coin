@@ -423,19 +423,25 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
     let mut logger = None;
     let mut child = if viz {
         let mut child = cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn()?;
-        if let Some(i) = child.stdin.take() {
-            vizio::attach(i);
-        }
         let out = child.stdout.take().expect("piped");
         let mut file = crate::sys::fs::File::options().append(true).create(true).open(&lf)?;
+        // The reader drains the pipe whatever comes (bytes that are not UTF-8 are logged lossily, never end the loop: a
+        // stopped reader would block the step on a full pipe), and runs before the stdin replay below.
         logger = Some(std::thread::spawn(move || {
             use std::io::{BufRead, Write};
-            for line in std::io::BufReader::new(out).lines().map_while(|l| l.ok()) {
+            let mut r = std::io::BufReader::new(out);
+            let mut buf = Vec::new();
+            while r.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+                let line = String::from_utf8_lossy(buf.strip_suffix(b"\n").unwrap_or(&buf));
                 if !vizio::child_line(&line) {
                     let _ = writeln!(file, "{line}");
                 }
+                buf.clear();
             }
         }));
+        if let Some(i) = child.stdin.take() {
+            vizio::attach(i);
+        }
         child
     } else {
         cmd.stdout(logfile).spawn()?
