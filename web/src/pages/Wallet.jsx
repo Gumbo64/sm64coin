@@ -154,6 +154,7 @@ function WebWallet() {
     await forgetStored();
     if (q && q.kind === 'android') { try { await getPlatform().biometric.forget(); } catch { /* gone already */ } }
     setQuickState(null);
+    setGeneratedHint(rec?.address || address, false);
     miner.forgetWallet(rec?.address || address);
     setRec(null); setStage('none');
   };
