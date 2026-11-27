@@ -28,14 +28,14 @@ fn bootstrap_from(json: &str) -> Vec<NodeAddr> {
     parse_bootstrap(json)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|NodeAddr::Http { url }| normalize(&url).map(|url| NodeAddr::Http { url }))
+        .filter_map(|NodeAddr::Http { url, tip }| normalize(&url).map(|url| NodeAddr::Http { url, tip }))
         .collect()
 }
 
 /// The first https public node (what the page shows as "the public node").
 #[cfg(test)]
 pub fn public_node() -> Option<String> {
-    bootstrap_nodes().into_iter().next().map(|NodeAddr::Http { url }| url)
+    bootstrap_nodes().into_iter().next().map(|NodeAddr::Http { url, .. }| url)
 }
 
 /// The remote nodes `remote_rpc` (and the wallet's `set_daemon`) may reach: the public node(s), and one https node the user
@@ -58,7 +58,7 @@ impl Remote {
         Remote::with_net(file, saved.clone(), Net::new(&bootstrap_nodes(), saved.as_deref(), nodes_file))
     }
     pub fn with_net(file: Option<PathBuf>, saved: Option<String>, net: Arc<Net>) -> Remote {
-        let public = bootstrap_nodes().into_iter().map(|NodeAddr::Http { url }| url).collect();
+        let public = bootstrap_nodes().into_iter().map(|NodeAddr::Http { url, .. }| url).collect();
         Remote { public, saved: Mutex::new(saved), file, net, proxy: OnceLock::new() }
     }
     fn is_public(&self, u: &str) -> bool {
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn bootstrap_lists_https_entries_only() {
         let b = bootstrap_from(r#"{"url":"https://eboy.au","nodes":["https://eboy.au","https://evil.example@x","http://plain.example","iroh:abababababababababababababababababababababababababababababababab@https://relay.example"],"comment":"x"}"#);
-        assert!(b.contains(&NodeAddr::Http { url: "https://eboy.au".into() }));
+        assert!(b.contains(&NodeAddr::http("https://eboy.au".into())));
         assert_eq!(b.len(), 2, "the url entry repeats nodes[0]; an old iroh entry and a userinfo host are dropped, plain http is not https: {b:?}");
         // the compiled-in file parses, with an https node for the page and every entry well-formed
         let c = bootstrap_nodes();

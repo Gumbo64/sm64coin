@@ -15,6 +15,8 @@ pub const MAX_RESPONSE: u64 = 64 << 20;
 pub struct HttpUpstream {
     base: String,
     agent: ureq::Agent,
+    /// Where the tip stream is when it is not `<base>/lc/tip` (the light-client service on its own HTTPS port).
+    tip_url: Option<String>,
 }
 
 impl HttpUpstream {
@@ -23,7 +25,12 @@ impl HttpUpstream {
         if !(base.starts_with("http://") || base.starts_with("https://")) || base.contains(['@', '?', '#', ' ']) {
             return Err(UpError::NotAllowed("a node must be an http(s):// address".into()));
         }
-        Ok(Self { base: base.trim_end_matches('/').to_string(), agent: ureq::AgentBuilder::new().redirects(0).build() })
+        Ok(Self { base: base.trim_end_matches('/').to_string(), agent: ureq::AgentBuilder::new().redirects(0).build(), tip_url: None })
+    }
+    /// The tip stream at `url` (a full URL) instead of `<base>/lc/tip`.
+    pub fn with_tip_url(mut self, url: Option<String>) -> Self {
+        self.tip_url = url;
+        self
     }
     pub fn base(&self) -> &str {
         &self.base
@@ -81,12 +88,14 @@ impl crate::client::TipStream for SseStream {
 }
 
 impl HttpUpstream {
-    /// GET `/lc/tip` (`Accept: text/event-stream`): `Unsupported` when the node has no such endpoint (404/405/501), else a stream
-    /// that ends when the connection does (the caller reconnects). The server sends a `ka` event every 30 s, so 95 s of silence
-    /// is a dead connection.
+    /// GET `/lc/tip` (`Accept: text/event-stream`; at the node's advertised tip URL when it has one): `Unsupported` when the node
+    /// has no such endpoint (404/405/501; for an advertised tip URL also when it cannot be reached, e.g. a closed port: that
+    /// must not count against the node's RPC), else a stream that ends when the connection does (the caller reconnects). The
+    /// server sends a `ka` event every 30 s, so 95 s of silence is a dead connection.
     async fn open_sse(&self) -> Result<Box<dyn crate::client::TipStream>, crate::client::TransportError> {
         use crate::client::TransportError;
-        let url = format!("{}{}", self.base, SSE_PATH);
+        let advertised = self.tip_url.is_some();
+        let url = self.tip_url.clone().unwrap_or_else(|| format!("{}{}", self.base, SSE_PATH));
         let agent = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(10)).timeout_read(Duration::from_secs(95)).build();
         let resp = tokio::task::spawn_blocking(move || agent.get(&url).set("Accept", "text/event-stream").call())
             .await
@@ -95,6 +104,7 @@ impl HttpUpstream {
             Ok(r) => r,
             Err(ureq::Error::Status(404 | 405 | 501, _)) => return Err(TransportError::Unsupported),
             Err(ureq::Error::Status(c, _)) => return Err(TransportError::Protocol(format!("HTTP {c}"))),
+            Err(_) if advertised => return Err(TransportError::Unsupported),
             Err(e) => return Err(TransportError::Connect(e.to_string())),
         };
         if !resp.content_type().starts_with("text/event-stream") {

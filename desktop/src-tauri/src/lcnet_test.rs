@@ -88,7 +88,7 @@ fn start_daemon(tag: &str) -> Option<Daemon> {
 }
 
 fn http_of(d: &Daemon) -> NodeAddr {
-    NodeAddr::Http { url: format!("http://127.0.0.1:{}", d.rpc) }
+    NodeAddr::http(format!("http://127.0.0.1:{}", d.rpc))
 }
 
 /// A tip service (the shared watcher and Server-Sent Events, as `sm64coin-lc serve` runs it) in front of `d`, on a loopback port; the
@@ -100,11 +100,11 @@ async fn tip_service(d: &Daemon) -> NodeAddr {
     tokio::spawn(feed.clone().run(|| false));
     let (addr, task) = serve(feed, SseConfig::default()).await.unwrap();
     std::mem::forget(task);
-    NodeAddr::Http { url: format!("http://{addr}") }
+    NodeAddr::http(format!("http://{addr}"))
 }
 
 fn dead_http() -> NodeAddr {
-    NodeAddr::Http { url: format!("http://127.0.0.1:{}", free_port()) } // nothing listens
+    NodeAddr::http(format!("http://127.0.0.1:{}", free_port())) // nothing listens
 }
 
 fn net_with(list: &[(NodeAddr, Source)]) -> Arc<Net> {
@@ -411,7 +411,7 @@ fn liar_for(real: &Daemon) -> Liar {
             let _ = req.respond(tiny_http::Response::from_data(out).with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap()));
         }
     });
-    Liar { server, addr: NodeAddr::Http { url: format!("http://127.0.0.1:{port}") } }
+    Liar { server, addr: NodeAddr::http(format!("http://127.0.0.1:{port}")) }
 }
 
 fn wait_for(d: &Daemon) -> [u8; 32] {

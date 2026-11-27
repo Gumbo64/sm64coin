@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createLightnet, bootstrapEntries, firstHttpNode, Unavailable, SUBMIT_METHODS } from './lightnet.js';
+import { createLightnet, bootstrapEntries, bootstrapTip, firstHttpNode, Unavailable, SUBMIT_METHODS } from './lightnet.js';
 
 const ID = 'ab'.repeat(32);
 // --- bootstrap parsing (public-node.json: nodes[] and the old url key)
@@ -10,6 +10,14 @@ assert.deepEqual(bootstrapEntries(null), []);
 assert.deepEqual(bootstrapEntries({ nodes: 'nope' }), []);
 assert.equal(firstHttpNode({ nodes: [`iroh:${ID}`, 'https://a.example/'] }), 'https://a.example');
 assert.equal(firstHttpNode({ nodes: [`iroh:${ID}`] }), '');
+// entries with a tip URL
+const withTip = { url: 'https://eboy.au', nodes: [{ url: 'https://eboy.au/', tip: 'https://eboy.au:16490/lc/tip' }, 'https://b.example', { url: 'https://c.example', tip: 'javascript:x' }, { url: 'https://d.example', tip: 'https://u@evil/lc/tip' }, { tip: 'https://x.example/lc/tip' }] };
+assert.deepEqual(bootstrapEntries(withTip), ['https://eboy.au/', 'https://b.example', 'https://c.example', 'https://d.example', 'https://eboy.au']);
+assert.equal(firstHttpNode(withTip), 'https://eboy.au');
+assert.equal(bootstrapTip(withTip, 'https://eboy.au'), 'https://eboy.au:16490/lc/tip');
+assert.equal(bootstrapTip(withTip, 'https://eboy.au/'), 'https://eboy.au:16490/lc/tip');
+for (const n of ['https://b.example', 'https://c.example', 'https://d.example', 'https://other.example', '']) assert.equal(bootstrapTip(withTip, n), '', n);
+assert.equal(bootstrapTip(null, 'https://eboy.au'), '');
 
 // --- a fake wasm module
 function fakeModule({ rpc, submit, allow = (m) => m !== 'stop_daemon', createFails = false } = {}) {

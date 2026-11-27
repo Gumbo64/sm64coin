@@ -26,7 +26,7 @@ struct BrowserConnector {
 
 impl Connector for BrowserConnector {
     fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>> {
-        let NodeAddr::Http { url } = addr;
+        let NodeAddr::Http { url, .. } = addr;
         let mut m = self.http.lock().unwrap();
         Some(m.entry(url.clone()).or_insert_with(|| Arc::new(UpstreamTransport(FetchUpstream::new(url)))).clone())
     }

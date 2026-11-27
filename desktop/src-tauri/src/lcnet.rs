@@ -159,7 +159,7 @@ impl TipHub {
 
 pub fn transport_of(addr: &NodeAddr) -> &'static str {
     match addr {
-        NodeAddr::Http { url } if url.starts_with("https://") => "https",
+        NodeAddr::Http { url, .. } if url.starts_with("https://") => "https",
         NodeAddr::Http { .. } => "http",
     }
 }
@@ -170,22 +170,23 @@ struct AppConnector {
 }
 
 impl AppConnector {
-    fn http_entry(&self, url: &str) -> Option<(HttpUpstream, Arc<dyn Transport>)> {
+    fn http_entry(&self, url: &str, tip: Option<&str>) -> Option<(HttpUpstream, Arc<dyn Transport>)> {
         let mut m = self.http.lock().unwrap();
-        if let Some(e) = m.get(url) {
+        let key = format!("{url}\n{}", tip.unwrap_or(""));
+        if let Some(e) = m.get(&key) {
             return Some(e.clone());
         }
-        let up = HttpUpstream::new(url).ok()?;
+        let up = HttpUpstream::new(url).ok()?.with_tip_url(tip.map(str::to_string));
         let e: (HttpUpstream, Arc<dyn Transport>) = (up.clone(), Arc::new(UpstreamTransport(up)));
-        m.insert(url.to_string(), e.clone());
+        m.insert(key, e.clone());
         Some(e)
     }
 }
 
 impl Connector for AppConnector {
     fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>> {
-        let NodeAddr::Http { url } = addr;
-        self.http_entry(url).map(|e| e.1)
+        let NodeAddr::Http { url, tip } = addr;
+        self.http_entry(url, tip.as_deref()).map(|e| e.1)
     }
 }
 
@@ -241,7 +242,7 @@ impl Net {
             list.add(a.clone(), Source::Bootstrap, now);
         }
         if let Some(s) = saved {
-            list.add(NodeAddr::Http { url: s.to_string() }, Source::Manual, now);
+            list.add(NodeAddr::http(s.to_string()), Source::Manual, now);
         }
         let conn = Arc::new(AppConnector { http: Mutex::new(HashMap::new()) });
         let verifier = Arc::new(Verifier::default());
@@ -328,10 +329,10 @@ impl Net {
         let now = now_secs();
         self.client.with_list(|l| {
             if let Some(o) = old {
-                l.remove(&NodeAddr::Http { url: o.to_string() }.key());
+                l.remove(&NodeAddr::http(o.to_string()).key());
             }
             if let Some(n) = new {
-                l.add(NodeAddr::Http { url: n.to_string() }, Source::Manual, now);
+                l.add(NodeAddr::http(n.to_string()), Source::Manual, now);
             }
         });
     }

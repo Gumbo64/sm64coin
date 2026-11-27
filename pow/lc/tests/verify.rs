@@ -412,7 +412,7 @@ fn net(nodes: Vec<(&str, FakeNode)>) -> (Client, Vec<String>) {
     let mut list = NodeList::new();
     let mut named = Vec::new();
     for (n, node) in nodes {
-        let addr = NodeAddr::Http { url: format!("http://{n}") };
+        let addr = NodeAddr::http(format!("http://{n}"));
         list.add(addr.clone(), Source::Manual, 1);
         named.push((addr.key(), node));
     }

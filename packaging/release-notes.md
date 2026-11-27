@@ -19,6 +19,19 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.6: instant blocks from public nodes again
+
+Same chain as 0.5.0 to 0.5.5: no reset, upgrade in place.
+
+- **Tip stream over HTTPS on its own port**: `sm64coin-lc serve --tls-cert FILE --tls-key FILE` serves the tip stream
+  (`GET /lc/tip`) as HTTPS straight to the public (default `[::]:16490`), so a node without a reverse proxy (a Raspberry
+  Pi behind a router forward) pushes new blocks to browsers and apps again. The certificate files (certbot's) are reloaded
+  when they change (and on SIGHUP): a renewal needs no restart. Per-IP caps count the real client address.
+- **`tip` in the bootstrap list**: an entry of `public-node.json` may be `{"url": "https://eboy.au", "tip":
+  "https://eboy.au:16490/lc/tip"}`. The website and the apps open the stream there; a node without `tip` keeps the
+  `<node>/lc/tip` attempt behind its reverse proxy. An unreachable tip address means polling, never a strike against the node.
+- WALLET_ITEMS_PLACEHOLDER
+
 ### 0.5.5: the light-client network
 
 Same chain as 0.5.0 to 0.5.4: no reset, upgrade in place.

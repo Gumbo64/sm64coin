@@ -6,7 +6,7 @@
 // (--rpc-access-control-origins, see scripts/public-node.sh).
 // Wallet RPC always goes through the proxy.
 import { probeChain, chainNote, GENESIS } from './nodechain.js';
-import { configureLightnet, lightnet, firstHttpNode } from './lightnet.js';
+import { configureLightnet, lightnet, firstHttpNode, bootstrapTip } from './lightnet.js';
 import { getPlatform } from '../platform/index.js';
 const KEY = 'sm64coin.node';
 const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
@@ -23,6 +23,8 @@ let publicNode = '';
 let bootstrap = null; // the parsed public-node.json
 let fallback = false; // this visit uses the public node
 export const getPublicNode = () => publicNode;
+/** Where `node` serves its tip stream when its public-node.json entry says so (an HTTPS port of its own), else ''. */
+export const tipUrlFor = (node) => bootstrapTip(bootstrap, node);
 export const usingPublicFallback = () => fallback;
 let note = ''; // visible warning about the node's chain (old v0.2 node), '' for none
 export const nodeNote = () => (usingPublicNode() ? `The local node is not running (yet): this app reads the chain from the public node ${publicNode}. Mining needs the local node.` : note);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { openSse, SSE_SILENCE_MS, createTipStore, tipFromInfo, tipFromPush, POLL_MS, MIN_REPOLL_MS, PUSH_RETRY_MS, PUSH_RETRY_MAX_MS, FALLBACK_JITTER_MS } from './tip.js';
+import { tipStreamUrls, openSse, SSE_SILENCE_MS, createTipStore, tipFromInfo, tipFromPush, POLL_MS, MIN_REPOLL_MS, PUSH_RETRY_MS, PUSH_RETRY_MAX_MS, FALLBACK_JITTER_MS } from './tip.js';
 
 // ---- parsing
 {
@@ -330,3 +330,7 @@ const total = (w) => w.calls.info + w.calls.header;
   assert.ok(second >= 1, 'the next source was tried within seconds');
 }
 console.log('tip ok');
+
+// --- which URLs a node's stream is looked for at
+assert.deepEqual(tipStreamUrls('https://eboy.au', 'https://eboy.au:16490/lc/tip'), ['https://eboy.au:16490/lc/tip', 'https://eboy.au/lc/tip']);
+assert.deepEqual(tipStreamUrls('https://n.example', ''), ['https://n.example/lc/tip']);

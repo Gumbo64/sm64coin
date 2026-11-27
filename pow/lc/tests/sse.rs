@@ -138,12 +138,12 @@ async fn the_http_client_follows_the_tip_and_falls_back_without_the_endpoint() {
     struct C;
     impl Connector for C {
         fn transport(&self, a: &NodeAddr) -> Option<Arc<dyn Transport>> {
-            let NodeAddr::Http { url } = a;
+            let NodeAddr::Http { url, .. } = a;
             Some(Arc::new(UpstreamTransport(HttpUpstream::new(url).unwrap())))
         }
     }
     let mut list = NodeList::new();
-    list.add(NodeAddr::Http { url: base.clone() }, Source::Bootstrap, 0);
+    list.add(NodeAddr::http(base.clone()), Source::Bootstrap, 0);
     let client = Arc::new(Client::new(list, Arc::new(C), Arc::new(SystemEnv)));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let cl = client.clone();
@@ -170,8 +170,22 @@ async fn the_http_client_follows_the_tip_and_falls_back_without_the_endpoint() {
     let t2 = UpstreamTransport(HttpUpstream::new(&format!("http://{plain}")).unwrap());
     assert!(matches!(t2.open_tip_stream().await, Err(TransportError::Unsupported)));
     let mut list = NodeList::new();
-    list.add(NodeAddr::Http { url: format!("http://{plain}") }, Source::Bootstrap, 0);
+    list.add(NodeAddr::http(format!("http://{plain}")), Source::Bootstrap, 0);
     let client = Client::new(list, Arc::new(C), Arc::new(SystemEnv));
     let end = tokio::time::timeout(Duration::from_secs(10), client.watch_tip(|_, _| panic!("a plain node pushes nothing"))).await.expect("returns");
     assert!(matches!(end, WatchEnd::NoPush));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_advertised_tip_url_is_used_instead_of_the_nodes_own_and_a_dead_one_does_not_count_against_the_node() {
+    let (_up, _feed, addr, _p, _t) = start(8).await;
+    // the node's RPC address serves no stream (nothing listens there); its advertised tip URL does
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+    let t = UpstreamTransport(HttpUpstream::new(&format!("http://{dead}")).unwrap().with_tip_url(Some(format!("http://{addr}/lc/tip"))));
+    let mut st = t.open_tip_stream().await.expect("the advertised tip URL");
+    let first = tokio::time::timeout(Duration::from_secs(5), st.next()).await.unwrap().unwrap().unwrap();
+    assert_eq!(first.height, 4);
+    // an advertised tip URL that cannot be reached: not supported (poll), not an RPC failure
+    let t = UpstreamTransport(HttpUpstream::new(&format!("http://{addr}")).unwrap().with_tip_url(Some(format!("http://{dead}/lc/tip"))));
+    assert!(matches!(t.open_tip_stream().await, Err(TransportError::Unsupported)));
 }

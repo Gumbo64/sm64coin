@@ -16,15 +16,31 @@ const EWMA_ALPHA: f64 = 0.2;
 /// How to reach a node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeAddr {
-    /// A JSON-RPC node (`https://host[:port]`, or plain http for list members).
-    Http { url: String },
+    /// A JSON-RPC node (`https://host[:port]`, or plain http for list members). `tip`: where this node serves its tip stream
+    /// (Server-Sent Events) when that is not `<url>/lc/tip` (the light-client service on its own HTTPS port, `sm64coin-lc serve
+    /// --tls-cert`). Not part of the node's identity ([`NodeAddr::key`]).
+    Http {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tip: Option<String>,
+    },
 }
 
 impl NodeAddr {
+    /// A node at `url` whose tip stream is at the usual `<url>/lc/tip`.
+    pub fn http(url: String) -> Self {
+        NodeAddr::Http { url, tip: None }
+    }
+    /// The tip stream's URL when it differs from `<url>/lc/tip`.
+    pub fn tip_url(&self) -> Option<&str> {
+        match self {
+            NodeAddr::Http { tip, .. } => tip.as_deref(),
+        }
+    }
     /// Stable identity: the URL.
     pub fn key(&self) -> String {
         match self {
-            NodeAddr::Http { url } => format!("http:{}", url.trim_end_matches('/')),
+            NodeAddr::Http { url, .. } => format!("http:{}", url.trim_end_matches('/')),
         }
     }
 }
@@ -275,25 +291,47 @@ impl NodeList {
     }
 }
 
-/// The bootstrap list shipped with a release: `{"nodes": [..]}` or the old `{"url": ".."}`; entries are https/http URLs
-/// (anything else, such as an old `iroh:` entry, is skipped).
+/// The bootstrap list shipped with a release: `{"nodes": [..]}` or the old `{"url": ".."}`. An entry is a URL string or an
+/// object `{"url": "https://host", "tip": "https://host:16490/lc/tip"}` (`tip`: where the node serves its tip stream, optional);
+/// entries that are not https/http URLs (such as an old `iroh:` entry) are skipped, and so is a `tip` that is not one.
 pub fn parse_bootstrap(json: &str) -> Result<Vec<NodeAddr>, serde_json::Error> {
     #[derive(Deserialize)]
     struct B {
-        nodes: Option<Vec<String>>,
-        url: Option<String>,
+        nodes: Option<Vec<serde_json::Value>>,
+        url: Option<serde_json::Value>,
     }
     let b: B = serde_json::from_str(json)?;
-    let mut v: Vec<String> = b.nodes.unwrap_or_default();
+    let mut v = b.nodes.unwrap_or_default();
     v.extend(b.url);
-    Ok(v.into_iter().filter_map(|s| parse_node_spec(&s)).collect())
+    Ok(v.into_iter()
+        .filter_map(|e| match e {
+            serde_json::Value::String(s) => parse_node_spec(&s),
+            serde_json::Value::Object(o) => {
+                let mut a = parse_node_spec(o.get("url")?.as_str()?)?;
+                let NodeAddr::Http { tip, .. } = &mut a;
+                *tip = o.get("tip").and_then(|t| t.as_str()).and_then(parse_tip_spec);
+                Some(a)
+            }
+            _ => None,
+        })
+        .collect())
+}
+
+/// A tip stream address: `https://host[:port]/path` (or `http://`), no credentials, query or fragment.
+pub fn parse_tip_spec(s: &str) -> Option<String> {
+    let s = s.trim();
+    let rest = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://"))?;
+    if rest.is_empty() || rest.starts_with('/') || s.len() > 300 || s.contains(['@', '?', '#', ' ', '\\']) {
+        return None;
+    }
+    Some(s.to_string())
 }
 
 /// `https://host` or `http://host:port`.
 pub fn parse_node_spec(s: &str) -> Option<NodeAddr> {
     let s = s.trim();
     if (s.starts_with("https://") || s.starts_with("http://")) && !s.contains(['@', '?', '#', ' ']) {
-        return Some(NodeAddr::Http { url: s.trim_end_matches('/').to_string() });
+        return Some(NodeAddr::http(s.trim_end_matches('/').to_string()));
     }
     None
 }
@@ -316,7 +354,7 @@ pub fn parse_public_nodes(body: &[u8], max: usize) -> Vec<NodeAddr> {
                 std::net::IpAddr::V4(a) => format!("http://{a}:{port}"),
                 std::net::IpAddr::V6(a) => format!("http://[{a}]:{port}"),
             };
-            let addr = NodeAddr::Http { url };
+            let addr = NodeAddr::http(url);
             if !out.contains(&addr) && out.len() < max {
                 out.push(addr);
             }
@@ -340,7 +378,7 @@ mod tests {
     use super::*;
 
     fn http(n: u32) -> NodeAddr {
-        NodeAddr::Http { url: format!("https://n{n}.example") }
+        NodeAddr::http(format!("https://n{n}.example"))
     }
 
     #[test]
@@ -450,6 +488,35 @@ mod tests {
         assert!(parse_bootstrap(r#"{"url":"https://eboy.au"}"#).unwrap().len() == 1);
         assert!(parse_node_spec(&format!("iroh:{id}")).is_none());
         assert!(parse_node_spec("ftp://x").is_none());
+    }
+
+    #[test]
+    fn bootstrap_entries_may_carry_a_tip_url() {
+        let b = parse_bootstrap(
+            r#"{"url":"https://eboy.au","nodes":[{"url":"https://eboy.au/","tip":"https://eboy.au:16490/lc/tip"},"https://b.example",{"url":"https://c.example","tip":"ftp://x"},{"url":"https://d.example"},{"tip":"https://x.example/lc/tip"},{"url":"https://e.example","tip":"https://u@evil/lc/tip"},7]}"#,
+        )
+        .unwrap();
+        let tips: Vec<_> = b.iter().map(|a| (a.key(), a.tip_url().map(str::to_string))).collect();
+        assert_eq!(
+            tips,
+            [
+                ("http:https://eboy.au".to_string(), Some("https://eboy.au:16490/lc/tip".to_string())),
+                ("http:https://b.example".to_string(), None),
+                ("http:https://c.example".to_string(), None),
+                ("http:https://d.example".to_string(), None),
+                ("http:https://e.example".to_string(), None),
+                ("http:https://eboy.au".to_string(), None),
+            ]
+        );
+        // a record saved before the field existed loads, and the tip survives a save
+        let old = r#"{"records":[{"addr":{"Http":{"url":"https://a.example"}},"source":"Bootstrap","first_seen":1,"last_ok":0,"ewma_latency_ms":0.0,"ok_rate":0.5,"height":0,"strikes":0,"banned_until":0,"tls":null}]}"#;
+        assert_eq!(NodeList::from_json(old).unwrap().len(), 1);
+        let mut l = NodeList::new();
+        l.add(b[0].clone(), Source::Bootstrap, 1);
+        assert_eq!(NodeList::from_json(&l.to_json()).unwrap().records()[0].addr.tip_url(), Some("https://eboy.au:16490/lc/tip"));
+        // the bootstrap's address replaces a stored one: a tip that was added or dropped follows the list
+        assert!(l.add(NodeAddr::http("https://eboy.au".into()), Source::Bootstrap, 2));
+        assert_eq!(l.records()[0].addr.tip_url(), None);
     }
 
     #[test]

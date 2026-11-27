@@ -1,6 +1,7 @@
 # systemd unit for the SM64Coin light-client service (sm64coin-lc) beside a node. It pushes the chain tip to the apps and the
-# website as Server-Sent Events (GET /lc/tip) from the local node's RPC; everything is plain HTTP(S). It listens on a local port
-# only: your HTTPS reverse proxy is the public address (see below). Only allowlisted RPC calls are ever made.
+# website as Server-Sent Events (GET /lc/tip) from the local node's RPC; everything is plain HTTP(S). As installed it listens on a
+# local port only and your HTTPS reverse proxy is the public address (see below); or it serves HTTPS itself (TLS section below).
+# Only allowlisted RPC calls are ever made.
 # Install (the node unit sm64coin-node.service is installed first, see its header; same user and folder). The service reads
 # the node's RESTRICTED RPC on 127.0.0.1:16489 (it refuses an unrestricted one: that has no request caps and shows Dandelion++
 # stem transactions), so give the node one first:
@@ -10,6 +11,16 @@
 # The stream is on http://127.0.0.1:16490/lc/tip. Forward /lc/tip from your public https name to it with buffering OFF:
 #   Caddy:  reverse_proxy /lc/tip 127.0.0.1:16490 { flush_interval -1 }
 #   nginx:  location /lc/tip { proxy_pass http://127.0.0.1:16490; proxy_buffering off; proxy_read_timeout 1h; }
+# TLS directly, no proxy (a node whose router forwards TCP 16490 to it): the service reads a PEM certificate and key, listens on
+# [::]:16490 (dual stack; add --sse-bind ADDR to choose) and reloads the files when they change (checked every 5 min and on
+# SIGHUP), so a certbot renewal needs no restart. Use the copy the node's certbot deploy hook keeps for the node's own RPC TLS
+# (owned by sm64coin, mode 600: the service user reads it), and advertise the address in public-node.json (`"tip"`):
+#   sudo systemctl edit sm64coin-lc   ->
+#     [Service]
+#     ExecStart=
+#     ExecStart=/opt/sm64coin/sm64coin-lc serve --node-rpc http://127.0.0.1:16489 --tls-cert /var/lib/sm64coin/tls/fullchain.pem --tls-key /var/lib/sm64coin/tls/privkey.pem
+#   (ProtectSystem=full leaves /var/lib/sm64coin readable; --tls-check-secs N changes the file check interval.)
+#   {"url": "https://node.example.org", "tip": "https://node.example.org:16490/lc/tip"}
 # Logs: journalctl -u sm64coin-lc -f
 # Settings: `sudo systemctl edit sm64coin-lc` and override ExecStart= (an empty ExecStart= line first); `--sse-bind ADDR` moves the
 # listener, `--sse-trust-forwarded` reads the client IP from X-Forwarded-For (a loopback bind does that already).

@@ -65,6 +65,9 @@ export function tipFromPush(j, at = Date.now()) {
 /** Silence on an SSE stream after which it is taken for dead (the server sends a `ka` event every 30 s). */
 export const SSE_SILENCE_MS = 95_000;
 
+/** The tip stream URLs to try for `node`, best first: its advertised `tip` URL (if any), then `<node>/lc/tip`. */
+export const tipStreamUrls = (node, advertised) => [...new Set([advertised, `${node}/lc/tip`].filter(Boolean))];
+
 /**
  * Follows the tip over Server-Sent Events (`GET <node>/lc/tip`, pow/lc/src/sse.rs): plain HTTPS. `h` = the store's handlers.
  * Returns a stop function. A node without the endpoint (404: the EventSource closes at once) is reported through `deps.onUnsupported(url)`
@@ -348,8 +351,11 @@ export function tipStore() {
         const { getPlatform } = await import('../platform/index.js');
         const node = getNode();
         if (getPlatform().desktop && !node) return null; // the app's own backend: platform.tip covers it
-        const url = `${node}/lc/tip`;
-        if (sseUnsupported.has(url)) return null;
+        // the node's advertised tip URL (public-node.json `tip`: its light-client service on an HTTPS port of its own), then the
+        // same-origin /lc/tip behind its reverse proxy
+        const { tipUrlFor } = await import('./rpc.js');
+        const url = tipStreamUrls(node, tipUrlFor(node)).find((u) => !sseUnsupported.has(u));
+        if (!url) return null;
         return openSse(url, h, { onUnsupported: (u) => sseUnsupported.add(u) });
       },
     ],

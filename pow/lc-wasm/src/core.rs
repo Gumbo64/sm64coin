@@ -44,7 +44,7 @@ impl Drop for Busy<'_> {
 /// The nodes a page can reach: https ones (a plain-http node is mixed content on an https page), and plain http on loopback
 /// (a development node).
 pub fn https_only(a: &NodeAddr) -> bool {
-    let NodeAddr::Http { url } = a;
+    let NodeAddr::Http { url, .. } = a;
     url.starts_with("https://") || ["http://localhost", "http://127.0.0.1", "http://[::1]"].iter().any(|p| url.strip_prefix(p).is_some_and(|r| r.is_empty() || r.starts_with(':') || r.starts_with('/')))
 }
 
@@ -276,7 +276,7 @@ mod tests {
     struct Conn(Vec<(&'static str, Arc<Fake>)>);
     impl Connector for Conn {
         fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>> {
-            let NodeAddr::Http { url } = addr else { return None };
+            let NodeAddr::Http { url, .. } = addr else { return None };
             self.0.iter().find(|(u, _)| url.contains(u)).map(|(_, f)| f.clone() as Arc<dyn Transport>)
         }
     }
@@ -353,9 +353,9 @@ mod tests {
     fn a_poisoned_saved_list_cannot_ban_the_bootstrap_nodes_or_add_its_own() {
         let boot = r#"{"nodes":["https://a.example","https://b.example"]}"#;
         let mut evil = NodeList::new();
-        evil.add(NodeAddr::Http { url: "https://a.example".into() }, Source::Manual, 1);
+        evil.add(NodeAddr::http("https://a.example".into()), Source::Manual, 1);
         evil.ban_liar("http:https://a.example", 1);
-        evil.add(NodeAddr::Http { url: "https://evil.example".into() }, Source::Manual, 1);
+        evil.add(NodeAddr::http("https://evil.example".into()), Source::Manual, 1);
         evil.record_ok("http:https://evil.example", 1.0, Some(1 << 40), 1);
         let list = build_list(boot, &evil.to_json(), 1000, |_| true);
         assert_eq!(list.len(), 2);

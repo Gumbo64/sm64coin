@@ -14,7 +14,10 @@ cargo build --release --features bin
 
 It serves the chain tip as Server-Sent Events at `GET /lc/tip` on that local port; your HTTPS reverse proxy forwards `/lc/tip` to it
 with buffering off (see `src/sse.rs`, `packaging/sm64coin-lc.service`). Flags: `--allow-unrestricted-rpc` (closed test networks only),
-`--sse-trust-forwarded`. `sm64coin-lc ping <https://node>` prints a node's tip. Only the allowlisted node RPC methods
+`--sse-trust-forwarded`. With `--tls-cert FILE --tls-key FILE` (PEM, e.g. certbot's `fullchain.pem` / `privkey.pem`) it serves HTTPS itself,
+by default on `[::]:16490` (repeat `--sse-bind` to choose), with no proxy: the files are re-read when they change (every
+`--tls-check-secs`, default 300, and on SIGHUP) so a renewal needs no restart, and the per-IP caps count the real peer. List the
+address as `"tip"` of the node's `public-node.json` entry. `sm64coin-lc ping <https://node>` prints a node's tip. Only the allowlisted node RPC methods
 (`src/allowlist.rs`) are ever asked.
 
 ## Layout and features

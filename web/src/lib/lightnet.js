@@ -18,11 +18,26 @@ const CATCH_UP_MS = 5_000;
 /** Methods whose result a single node's answer is enough for, sent to several nodes at once. */
 export const SUBMIT_METHODS = new Set(['submit_block', 'submit_sm64_proof']);
 
-/** The bootstrap entries of public-node.json (`{"nodes": [...], "url": "..."}`): https/http URLs (anything else, such as an old `iroh:` entry, is skipped). */
-export function bootstrapEntries(json) {
+const NODE_RE = /^https?:\/\/[^\s@?#]+$/;
+const rawEntries = (json) => {
   const j = json && typeof json === 'object' ? json : {};
-  const all = [...(Array.isArray(j.nodes) ? j.nodes : []), ...(j.url ? [j.url] : [])];
-  return all.map((s) => String(s || '').trim()).filter((s) => /^https?:\/\/[^\s@?#]+$/.test(s));
+  return [...(Array.isArray(j.nodes) ? j.nodes : []), ...(j.url ? [j.url] : [])];
+};
+/** The bootstrap entries of public-node.json (`{"nodes": [...], "url": "..."}`): https/http URLs (anything else, such as an old `iroh:` entry, is skipped).
+ *  An entry is a URL string or `{"url": "https://host", "tip": "https://host:16490/lc/tip"}`. */
+export function bootstrapEntries(json) {
+  return rawEntries(json).map((e) => String(e && typeof e === 'object' ? e.url || '' : e || '').trim()).filter((s) => NODE_RE.test(s));
+}
+/** Where a node serves its tip stream when that is not `<node>/lc/tip`: the `tip` of its public-node.json entry ('' for none). */
+export function bootstrapTip(json, node) {
+  const want = String(node || '').replace(/\/+$/, '');
+  for (const e of rawEntries(json)) {
+    if (!e || typeof e !== 'object') continue;
+    const url = String(e.url || '').trim().replace(/\/+$/, '');
+    const tip = String(e.tip || '').trim();
+    if (url === want && NODE_RE.test(url) && NODE_RE.test(tip)) return tip;
+  }
+  return '';
 }
 /** The first entry: what the rest of the site calls "the public node". */
 export const firstHttpNode = (json) => (bootstrapEntries(json)[0] || '').replace(/\/+$/, '');

@@ -25,7 +25,8 @@ Non-goals
 ## Current state
 
 - `web/public/public-node.json` = `{"url": ..., "nodes": ["https://eboy.au", ...]}` (the old `url` key is still read; entries that are
-  not http(s) URLs are skipped). The apps compile the same file in (`desktop/src-tauri/src/remote.rs`); the page cannot widen it.
+  not http(s) URLs are skipped). An entry may also be an object `{"url": "https://eboy.au", "tip": "https://eboy.au:16490/lc/tip"}`:
+  `tip` is where that node serves its tip stream when that is not `<url>/lc/tip` (see "Tip push"). The apps compile the same file in (`desktop/src-tauri/src/remote.rs`); the page cannot widen it.
 - `pow/lc` (crate `sm64coin-lc`, its own workspace; the core builds for wasm32): `proto.rs` (requests, answers, limits), `nodes.rs` (the
   scored list), `exec.rs` (request -> the node's JSON-RPC / `.bin` call), `allowlist.rs`, `client.rs` (`Transport`, failover `Client`),
   `http.rs` (ureq `Upstream`, https with the `tls` feature), `block.rs` / `verify.rs` / `checkpoints.rs` / `consensus.rs` / `replay.rs`
@@ -60,7 +61,7 @@ which keeps only the bootstrap entries' latency and success history: no bans, he
 
 An https page can only `fetch` https origins, the certificate must be valid for the host and the node must send CORS for the site's
 origin (public nodes should allow `*`: restricted RPC holds nothing secret). The CSP `connect-src` allows `https:` and loopback http;
-there is no websocket scheme. The tip stream is an `EventSource` (a fetch) to `https://<node>/lc/tip`.
+there is no websocket scheme. The tip stream is an `EventSource` (a fetch) to the node's `tip` URL from `public-node.json` (e.g. `https://<node>:16490/lc/tip`) or `https://<node>/lc/tip`.
 
 ## Verification: what a light client checks
 
@@ -117,6 +118,14 @@ Now the tip is pushed and the limit is computed on the device.
   proxy, which must not buffer: Caddy `reverse_proxy /lc/tip 127.0.0.1:16490 { flush_interval -1 }`; nginx `location = /lc/tip { proxy_pass
   http://127.0.0.1:16490; proxy_buffering off; proxy_read_timeout 1h; }`. The service reads the node's RESTRICTED RPC only (it refuses an
   unrestricted one: no caps there, and Dandelion++ stem transactions in the pool answers).
+- **HTTPS without a proxy**: `sm64coin-lc serve --tls-cert fullchain.pem --tls-key privkey.pem` (PEM; rustls) makes the listener speak HTTPS
+  itself on a public port (default `[::]:16490`; repeat `--sse-bind` for more addresses). The files are looked at every `--tls-check-secs`
+  (300) and on SIGHUP, and a changed pair replaces the certificate for new connections (open streams keep theirs); a pair that fails to
+  load (half-written, key mismatch) is ignored and the old one stays. With TLS the client IP for the caps is the TCP peer's and
+  `X-Forwarded-For` is never read (`--sse-trust-forwarded` is refused). The node advertises the address in `public-node.json` (`tip`);
+  the page and the apps try that URL first and then `<node>/lc/tip`. A tip URL that cannot be reached counts as "no push" (the poll
+  runs), not as an RPC failure of the node. The site's CSP `connect-src` allows `https:` on any port, so no change is needed there.
+  Packaging: the comments of `packaging/sm64coin-lc.service` (a `systemctl edit` override with the certbot copy under `/var/lib/sm64coin/tls`).
 - **Caps**: 4 subscriptions per client IP (an IPv6 client per /64), 4096 in all; beyond them `429`; open connections 4096 + 256, beyond
   that closed at once. `X-Forwarded-For` (its last entry, the one the proxy adds) is read when the listener is on loopback or with
   `--sse-trust-forwarded`; nginx needs `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` (Caddy sets it). A reader that stops
