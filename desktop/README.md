@@ -26,11 +26,13 @@ already answering on the RPC port is reused and left running), `SM64COIN_NO_DHT`
 ## What exists
 
 Commands (all return `{code, message}` errors; `capabilities/default.json` grants exactly these, plus event listen):
-`host_info`, `rom_set(path)`, `rom_pick` (system file dialog, the dialog plugin is used from Rust only), `rom_bytes` (feeds the in-page game: no second upload), `remote_rpc(url, method, params)` (the same RPC whitelist over https to the public node), `node_start/stop/status`, `node_rpc(method, params)` (whitelist `rpc::allowed`, no CORS,
+`host_info`, `rom_set(path)`, `rom_pick` (system file dialog, the dialog plugin is used from Rust only), `rom_bytes` (feeds the in-page game: no second upload), `remote_rpc(url, method, params)` (the same RPC whitelist over https, only to the public node compiled in from `web/public/public-node.json` or the one https node the user confirmed in a native dialog through `remote_node_set` on the Network page, saved as `remote-node.txt` in the data dir; no redirects), `remote_node_get`, `node_start/stop/status`, `node_rpc(method, params)` (whitelist `rpc::allowed`, no CORS,
 no HTTP from the webview), `miner_start({address, threads})/miner_stop/miner_status`; events `miner-log`, `miner-state`.
 The node starts with the app when a ROM is found and is stopped on quit (also on SIGTERM/SIGINT). The miner runs at
 low priority against the local node. The Mine page shows a "Native miner" card (threads under the gear, local node
 status, log); the WASM auto-miner stays available.
+
+The window only shows the app's own pages (a navigation guard opens web links in the system browser).
 
 Webview findings (WebKitGTK 2.x): WebGL2 works; WASM works; **SharedArrayBuffer / cross-origin isolation do not**
 (`crossOriginIsolated` is false although tauri.conf.json sends COOP/COEP), so the WASM workers run without worker sync
@@ -58,7 +60,9 @@ node directly (node CORS origins include `tauri://localhost`).
   `relay_tx`). Auto-lock (default 10 min, 0 = never) stores and closes the wallet; the page reports user activity.
   Amounts are strings above 2^53. (`main.jsx`'s key guard for the game is a bubble-phase window listener, so React `onKeyDown`
   handlers work everywhere.)
-- **Use my website passkey** (`link.rs`, `pages/DesktopLink.jsx`, `lib/desktopLink.js`): as designed; X25519 + HKDF-SHA256 +
+- **Use my website passkey** (`link.rs`, `pages/DesktopLink.jsx`, `lib/desktopLink.js`): as designed, plus an address check (the
+  app shows the address it received, the user compares it with the page's, and the restored wallet must have it: the link URL is
+  in the browser's process arguments, so a local process could otherwise race in a seed of its own); X25519 + HKDF-SHA256 +
   AES-256-GCM (WebCrypto has no ChaCha); the page sends the wallet's seed words (made with the WASM engine from the frozen
   passkey.js output), the app restores them with a password chosen in the app. Listener: 127.0.0.1, random port, 5 minutes,
   one good POST, 10 bad ones; Origin, Host and secret checked; answers the PNA preflight. Not testable here with a real passkey
