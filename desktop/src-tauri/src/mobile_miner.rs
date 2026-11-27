@@ -101,6 +101,19 @@ impl MobileMiner {
         std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, self.rom_path())).map_err(|e| AppError::new("io", e.to_string()))
     }
 
+    /// [`rom_put`](Self::rom_put) for the ROM as base64 text: Android's IPC carries no raw bodies (every invoke there is a
+    /// JSON message, a `Uint8Array` would arrive as an array of 8 M numbers), so the page sends `{rom: "<base64>"}`. The
+    /// length is checked before anything is decoded.
+    pub fn rom_put_b64(&self, b64: &str) -> Res<()> {
+        use base64::Engine;
+        const B64_LEN: usize = ROM_SIZE.div_ceil(3) * 4;
+        if b64.len() != B64_LEN {
+            return Err(AppError::new("rom_wrong", format!("that is not the US Super Mario 64 ROM (.z64 is {ROM_SIZE} bytes, {B64_LEN} in base64; this is {})", b64.len())));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| AppError::new("rom_wrong", format!("the ROM's base64 does not decode ({e})")))?;
+        self.rom_put(&bytes)
+    }
+
     pub fn has_rom(&self) -> bool {
         std::fs::metadata(self.rom_path()).is_ok_and(|m| m.len() == ROM_SIZE as u64)
     }
@@ -296,6 +309,12 @@ mod tests {
         let m = MobileMiner::new(dir.clone());
         assert_eq!(m.rom_put(&[0u8; 100]).unwrap_err().code, "rom_wrong");
         assert_eq!(m.rom_put(&vec![0u8; ROM_SIZE]).unwrap_err().code, "rom_wrong");
+        assert_eq!(m.rom_put_b64("AAAA").unwrap_err().code, "rom_wrong");
+        assert_eq!(m.rom_put_b64(&"!".repeat(ROM_SIZE.div_ceil(3) * 4)).unwrap_err().code, "rom_wrong");
+        {
+            use base64::Engine;
+            assert_eq!(m.rom_put_b64(&base64::engine::general_purpose::STANDARD.encode(vec![0u8; ROM_SIZE])).unwrap_err().code, "rom_wrong");
+        }
         assert!(!m.has_rom());
         let emit: Emit = Arc::new(|_, _| {});
         assert_eq!(m.start(emit.clone(), "http://127.0.0.1:1", "SM6short", None, false).unwrap_err().code, "bad_address");
@@ -349,7 +368,10 @@ mod tests {
             })
         };
         let m = MobileMiner::new(dir.join("app"));
-        m.rom_put(&rom_bytes).unwrap();
+        {
+            use base64::Engine;
+            m.rom_put_b64(&base64::engine::general_purpose::STANDARD.encode(&rom_bytes)).unwrap(); // as the Android page sends it
+        }
         assert!(m.has_rom());
         let url = format!("http://127.0.0.1:{rpc_port}");
         assert!(url.starts_with("http://127.0.0.1:"), "this test mines only to its own loopback node");

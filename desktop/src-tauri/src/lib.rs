@@ -69,12 +69,17 @@ mod mobile_cmds {
         })
     }
 
-    /// The page's ROM (raw request body, from its IndexedDB): kept in the app's data dir after the SHA-1 check.
+    /// The page's ROM (from its IndexedDB): kept in the app's data dir after the size and SHA-1 checks. Android's IPC has no raw
+    /// bodies (Tauri: "On Android, InvokeBody::Raw is not supported"), so the page sends `{rom: "<base64>"}`; a raw body is
+    /// taken too.
     #[tauri::command]
     pub async fn rom_put(miner: Miner<'_>, request: tauri::ipc::Request<'_>) -> Res<()> {
         match request.body() {
             tauri::ipc::InvokeBody::Raw(bytes) => miner.rom_put(bytes),
-            _ => Err(AppError::new("bad_request", "rom_put takes the ROM's bytes as the request body")),
+            tauri::ipc::InvokeBody::Json(v) => match v.get("rom").and_then(|r| r.as_str()) {
+                Some(b64) => miner.rom_put_b64(b64),
+                None => Err(AppError::new("bad_request", "rom_put takes {rom: the ROM's bytes in base64}")),
+            },
         }
     }
 
@@ -94,18 +99,20 @@ mod mobile_cmds {
         tauri::async_runtime::spawn_blocking(move || m.stop(&emit)).await.map_err(|e| AppError::new("internal", e.to_string()))
     }
 
+    // Not on the main thread (a sync command's place): `miner_start` holds the miner's lock while the game's WebAssembly
+    // compiles (seconds on a phone), and the page polls the status every 2 s.
     #[tauri::command]
-    pub fn miner_status(miner: Miner<'_>) -> Res<MinerInfo> {
+    pub async fn miner_status(miner: Miner<'_>) -> Res<MinerInfo> {
         Ok(miner.status())
     }
 
     #[tauri::command]
-    pub fn miner_viz_on(miner: Miner<'_>, on: bool) -> Res<()> {
+    pub async fn miner_viz_on(miner: Miner<'_>, on: bool) -> Res<()> {
         miner.viz_on(on)
     }
 
     #[tauri::command]
-    pub fn miner_viz_mail(miner: Miner<'_>, mail: serde_json::Map<String, serde_json::Value>) -> Res<()> {
+    pub async fn miner_viz_mail(miner: Miner<'_>, mail: serde_json::Map<String, serde_json::Value>) -> Res<()> {
         miner.viz_mail(&mail)
     }
 }
