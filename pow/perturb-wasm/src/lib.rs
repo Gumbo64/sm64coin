@@ -17,7 +17,6 @@ pub mod rules;
 /// (`Rules::max_frames` of the active rules).
 #[wasm_bindgen]
 pub fn rules_max_frames(difficulty: u64, elapsed_seconds: u64) -> u32 {
-    use rules::Rules;
     rules::active().max_frames(difficulty, elapsed_seconds)
 }
 
@@ -25,7 +24,6 @@ pub fn rules_max_frames(difficulty: u64, elapsed_seconds: u64) -> u32 {
 /// only grows with time); `u64::MAX`: never. A block carrying that run is valid from `parent timestamp + this`.
 #[wasm_bindgen]
 pub fn rules_due_elapsed(difficulty: u64, frames: u32) -> u64 {
-    use rules::Rules;
     let r = rules::active();
     const FAR: u64 = 1 << 40;
     if r.max_frames(difficulty, FAR) < frames {
@@ -42,7 +40,6 @@ pub fn rules_due_elapsed(difficulty: u64, frames: u32) -> u64 {
 /// The most frames any block can carry (the limit at difficulty 1 once fully grown).
 #[wasm_bindgen]
 pub fn rules_max_run_frames() -> u32 {
-    use rules::Rules;
     rules::active().max_frames_any()
 }
 
