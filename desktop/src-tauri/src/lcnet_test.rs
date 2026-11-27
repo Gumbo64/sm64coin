@@ -46,12 +46,34 @@ fn bundle_file(name: &str) -> Option<PathBuf> {
     dirs.into_iter().rev().map(|d| d.join(name)).find(|p| p.is_file())
 }
 
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let t = to.join(e.file_name());
+        if e.file_type()?.is_dir() { copy_dir(&e.path(), &t)? } else { std::fs::copy(e.path(), &t).map(|_| ())? }
+    }
+    Ok(())
+}
+
+/// A pre-mined isolated chain for the wallet flow (`SM64COIN_FLOW_FIXTURE`: a directory with `node/`, the stopped daemon's
+/// data dir of an `--offline --sm64-solo` chain, and `wallets/` holding w1 (the miner's payee) and w2). Never the real chain.
+fn flow_fixture() -> Option<PathBuf> {
+    std::env::var_os("SM64COIN_FLOW_FIXTURE").map(PathBuf::from).filter(|d| d.join("node").is_dir())
+}
+
 fn start_daemon(tag: &str) -> Option<Daemon> {
     let bin = std::env::var_os("SM64COIND").map(PathBuf::from).or_else(|| bundle_file("sm64coind"))?;
     let rom = std::env::var_os("SM64COIN_ROM").map(PathBuf::from).or_else(|| bundle_file("baserom.us.z64"))?;
     let dir = std::env::temp_dir().join(format!("lcnet-test-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    if tag == "flow" {
+        if let Some(fx) = flow_fixture() {
+            // a copy: the fixture itself stays as it was
+            copy_dir(&fx.join("node"), &dir.join("node")).expect("copy the chain fixture");
+        }
+    }
     let (rpc, p2p, zmq) = (free_port(), free_port(), free_port());
     let child = Command::new(bin)
         .args(["--offline", "--sm64-solo", "--no-igd", "--non-interactive", "--p2p-bind-ip", "127.0.0.1", "--rpc-bind-ip", "127.0.0.1"])
@@ -587,10 +609,16 @@ fn wallet_send_flow_over_iroh_with_the_native_miner() {
         assert!(v.get("error").is_none(), "{v}");
         v["result"].clone()
     };
-    ok(w("create_wallet", json!({"filename": "w2", "password": "", "language": "English"})));
+    // with a fixture its wallets (w1 is the payee of the pre-mined blocks); else two new ones
+    let fixture = flow_fixture();
+    if let Some(fx) = &fixture {
+        copy_dir(&fx.join("wallets"), &wdir).expect("copy the fixture's wallets");
+    }
+    let make = if fixture.is_some() { "open_wallet" } else { "create_wallet" };
+    ok(w(make, json!({"filename": "w2", "password": "", "language": "English"})));
     let addr2 = ok(w("get_address", json!({})))["address"].as_str().unwrap().to_string();
     ok(w("close_wallet", json!({})));
-    ok(w("create_wallet", json!({"filename": "w1", "password": "", "language": "English"})));
+    ok(w(make, json!({"filename": "w1", "password": "", "language": "English"})));
     let addr1 = ok(w("get_address", json!({})))["address"].as_str().unwrap().to_string();
 
     // the native miner, behind the proxy (so its template, state and submit calls all travel over iroh)
@@ -601,20 +629,28 @@ fn wallet_send_flow_over_iroh_with_the_native_miner() {
     }
     let emit: crate::mobile_miner::Emit = Arc::new(|_, _| {});
     assert!(proxy.url().starts_with("http://127.0.0.1:"), "this test mines only through its own loopback proxy to its own isolated node");
-    m.start(emit.clone(), &proxy.url(), &addr1, Some(4), false).expect("start the miner");
     let want: u64 = std::env::var("SM64COIN_FLOW_BLOCKS").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
     let limit = Duration::from_secs(std::env::var("SM64COIN_TEST_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3600));
     let t0 = std::time::Instant::now();
     let node = HttpUpstream::new(&format!("http://127.0.0.1:{}", a.rpc)).unwrap();
     let height = || -> u64 { tauri::async_runtime::block_on(node.json_rpc("get_info", json!({}), Duration::from_secs(10))).ok().and_then(|v| v["result"]["height"].as_u64()).unwrap_or(0) };
+    // a fixture that is already long enough needs no mining here
+    let mine = height() < want;
+    if mine {
+        m.start(emit.clone(), &proxy.url(), &addr1, Some(4), false).expect("start the miner");
+    }
     while height() < want && t0.elapsed() < limit {
         std::thread::sleep(Duration::from_secs(10));
     }
     let h = height();
-    eprintln!("mined to height {h} in {:?}; miner accepted {}", t0.elapsed(), m.status().accepted);
-    let _ = m.stop(&emit);
+    eprintln!("chain at height {h} after {:?}; miner accepted {}", t0.elapsed(), m.status().accepted);
+    if mine {
+        let _ = m.stop(&emit);
+    }
     assert!(h >= want, "the isolated chain did not reach {want} blocks in time (height {h})");
-    assert!(net.status().used.is_some_and(|u| u.transport == "iroh"), "the miner reached the node over iroh");
+    if mine {
+        assert!(net.status().used.is_some_and(|u| u.transport == "iroh"), "the miner reached the node over iroh");
+    }
 
     // sync and send over iroh
     ok(w("refresh", json!({})));
