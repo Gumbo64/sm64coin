@@ -71,11 +71,11 @@ function WebWallet() {
   // persists the record first (a PIN try is counted before it is checked), then shows it
   const setQuick = useCallback(async (r) => { await saveQuick(r); setQuickState(r || null); }, []);
 
-  useEffect(() => { loadQuick().then((q) => setQuickState(q || null)).catch(() => {}); }, []);
   useEffect(() => { eng.loadLib().catch((e) => setEngineErr(e.message || String(e))); }, []);
 
   useEffect(() => {
-    loadStored().then((r) => { setRec(r || null); setStage(r ? 'locked' : 'none'); }).catch(() => setStage('none'));
+    // the quick-unlock record is read with the wallet, so the unlock screen shows the right box at once
+    loadStored().then(async (r) => { setQuickState(r ? ((await loadQuick().catch(() => null)) || null) : null); setRec(r || null); setStage(r ? 'locked' : 'none'); }).catch(() => setStage('none'));
   }, []);
 
   const persist = useCallback(async (wallet, addr, vo) => {
