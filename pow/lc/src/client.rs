@@ -1,0 +1,322 @@
+//! The client: one [`Transport`] trait (HTTP JSON-RPC and iroh implementations) and [`Client`], which
+//! picks nodes from a [`NodeList`], fails over, fans submissions out to several nodes and feeds
+//! latency, errors and tip heights back into the scores.
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::exec::{self, MaybeSend, MaybeSync, Upstream};
+use crate::nodes::{NodeAddr, NodeList, NodeRecord, Source};
+use crate::proto::*;
+
+#[derive(Debug, thiserror::Error)]
+pub enum TransportError {
+    #[error("timed out")]
+    Timeout,
+    #[error("cannot connect: {0}")]
+    Connect(String),
+    #[error("protocol error: {0}")]
+    Protocol(String),
+    #[error("network mismatch (other chain)")]
+    WrongNetwork,
+}
+
+/// One way of asking a node a [`Request`].
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait Transport: MaybeSend + MaybeSync {
+    async fn request(&self, req: &Request, timeout: Duration) -> Result<Response, TransportError>;
+}
+
+/// The existing JSON-RPC over HTTP(S) as a [`Transport`] (same answers as the iroh service gives).
+pub struct UpstreamTransport<U: Upstream>(pub U);
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl<U: Upstream> Transport for UpstreamTransport<U> {
+    async fn request(&self, req: &Request, timeout: Duration) -> Result<Response, TransportError> {
+        Ok(exec::run(&self.0, req, timeout).await)
+    }
+}
+
+/// Builds the transport for a node address (HTTP, iroh ...). The browser supplies its own.
+pub trait Connector: MaybeSend + MaybeSync {
+    fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>>;
+}
+
+/// Time and randomness for the pure logic (`Instant` does not work in the browser).
+pub trait Env: MaybeSend + MaybeSync {
+    fn now_ms(&self) -> u64;
+    fn rand(&self) -> u64;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct SystemEnv;
+#[cfg(not(target_arch = "wasm32"))]
+impl Env for SystemEnv {
+    fn now_ms(&self) -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    }
+    fn rand(&self) -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        std::collections::hash_map::RandomState::new().build_hasher().finish()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    #[error("no usable node")]
+    NoNodes,
+    #[error("every node failed: {0}")]
+    AllFailed(String),
+    /// A node answered, and the answer is a definite "no" (not a node fault): no failover.
+    #[error("request refused: {0:?}")]
+    Refused(ErrorKind),
+}
+
+/// How many nodes a failing read tries before giving up.
+pub const MAX_ATTEMPTS: usize = 4;
+/// Fan-out of submissions (`submit_block`, proofs, `sendrawtransaction`).
+pub const SUBMIT_FANOUT: usize = 3;
+/// Default timeouts (doc: 10 s; 60 s for bulk block reads).
+pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
+pub const BULK_TIMEOUT: Duration = Duration::from_secs(60);
+
+pub struct Client {
+    list: Mutex<NodeList>,
+    connector: Arc<dyn Connector>,
+    env: Arc<dyn Env>,
+}
+
+impl Client {
+    pub fn new(list: NodeList, connector: Arc<dyn Connector>, env: Arc<dyn Env>) -> Self {
+        Self { list: Mutex::new(list), connector, env }
+    }
+    fn now(&self) -> u64 {
+        self.env.now_ms() / 1000
+    }
+    /// A snapshot of the node list (to persist or show).
+    pub fn list_json(&self) -> String {
+        self.list.lock().unwrap().to_json()
+    }
+    pub fn with_list<R>(&self, f: impl FnOnce(&mut NodeList) -> R) -> R {
+        f(&mut self.list.lock().unwrap())
+    }
+    pub fn ban_liar(&self, key: &str) {
+        let now = self.now();
+        self.list.lock().unwrap().ban_liar(key, now);
+    }
+    /// Adds the verified announcements of `GetNodes` (invalid / expired ones are dropped).
+    pub fn learn(&self, ann: &[NodeAnnouncement]) -> usize {
+        let now = self.now();
+        let mut list = self.list.lock().unwrap();
+        ann.iter()
+            .filter(|a| a.verify(now).is_ok())
+            .filter_map(|a| announcement_addr(a))
+            .filter(|addr| list.add(addr.clone(), Source::Gossip, now))
+            .count()
+    }
+
+    fn pick(&self, n: usize) -> Vec<(String, NodeAddr)> {
+        let now = self.now();
+        let r = self.env.rand();
+        self.list.lock().unwrap().pick_many(n, now, r).into_iter().map(|r: &NodeRecord| (r.key(), r.addr.clone())).collect()
+    }
+
+    async fn ask(&self, key: &str, addr: &NodeAddr, req: &Request, timeout: Duration) -> Result<Response, String> {
+        let Some(t) = self.connector.transport(addr) else {
+            return Err("no transport for this node".into());
+        };
+        let t0 = self.env.now_ms();
+        let res = t.request(req, timeout).await;
+        let ms = self.env.now_ms().saturating_sub(t0) as f64;
+        let now = self.now();
+        let mut list = self.list.lock().unwrap();
+        match res {
+            Ok(Response::Error(ErrorKind::Busy { .. })) | Ok(Response::Error(ErrorKind::Upstream(_))) => {
+                list.record_err(key, now);
+                Err("node busy or failing".into())
+            }
+            Ok(resp) => {
+                let height = if let Response::Tip(t) = &resp { Some(t.height) } else { None };
+                list.record_ok(key, ms, height, now);
+                Ok(resp)
+            }
+            Err(TransportError::WrongNetwork) => {
+                list.ban_liar(key, now);
+                Err("other chain".into())
+            }
+            Err(e) => {
+                list.record_err(key, now);
+                Err(e.to_string())
+            }
+        }
+    }
+
+    /// An idempotent read: tries nodes best-first (weighted) until one answers. A definite refusal
+    /// (`Malformed`, `NotFound`, `Unsupported`, `TooLarge`) is returned, not retried elsewhere.
+    pub async fn read(&self, req: &Request, timeout: Duration) -> Result<(String, Response), ClientError> {
+        let picks = self.pick(MAX_ATTEMPTS);
+        if picks.is_empty() {
+            return Err(ClientError::NoNodes);
+        }
+        let mut errs = Vec::new();
+        for (key, addr) in picks {
+            match self.ask(&key, &addr, req, timeout).await {
+                Ok(Response::Error(e)) => return Err(ClientError::Refused(e)),
+                Ok(r) => return Ok((key, r)),
+                Err(e) => errs.push(format!("{key}: {e}")),
+            }
+        }
+        Err(ClientError::AllFailed(errs.join("; ")))
+    }
+
+    /// A submission goes to [`SUBMIT_FANOUT`] nodes at once; returns each node's outcome.
+    pub async fn submit(&self, req: &Request, timeout: Duration) -> Result<Vec<(String, Result<Response, String>)>, ClientError> {
+        let picks = self.pick(SUBMIT_FANOUT);
+        if picks.is_empty() {
+            return Err(ClientError::NoNodes);
+        }
+        let futs = picks.iter().map(|(k, a)| async move { (k.clone(), self.ask(k, a, req, timeout).await) });
+        Ok(futures_util::future::join_all(futs).await)
+    }
+
+    /// Asks every candidate (up to `max`) for its tip: refreshes heights so lagging nodes are skipped.
+    pub async fn refresh_tips(&self, max: usize, timeout: Duration) {
+        let picks = self.pick(max);
+        let futs = picks.iter().map(|(k, a)| async move { let _ = self.ask(k, a, &Request::GetTip, timeout).await; });
+        futures_util::future::join_all(futs).await;
+    }
+}
+
+/// The node address an announcement describes.
+pub fn announcement_addr(a: &NodeAnnouncement) -> Option<NodeAddr> {
+    Some(NodeAddr::Iroh { endpoint_id: hex::encode(a.endpoint_id), relay_url: a.relay_url.clone(), direct: a.direct_addrs.clone() })
+}
+
+#[cfg(feature = "iroh-client")]
+pub use iroh_transport::*;
+
+#[cfg(feature = "iroh-client")]
+mod iroh_transport {
+    use super::*;
+    use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, TransportAddr, endpoint::Connection};
+    use std::collections::HashMap;
+
+    /// Converts a stored [`NodeAddr::Iroh`] into an iroh address.
+    pub fn to_endpoint_addr(addr: &NodeAddr) -> Option<EndpointAddr> {
+        let NodeAddr::Iroh { endpoint_id, relay_url, direct } = addr else { return None };
+        let id: EndpointId = endpoint_id.parse().ok()?;
+        let mut a = EndpointAddr::new(id);
+        if let Some(r) = relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
+            a = a.with_relay_url(r);
+        }
+        for d in direct.iter().filter_map(|d| d.parse().ok()) {
+            a = a.with_ip_addr(d);
+        }
+        Some(a)
+    }
+
+    pub fn from_endpoint_addr(a: &EndpointAddr) -> NodeAddr {
+        let mut relay_url = None;
+        let mut direct = vec![];
+        for t in a.addrs.iter() {
+            match t {
+                TransportAddr::Relay(r) => relay_url = Some(r.to_string()),
+                TransportAddr::Ip(i) => direct.push(i.to_string()),
+                _ => {}
+            }
+        }
+        NodeAddr::Iroh { endpoint_id: a.id.to_string(), relay_url, direct }
+    }
+
+    /// The iroh transport to one node: a cached connection (`Hello` on connect), one bi-stream per request.
+    pub struct IrohTransport {
+        endpoint: Endpoint,
+        addr: EndpointAddr,
+        network: [u8; 32],
+        conn: tokio::sync::Mutex<Option<Connection>>,
+    }
+
+    impl IrohTransport {
+        pub fn new(endpoint: Endpoint, addr: EndpointAddr, network: [u8; 32]) -> Self {
+            Self { endpoint, addr, network, conn: Default::default() }
+        }
+
+        async fn connect(&self) -> Result<Connection, TransportError> {
+            let conn = self.endpoint.connect(self.addr.clone(), ALPN).await.map_err(|e| TransportError::Connect(e.to_string()))?;
+            let hello = Request::Hello { minor: MINOR, features: 0, network: self.network };
+            match round_trip(&conn, &hello).await? {
+                Response::Hello { network, .. } if network == self.network => Ok(conn),
+                Response::Hello { .. } | Response::Error(ErrorKind::BadHello) => Err(TransportError::WrongNetwork),
+                other => Err(TransportError::Protocol(format!("unexpected answer to Hello: {other:?}"))),
+            }
+        }
+    }
+
+    /// One request on a fresh bi-stream of `conn`.
+    pub async fn round_trip(conn: &Connection, req: &Request) -> Result<Response, TransportError> {
+        let (mut send, mut recv) = conn.open_bi().await.map_err(|e| TransportError::Connect(e.to_string()))?;
+        write_frame(&mut send, req, MAX_REQUEST_FRAME).await.map_err(|e| TransportError::Protocol(e.to_string()))?;
+        send.finish().map_err(|e| TransportError::Protocol(e.to_string()))?;
+        let body = read_frame(&mut recv, MAX_FRAME).await.map_err(|e| TransportError::Protocol(e.to_string()))?.ok_or_else(|| TransportError::Protocol("stream ended without an answer".into()))?;
+        decode_body(&body).map_err(|e| TransportError::Protocol(e.to_string()))
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl Transport for IrohTransport {
+        async fn request(&self, req: &Request, timeout: Duration) -> Result<Response, TransportError> {
+            n0_future::time::timeout(timeout, async {
+                let mut guard = self.conn.lock().await;
+                let conn = match guard.as_ref() {
+                    Some(c) if c.close_reason().is_none() => c.clone(),
+                    _ => {
+                        let c = self.connect().await?;
+                        *guard = Some(c.clone());
+                        c
+                    }
+                };
+                drop(guard);
+                let r = round_trip(&conn, req).await;
+                if r.is_err() {
+                    *self.conn.lock().await = None;
+                }
+                r
+            })
+            .await
+            .map_err(|_| TransportError::Timeout)?
+        }
+    }
+
+    /// Connector for iroh nodes (and, with the `http` feature, HTTP nodes).
+    pub struct IrohConnector {
+        endpoint: Endpoint,
+        network: [u8; 32],
+        cache: Mutex<HashMap<String, Arc<dyn Transport>>>,
+    }
+
+    impl IrohConnector {
+        pub fn new(endpoint: Endpoint, network: [u8; 32]) -> Self {
+            Self { endpoint, network, cache: Default::default() }
+        }
+    }
+
+    impl Connector for IrohConnector {
+        fn transport(&self, addr: &NodeAddr) -> Option<Arc<dyn Transport>> {
+            let key = addr.key();
+            let mut c = self.cache.lock().unwrap();
+            if let Some(t) = c.get(&key) {
+                return Some(t.clone());
+            }
+            let t: Arc<dyn Transport> = match addr {
+                NodeAddr::Iroh { .. } => Arc::new(IrohTransport::new(self.endpoint.clone(), to_endpoint_addr(addr)?, self.network)),
+                #[cfg(feature = "http")]
+                NodeAddr::Http { url } => Arc::new(UpstreamTransport(crate::http::HttpUpstream::new(url).ok()?)),
+                #[cfg(not(feature = "http"))]
+                NodeAddr::Http { .. } => return None,
+            };
+            c.insert(key, t.clone());
+            Some(t)
+        }
+    }
+}
