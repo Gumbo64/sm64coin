@@ -28,7 +28,7 @@ pub fn spawn_emitter(app: AppHandle, hub: Arc<TipHub>) {
         while rx.changed().await.is_ok() {
             let t = rx.borrow().clone();
             if let Some(t) = t {
-                let _ = app.emit("tip", tip_json(&t));
+                let _ = app.emit("tip", tip_json(&hub.stamped(t)));
             }
         }
     });
@@ -37,7 +37,8 @@ pub fn spawn_emitter(app: AppHandle, hub: Arc<TipHub>) {
 /// The current tip (null until one is known): the page asks once when it subscribes, since events only tell changes.
 #[tauri::command]
 pub fn tip_get(remote: State<'_, Remote>) -> Option<Value> {
-    remote.net.tip_hub().current().map(|t| tip_json(&t))
+    let hub = remote.net.tip_hub();
+    hub.current().map(|t| tip_json(&hub.stamped(t)))
 }
 
 /// Desktop: the app's own node, polled once a second (it is on this machine) for everyone who wants the tip: the page, the

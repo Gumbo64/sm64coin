@@ -74,6 +74,10 @@ pub struct TipHub {
     local_at: Mutex<Option<std::time::Instant>>,
     /// No node answered the last attempts to learn the tip.
     stranded: AtomicBool,
+    /// A push subscription is delivering (the network's tips arrive as they happen, not by a 30 s poll).
+    pushing: AtomicBool,
+    /// The tip source's clock minus ours, seconds (from a pushed record's server time; 0 for the local node or a poll).
+    skew: std::sync::atomic::AtomicI64,
 }
 
 /// A local tip older than this no longer shadows the network's.
@@ -81,7 +85,7 @@ const LOCAL_FRESH: Duration = Duration::from_secs(10);
 
 impl TipHub {
     pub fn new() -> Arc<TipHub> {
-        Arc::new(TipHub { tx: tokio::sync::watch::channel(None).0, local_at: Mutex::new(None), stranded: AtomicBool::new(false) })
+        Arc::new(TipHub { tx: tokio::sync::watch::channel(None).0, local_at: Mutex::new(None), stranded: AtomicBool::new(false), pushing: AtomicBool::new(false), skew: Default::default() })
     }
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Option<TipInfo>> {
         self.tx.subscribe()
@@ -107,22 +111,49 @@ impl TipHub {
     pub fn offer_local(&self, t: TipInfo) {
         *self.local_at.lock().unwrap() = Some(std::time::Instant::now());
         self.stranded.store(false, Ordering::Relaxed);
+        self.skew.store(0, Ordering::Relaxed); // the same machine's clock
         self.set(t);
     }
-    /// A tip from the light-client network; ignored while the local node's keeps arriving.
+    fn local_fresh(&self) -> bool {
+        self.local_at.lock().unwrap().is_some_and(|at| at.elapsed() < LOCAL_FRESH)
+    }
+    /// A tip from the light-client network; ignored while the local node's keeps arriving. `server_time` (when nonzero) is the
+    /// sender's clock at sending: the page's clock is corrected by it (the node judges a held run's send time by its own clock).
     pub fn offer_net(&self, t: TipInfo) {
         self.stranded.store(false, Ordering::Relaxed);
-        if self.local_at.lock().unwrap().is_some_and(|at| at.elapsed() < LOCAL_FRESH) {
+        if self.local_fresh() {
             return;
         }
+        if t.server_time > 0 {
+            self.skew.store(t.server_time as i64 - now_secs() as i64, Ordering::Relaxed);
+        }
         self.set(t);
+    }
+    /// A pushed tip from the network (see [`TipHub::offer_net`]); marks the push as delivering.
+    pub fn offer_pushed(&self, t: TipInfo) {
+        self.pushing.store(true, Ordering::Relaxed);
+        self.offer_net(t);
+    }
+    pub fn set_pushing(&self, on: bool) {
+        self.pushing.store(on, Ordering::Relaxed);
+    }
+    /// The tip with `server_time` the source's clock NOW (ours corrected by the last pushed reading): what the page is told, so a
+    /// record read long after the tip came (`tip_get`) still gives the right clock.
+    pub fn stamped(&self, t: TipInfo) -> TipInfo {
+        let skew = if self.local_fresh() { 0 } else { self.skew.load(Ordering::Relaxed) };
+        TipInfo { server_time: (now_secs() as i64 + skew).max(0) as u64, ..t }
     }
     pub fn set_stranded(&self, on: bool) {
         self.stranded.store(on, Ordering::Relaxed);
     }
-    /// The tip's block id (hex), no request: what the native miner's feed reads.
+    /// The tip's block id (hex), no request.
     pub fn tip_hash(&self) -> Option<String> {
         self.tx.borrow().as_ref().map(|t| hex::encode(t.hash))
+    }
+    /// What the native miner's feed reads: the tip while it is live (pushed, or the local node polled each second), else None so
+    /// the campaign polls its daemon itself (a 30 s network poll would tell it of a new block up to 30 s late).
+    pub fn live_tip_hash(&self) -> Option<String> {
+        if self.pushing.load(Ordering::Relaxed) || self.local_fresh() { self.tip_hash() } else { None }
     }
 }
 
@@ -277,7 +308,9 @@ impl Net {
         loop {
             if push {
                 let hub = self.hub.clone();
-                match self.client.watch_tip(|_, t| hub.offer_net(t)).await {
+                let end = self.client.watch_tip(|_, t| hub.offer_pushed(t)).await;
+                self.hub.set_pushing(false);
+                match end {
                     WatchEnd::NoPush => {}
                     WatchEnd::NoNodes => self.hub.set_stranded(true),
                 }
@@ -716,6 +749,25 @@ mod unit {
         assert!(hub.stranded());
         hub.offer_local(tip(5, 50));
         assert!(!hub.stranded());
+    }
+
+    #[test]
+    fn the_tip_hub_tells_the_page_the_senders_clock_now_and_the_miner_only_a_live_tip() {
+        let hub = TipHub::new();
+        // a pushed tip from a server 40 s behind this device, read by the page much later: still the server's clock NOW
+        let now = now_secs();
+        hub.offer_pushed(TipInfo { server_time: now - 40, ..tip(1, 10) });
+        let st = hub.stamped(hub.current().unwrap()).server_time as i64;
+        assert!((st - (now as i64 - 40)).abs() <= 1, "{st} vs {now}");
+        assert_eq!(hub.live_tip_hash(), hub.tip_hash(), "pushing: the miner reads the hub");
+        // the push ended: the hub's tip may be up to a poll old, so the miner polls its daemon itself
+        hub.set_pushing(false);
+        hub.offer_net(tip(2, 20));
+        assert!(hub.tip_hash().is_some() && hub.live_tip_hash().is_none());
+        // the local node (desktop): live, and its clock is ours
+        hub.offer_local(tip(3, 30));
+        assert!(hub.live_tip_hash().is_some());
+        assert!((hub.stamped(hub.current().unwrap()).server_time as i64 - now_secs() as i64).abs() <= 1);
     }
 
     #[test]

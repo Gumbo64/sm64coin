@@ -75,7 +75,7 @@ pub struct MobileMiner {
 pub struct HubFeed(pub Arc<crate::lcnet::TipHub>);
 impl sm64coin_miner::campaign::TipFeed for HubFeed {
     fn tip(&self) -> Option<String> {
-        self.0.tip_hash()
+        self.0.live_tip_hash()
     }
 }
 
