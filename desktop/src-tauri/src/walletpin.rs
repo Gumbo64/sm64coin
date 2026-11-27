@@ -95,9 +95,14 @@ pub enum Attempt {
     Wiped,
 }
 
+/// Tries run one at a time (in this process): two at once would both read the same count and each get a free guess, so a page
+/// firing many `wallet_pin_open` calls in parallel could otherwise go far past the limit.
+static ATTEMPTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// One PIN try against the record in `path`. The failure is counted (and written) BEFORE the PIN is checked, so a process
 /// killed in the middle does not give a free guess; success resets the count; the last wrong try deletes the file.
 pub fn attempt(path: &Path, pin: &str, aad: &str) -> Result<Attempt, String> {
+    let _one = ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut rec) = load(path) else { return Ok(Attempt::Wiped) };
     let tries = rec.tries.clamp(1, 100);
     rec.fails = rec.fails.saturating_add(1);
@@ -227,6 +232,21 @@ mod tests {
         save(&p, &wrap("pw", "2468", "main", FAST, 3, false).unwrap()).unwrap();
         attempt(&p, "1", "main").unwrap(); // not even a valid PIN: counts
         assert_eq!(load(&p).unwrap().fails, 1);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn parallel_tries_do_not_get_free_guesses() {
+        // 16 wrong tries at once against a 5-try record: exactly 5 are counted, the rest find the file wiped
+        let d = dir("parallel");
+        let p = d.join("main.pin");
+        save(&p, &wrap("pw", "2468", "main", FAST, 5, false).unwrap()).unwrap();
+        let checked: usize = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..16).map(|_| s.spawn(|| matches!(attempt(&p, "0000", "main").unwrap(), Attempt::Wrong { .. }))).collect();
+            hs.into_iter().map(|h| h.join().unwrap() as usize).sum()
+        });
+        assert_eq!(checked, 4, "4 wrong tries, the 5th wipes");
+        assert!(!p.exists());
         std::fs::remove_dir_all(&d).unwrap();
     }
 
