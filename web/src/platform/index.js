@@ -9,6 +9,7 @@
 //   platform.node                 {status, start, stop} of the local node, or null
 //   platform.nativeMiner          {start, stop, status, subscribe, onState} of the native miner, or null
 //   platform.wallet               the wallet-rpc sidecar's API (desktop) or null: the Wallet page then uses it, not the WASM engine
+//   platform.biometric            {status, wrap, unwrap, forget} Android only: the phone's fingerprint / screen lock seals the wallet password; null elsewhere
 //   platform.rom                  {status, set(path), pick(), bytes()} of the ROM kept by the app, or null
 // `await initPlatform()` once before the first render; `getPlatform()` after that.
 import { browser } from './browser.js';

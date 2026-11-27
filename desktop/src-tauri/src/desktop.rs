@@ -448,7 +448,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, crate::remote::net_status, crate::lctip::tip_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, crate::remote::net_status, crate::lctip::tip_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, wallet::wallet_pin_enable, wallet::wallet_pin_open, wallet::wallet_pin_disable, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {

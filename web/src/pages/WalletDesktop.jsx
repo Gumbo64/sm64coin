@@ -7,7 +7,10 @@ import Identicon from '../components/Identicon.jsx';
 import { miner } from '../lib/webminer/controller.js';
 import { newPassword, NO_PASSWORD_WARNING } from '../lib/wallet/pwRule.js';
 import { isNoPw, setNoPw } from '../lib/wallet/quick.js';
+import { setGeneratedHint } from '../lib/wallet/quickunlock.js';
 import { getPlatform } from '../platform/index.js';
+import { AddressBookCard, BookPicker, RecipientNote, SaveToBook, useBook } from '../components/AddressBook.jsx';
+import { validPin, PIN_NOTE } from '../lib/wallet/pin.js';
 
 // The desktop app's wallet: sm64coin-wallet-rpc (the wallet the Qt GUI uses) behind the Rust backend, which keeps its login to itself
 // and enforces the password rules: the password opens a wallet, it locks after some idle minutes, sending asks for it again
@@ -15,6 +18,9 @@ import { getPlatform } from '../platform/index.js';
 const POLL_MS = 8000;
 const short = (a) => (a ? `${a.slice(0, 10)}…${a.slice(-8)}` : '');
 const isAddress = (a) => /^SM6[a-zA-Z0-9]{90,110}$/.test((a || '').trim());
+// What a password box sends: the text as the password and, when the wallet has a PIN and the text is PIN-shaped, as the PIN too (Rust
+// checks the password first; a PIN try is only used when it is not the password).
+const gateArgs = (txt, hasPin) => ({ password: txt, pin: hasPin && validPin(txt) ? txt : undefined });
 const copy = (t) => { try { navigator.clipboard && navigator.clipboard.writeText(t); } catch { /* clipboard unavailable */ } };
 
 export default function WalletDesktop() {
@@ -93,7 +99,14 @@ function Unlock({ st, note, run, adopt, busy }) {
   const w = getPlatform().wallet;
   const [name, setName] = useState(st.wallets[0]);
   const [pw, setPw] = useState('');
+  const [pin, setPin] = useState('');
+  const [viaPw, setViaPw] = useState(false);
+  const pinInfo = (st.pins || []).find((p) => p.name === name);
+  const quickOn = !!pinInfo && !viaPw;
   const go = () => run('Opening', async () => { const r = await w.open(name, pw); setPw(''); adopt(r.address); });
+  const goPin = () => run('Opening', async () => {
+    try { const r = await w.pinOpen(name, pin); setPin(''); adopt(r.address); } catch (e) { setPin(''); if (e.code === 'pin_wiped') setViaPw(true); throw e; }
+  });
   // a wallet made without a password opens by itself
   useEffect(() => { if (isNoPw(name) && !busy) go(); }, [name]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
@@ -101,14 +114,23 @@ function Unlock({ st, note, run, adopt, busy }) {
       <h2>Wallet</h2>
       {note && <p className="notice">{note}</p>}
       <p>
-        {st.wallets.length > 1 && <select value={name} onChange={(e) => setName(e.target.value)}>{st.wallets.map((n) => <option key={n}>{n}</option>)}</select>}
+        {st.wallets.length > 1 && <select value={name} onChange={(e) => { setName(e.target.value); setViaPw(false); }}>{st.wallets.map((n) => <option key={n}>{n}</option>)}</select>}
         {st.wallets.length === 1 && <b>{name}</b>}
       </p>
       {/* a form: Enter submits it */}
-      <form onSubmit={(e) => { e.preventDefault(); if (!busy) go(); }}>
-        <input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
-        <button type="submit" disabled={busy}>Open</button>
-      </form>
+      {quickOn ? (
+        <form onSubmit={(e) => { e.preventDefault(); if (!busy && validPin(pin)) goPin(); }}>
+          <input type="password" inputMode="numeric" autoComplete="off" autoFocus maxLength={8} size={10} placeholder="PIN" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} data-testid="unlock-pin" />{' '}
+          <button type="submit" disabled={busy || !validPin(pin)}>Open</button>{' '}
+          <span className="muted small">{pinInfo.left} {pinInfo.left === 1 ? 'try' : 'tries'} left</span>
+          <p className="small"><button type="button" className="linkish" onClick={() => setViaPw(true)}>use the password instead</button></p>
+        </form>
+      ) : (
+        <form onSubmit={(e) => { e.preventDefault(); if (!busy) go(); }}>
+          <input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+          <button type="submit" disabled={busy}>Open</button>
+        </form>
+      )}
       <p className="muted">Stored in {st.dir} (readable by you only).</p>
     </div>
   );
@@ -180,6 +202,8 @@ function Onboard({ st, run, setFresh, adopt, busy, first }) {
 }
 
 function Open({ st, w, address, setAddress, run, refresh }) {
+  const pinInfo = (st.pins || []).find((p) => p.name === st.open) || null;
+  const { entries, reload } = useBook(w.book);
   const [bal, setBal] = useState(null);
   const [txs, setTxs] = useState([]);
   const [heights, setHeights] = useState({ wallet: 0, chain: 0 });
@@ -221,10 +245,12 @@ function Open({ st, w, address, setAddress, run, refresh }) {
         <div className="stat"><div className="label">Sync</div><div className="value">{syncPct == null ? '…' : syncPct >= 100 ? 'synced' : `${syncPct}%`}</div></div>
       </div>
       <Txs txs={txs} hide={hide} />
-      <Send w={w} bal={bal} settings={st.settings} run={run} poll={poll} hide={hide} />
-      <Keys w={w} run={run} onShown={() => { markBacked(address); bump(); }} />
-      <SetPassword w={w} name={st.open} run={run} />
-      <Settings w={w} st={st} run={run} refresh={refresh} />
+      <Send w={w} bal={bal} settings={st.settings} run={run} poll={poll} hide={hide} hasPin={!!pinInfo} entries={entries} reload={reload} />
+      <Keys w={w} run={run} hasPin={!!pinInfo} onShown={() => { markBacked(address); bump(); }} />
+      <SetPassword w={w} name={st.open} run={run} pinInfo={pinInfo} />
+      <PinCard w={w} name={st.open} pinInfo={pinInfo} address={address} run={run} refresh={refresh} />
+      <AddressBookCard book={w.book} entries={entries} reload={reload} />
+      <Settings w={w} st={st} run={run} refresh={refresh} hasPin={!!pinInfo} />
     </>
   );
 }
@@ -273,8 +299,9 @@ function Txs({ txs, hide }) {
   );
 }
 
-function Send({ w, bal, settings, run, poll, hide }) {
+function Send({ w, bal, settings, run, poll, hide, hasPin, entries, reload }) {
   const [to, setTo] = useState('');
+  const [sentTo, setSentTo] = useState(''); // the recipient of the send just made: offered for the address book
   const [amt, setAmt] = useState('');
   const [pw, setPw] = useState('');
   const [draft, setDraft] = useState(null);
@@ -282,27 +309,28 @@ function Send({ w, bal, settings, run, poll, hide }) {
   const atomic = parseAmount(amt);
   const ok = isAddress(to) && atomic && atomic > 0n && true; // the app checks the password (an empty one is right for a wallet made without one)
   const prepare = () => run('Building the transaction', async () => {
-    setSent('');
-    const d = await w.draft({ address: to.trim(), amount: atomic, password: pw });
+    setSent(''); setSentTo('');
+    const d = await w.draft({ address: to.trim(), amount: atomic, ...gateArgs(pw, hasPin) });
     setPw('');
     setDraft({ ...d, to: to.trim() });
   });
   const relay = () => run('Sending', async () => {
     const hash = await w.relay(draft.metadata);
-    setSent(hash); setDraft(null); setTo(''); setAmt('');
+    setSent(hash); setSentTo(draft.to); setDraft(null); setTo(''); setAmt('');
     poll();
   });
   return (
     <div className="card">
       <h3>Send</h3>
-      <p><input className="wide mono" placeholder="SM64… recipient address" value={to} onChange={(e) => { setTo(e.target.value); setDraft(null); }} /></p>
-      {isAddress(to) && <p className="muted small" data-testid="to-preview"><Identicon address={to.trim()} size={24} /> {to.trim().slice(0, 8)}…{to.trim().slice(-6)}: check it is the right one.</p>}
+      <p><input className="wide mono" placeholder="SM64… recipient address" value={to} onChange={(e) => { setTo(e.target.value); setDraft(null); }} />{' '}
+        <BookPicker entries={entries} onPick={(a) => { setTo(a); setDraft(null); }} /></p>
+      {isAddress(to) && <RecipientNote entries={entries} to={to} />}
 
       <p>
         <input placeholder="amount" value={amt} size={16} onChange={(e) => { setAmt(e.target.value); setDraft(null); }} />{' '}
         <span className="muted">spendable {hide ? '•••••' : bal ? fmtShort(bal.unlocked) : '…'}</span>
       </p>
-      {settings.password_on_send && !draft && <p><input type="password" placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} /></p>}
+      {settings.password_on_send && !draft && <p><input type="password" placeholder={hasPin ? 'wallet password or PIN' : 'wallet password'} value={pw} onChange={(e) => setPw(e.target.value)} /></p>}
       {!draft && <button disabled={!ok} onClick={prepare}>Review</button>}
       {draft && (
         <div className="notice">
@@ -312,18 +340,20 @@ function Send({ w, bal, settings, run, poll, hide }) {
         </div>
       )}
       {sent && <p>Sent: <span className="mono break">{sent}</span></p>}
+      {sent && <SaveToBook book={w.book} entries={entries} reload={reload} address={sentTo} onDone={() => setSentTo('')} />}
     </div>
   );
 }
 
-function Keys({ w, run, onShown }) {
+function Keys({ w, run, onShown, hasPin }) {
   const [open, setOpen] = useState(false);
   const [pw, setPw] = useState('');
   const [k, setK] = useState(null);
   const close = () => { setOpen(false); setPw(''); setK(null); };
   const reveal = () => run('Checking the password', async () => {
-    const seed = await w.seed(pw);
-    const keys = await w.keys(pw);
+    const g = gateArgs(pw, hasPin);
+    const seed = await w.seed(g.password, g.pin);
+    const keys = await w.keys(g.password, g.pin);
     setK({ seed, ...keys }); setPw(''); onShown && onShown();
   });
   return (
@@ -333,7 +363,7 @@ function Keys({ w, run, onShown }) {
         <>
           <p className="walleterr">Anyone who sees the spend key or the seed words can spend all of this wallet's coins. Show them only where nobody can look over your shoulder, and never paste them into a website or send them to anyone.</p>
           <form onSubmit={(e) => { e.preventDefault(); reveal(); }}>
-            <input type="password" autoFocus placeholder="wallet password" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+            <input type="password" autoFocus placeholder={hasPin ? 'wallet password or PIN' : 'wallet password'} value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
             <button type="submit">I understand, show them</button>{' '}
             <button type="button" className="linkish" onClick={close}>cancel</button>
           </form>
@@ -357,13 +387,14 @@ const isBacked = (a) => { try { return !!localStorage.getItem(BK(a)); } catch { 
 const markBacked = (a) => { try { if (a) localStorage.setItem(BK(a), String(Date.now())); } catch { /* storage unavailable */ } };
 
 /** Set (or change) the wallet's password, later: nothing asks for one while the visitor plays or explores. */
-function SetPassword({ w, name, run }) {
+function SetPassword({ w, name, run, pinInfo }) {
   const none = isNoPw(name);
   const [open, setOpen] = useState(false);
   const [cur, setCur] = useState('');
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const np = newPassword(pw, pw2);
+  if (pinInfo) return <div className="card"><p className="muted small">A PIN is set: turn it off (below) before changing the password.</p></div>;
   const save = () => run('Setting the password', async () => { await w.setPassword(none ? '' : cur, pw); setNoPw(name, false); setOpen(false); setCur(''); setPw(''); setPw2(''); });
   return (
     <div className="card">
@@ -382,12 +413,72 @@ function SetPassword({ w, name, run }) {
   );
 }
 
-function Settings({ w, st, run, refresh }) {
+/** Optional quick unlock on the desktop: a PIN seals the wallet password (Rust, walletpin.rs). Off unless turned on here. */
+function PinCard({ w, name, pinInfo, address, run, refresh }) {
+  const none = isNoPw(name);
+  const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState('');
+  const [pin, setPin] = useState('');
+  const [pin2, setPin2] = useState('');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const np = newPassword(pw, pw2);
+  const digits = (set) => (e) => set(e.target.value.replace(/\D/g, ''));
+  const reset = () => { setCur(''); setPin(''); setPin2(''); setPw(''); setPw2(''); };
+  const enable = () => run('Setting up the PIN', async () => {
+    if (none && !isBacked(address)) throw new Error('Back up your seed words first (Show seed words and keys): the PIN gives this wallet a password that only the PIN knows.');
+    const r = await w.pinEnable(pin, none ? '' : cur);
+    if (r && r.generated) { setNoPw(name, false); setGeneratedHint(address, true); }
+    reset(); setOpen(false);
+  });
+  const disable = () => run('Turning the PIN off', async () => {
+    if (pinInfo.generated && !np.ok) throw new Error(np.error);
+    const t = pinInfo.generated ? pin : cur; // the PIN, or (not generated) the password or the PIN
+    await w.pinDisable({ password: pinInfo.generated ? undefined : t, pin: validPin(t) ? t : undefined, newPassword: pinInfo.generated ? pw : undefined });
+    if (pinInfo.generated) { setNoPw(name, !pw); setGeneratedHint(address, false); }
+    reset(); setOpen(false);
+  });
+  return (
+    <div className="card" data-testid="pin-card">
+      <button className="linkish" onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} {pinInfo ? 'PIN: on' : 'Set up PIN'}</button>
+      {open && !pinInfo && (
+        <>
+          <p className="muted small">Open this wallet with a short PIN instead of its password. Optional; off unless you turn it on.</p>
+          <p className="muted small" data-testid="pin-note">{PIN_NOTE}</p>
+          {none && <p className="muted small">This wallet has no password. The PIN will give it a long random one that only the PIN knows, so the wallet file becomes encrypted. Your seed words stay the real backup; if the PIN is wiped (5 wrong tries) you open the wallet from them.</p>}
+          {!none && <p><input type="password" placeholder="current wallet password" value={cur} onChange={(e) => setCur(e.target.value)} /></p>}
+          <p>
+            <input type="password" inputMode="numeric" autoComplete="off" maxLength={8} size={10} placeholder="PIN (4-8 digits)" value={pin} onChange={digits(setPin)} />{' '}
+            <input type="password" inputMode="numeric" autoComplete="off" maxLength={8} size={10} placeholder="repeat it" value={pin2} onChange={digits(setPin2)} />
+          </p>
+          <button disabled={!validPin(pin) || pin !== pin2 || (!none && !cur)} onClick={enable}>Turn on</button>
+        </>
+      )}
+      {open && pinInfo && (
+        <>
+          <p className="muted small">A PIN opens this wallet ({pinInfo.left} wrong {pinInfo.left === 1 ? 'try' : 'tries'} left before it is wiped). {PIN_NOTE}</p>
+          {pinInfo.generated ? (
+            <>
+              <p className="muted small">Its password was made by the PIN setup. Enter your PIN and choose a password now (or none).</p>
+              <p><input type="password" inputMode="numeric" autoComplete="off" maxLength={8} size={10} placeholder="your PIN" value={pin} onChange={digits(setPin)} /></p>
+              <p><input type="password" placeholder="new password (8+ characters, optional)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}
+                <input type="password" placeholder="repeat it" value={pw2} onChange={(e) => setPw2(e.target.value)} /></p>
+              {np.error ? <p className="walleterr">{np.error}</p> : np.warn ? <p className="muted small">{np.warn}</p> : null}
+            </>
+          ) : <p><input type="password" placeholder="wallet password or PIN" value={cur} onChange={(e) => setCur(e.target.value)} /></p>}
+          <button disabled={pinInfo.generated ? (!validPin(pin) || !np.ok) : !cur} onClick={disable}>Turn off</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Settings({ w, st, run, refresh, hasPin }) {
   const [open, setOpen] = useState(false);
   const [s, setS] = useState(st.settings);
   const [pw, setPw] = useState('');
   useEffect(() => { setS(st.settings); }, [st.settings]);
-  const save = () => run('Saving', async () => { await w.settings({ ...s, auto_lock_minutes: Math.max(0, parseInt(s.auto_lock_minutes, 10) || 0) }, pw); setPw(''); refresh(); });
+  const save = () => run('Saving', async () => { const g = gateArgs(pw, hasPin); await w.settings({ ...s, auto_lock_minutes: Math.max(0, parseInt(s.auto_lock_minutes, 10) || 0) }, g.password, g.pin); setPw(''); refresh(); });
   return (
     <div className="card">
       <button className="linkish" onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} Wallet settings</button>
@@ -396,8 +487,8 @@ function Settings({ w, st, run, refresh }) {
           <p><label>Lock after <input size={4} value={s.auto_lock_minutes} onChange={(e) => setS({ ...s, auto_lock_minutes: e.target.value })} /> idle minutes (0 = never)</label></p>
           <p><label><input type="checkbox" checked={s.password_on_send} onChange={(e) => setS({ ...s, password_on_send: e.target.checked })} /> Ask for the password before sending</label></p>
           <p><label><input type="checkbox" checked={s.hide_balance} onChange={(e) => setS({ ...s, hide_balance: e.target.checked })} /> Hide the balance until clicked</label></p>
-          <p className="muted">Making a protection weaker (longer or no lock, no password to send) asks for the wallet password.</p>
-          <p><input type="password" placeholder="wallet password (only to weaken)" value={pw} onChange={(e) => setPw(e.target.value)} />{' '}<button onClick={save}>Save</button></p>
+          <p className="muted">Making a protection weaker (longer or no lock, no password to send) asks for the wallet password{hasPin ? ' (or the PIN)' : ''}.</p>
+          <p><input type="password" placeholder={hasPin ? 'password or PIN (only to weaken)' : 'wallet password (only to weaken)'} value={pw} onChange={(e) => setPw(e.target.value)} />{' '}<button onClick={save}>Save</button></p>
         </>
       )}
     </div>

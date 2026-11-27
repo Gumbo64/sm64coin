@@ -20,6 +20,12 @@ mod desktop;
 mod miner;
 #[cfg(desktop)]
 mod wallet;
+// The wallet PIN's wrap/attempt-limit logic: pure, so the host's tests run it too.
+#[cfg(any(desktop, test))]
+#[cfg_attr(not(desktop), allow(dead_code))]
+mod walletpin;
+#[cfg(mobile)]
+mod quick; // Android: the Keystore-sealed wallet password (fingerprint / device lock), QuickUnlockPlugin.kt
 mod link; // desktop: the passkey hand-off into wallet-rpc; Android: the seed goes to the page's WASM wallet (link_take)
 // The visualisation feed's checks (desktop: the miner's stdout; Android: the page's mailbox).
 #[allow(dead_code)]
@@ -162,6 +168,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(nav_guard())
+        .plugin(quick::init())
         .manage(link::Link::default())
         .setup(|t| {
             use tauri::Manager;
@@ -180,7 +187,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, remote::net_status, lctip::tip_get, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail, link::link_start, link::link_status, link::link_cancel, link::link_take])
+        .invoke_handler(tauri::generate_handler![host_info, remote::remote_rpc, remote::remote_node_get, remote::net_status, lctip::tip_get, mobile_cmds::rom_put, mobile_cmds::miner_start, mobile_cmds::miner_stop, mobile_cmds::miner_status, mobile_cmds::miner_viz_on, mobile_cmds::miner_viz_mail, link::link_start, link::link_status, link::link_cancel, link::link_take, quick::quick_status, quick::quick_wrap, quick::quick_unwrap, quick::quick_forget])
         .run(tauri::generate_context!())
         .expect("error while running the SM64Coin app");
 }

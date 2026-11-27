@@ -19,3 +19,7 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# QuickUnlockPlugin.kt is loaded by name and its arguments are parsed by reflection (Tauri plugin API)
+-keep class io.github.gumbo64.sm64coin.QuickUnlockPlugin { *; }
+-keep class io.github.gumbo64.sm64coin.QuickWrapArgs { *; }
+-keep class io.github.gumbo64.sm64coin.QuickUnwrapArgs { *; }

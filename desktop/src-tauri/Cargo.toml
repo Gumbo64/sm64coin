@@ -37,6 +37,8 @@ hkdf = "0.12"
 zeroize = "1"
 getrandom = "0.2"
 sha2 = "0.10"
+# the wallet PIN (walletpin.rs): PBKDF2-HMAC-SHA256 seals the wallet password
+pbkdf2 = "0.12"
 
 # Android only: links to web pages open in the system browser (the app's window never leaves its own pages); the native miner
 # is the sm64coin-miner library (Campaign, in this process; pow/miner/README.md).

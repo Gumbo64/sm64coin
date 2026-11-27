@@ -5,6 +5,7 @@
 import { getNode, daemon, isChosenNode, usingLocalNode } from '../rpc.js';
 import { getPlatform } from '../../platform/index.js';
 import { BACKUP_FORMAT, b64, parseBackup } from './backup.js';
+import { makeBook, webApi } from './addrbook.js';
 export { BACKUP_FORMAT, parseBackup };
 
 // v0.3 is a new chain (new genesis, block ids that also commit the miner's signature). A wallet cache
@@ -155,6 +156,13 @@ export async function exportData(w) {
 export async function setPassword(w, oldPassword, newPassword) { return w.changePassword(oldPassword, newPassword); }
 
 export async function isViewOnly(w) { return w.isViewOnly(); }
+
+/** The open wallet's address book (wallet2's own, kept inside the wallet's data): see addrbook.js. `onChange` saves the wallet. */
+export async function addressBook(w, onChange) {
+  const m = await loadLib();
+  const validate = (a) => { m.MoneroUtils.validateAddress(a, net(m)); }; // throws for an address of another network or a bad checksum
+  return makeBook(webApi(w, validate, onChange));
+}
 
 /** One sync pass; `onProgress(percent)`. */
 export async function syncOnce(w, onProgress) {
