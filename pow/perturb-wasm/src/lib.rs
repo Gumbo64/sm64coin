@@ -7,6 +7,45 @@ use sm64coin_perturb::sm64::{HEADLESS, VISUAL, event, features, progress, progre
 use sm64coin_perturb::{Pad, Perturber, PokeConfig};
 use wasm_bindgen::prelude::*;
 
+/// The consensus rules, the very file `sm64pow` compiles (it needs only `sm64coin-perturb`, not the game): the time limit the
+/// page computes from a tip's timestamp and difficulty is the node's, not a port of it.
+#[path = "../../sm64pow/src/rules.rs"]
+#[allow(dead_code)]
+pub mod rules;
+
+/// The time limit in frames for a block timestamped `elapsed_seconds` after its parent at retarget difficulty `difficulty`
+/// (`Rules::max_frames` of the active rules).
+#[wasm_bindgen]
+pub fn rules_max_frames(difficulty: u64, elapsed_seconds: u64) -> u32 {
+    use rules::Rules;
+    rules::active().max_frames(difficulty, elapsed_seconds)
+}
+
+/// The first second after the parent at which a run of `frames` fits the limit at retarget difficulty `difficulty` (the limit
+/// only grows with time); `u64::MAX`: never. A block carrying that run is valid from `parent timestamp + this`.
+#[wasm_bindgen]
+pub fn rules_due_elapsed(difficulty: u64, frames: u32) -> u64 {
+    use rules::Rules;
+    let r = rules::active();
+    const FAR: u64 = 1 << 40;
+    if r.max_frames(difficulty, FAR) < frames {
+        return u64::MAX;
+    }
+    let (mut lo, mut hi) = (0u64, FAR);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if r.max_frames(difficulty, mid) >= frames { hi = mid } else { lo = mid + 1 }
+    }
+    lo
+}
+
+/// The most frames any block can carry (the limit at difficulty 1 once fully grown).
+#[wasm_bindgen]
+pub fn rules_max_run_frames() -> u32 {
+    use rules::Rules;
+    rules::active().max_frames_any()
+}
+
 #[wasm_bindgen]
 pub struct WasmPerturber(Perturber);
 
@@ -147,4 +186,33 @@ impl Drop for WasmStateDecoder {
 #[wasm_bindgen]
 pub fn progress_event(before: &[u8], after: &[u8]) -> String {
     event(&progress(before), &progress(after)).map(|e| e.name()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Difficulties and elapsed seconds the vectors cover; `limit_vectors.json` holds the answers (checked by sm64pow's own test
+    /// too, so a rule change cannot slip past either side).
+    const DIFFS: [u64; 9] = [1, 2, 1000, 12_345_678, 1_000_000_000, 1u64 << 40, 1_000_000_000_000_000, u64::MAX / 3, u64::MAX];
+    const ELAPSED: [u64; 14] = [0, 1, 59, 60, 61, 300, 600, 1200, 1800, 3600, 7200, 86_400, 1_000_000, 10_000_000];
+
+    #[test]
+    fn limit_vectors_match_the_rules() {
+        let rows: Vec<(u64, u64, u32)> = DIFFS.iter().flat_map(|&d| ELAPSED.iter().map(move |&e| (d, e, rules_max_frames(d, e)))).collect();
+        let json = serde_json::to_string(&rows.iter().map(|(d, e, f)| serde_json::json!([d.to_string(), e, f])).collect::<Vec<_>>()).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../sm64pow/tests/limit_vectors.json");
+        if std::env::var("WRITE_LIMIT_VECTORS").is_ok() {
+            std::fs::write(path, &json).unwrap();
+        }
+        let have: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(have, serde_json::from_str::<serde_json::Value>(&json).unwrap(), "pow/sm64pow/tests/limit_vectors.json is stale (WRITE_LIMIT_VECTORS=1 cargo test regenerates it)");
+        assert_eq!(rules_max_run_frames(), 36000);
+        // due time: the first second the limit reaches the run, for every row
+        for (d, e, f) in rows {
+            let due = rules_due_elapsed(d, f);
+            assert!(due <= e && rules_max_frames(d, due) >= f && (due == 0 || rules_max_frames(d, due - 1) < f), "{d} {e} {f} {due}");
+        }
+        assert_eq!(rules_due_elapsed(1, 36001), u64::MAX);
+    }
 }

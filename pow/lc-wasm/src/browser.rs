@@ -141,9 +141,44 @@ impl LightClient {
         self.core.client.list_json()
     }
 
+    /// Follows the chain tip by push (`Request::SubscribeTip` over iroh): `on_tip(json)` is called with the current tip and on
+    /// every change (`{node, height, hash, timestamp, cumulative_difficulty, difficulty, server_time}`), reconnecting by
+    /// itself. When no listed node can push (HTTPS-only list, older servers) `on_end("nopush" | "nonodes")` is called once
+    /// and the caller polls. `stop()` on the returned handle ends it.
+    pub fn watch_tip(&self, on_tip: js_sys::Function, on_end: js_sys::Function) -> TipWatch {
+        let client = self.core.client.clone();
+        let (fut, handle) = futures_util::future::abortable(async move {
+            let end = client
+                .watch_tip(|node, t| {
+                    let _ = on_tip.call1(&JsValue::NULL, &crate::core::tip_json(node, &t).into());
+                })
+                .await;
+            let why = match end {
+                sm64coin_lc::client::WatchEnd::NoPush => "nopush",
+                sm64coin_lc::client::WatchEnd::NoNodes => "nonodes",
+            };
+            let _ = on_end.call1(&JsValue::NULL, &why.into());
+        });
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = fut.await;
+        });
+        TipWatch(handle)
+    }
+
     /// Bans a node caught lying (a week).
     pub fn ban_liar(&self, key: &str) {
         self.core.client.ban_liar(key)
+    }
+}
+
+/// A running [`LightClient::watch_tip`].
+#[wasm_bindgen]
+pub struct TipWatch(futures_util::future::AbortHandle);
+
+#[wasm_bindgen]
+impl TipWatch {
+    pub fn stop(&self) {
+        self.0.abort();
     }
 }
 

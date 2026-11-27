@@ -20,7 +20,7 @@ pub const VERIFY_MAX_BLOCKS: u64 = 500;
 const PROBE_PER_REFRESH: usize = 6;
 
 pub struct Core {
-    pub client: Client,
+    pub client: Arc<Client>,
     env: Arc<dyn Env>,
     /// The network's genesis block hash (None: "any chain", nothing is probed or verified).
     genesis: Option<[u8; 32]>,
@@ -68,7 +68,7 @@ pub fn build_list(bootstrap_json: &str, saved_json: &str, now: u64, keep: impl F
 
 impl Core {
     pub fn new(list: NodeList, connector: Arc<dyn Connector>, env: Arc<dyn Env>, genesis: Option<[u8; 32]>, anchor: Option<Checkpoint>, rules: Box<dyn Consensus>) -> Self {
-        Self { client: Client::new(list, connector, env.clone()), env, genesis, anchor, rules, probed: Default::default(), last_verify: Default::default(), verifying: Default::default(), resume: Default::default() }
+        Self { client: Arc::new(Client::new(list, connector, env.clone())), env, genesis, anchor, rules, probed: Default::default(), last_verify: Default::default(), verifying: Default::default(), resume: Default::default() }
     }
 
     fn now_secs(&self) -> u64 {
@@ -364,4 +364,18 @@ mod tests {
         assert!(anchor_for(None).is_none());
         assert!(anchor_for(Some([9; 32])).is_none());
     }
+}
+
+/// A pushed tip as the JSON the page reads (`difficulty` and `cumulative_difficulty` as decimal strings: they can exceed 2^53).
+pub fn tip_json(node: &str, t: &sm64coin_lc::proto::TipInfo) -> String {
+    json!({
+        "node": node,
+        "height": t.height,
+        "hash": hex::encode(t.hash),
+        "timestamp": t.timestamp,
+        "cumulative_difficulty": t.cumulative_difficulty.to_string(),
+        "difficulty": t.difficulty.to_string(),
+        "server_time": t.server_time,
+    })
+    .to_string()
 }
