@@ -178,7 +178,9 @@ class QuickUnlockPlugin(private val activity: Activity) : Plugin(activity) {
       deleteKey()
       invoke.reject("Your fingerprints or screen lock changed: quick unlock was turned off", "invalidated")
     } catch (e: Exception) {
-      invoke.reject("Could not start the unlock: ${e.javaClass.simpleName}", "invalidated")
+      // not "invalidated": the page deletes the sealed password on that code, and a passing Keystore error must not cost it
+      // (for a wallet whose password quick unlock made, that would leave only the seed words)
+      invoke.reject("Could not start the unlock: ${e.javaClass.simpleName}", "quick_failed")
     }
   }
 

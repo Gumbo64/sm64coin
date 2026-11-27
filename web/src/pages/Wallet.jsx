@@ -610,7 +610,7 @@ function QuickCard({ w, nopw, quick, setQuick, address, run, passwordSet }) {
           )}
           {kind === 'bio' && <p className="muted small">The phone's secure hardware keeps the key and asks you every time; it stops working if fingerprints or the screen lock change (then the password opens the wallet).</p>}
           {kind === 'pin' && <p className="muted small" data-testid="pin-note">{PIN_NOTE}</p>}
-          {nopw && <p className="muted small">This wallet has no password. Quick unlock will give it a long random one that only quick unlock knows, so what is stored here becomes encrypted. Your seed words stay the real backup; if the PIN is wiped (5 wrong tries) you open the wallet from them.</p>}
+          {nopw && <p className="muted small">This wallet has no password. Quick unlock will give it a long random one that only quick unlock knows, so what is stored here becomes encrypted. Your seed words stay the real backup; if quick unlock is lost ({bio ? '5 wrong PINs, or the phone\'s fingerprints or screen lock change' : '5 wrong PINs'}) you open the wallet from them.</p>}
           {!nopw && <p><input type="password" placeholder="current wallet password" value={cur} onChange={(e) => setCur(e.target.value)} /></p>}
           {kind === 'pin' && (
             <p>
