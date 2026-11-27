@@ -11,7 +11,15 @@ name: Release
 on:
   push:
     tags: ['v*']
-    branches: ['release-test']
+    # main: cache warming. A run may restore caches only from its own ref or the default branch, so
+    # every new tag started with an empty ccache (v0.5.2: 2% hits, ~20 min per platform). These
+    # build-only runs on main fill the caches the next tag restores; they publish nothing (publish
+    # needs a tag) and skip the desktop/android jobs. The paths filter applies to branch pushes only
+    # (GitHub ignores it for tags), so main builds only when native code changes.
+    branches: ['release-test', 'main']
+    paths: ['monero', 'gui', 'pow/**', 'scripts/**', 'packaging/**', '.github/workflows/release.yml']
+  schedule:
+    - cron: '17 3 * * 1'   # weekly cache refresh (caches unused for 7 days are evicted)
   workflow_dispatch:
     inputs:
       version:
@@ -20,6 +28,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:   # cache-warming runs on main: only the newest matters
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -492,7 +504,7 @@ jobs:
   web-desktop:
     name: Desktop frontend
     needs: wallet-engine
-    if: ${{ !cancelled() }}
+    if: ${{ (!cancelled()) && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -550,7 +562,7 @@ jobs:
   desktop:
     name: Desktop ${{ matrix.platform }}
     needs: [web-desktop, build-linux, build-windows, build-macos]
-    if: ${{ !cancelled() }}   # each platform needs its own bundle job; one platform failing does not stop the others
+    if: ${{ !cancelled() && github.ref != 'refs/heads/main' }}   # each platform needs its own bundle job; one platform failing does not stop the othe
     strategy:
       fail-fast: false
       matrix:
@@ -669,6 +681,7 @@ jobs:
   # takes it when it was built. The workflow can also be run by hand to test the APK without a release.
   android:
     name: Android APK
+    if: ${{ github.ref != 'refs/heads/main' }}   # not on cache-warming runs
     uses: ./.github/workflows/android.yml
     permissions:
       contents: read
