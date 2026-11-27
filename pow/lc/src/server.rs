@@ -275,7 +275,7 @@ impl LcService {
                     self.0.upstream_busy.fetch_sub(1, Ordering::AcqRel);
                     return (Response::Error(ErrorKind::Busy { retry_ms: 500 }), false);
                 }
-                let t = if req.cost() >= 10 || matches!(req, Request::Wallet { .. }) { cfg.limits.bulk_timeout } else { cfg.limits.upstream_timeout };
+                let t = if req.is_bulk() { cfg.limits.bulk_timeout } else { cfg.limits.upstream_timeout };
                 let r = exec::run(&*self.0.upstream, &req, t).await;
                 self.0.upstream_busy.fetch_sub(1, Ordering::AcqRel);
                 (r, false)
@@ -311,6 +311,12 @@ impl LcService {
         self.0.stats.requests.fetch_add(1, Ordering::Relaxed);
         let req: Request = match decode_body(&frame) {
             Ok(r) => r,
+            // a request from a newer minor: answered, not a protocol violation
+            Err(_) if is_unknown_request(&frame) => {
+                let _ = write_frame(&mut send, &Response::Error(ErrorKind::Unsupported), MAX_FRAME).await;
+                let _ = send.finish();
+                return Ok(false);
+            }
             Err(_) => {
                 self.0.stats.malformed.fetch_add(1, Ordering::Relaxed);
                 *malformed += 1;

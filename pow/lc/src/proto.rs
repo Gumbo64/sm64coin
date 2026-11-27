@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// ALPN of the service. A breaking change is `sm64coin/light/2`, served side by side for a release.
 pub const ALPN: &[u8] = b"sm64coin/light/1";
 /// This implementation's minor version.
-pub const MINOR: u16 = 0;
+pub const MINOR: u16 = 1;
 
 /// Largest frame an answer may have (8 MiB).
 pub const MAX_FRAME: usize = 8 << 20;
@@ -37,8 +37,10 @@ pub mod features {
     pub const TREE_SYNC: u64 = 1 << 2;
     pub const WALLET: u64 = 1 << 3;
     pub const PROBE: u64 = 1 << 4;
+    /// `Request::JsonRpc` / `Request::Path` (minor 1): any allowlisted node call.
+    pub const PASSTHROUGH: u64 = 1 << 5;
     /// Features this implementation's server offers.
-    pub const SERVED: u64 = CYCLE | PROOF_RECORDS | WALLET | PROBE;
+    pub const SERVED: u64 = CYCLE | PROOF_RECORDS | WALLET | PROBE | PASSTHROUGH;
 }
 
 /// Flag bits of [`NodeAnnouncement::flags`].
@@ -137,6 +139,29 @@ pub enum Request {
     GetNodes { max: u16 },
     /// "Connect back to the IP you see me at, on this TCP port": the relay reachability self-test.
     Probe { tcp_port: u16 },
+    /// Minor 1: any [`crate::allowlist::RPC_ALLOWED`] JSON-RPC method of the node, `params` as JSON text. The answer is
+    /// [`Response::JsonRpc`], the node's whole JSON-RPC answer (so a node-side error reaches the caller unchanged).
+    JsonRpc { method: String, params: String },
+    /// Minor 1: any [`crate::allowlist::PATH_ALLOWED`] non-JSON-RPC call (`/get_transactions`, `/is_key_image_spent`,
+    /// `/get_o_indexes.bin` ...), body as the wallet sends it; the answer is [`Response::Bin`].
+    Path { path: String, body: Vec<u8> },
+}
+
+/// Number of [`Request`] variants this build knows. A request whose postcard variant index is at or above this is from
+/// a newer minor: it is answered with `Unsupported`, not counted as malformed and never closes the connection.
+pub const REQUEST_VARIANTS: u32 = 16;
+
+/// True when `body` (a request frame body) starts with a variant index this build does not know.
+pub fn is_unknown_request(body: &[u8]) -> bool {
+    // postcard: the enum variant index is a varint (LEB128, 7 bits per byte)
+    let mut idx: u64 = 0;
+    for (i, b) in body.iter().take(5).enumerate() {
+        idx |= ((b & 0x7f) as u64) << (7 * i);
+        if b & 0x80 == 0 {
+            return idx >= REQUEST_VARIANTS as u64;
+        }
+    }
+    false
 }
 
 /// Why a request failed.
@@ -172,6 +197,8 @@ pub enum Response {
     /// `reachable`: the TCP connect back to `observed:tcp_port` worked.
     Probe { observed: Option<String>, reachable: bool },
     Error(ErrorKind),
+    /// The node's whole JSON-RPC answer (`{"jsonrpc", "id", "result" | "error"}`) as JSON text; answer of `Request::JsonRpc`.
+    JsonRpc(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -266,6 +293,8 @@ impl Request {
             Request::SendTx { .. } => "send_tx",
             Request::GetNodes { .. } => "get_nodes",
             Request::Probe { .. } => "probe",
+            Request::JsonRpc { .. } => "json_rpc",
+            Request::Path { .. } => "path",
         }
     }
     /// Budget cost in tokens (a plain read costs 1; heavy ones more, DOS.md style).
@@ -276,7 +305,29 @@ impl Request {
             Request::SubmitBlock { .. } | Request::SubmitProof { .. } | Request::Probe { .. } => 4,
             Request::GetHeaders { .. } | Request::Wallet { .. } => 5,
             Request::GetBlocks { .. } | Request::GetCycle { .. } => 10,
+            Request::JsonRpc { method, .. } => match method.as_str() {
+                "get_sm64_cycle" => 10,
+                "get_block_headers_range" | "getblockheadersrange" | "get_output_distribution" | "get_output_histogram" | "get_block" | "getblock" => 5,
+                "submit_block" | "submitblock" | "submit_sm64_proof" => 4,
+                "get_block_template" | "getblocktemplate" | "sm64_board" | "get_sm64_state" => 2,
+                _ => 1,
+            },
+            Request::Path { path, .. } => match path.as_str() {
+                "/getblocks.bin" | "/get_blocks.bin" | "/getblocks_by_height.bin" | "/get_blocks_by_height.bin" | "/get_output_distribution.bin" => 10,
+                "/gethashes.bin" | "/get_hashes.bin" | "/get_outs.bin" | "/get_transactions" | "/gettransactions" => 5,
+                "/send_raw_transaction" | "/sendrawtransaction" => 2,
+                _ => 1,
+            },
         }
+    }
+    /// A request only a minor-1 (or newer) server knows: an older one answers it `Malformed`, which is no verdict on the
+    /// request, so the client moves on to another node.
+    pub fn is_passthrough(&self) -> bool {
+        matches!(self, Request::JsonRpc { .. } | Request::Path { .. })
+    }
+    /// Whether the answer may be large (bulk timeout).
+    pub fn is_bulk(&self) -> bool {
+        self.cost() >= 10 || matches!(self, Request::Wallet { .. }) || matches!(self, Request::Path { path, .. } if path.ends_with(".bin"))
     }
 }
 

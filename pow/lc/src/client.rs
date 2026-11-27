@@ -83,13 +83,16 @@ pub const BULK_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct Client {
     list: Mutex<NodeList>,
+    /// When set, reads and submissions use only these nodes (the verified best branch's; see `verify`). Verification itself
+    /// ([`Client::pick_keys`], [`Client::ask_node`]) is not restricted.
+    allowed: Mutex<Option<std::collections::HashSet<String>>>,
     connector: Arc<dyn Connector>,
     env: Arc<dyn Env>,
 }
 
 impl Client {
     pub fn new(list: NodeList, connector: Arc<dyn Connector>, env: Arc<dyn Env>) -> Self {
-        Self { list: Mutex::new(list), connector, env }
+        Self { list: Mutex::new(list), allowed: Mutex::new(None), connector, env }
     }
     fn now(&self) -> u64 {
         self.env.now_ms() / 1000
@@ -119,7 +122,7 @@ impl Client {
     /// Up to `n` distinct node keys, best first (weighted). For callers that ask nodes one by one
     /// ([`Client::ask_node`]), like the light-client verifier's cross-check.
     pub fn pick_keys(&self, n: usize) -> Vec<String> {
-        self.pick(n).into_iter().map(|(k, _)| k).collect()
+        self.pick_unrestricted(n).into_iter().map(|(k, _)| k).collect()
     }
 
     /// Asks one specific node (no failover): the answer is attributable. Latency and errors still feed the score.
@@ -128,10 +131,25 @@ impl Client {
         self.ask(key, &addr, req, timeout).await
     }
 
-    fn pick(&self, n: usize) -> Vec<(String, NodeAddr)> {
+    /// Restricts reads and submissions to these node keys (`None`: any node). An empty set is treated as `None`.
+    pub fn set_allowed(&self, keys: Option<Vec<String>>) {
+        *self.allowed.lock().unwrap() = keys.filter(|k| !k.is_empty()).map(|k| k.into_iter().collect());
+    }
+    pub fn allowed(&self) -> Option<Vec<String>> {
+        self.allowed.lock().unwrap().as_ref().map(|s| s.iter().cloned().collect())
+    }
+
+    fn pick_unrestricted(&self, n: usize) -> Vec<(String, NodeAddr)> {
         let now = self.now();
         let r = self.env.rand();
         self.list.lock().unwrap().pick_many(n, now, r).into_iter().map(|r: &NodeRecord| (r.key(), r.addr.clone())).collect()
+    }
+
+    fn pick(&self, n: usize) -> Vec<(String, NodeAddr)> {
+        let allowed = self.allowed.lock().unwrap().clone();
+        let Some(allowed) = allowed else { return self.pick_unrestricted(n) };
+        let all = self.list.lock().unwrap().len();
+        self.pick_unrestricted(all).into_iter().filter(|(k, _)| allowed.contains(k)).take(n).collect()
     }
 
     async fn ask(&self, key: &str, addr: &NodeAddr, req: &Request, timeout: Duration) -> Result<Response, String> {
@@ -174,6 +192,9 @@ impl Client {
         let mut errs = Vec::new();
         for (key, addr) in picks {
             match self.ask(&key, &addr, req, timeout).await {
+                // an older node does not know the passthrough requests (and a node may serve a narrower allowlist): the
+                // next node may
+                Ok(Response::Error(ErrorKind::Malformed | ErrorKind::Unsupported)) if req.is_passthrough() => errs.push(format!("{key}: not supported")),
                 Ok(Response::Error(e)) => return Err(ClientError::Refused(e)),
                 Ok(r) => return Ok((key, r)),
                 Err(e) => errs.push(format!("{key}: {e}")),

@@ -68,6 +68,26 @@ pub fn validate(req: &Request) -> Result<(), ErrorKind> {
         Request::GetCycle { hash } if !(hash.is_empty() || (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))) => Err(ErrorKind::Malformed),
         Request::GetTemplate { address, reserve } if address.len() > 200 || address.is_empty() || *reserve > 255 => Err(ErrorKind::Malformed),
         Request::GetOutDistribution { amounts, .. } if amounts.len() > 64 => Err(ErrorKind::Malformed),
+        Request::JsonRpc { method, params } => {
+            if method.len() > 64 || params.len() > MAX_REQUEST_FRAME / 2 {
+                Err(ErrorKind::Malformed)
+            } else if !allowlist::rpc_allowed(method) {
+                Err(ErrorKind::Unsupported)
+            } else if serde_json::from_str::<Value>(params).is_err() {
+                Err(ErrorKind::Malformed)
+            } else {
+                Ok(())
+            }
+        }
+        Request::Path { path, body } => {
+            if path.len() > 64 || body.len() > MAX_REQUEST_FRAME - 1024 {
+                Err(ErrorKind::Malformed)
+            } else if !allowlist::path_allowed(path) {
+                Err(ErrorKind::Unsupported)
+            } else {
+                Ok(())
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -196,6 +216,14 @@ async fn run_inner(up: &dyn Upstream, req: &Request, t: Duration) -> Result<Resp
                 Some("OK") => Response::Accepted,
                 other => Response::Rejected { reason: v["reason"].as_str().filter(|r| !r.is_empty()).or(other).unwrap_or("rejected").to_string() },
             }
+        }
+        Request::JsonRpc { method, params } => {
+            let params: Value = serde_json::from_str(params).map_err(|_| Response::Error(ErrorKind::Malformed))?;
+            Response::JsonRpc(up.json_rpc(method, params, t).await.map_err(upstream_err)?.to_string())
+        }
+        Request::Path { path, body } => {
+            let ct = if path.ends_with(".bin") { "application/octet-stream" } else { "application/json" };
+            Response::Bin(up.post(path, ct, body.clone(), t).await.map_err(upstream_err)?)
         }
         Request::Hello { .. } | Request::GetNodes { .. } | Request::Probe { .. } => Response::Error(ErrorKind::Unsupported),
     })

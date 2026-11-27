@@ -230,6 +230,64 @@ fn frame(r: &Request) -> Vec<u8> {
     encode_frame(r, MAX_REQUEST_FRAME).unwrap()
 }
 
+#[test]
+fn request_variant_count_matches_the_enum() {
+    // the newest variant sits at REQUEST_VARIANTS - 1 (append-only enum; bump the constant with each new variant)
+    let last = postcard::to_stdvec(&Request::Path { path: String::new(), body: vec![] }).unwrap();
+    assert_eq!(last[0] as u32, REQUEST_VARIANTS - 1);
+    assert!(!is_unknown_request(&last));
+    assert!(is_unknown_request(&[REQUEST_VARIANTS as u8, 1, 2]));
+    assert!(is_unknown_request(&[0x80 | 3, 1])); // varint 131
+    assert!(!is_unknown_request(&[0xff, 0xff]), "unterminated varint is just malformed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn passthrough_json_rpc_and_paths_with_the_allowlist() {
+    let s = fake_srv(None, Limits::default()).await;
+    let c = client_ep(None).await;
+    let t = IrohTransport::new(c.clone(), direct_addr(&s.ep), GENESIS);
+    // any allowlisted JSON-RPC method: the node's whole answer comes back
+    let params = json!({"wallet_address": "A", "reserve_size": 8, "sm64_frames": 3}).to_string();
+    match t.request(&Request::JsonRpc { method: "get_block_template".into(), params }, T).await.unwrap() {
+        Response::JsonRpc(j) => assert!(serde_json::from_str::<Value>(&j).unwrap().get("result").is_some()),
+        r => panic!("{r:?}"),
+    }
+    assert!(matches!(t.request(&Request::JsonRpc { method: "get_sm64_state".into(), params: "{}".into() }, T).await.unwrap(), Response::JsonRpc(_)));
+    // a path call is forwarded with its body
+    assert_eq!(t.request(&Request::Path { path: "/get_transactions".into(), body: b"{\"txs_hashes\":[]}".to_vec() }, T).await.unwrap(), Response::Bin(b"{\"txs_hashes\":[]}".to_vec()));
+    assert!(matches!(t.request(&Request::Path { path: "/get_o_indexes.bin".into(), body: vec![1, 2] }, T).await.unwrap(), Response::Bin(_)));
+    let calls = s.up.calls.load(Ordering::SeqCst);
+    // not on the allowlist: refused without touching the node
+    for m in ["stop_daemon", "set_bans", "prune_blockchain", "get_connections"] {
+        assert_eq!(t.request(&Request::JsonRpc { method: m.into(), params: "{}".into() }, T).await.unwrap(), Response::Error(ErrorKind::Unsupported), "{m}");
+    }
+    for p in ["/stop_daemon", "/get_transaction_pool", "/get_peer_list", "/start_mining", "/../json_rpc"] {
+        assert_eq!(t.request(&Request::Path { path: p.into(), body: vec![] }, T).await.unwrap(), Response::Error(ErrorKind::Unsupported), "{p}");
+    }
+    assert_eq!(t.request(&Request::JsonRpc { method: "get_info".into(), params: "not json".into() }, T).await.unwrap(), Response::Error(ErrorKind::Malformed));
+    assert_eq!(s.up.calls.load(Ordering::SeqCst), calls);
+    s.router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_request_is_answered_not_a_disconnect() {
+    let s = fake_srv(None, Limits::default()).await;
+    let c = client_ep(None).await;
+    let conn = c.connect(direct_addr(&s.ep), ALPN).await.unwrap();
+    assert!(matches!(raw(&conn, &frame(&Request::Hello { minor: 9, features: u64::MAX, network: GENESIS })).await.unwrap(), Response::Hello { .. }));
+    // a variant from a future minor (index 40) with some payload; many times over: still answered, connection stays up
+    for _ in 0..8 {
+        let mut body = vec![40u8, 1, 2, 3];
+        let mut f = (body.len() as u32).to_be_bytes().to_vec();
+        f.append(&mut body);
+        assert_eq!(raw(&conn, &f).await.unwrap(), Response::Error(ErrorKind::Unsupported));
+    }
+    assert!(conn.close_reason().is_none());
+    assert!(matches!(raw(&conn, &frame(&Request::GetTip)).await.unwrap(), Response::Tip(_)));
+    assert_eq!(s.svc.stats().malformed.load(Ordering::Relaxed), 0);
+    s.router.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_oversized_and_unhelloed() {
     let s = fake_srv(None, Limits::default()).await;
