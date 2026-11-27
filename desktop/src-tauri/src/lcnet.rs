@@ -521,7 +521,7 @@ impl Net {
 
     /// A call to exactly one HTTP node (the one the user confirmed): no failover, no mapping.
     pub async fn rpc_pinned(&self, url: &str, method: &str, params: Value) -> Result<Value, String> {
-        let Some((up, _)) = self.conn.http_entry(url) else { return Err("not an http(s) node".into()) };
+        let Some((up, _)) = self.conn.http_entry(url, None) else { return Err("not an http(s) node".into()) };
         up.json_rpc(method, params, self.bulk_timeout).await.map_err(|e| e.to_string())
     }
 
@@ -655,7 +655,7 @@ mod unit {
 
     #[test]
     fn the_view_key_call_is_not_routed_by_failover() {
-        let net = Net::new(&[NodeAddr::Http { url: "https://a.example".into() }], None, None);
+        let net = Net::new(&[NodeAddr::http("https://a.example".into())], None, None);
         let e = tauri::async_runtime::block_on(net.rpc("sm64_board_join", json!({}))).unwrap_err();
         assert!(e.contains("only sent to the node you chose"), "{e}");
     }

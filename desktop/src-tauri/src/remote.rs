@@ -134,7 +134,7 @@ mod tests {
     use super::*;
 
     fn remote(saved: Option<String>) -> Remote {
-        Remote::with_net(None, saved.clone(), Net::new(&[NodeAddr::Http { url: "https://eboy.au".into() }], saved.as_deref(), None))
+        Remote::with_net(None, saved.clone(), Net::new(&[NodeAddr::http("https://eboy.au".into())], saved.as_deref(), None))
     }
 
     #[test]
@@ -148,8 +148,15 @@ mod tests {
         let raw: serde_json::Value = serde_json::from_str(PUBLIC_NODE_JSON).unwrap();
         assert!(raw["nodes"].is_array() && raw["url"].is_string(), "old clients read url, new ones nodes");
         for n in raw["nodes"].as_array().unwrap() {
-            assert!(sm64coin_lc::nodes::parse_node_spec(n.as_str().unwrap()).is_some(), "bad bootstrap entry {n}");
+            let spec = n.as_str().or_else(|| n["url"].as_str()).unwrap();
+            assert!(sm64coin_lc::nodes::parse_node_spec(spec).is_some(), "bad bootstrap entry {n}");
+            if let Some(t) = n.get("tip") {
+                assert!(sm64coin_lc::nodes::parse_tip_spec(t.as_str().unwrap()).is_some(), "bad tip in bootstrap entry {n}");
+            }
         }
+        // an entry's tip URL reaches the node list
+        let t = bootstrap_from(r#"{"nodes":[{"url":"https://eboy.au","tip":"https://eboy.au:16490/lc/tip"},"https://b.example"]}"#);
+        assert_eq!((t[0].tip_url(), t[1].tip_url()), (Some("https://eboy.au:16490/lc/tip"), None));
     }
 
     #[test]
