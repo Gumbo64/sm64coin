@@ -13,6 +13,13 @@ if [ -z "${ANDROID_KEYSTORE_PASSWORD:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD_
   ANDROID_KEYSTORE_PASSWORD="$(tr -d '\r\n' < "$ANDROID_KEYSTORE_PASSWORD_FILE")"
 fi
 : "${ANDROID_KEYSTORE_PASSWORD:?no keystore password}"
+# A password pasted from a phone can carry invisible non-ASCII characters (no-break space, zero-width space, BOM, smart quotes) and
+# keytool rejects those ("Password is not ASCII"). Keep only printable ASCII; say how many characters were dropped, never which.
+clean="$(printf '%s' "$ANDROID_KEYSTORE_PASSWORD" | LC_ALL=C tr -cd '\041-\176')"
+if [ "${#clean}" != "$(printf '%s' "$ANDROID_KEYSTORE_PASSWORD" | LC_ALL=C wc -c | tr -d ' ')" ]; then
+  echo "android-sign: dropped $(( $(printf '%s' "$ANDROID_KEYSTORE_PASSWORD" | LC_ALL=C wc -c) - ${#clean} )) non-printable/non-ASCII byte(s) from the keystore password" >&2
+fi
+ANDROID_KEYSTORE_PASSWORD="$clean"
 export ANDROID_KEYSTORE_PASSWORD
 BT="$(ls -d "${ANDROID_HOME:?ANDROID_HOME is not set}"/build-tools/*/ | sort -V | tail -1)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
