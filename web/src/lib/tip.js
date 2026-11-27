@@ -1,7 +1,7 @@
 // The chain tip, once per page. Everything that used to ask `get_info` on a timer (the Mine page, the auto-miner, the header
 // light, the new-block banner, the explorer, the cycle timeline ...) reads this store instead; it learns the tip by PUSH where it
 // can and by a slow poll where it cannot:
-//   push  the light-client network's SubscribeTip stream over iroh (lib/lightnet.js, pow/lc-wasm), or the desktop app's `tip`
+//   push  Server-Sent Events from the node in use (`GET <node>/lc/tip`, pow/lc/src/sse.rs), or the desktop app's `tip`
 //         event (Rust: desktop/src-tauri/src/lctip.rs; the local node is polled there, once, for everyone). No request at all
 //         while the tip stands.
 //   poll  get_info every POLL_MS (30 s), at once again when the tab becomes visible or gets focus (a sleeping tab wakes up
@@ -47,7 +47,7 @@ export function tipFromInfo(info, timestamp, at = Date.now()) {
   };
 }
 
-/** A tip from a pushed record (lc-wasm `watch_tip`, or the desktop's `tip` event: the same JSON shape). */
+/** A tip from a pushed record (an SSE event, or the desktop's `tip` event: the same JSON shape). */
 export function tipFromPush(j, at = Date.now()) {
   if (!j || typeof j.hash !== 'string' || !(Number(j.height) >= 0)) return null;
   return {
@@ -66,7 +66,7 @@ export function tipFromPush(j, at = Date.now()) {
 export const SSE_SILENCE_MS = 95_000;
 
 /**
- * Follows the tip over Server-Sent Events (`GET <node>/lc/tip`, pow/lc/src/sse.rs): plain HTTPS, no iroh. `h` = the store's handlers.
+ * Follows the tip over Server-Sent Events (`GET <node>/lc/tip`, pow/lc/src/sse.rs): plain HTTPS. `h` = the store's handlers.
  * Returns a stop function. A node without the endpoint (404: the EventSource closes at once) is reported through `deps.onUnsupported(url)`
  * so it is not tried again this page load. A dropped connection is retried by the browser (EventSource) by itself.
  */
@@ -342,7 +342,7 @@ export function tipStore() {
         if (!p.tip) return null;
         return p.tip.subscribe((j) => h.tip(j));
       },
-      // the node in use serves Server-Sent Events (an HTTPS node behind a proxy that forwards /lc/tip): no iroh needed
+      // the node in use serves Server-Sent Events (an HTTPS node behind a proxy that forwards /lc/tip)
       async (h) => {
         const { getNode } = await import('./rpc.js');
         const { getPlatform } = await import('../platform/index.js');
@@ -351,13 +351,6 @@ export function tipStore() {
         const url = `${node}/lc/tip`;
         if (sseUnsupported.has(url)) return null;
         return openSse(url, h, { onUnsupported: (u) => sseUnsupported.add(u) });
-      },
-      // a browser tab on the light-client network: SubscribeTip over iroh
-      async (h) => {
-        const { lightnet } = await import('./lightnet.js');
-        const ln = lightnet();
-        if (!ln.onChangeOnce) ln.onChangeOnce = ln.onChange(() => page && page.kick());
-        return ln.watchTip(h.tip, h.end);
       },
     ],
   });

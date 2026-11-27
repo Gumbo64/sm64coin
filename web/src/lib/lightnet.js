@@ -1,5 +1,5 @@
 // The website's light-client network (docs/LIGHT-CLIENTS.md): in a plain browser tab the default (public) node path goes through
-// pow/lc-wasm, which keeps a scored list of nodes (HTTPS nodes now; iroh nodes over a relay when public-node.json lists them),
+// pow/lc-wasm, which keeps a scored list of nodes (the https entries of public-node.json),
 // fails over between them, fans submissions out to several nodes, bans a node that lies, and verifies the chain from a
 // checkpoint compiled into the release (headers, ids, timestamps and the consensus rules; no Mario replay in the page). The
 // first check of a page load starts at that checkpoint, later ones only at the last verified point (kept in the WASM's memory,
@@ -18,15 +18,14 @@ const CATCH_UP_MS = 5_000;
 /** Methods whose result a single node's answer is enough for, sent to several nodes at once. */
 export const SUBMIT_METHODS = new Set(['submit_block', 'submit_sm64_proof']);
 
-/** The bootstrap entries of public-node.json (`{"nodes": [...], "url": "..."}`), https/http URLs and `iroh:<id>@<relay>`. */
+/** The bootstrap entries of public-node.json (`{"nodes": [...], "url": "..."}`): https/http URLs (anything else, such as an old `iroh:` entry, is skipped). */
 export function bootstrapEntries(json) {
   const j = json && typeof json === 'object' ? json : {};
   const all = [...(Array.isArray(j.nodes) ? j.nodes : []), ...(j.url ? [j.url] : [])];
-  return all.map((s) => String(s || '').trim()).filter((s) => /^(https?:\/\/[^\s@?#]+|iroh:[0-9a-fA-F]{64}(@\S+)?)$/.test(s));
+  return all.map((s) => String(s || '').trim()).filter((s) => /^https?:\/\/[^\s@?#]+$/.test(s));
 }
-/** The first https/http entry: what the rest of the site calls "the public node". */
-export const firstHttpNode = (json) => (bootstrapEntries(json).find((s) => /^https?:/.test(s)) || '').replace(/\/+$/, '');
-export const hasIrohNodes = (json) => bootstrapEntries(json).some((s) => s.startsWith('iroh:'));
+/** The first entry: what the rest of the site calls "the public node". */
+export const firstHttpNode = (json) => (bootstrapEntries(json)[0] || '').replace(/\/+$/, '');
 
 /** Thrown when the light-client path cannot serve a call: the caller uses its own single-node path instead. */
 export class Unavailable extends Error {
@@ -138,15 +137,6 @@ export function createLightnet(deps = {}) {
     return j.result;
   }
 
-  /** Follows the chain tip by push over iroh (pow/lc-wasm `watch_tip`): `onTip(record)` for the current tip and each change,
-   *  `onEnd(why)` when no listed node can push ('nopush': HTTPS-only list or older servers) so the caller polls. Returns a stop
-   *  function, or null when the network is not ready. */
-  function watchTip(onTip, onEnd) {
-    if (state !== 'ready' || !lc || typeof lc.watch_tip !== 'function') return null;
-    const w = lc.watch_tip((j) => { try { onTip(JSON.parse(j)); } catch { /* unreadable record */ } }, (why) => { try { onEnd(why); } catch { /* the caller's */ } });
-    return () => { try { w.stop(); w.free(); } catch { /* already stopped */ } };
-  }
-
   /** What the Network page shows: state, nodes with scores, verification. */
   function status() {
     const base = { state, failure, verify: verifyInfo };
@@ -155,19 +145,18 @@ export function createLightnet(deps = {}) {
     try { st = JSON.parse(lc.status()); } catch { /* none */ }
     const now = st.now || Math.floor(nowMs() / 1000);
     const nodes = ((st.list && st.list.records) || []).map((r) => ({
-      key: r.addr.Http ? `http:${r.addr.Http.url}` : `iroh:${r.addr.Iroh.endpoint_id}`,
-      kind: r.addr.Http ? 'https' : 'iroh',
-      url: r.addr.Http ? r.addr.Http.url : '',
-      relay: r.addr.Iroh ? r.addr.Iroh.relay_url : null,
+      key: `http:${r.addr.Http.url}`,
+      kind: r.addr.Http.url.startsWith('https:') ? 'https' : 'http',
+      url: r.addr.Http.url,
       source: r.source, okRate: r.ok_rate, latencyMs: r.ewma_latency_ms, height: r.height, strikes: r.strikes,
       banned: r.banned_until > now,
-      verified: Array.isArray(st.allowed) ? st.allowed.includes(r.addr.Http ? `http:${r.addr.Http.url}` : `iroh:${r.addr.Iroh.endpoint_id}`) : null,
+      verified: Array.isArray(st.allowed) ? st.allowed.includes(`http:${r.addr.Http.url}`) : null,
     }));
-    return { ...base, nodes, iroh: !!st.iroh };
+    return { ...base, nodes };
   }
 
   return {
-    start, call, available, status, refresh, verify, watchTip,
+    start, call, available, status, refresh, verify,
     state: () => state,
     onChange: (f) => { listeners.add(f); return () => listeners.delete(f); },
     banLiar: (key) => { if (lc) { lc.ban_liar(key); persist(); emit(); } },

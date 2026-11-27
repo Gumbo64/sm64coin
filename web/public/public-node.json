@@ -1,5 +1,5 @@
 {
   "url": "https://eboy.au",
   "nodes": ["https://eboy.au"],
-  "comment": "nodes: https://host, or iroh:<node-id>@<relay-url> for a light-client node (reached by id and relay, no lookup service). url is for clients older than the nodes list. The Pi's iroh entry is added at deploy time: iroh:<its endpoint id>@https://<its relay>."
+  "comment": "nodes: https://host entries (light-client nodes the site may use; the browser takes https only). url is for clients older than the nodes list. The apps also learn more nodes from Monero's get_public_nodes."
 }

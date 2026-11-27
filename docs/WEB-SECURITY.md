@@ -53,11 +53,11 @@ CSP via `<meta>`: feasible and now committed (commit `b722ccb`, `web/index.html`
 ```
 default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:;
-connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:;
+connect-src 'self' https: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:;
 object-src 'none'; base-uri 'none'; form-action 'none'
 ```
 
-Why these: Vite output has external module scripts only, no inline script; WASM needs `wasm-unsafe-eval` (game, miner, perturbation); inline `style` attributes need `'unsafe-inline'` for styles only; `wss:` is there for the light-client network (lib/lightnet.js): iroh reaches a node's home relay over a WebSocket, and relay hosts come from `public-node.json` and signed node announcements, so they cannot be listed (it adds only the scheme, `https:` already allows any host); the node URL is user-chosen so `connect-src` must allow any `https:` plus loopback http (a node at `http://192.168.x.x` would be blocked, which is also the right mixed-content answer, see 5). `new Function` runs in dedicated workers, which a document meta CSP does not govern (a worker's policy comes from its own response headers, which Pages cannot set), so `'unsafe-eval'` is not needed in the document.
+Why these: Vite output has external module scripts only, no inline script; WASM needs `wasm-unsafe-eval` (game, miner, perturbation); inline `style` attributes need `'unsafe-inline'` for styles only; the light-client network (lib/lightnet.js) uses only `fetch` and `EventSource` to https nodes, so no websocket scheme is needed; the node URL is user-chosen so `connect-src` must allow any `https:` plus loopback http (a node at `http://192.168.x.x` would be blocked, which is also the right mixed-content answer, see 5). `new Function` runs in dedicated workers, which a document meta CSP does not govern (a worker's policy comes from its own response headers, which Pages cannot set), so `'unsafe-eval'` is not needed in the document.
 
 Verified: `SM64COIN_BASE=/sm64coin/ npx vite build` succeeds; headless Chromium loaded `/`, `/mine`, `/automine`, `/leaderboard`, `/blocks`, `/wallet`, `/network`, `/info` with zero CSP violations and `crossOriginIsolated` true (the service worker still works). Not verified: paths behind the ROM gate (the game itself on the main thread), and the wallet engine (not built here; `wallet/monero-ts.lib.mjs` is a same-origin dynamic import, covered by `'self'`; the wallet worker is a dedicated worker). One emscripten helper in the main bundle contains `new Function(""+Z)` only when passed a string callback; it is not used in normal paths but would throw EvalError under this CSP if a game build ever used it. If a game feature breaks after ROM load, the console says which directive; the first suspect is that helper, and the answer is to add `'unsafe-eval'` rather than drop the CSP. Test with a real ROM before the next release.
 
@@ -128,7 +128,7 @@ Headers to set (Cloudflare Pages `_headers`):
 
 ```
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless

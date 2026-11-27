@@ -27,7 +27,7 @@ const node = {
 
 let netInfo = null; // the last net_status: the loopback daemon, the node and transport in use, the node list
 
-/** The app's light-client network (Rust: lcnet.rs): `status()` -> {proxy, used: {node, transport, method}, iroh, nodes: [...],
+/** The app's light-client network (Rust: lcnet.rs): `status()` -> {proxy, used: {node, transport, method}, nodes: [...],
  *  verify: {state: 'checking'|'verified'|'conflict'|'unverified', label: 'verified (3 nodes agree)', agree, quorum, height, replay}}
  *  (`verify` is the chain check of lcverify.rs; `verified()` is its label).
  *  `walletDaemon()` is the loopback daemon (http://127.0.0.1:port) the wallet engine and the native miner use: it fails over
@@ -250,7 +250,7 @@ const mobile = {
   rpc: null, // no local node: lib/rpc.js uses the public node through remoteRpc
   nodeUrl: () => '',
   node: null,
-  nativeMiner: mobileMiner, // battery-hungry: off by default, stopped when the app leaves the foreground (NativeMiner.jsx)
+  nativeMiner: mobileMiner, // battery-hungry: off by default, stopped when the app leaves the foreground (NativeControls.jsx)
   rom: null,
   remoteNode: { get: desktop.remoteNode.get, set: null }, // the public node only (no native confirmation dialog there)
   wallet: null, // the browser's WASM wallet engine (Wallet page) serves there

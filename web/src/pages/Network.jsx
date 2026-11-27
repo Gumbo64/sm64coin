@@ -10,7 +10,7 @@ const LIST_KEY = 'sm64coin.nodes';
 const loadList = () => { try { return JSON.parse(localStorage.getItem(LIST_KEY) || '[]'); } catch { return []; } };
 const saveList = (l) => { try { localStorage.setItem(LIST_KEY, JSON.stringify(l)); } catch { /* storage unavailable */ } };
 
-const label = (key) => String(key || '').replace(/^http:/, '').replace(/^iroh:(.{8}).*$/, 'iroh $1...');
+const label = (key) => String(key || '').replace(/^http:/, '');
 // What the verifier found, in words (Rust lcverify.rs). A node that served an invalid chain is banned for a week.
 function Verified({ v }) {
   if (!v) return null;
@@ -27,7 +27,7 @@ function Verified({ v }) {
   );
 }
 
-const TRANSPORT = { https: 'https', http: 'http', iroh: 'iroh (QUIC)' };
+const TRANSPORT = { https: 'https', http: 'http' };
 
 // The app's light-client network (Rust lcnet.rs): which node and transport the last call used, and the candidate list with its
 // scores. Shown where the app reads from remote nodes (no local node answering): Android always, desktop while its node is down.
@@ -42,7 +42,6 @@ function LightNet() {
     <div className="muted">
       <p>
         Connected through: <b>{st.used ? <><code>{label(st.used.node)}</code> over <b>{TRANSPORT[st.used.transport] || st.used.transport}</b></> : 'no call yet'}</b>
-        {st.iroh ? <> | iroh endpoint <code>{st.iroh.slice(0, 8)}...</code></> : ' | iroh starting'}
       </p>
       <Verified v={st.verify} />
       <table>

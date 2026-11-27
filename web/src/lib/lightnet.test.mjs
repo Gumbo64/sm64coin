@@ -1,33 +1,30 @@
 import assert from 'node:assert/strict';
-import { createLightnet, bootstrapEntries, firstHttpNode, hasIrohNodes, Unavailable, SUBMIT_METHODS } from './lightnet.js';
+import { createLightnet, bootstrapEntries, firstHttpNode, Unavailable, SUBMIT_METHODS } from './lightnet.js';
 
 const ID = 'ab'.repeat(32);
 // --- bootstrap parsing (public-node.json: nodes[] and the old url key)
 assert.deepEqual(bootstrapEntries({ url: 'https://eboy.au' }), ['https://eboy.au']);
 assert.deepEqual(bootstrapEntries({ nodes: ['https://a.example', `iroh:${ID}@https://relay.example`, 'ftp://x', 'iroh:zz', 'https://u@evil'], url: 'https://b.example' }),
-  ['https://a.example', `iroh:${ID}@https://relay.example`, 'https://b.example']);
+  ['https://a.example', 'https://b.example'], 'an old iroh entry is skipped');
 assert.deepEqual(bootstrapEntries(null), []);
 assert.deepEqual(bootstrapEntries({ nodes: 'nope' }), []);
 assert.equal(firstHttpNode({ nodes: [`iroh:${ID}`, 'https://a.example/'] }), 'https://a.example');
 assert.equal(firstHttpNode({ nodes: [`iroh:${ID}`] }), '');
-assert.equal(hasIrohNodes({ nodes: [`iroh:${ID}`] }), true);
-assert.equal(hasIrohNodes({ url: 'https://x' }), false);
 
 // --- a fake wasm module
 function fakeModule({ rpc, submit, allow = (m) => m !== 'stop_daemon', createFails = false } = {}) {
-  const log = { watches: [], created: null, rpcs: [], refreshes: 0, verifies: 0, bans: [] };
+  const log = { created: null, rpcs: [], refreshes: 0, verifies: 0, bans: [] };
   class LightClient {
     static async create(boot, genesis, saved) { if (createFails) throw new Error('no wasm'); log.created = { boot: JSON.parse(boot), genesis, saved }; return new LightClient(); }
     static allowed(m) { return allow(m); }
     async rpc(m, p) { log.rpcs.push([m, JSON.parse(p)]); return rpc ? rpc(m, p) : JSON.stringify({ jsonrpc: '2.0', id: 0, result: { m } }); }
     async submit(m, p) { return submit(m, p); }
     async refresh() { log.refreshes++; }
-    watch_tip(onTip, onEnd) { const w = { onTip, onEnd, stopped: 0, freed: 0, stop() { w.stopped++; }, free() { w.freed++; } }; log.watches.push(w); return w; }
     async verify() { log.verifies++; return JSON.stringify({ level: 'full', height: 7, at: 1 }); }
     list_json() { return '{"records":[]}'; }
-    status() { return JSON.stringify({ now: 100, iroh: true, allowed: ['http:https://a.example'], list: { records: [
+    status() { return JSON.stringify({ now: 100, allowed: ['http:https://a.example'], list: { records: [
       { addr: { Http: { url: 'https://a.example' } }, source: 'Bootstrap', ok_rate: 0.9, ewma_latency_ms: 80, height: 7, strikes: 0, banned_until: 0 },
-      { addr: { Iroh: { endpoint_id: ID, relay_url: 'https://r.example', direct: [] } }, source: 'Bootstrap', ok_rate: 0.5, ewma_latency_ms: 0, height: 0, strikes: 3, banned_until: 500 } ] } }); }
+      { addr: { Http: { url: 'http://203.0.113.9:16481' } }, source: 'PublicNodes', ok_rate: 0.5, ewma_latency_ms: 0, height: 0, strikes: 3, banned_until: 500 } ] } }); }
     ban_liar(k) { log.bans.push(k); }
   }
   return { mod: { LightClient, default: async () => {} }, log };
@@ -80,9 +77,7 @@ const settle = () => new Promise((r) => setImmediate(r));
   assert.equal(log.verifies, 1);
   const s = ln.status();
   assert.equal(s.verify.level, 'full');
-  assert.equal(s.iroh, true);
-  assert.deepEqual(s.nodes.map((n) => [n.kind, n.banned, n.verified]), [['https', false, true], ['iroh', true, false]]);
-  assert.equal(s.nodes[1].relay, 'https://r.example');
+  assert.deepEqual(s.nodes.map((n) => [n.kind, n.banned, n.verified]), [['https', false, true], ['http', true, false]]);
   ln.banLiar('http:https://a.example');
   assert.deepEqual(log.bans, ['http:https://a.example']);
 }
@@ -115,29 +110,5 @@ const settle = () => new Promise((r) => setImmediate(r));
   const ln = createLightnet({ loadWasm: async () => mod, storage: bad, ...timers() });
   await ln.start({}); await settle();
   assert.equal(ln.state(), 'ready');
-}
-// --- tip push: not available before the network is ready; then the records arrive parsed, the end is reported, stop frees the watch
-{
-  const { mod, log } = fakeModule();
-  const ln = createLightnet({ loadWasm: async () => mod, genesis: 'g', storage: storage(), ...timers() });
-  assert.equal(ln.watchTip(() => {}, () => {}), null, 'not ready: the caller polls');
-  await ln.start({}); await settle();
-  const got = [], ended = [];
-  const stop = ln.watchTip((t) => got.push(t), (why) => ended.push(why));
-  assert.equal(typeof stop, 'function');
-  const w = log.watches[0];
-  w.onTip(JSON.stringify({ height: 7, hash: 'ab', timestamp: 5, difficulty: '1000', cumulative_difficulty: '9', server_time: 6, node: 'n' }));
-  w.onTip('not json');
-  w.onEnd('nopush');
-  assert.deepEqual(got.map((t) => t.height), [7]);
-  assert.deepEqual(ended, ['nopush']);
-  stop();
-  assert.deepEqual([w.stopped, w.freed], [1, 1]);
-  // a module from before tip push (no watch_tip): null, so the store polls
-  const old = fakeModule();
-  delete old.mod.LightClient.prototype.watch_tip;
-  const ln2 = createLightnet({ loadWasm: async () => old.mod, genesis: 'g', storage: storage(), ...timers() });
-  await ln2.start({}); await settle();
-  assert.equal(ln2.watchTip(() => {}, () => {}), null);
 }
 console.log('lightnet ok');

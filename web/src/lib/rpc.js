@@ -15,7 +15,7 @@ let savedRemote = ''; // desktop: the https node the user confirmed (remote_node
 // A build for a static host (GitHub Pages) has no proxy: VITE_DEFAULT_NODE (e.g. the
 // visitor's own node, http://127.0.0.1:16481) is the node until one is chosen.
 const DEFAULT_NODE = (import.meta.env.VITE_DEFAULT_NODE || '').replace(/\/+$/, '');
-// The public node: public-node.json next to the site ({"nodes": ["https://...", "iroh:<id>@<relay>"]}, or the old {"url": ...}; e.g.
+// The public node: public-node.json next to the site ({"nodes": ["https://..."]}, or the old {"url": ...}; e.g.
 // a node's restricted RPC), read at load so it can change without a rebuild. Used for a visit when no node was chosen and the
 // default (your own) node doesn't answer. `publicNode` is the first https entry; in a browser tab the calls to it go through the
 // light-client network (lib/lightnet.js: all entries, failover, verification), the single node only while that loads or fails.

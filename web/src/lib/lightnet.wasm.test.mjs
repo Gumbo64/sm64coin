@@ -49,16 +49,8 @@ assert.ok(rec(down).strikes >= 1 || rec(down).ok_rate < 0.5);
 const v = JSON.parse(await lc.verify()); // the fake nodes serve no blocks: verification reports failure, it does not throw
 assert.ok(['failed', 'none'].includes(v.level), JSON.stringify(v));
 assert.ok(typeof lc.list_json() === 'string' && JSON.parse(lc.list_json()).records.length === 4);
-// tip push in the real wasm: an HTTPS-only list cannot push, so the watch reports it and the page polls instead
-{
-  const got = [];
-  const ended = await new Promise((resolve) => {
-    const w = lc.watch_tip((j) => got.push(j), (why) => resolve(why));
-    setTimeout(() => { w.stop(); resolve('timeout'); }, 15000);
-  });
-  assert.equal(ended, 'nopush', 'HTTP nodes answer no SubscribeTip');
-  assert.equal(got.length, 0);
-}
+// no tip push in the WASM any more: the page follows the tip by EventSource (lib/tip.js)
+assert.equal(typeof lc.watch_tip, 'undefined');
 servers.forEach((s) => s.close());
 console.log('lightnet.wasm ok');
 process.exit(0);

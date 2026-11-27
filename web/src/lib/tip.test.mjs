@@ -226,7 +226,7 @@ const total = (w) => w.calls.info + w.calls.header;
   await settle();
   assert.deepEqual(seen, ['h5', null, 'other']);
 }
-// ---- Server-Sent Events source (no iroh)
+// ---- Server-Sent Events source 
 {
   class FakeES {
     static last = null;
