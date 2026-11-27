@@ -16,6 +16,23 @@ export function successFor(rulesName) {
   return KNOWN_RULES[rulesName] || null;
 }
 
+const CAP_SWITCHES = [[1, 'the wing cap switch (red)'], [2, 'the metal cap switch (green)'], [4, 'the vanish cap switch (blue)']];
+
+/**
+ * What a run added between two readProgress() results, for messages ("goal reached: the wing cap switch (red)"), so a
+ * player can see a cap switch counted. The precedence of Rust's perturb sm64.rs `event`: Grand Star, star, key, cap.
+ * null: no progress point.
+ */
+export function progressLabel(start, now) {
+  if (!start || !now || !(now.points > start.points)) return null;
+  if (now.grand && !start.grand) return 'the Grand Star';
+  if (now.stars > start.stars) return 'a star';
+  if (now.keys > start.keys) return `Bowser key ${now.keys}`;
+  const caps = (now.caps || 0) & ~(start.caps || 0);
+  const cap = CAP_SWITCHES.find(([bit]) => caps & bit);
+  return cap ? cap[1] : 'a progress point';
+}
+
 // The longest run any block can carry (the time limit at difficulty 1:
 // base_frames in rules.rs). Past this a run can never become valid.
 export const MAX_RUN_FRAMES = 20 * 60 * 30;

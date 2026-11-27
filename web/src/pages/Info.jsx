@@ -72,7 +72,7 @@ export default function Info() {
 
       <h3>How a block is won: the auction and the envelope</h3>
       <p>
-        Each block is the next star or key from where the last block ended, played with random controller pokes seeded by
+        Each block is the next star, Bowser key or cap switch from where the last block ended, played with random controller pokes seeded by
         the block. Miners search for a run that gets there; the shorter the run, the better.
       </p>
       <p>
