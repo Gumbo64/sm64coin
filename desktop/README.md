@@ -83,8 +83,33 @@ routes/); `src-tauri/bundle/<os>.json` is passed with `tauri build --config` (ke
 `Contents/Resources` (macOS); `Dirs::res` finds them. Unsigned. TODO: Windows signing, macOS Developer ID + notarization, updater
 plugin + keys, Linux aarch64/.rpm, Windows DLL placement (`stage/dll/*` -> `./`) is untested.
 
+## Native miner without a child process (for the Android app)
+
+Android cannot spawn sidecar binaries, so the miner is also a library that runs on threads of the app's own process:
+`sm64coin_miner::campaign` (pow/miner, see its README). Not wired into the app yet. How the Android shell will call it
+(the `tauri-mobile` platform; Rust side in `src-tauri/src/miner.rs`, mobile variant):
+
+1. Depend on `sm64coin-miner` (path `../../pow/miner`) for the mobile target only. It needs the C compiler of the NDK for
+   `ring` (`CC_aarch64_linux_android` = the NDK's `aarch64-linux-android24-clang`); `cargo build --release --target aarch64-linux-android -p sm64coin-miner --lib --examples` builds and links (not run
+   on a device).
+2. A `miner_start` command: read the ROM bytes from the app's storage (the ROM the user picked; the same file the page
+   uploads into IndexedDB), build `CampaignConfig::new(daemon_url, address, rom, app_data_dir.join("miner"))`, set
+   `threads` (cores minus one, `viz` from the Mine page's setting) and call `Campaign::start`. The daemon URL is the
+   RPC of a node that serves block templates (the user's own node; whether the public node does is not checked here). Keep the returned `Campaign` in the app state (one per process).
+3. Forward `campaign.subscribe()` on a thread as Tauri events (`miner-log`, `miner-state`, `miner-viz`, `miner-block`,
+   `miner-stopped`): the same shapes the desktop's `miner.rs` emits from automine's stdout (`Event::Viz{kind,key,payload}`
+   is the `VIZ` line's `kind key payload`), so the Mine page's viz code works unchanged. `miner_stats` returns
+   `campaign.stats()` (`fps` is the hashrate; call it about every 2 s).
+4. The page's mailbox (`viz_on`, sampling bubble, node requests) goes to `campaign.mailbox(json)` unchanged, the way the
+   desktop forwards the page's lines to automine's stdin.
+5. `miner_stop` calls `campaign.stop()` (the search ends at its next round, usually within seconds); drop the `Campaign` on
+   app exit. Mind the phone: use a foreground service while mining, and few threads (the search is CPU bound).
+
+Desktop keeps the process-per-step model by default (`automine` spawning `rrtrun`); `automine --in-process` runs the steps
+on threads of the miner and does not need `rrtrun`.
+
 ## Not done
 
-- iroh group mining (same tree-sync records) in Rust; native miner on Android; Windows job object for the app's own children is
+- iroh group mining (same tree-sync records) in Rust; native miner on Android (the library API exists, see above; not wired into the app); Windows job object for the app's own children is
   in the launcher `proc` (children get CREATE_NO_WINDOW now), pdeathsig on Linux.
 - Wallet: sweep, subaddresses, address book, view-only wallets, leaderboard join from the app.
