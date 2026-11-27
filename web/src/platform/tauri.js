@@ -65,6 +65,26 @@ const rom = {
   bytes: async () => { const b = await cmd('rom_bytes'); return b instanceof ArrayBuffer ? b : new Uint8Array(b).buffer; },
 };
 
+// The Android app's native miner (Rust: the miner library in the app's process, src-tauri/src/mobile_miner.rs). Same shape as the
+// desktop's; the ROM is the page's own (IndexedDB), handed to Rust once with rom_put, which keeps it in the app's data.
+async function pageRomBytes() {
+  const f = await import('sm64-binds-src/scripts/fileUpload.js');
+  const b = await f.getROM();
+  return b instanceof ArrayBuffer ? new Uint8Array(b) : new Uint8Array(b.buffer || b);
+}
+const mobileMiner = {
+  ...nativeMiner,
+  async start(args = {}) {
+    try {
+      return await cmd('miner_start', args);
+    } catch (e) {
+      if (e.code !== 'rom_missing') throw e;
+      await cmd('rom_put', await pageRomBytes()); // raw body: the ROM's bytes (checked by SHA-1 in Rust)
+      return cmd('miner_start', args);
+    }
+  },
+};
+
 const isMobile = /Android|iPhone|iPad/.test(globalThis.navigator ? navigator.userAgent : '');
 
 // The wallet: the sm64coin-wallet-rpc sidecar behind Rust (wallet.rs). The page never sees its port or login; Rust refuses
@@ -170,7 +190,7 @@ const desktop = {
 };
 
 /** The Android app (Tauri mobile): a remote node only (the public one, over https from Rust), no node controls, no sidecars,
- *  the ROM through the page's own upload. The native miner for Android is future work (off by default, charging only). */
+ *  the ROM through the page's own upload. The native miner (preview) runs in the app's process; off by default. */
 const mobile = {
   ...desktop,
   name: 'tauri-mobile',
@@ -179,7 +199,7 @@ const mobile = {
   rpc: null, // no local node: lib/rpc.js uses the public node through remoteRpc
   nodeUrl: () => '',
   node: null,
-  nativeMiner: null,
+  nativeMiner: mobileMiner, // battery-hungry: off by default, stopped when the app leaves the foreground (NativeMiner.jsx)
   rom: null,
   remoteNode: { get: desktop.remoteNode.get, set: null }, // the public node only (no native confirmation dialog there)
   wallet: null, // the browser's WASM wallet engine (Wallet page) serves there

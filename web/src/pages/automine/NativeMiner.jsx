@@ -4,8 +4,9 @@ import { miner, isAddress, fmtRate } from '../../lib/webminer/controller.js';
 import { useMiner } from '../../lib/webminer/useMiner.js';
 import { SideCard, GearBtn, Toolbar, ToolBtn, Row, useStored } from '../../components/ui.jsx';
 
-// Desktop app only (platform.nativeMiner): the native sm64coin-automine against the app's own node, next to the
-// browser's WASM auto-miner. Also shows the local node and, until the ROM is found, asks for its path.
+// Apps only (platform.nativeMiner): on desktop the native sm64coin-automine against the app's own node (also shows the local
+// node and, until the ROM is found, asks for its path); on Android (platform.mobile) the miner library inside the app, against
+// the public node, with the page's own ROM, and only while the app is in the foreground.
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const KEEP = 200;
 // What this webview supports (the WASM workers want SharedArrayBuffer, the game WebGL). Probed once, and the probe's context
@@ -36,9 +37,12 @@ export default function NativeMiner() {
   const p = getPlatform();
   const { address } = useMiner();
   const [open, setOpen] = useStored('sm64coin.nativeCardOpen', false);
-  const [threads, setThreads] = useStored('sm64coin.nativeThreads', 0); // 0 = all cores but one
+  const mobile = !!p.mobile;
+  // Desktop: 0 = all cores but one. Android: min(4, cores - 1) (a phone throttles and drains fast with more).
+  const defThreads = mobile ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 0;
+  const [threads, setThreads] = useStored('sm64coin.nativeThreads', defThreads);
   const [host, setHost] = useState(null);
-  const [node, refreshNode] = usePolled(() => p.node.status(), 2000);
+  const [node, refreshNode] = usePolled(() => (p.node ? p.node.status() : Promise.resolve(null)), 2000);
   const [m, refreshMiner] = usePolled(() => p.nativeMiner.status(), 2000);
   const [lines, setLines] = useState([]);
   const [err, setErr] = useState('');
@@ -56,18 +60,25 @@ export default function NativeMiner() {
 
   const run = async (f) => { setBusy(true); setErr(''); try { await f(); } catch (e) { setErr(e.message); } finally { setBusy(false); refreshNode(); refreshMiner(); } };
   const running = !!(m && m.running);
-  const romOk = host ? host.rom.found : true;
-  const nodeUp = !!(node && node.answering);
+  const romOk = host && host.rom ? host.rom.found : true; // Android: the page's ROM gate has already passed
+  const nodeUp = mobile ? true : !!(node && node.answering); // Android: the public node
   const th = Number(threads) || undefined;
   // While the native miner runs, its search drives the page's visualisations (lib/webminer/nativeFeed.js).
   useEffect(() => { if (running) miner.attachNative(p.nativeMiner); }, [running, p]);
+  // Android: mining only while the app is in the foreground (no wake lock or foreground service in this version).
+  useEffect(() => {
+    if (!mobile || !running) return undefined;
+    const hide = () => { if (document.hidden) p.nativeMiner.stop().catch(() => {}); };
+    document.addEventListener('visibilitychange', hide);
+    return () => document.removeEventListener('visibilitychange', hide);
+  }, [mobile, running, p]);
 
   return (
-    <SideCard title="Native miner" tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
+    <SideCard title={mobile ? 'Native miner (preview)' : 'Native miner'} tools={<GearBtn open={open} onClick={() => setOpen(!open)} />}>
       {open && (
         <form className="viz-settings" onSubmit={(e) => e.preventDefault()}>
           <label htmlFor="nm-threads">Threads</label>
-          <div className="ctl"><input id="nm-threads" type="number" min="0" max="256" value={threads} onChange={(e) => setThreads(e.target.value)} disabled={running} /> <span className="muted">{running ? 'stop to change' : '0 = all cores but one'}</span></div>
+          <div className="ctl"><input id="nm-threads" type="number" min="0" max="256" value={threads} onChange={(e) => setThreads(e.target.value)} disabled={running} /> <span className="muted">{running ? 'stop to change' : mobile ? 'default: cores - 1, at most 4' : '0 = all cores but one'}</span></div>
           <span className="lab">Webview</span><div className="ctl"><span className="mono small" data-testid="webview-caps">{webviewCaps()}</span></div>
           {host && (<><span className="lab">Data</span><div className="ctl"><span className="mono small">{host.data_dir}</span></div></>)}
         </form>
@@ -80,14 +91,15 @@ export default function NativeMiner() {
           </Toolbar>
         </div>
       )}
+      {mobile && <p className="muted small" data-testid="native-battery">Uses a lot of battery and warms the phone: best while charging. It mines only while the app is open on screen, and stops when you leave it.</p>}
       <div className="ui-stat">
         <span><b>{running && m.fps > 0 ? `${fmtRate(m.fps)} frames/s` : '—'}</b></span>
         <span>{running ? `${m.threads} thread${m.threads === 1 ? '' : 's'} · ${m.accepted} block${m.accepted === 1 ? '' : 's'}` : 'native miner stopped'}</span>
       </div>
       <dl className="kv">
-        <dt>Local node</dt>
+        <dt>{mobile ? 'Node' : 'Local node'}</dt>
         <dd data-testid="native-node">
-          {nodeUp ? `block ${node.height}${node.synchronized ? '' : ` of ${node.target_height || '?'}`} · ${node.peers} peer${node.peers === 1 ? '' : 's'}${node.synchronized ? '' : ' · syncing'}`
+          {mobile ? 'the public node' : nodeUp ? `block ${node.height}${node.synchronized ? '' : ` of ${node.target_height || '?'}`} · ${node.peers} peer${node.peers === 1 ? '' : 's'}${node.synchronized ? '' : ' · syncing'}`
             : node && node.starting ? 'starting…' : node && node.running ? 'loading the chain…' : node && node.error ? <span className="error">{node.error.split('\n')[0]}</span> : 'not running'}
         </dd>
         <dt>Paying</dt><dd>{isAddress(address || '') ? <span className="mono" title={address}>{short(address)}</span> : <em>no address</em>}</dd>
@@ -99,8 +111,8 @@ export default function NativeMiner() {
         {running
           ? <ToolBtn disabled={busy} onClick={() => run(() => p.nativeMiner.stop())}>Stop native miner</ToolBtn>
           : <ToolBtn disabled={busy || !isAddress(address || '') || !nodeUp} title={nodeUp ? '' : 'the local node must be running'} onClick={() => run(async () => { setLines([]); await p.nativeMiner.start({ address, threads: th, viz: miner.vizOn }); })}>Start native miner</ToolBtn>}
-        {node && !node.running && !node.starting && romOk && <ToolBtn disabled={busy} onClick={() => run(() => p.node.start())}>Start node</ToolBtn>}
-        {node && node.running && !running && <ToolBtn disabled={busy} onClick={() => run(() => p.node.stop())}>Stop node</ToolBtn>}
+        {p.node && node && !node.running && !node.starting && romOk && <ToolBtn disabled={busy} onClick={() => run(() => p.node.start())}>Start node</ToolBtn>}
+        {p.node && node && node.running && !running && <ToolBtn disabled={busy} onClick={() => run(() => p.node.stop())}>Stop node</ToolBtn>}
       </Toolbar>
       {err && <p className="error small">{err}</p>}
       {m && m.exit_code != null && !running && <p className="muted small">The miner exited (code {m.exit_code}).</p>}

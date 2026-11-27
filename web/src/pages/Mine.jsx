@@ -44,7 +44,7 @@ import { e2e, e2eHook } from '../lib/e2e.js';
 // (?address=), or is pasted (and remembered).
 export default function Mine() {
   // Desktop app: the native miner needs no browser copy of the ROM, so its card shows above the ROM prompt.
-  return <RomGate fallback={getPlatform().nativeMiner ? <NativeMiner /> : null}><Miner /></RomGate>;
+  return <RomGate fallback={getPlatform().nativeMiner && getPlatform().rom ? <NativeMiner /> : null}><Miner /></RomGate>;
 }
 
 // The auto-miner's views, loaded only when they are needed (three.js, the visual game's reel, the charts).
@@ -570,8 +570,8 @@ function Miner() {
           <>
             {getPlatform().nativeMiner && <NativeMiner />}
             {getPlatform().mobile ? (
-              // The Android app: the web auto-miner (many WASM workers) is not offered there; native mining on Android comes next.
-              <SideCard className="first" title="Auto-mine"><p className="muted small" data-testid="automine-mobile">Auto-mining is not in the Android app yet: native mining on Android comes next. Play to mine here, or auto-mine with the desktop app or the website on a computer.</p></SideCard>
+              // The Android app: the web auto-miner (many WASM workers) is not offered there; the Native miner card above is its auto-miner.
+              <SideCard className="first" title="Auto-mine"><p className="muted small" data-testid="automine-mobile">The web auto-miner is not in the Android app: use the Native miner above (preview), or play to mine here.</p></SideCard>
             ) : <ControlCard s={s} />}
             {showAuto ? (
               <React.Suspense fallback={null}><VizTop hub={hub} mode={s.mode} /></React.Suspense>
