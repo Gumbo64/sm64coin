@@ -190,7 +190,26 @@ class MinerController {
   forgetWallet(a) { if (!a || a === this.walletAddress) { this.walletAddress = ''; lsSet('sm64coin.walletAddress', ''); this.emit(true); } }
   setAddress(a) { this.address = a; if (isAddress(a)) lsSet('sm64coin.address', a); this.emit(true); }
   setCount(n) { this.count = Math.max(1, Math.min(32, Number(n) || 1)); this.emit(true); }
-  setMode(m) { this.mode = m; lsSet('sm64coin.resetMode', m); this.emit(true); }
+  /** The reset policy (remembered). While mining it applies at once: workers on a start the new policy would not pick for this
+   *  template start over (a fresh template and fresh trees), unless a run is already held or being submitted. */
+  setMode(m) {
+    const was = this.mode;
+    this.mode = m;
+    lsSet('sm64coin.resetMode', m);
+    const c = this.c, t = c && c.template;
+    if (m !== was && t && !c.stopped && !c.mockStop && !c.best && c.submitting !== t) {
+      const want = initialStart(m, t.sm64_start, t.sm64_parent_stars);
+      if (c.status.some((s) => s.start !== want.start)) this.restart(`reset policy ${m}: starting over from ${want.start} (${want.why})`);
+    }
+    this.emit(true);
+  }
+  /** Starts the running miner over on a fresh template: new workers, new search trees, the views cleared. */
+  restart(why = 'restarting on a fresh template') {
+    const c = this.c;
+    if (!c || c.stopped || c.mockStop) return;
+    this.say(why);
+    this.round(c);
+  }
   setVizOn(on) {
     this.vizOn = on;
     lsSet('sm64coin.viz', on ? '1' : '0');
