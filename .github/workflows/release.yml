@@ -170,6 +170,12 @@ jobs:
 
       - name: Light-client service (Rust; sm64coin-lc, its own workspace)
         run: scripts/ci-run.sh lc bash -c 'cd pow/lc && cargo build --release --features bin'
+      # The light clients' trust anchor is compiled in (pow/lc/checkpoints/mainnet.json); scripts/update-checkpoint.sh
+      # regenerates it from your own node before tagging (packaging/RELEASING.md). This only warns: it checks the committed
+      # table against the public node (on its chain, not more than 2000 blocks behind its tip).
+      - name: Light-client checkpoint freshness
+        continue-on-error: true
+        run: CHECK_ONLY=1 scripts/update-checkpoint.sh https://eboy.au || echo "::warning title=Light-client checkpoint::pow/lc/checkpoints/mainnet.json is stale or not on the public node's chain; run scripts/update-checkpoint.sh <your node> and commit it"
 
       - name: AutoMiner (Rust; the campaign's tree search runs in its rrtrun child)
         run: scripts/ci-run.sh automine bash -c 'cd pow && cargo build --release -p sm64coin-miner --bin automine --bin rrtrun'

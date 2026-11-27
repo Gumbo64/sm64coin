@@ -1,6 +1,14 @@
 # Releasing
 
 1. Make sure `main` is what you want to ship and CI is green.
+   **Light-client checkpoint**: regenerate the anchor every light client verifies the chain from (the website, the apps):
+   `scripts/update-checkpoint.sh http://127.0.0.1:16481` against a fully synced node of your own (default depth 36 blocks
+   below the tip, the node's reorg cap), then commit `pow/lc/checkpoints/mainnet.json`. The tool replays the header rules
+   over every block from genesis, so the table is what a client recomputes; it never moves the anchor back. A fresh
+   anchor keeps the first check of a new visitor or app short (every later check only fetches the blocks after the last
+   verified point). The release workflow's "Light-client checkpoint freshness" step warns when the committed table is
+   off the public node's chain or more than 2000 blocks behind (`CHECK_ONLY=1 scripts/update-checkpoint.sh https://eboy.au`
+   does the same by hand).
 2. `git tag v0.1.0 && git push origin v0.1.0` (tag names must start with `v`).
 3. The `Release` workflow builds four bundles, writes `SHA256SUMS` and creates a **draft** release
    with `packaging/release-notes.md` as its text. Edit the notes, publish.
