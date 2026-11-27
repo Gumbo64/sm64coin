@@ -89,7 +89,7 @@ impl crate::client::TipStream for SseStream {
 
 impl HttpUpstream {
     /// GET `/lc/tip` (`Accept: text/event-stream`; at the node's advertised tip URL when it has one): `Unsupported` when the node
-    /// has no such endpoint (404/405/501; for an advertised tip URL also when it cannot be reached, e.g. a closed port: that
+    /// has no such endpoint (404/405/501; for an advertised tip URL any failure, e.g. a closed port or an HTTP error: that
     /// must not count against the node's RPC), else a stream that ends when the connection does (the caller reconnects). The
     /// server sends a `ka` event every 30 s, so 95 s of silence is a dead connection.
     async fn open_sse(&self) -> Result<Box<dyn crate::client::TipStream>, crate::client::TransportError> {
@@ -102,9 +102,11 @@ impl HttpUpstream {
             .map_err(|e| TransportError::Connect(e.to_string()))?;
         let resp = match resp {
             Ok(r) => r,
+            // an advertised tip URL is a separate service: whatever goes wrong there (closed port, TLS, a proxy's 502) is no
+            // reason to strike the node's RPC, so it only means "no push here" and the caller polls
+            Err(_) if advertised => return Err(TransportError::Unsupported),
             Err(ureq::Error::Status(404 | 405 | 501, _)) => return Err(TransportError::Unsupported),
             Err(ureq::Error::Status(c, _)) => return Err(TransportError::Protocol(format!("HTTP {c}"))),
-            Err(_) if advertised => return Err(TransportError::Unsupported),
             Err(e) => return Err(TransportError::Connect(e.to_string())),
         };
         if !resp.content_type().starts_with("text/event-stream") {

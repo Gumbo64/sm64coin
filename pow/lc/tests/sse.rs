@@ -188,4 +188,17 @@ async fn an_advertised_tip_url_is_used_instead_of_the_nodes_own_and_a_dead_one_d
     // an advertised tip URL that cannot be reached: not supported (poll), not an RPC failure
     let t = UpstreamTransport(HttpUpstream::new(&format!("http://{addr}")).unwrap().with_tip_url(Some(format!("http://{dead}/lc/tip"))));
     assert!(matches!(t.open_tip_stream().await, Err(TransportError::Unsupported)));
+    // nor one that answers an HTTP error (a proxy's 502 on the tip port): a Protocol error would strike (and ban) the node
+    let bad = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bad_addr = bad.local_addr().unwrap();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        if let Ok((mut c, _)) = bad.accept() {
+            let mut b = [0u8; 1024];
+            let _ = c.read(&mut b);
+            let _ = c.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+    });
+    let t = UpstreamTransport(HttpUpstream::new(&format!("http://{addr}")).unwrap().with_tip_url(Some(format!("http://{bad_addr}/lc/tip"))));
+    assert!(matches!(t.open_tip_stream().await, Err(TransportError::Unsupported)));
 }
