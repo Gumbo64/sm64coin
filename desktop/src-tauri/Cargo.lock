@@ -5078,6 +5078,7 @@ dependencies = [
  "sm64pow",
  "ureq",
  "wasm-bindgen",
+ "web-time",
 ]
 
 [[package]]
