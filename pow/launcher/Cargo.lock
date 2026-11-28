@@ -989,6 +989,7 @@ version = "0.2.2"
 dependencies = [
  "clap",
  "ctrlc",
+ "getrandom 0.2.17",
  "libc",
  "mainline",
  "serde",

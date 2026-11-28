@@ -112,10 +112,11 @@ export default function Info() {
 
       <h3>How do I run a node?</h3>
       <p>
-        Download the bundle for your computer from the <a href={`${REPO}/releases/latest`} target="_blank" rel="noreferrer">latest
-        release</a>, put your own US Super Mario 64 ROM next to it as <span className="mono">baserom.us.z64</span>, and open
-        the wallet app: it starts its own node. On a server, run <span className="mono">./sm64coin-node</span> (a systemd unit is
-        included) and open TCP port 16480.
+        The desktop app (the Linux AppImage on the <a href={`${REPO}/releases/latest`} target="_blank" rel="noreferrer">latest
+        release</a>) runs its own full node: open <Link to="/network">Network → Local node</Link> to start or stop it, see its
+        sync state and set the P2P/public ports your VPN forwards. The older wallet bundle is the same: put your own US Super
+        Mario 64 ROM next to it as <span className="mono">baserom.us.z64</span> and open the wallet app. On a server, run
+        <span className="mono"> ./sm64coin-node</span> (a systemd unit is included) and open TCP port 16480.
       </p>
 
       <h3 id="connection">Connection problems</h3>
@@ -124,8 +125,10 @@ export default function Info() {
         another node on the <Link to="/network">Network</Link> page.
       </p>
       <p>
-        <b>Your own node has no incoming peers</b> (it still syncs and mines through its outgoing ones): forward TCP 16480 on
-        your router (NAT) or in your VPN if it offers port forwarding, and allow it in your firewall.
+        <b>Your own node has no incoming peers</b> (it still syncs and mines through its outgoing ones): forward the node's P2P
+        port (16480 by default; see <Link to="/network">Network → Local node</Link>) on your router (NAT) or in your VPN if it
+        offers port forwarding, and allow it in your firewall. If your VPN exposes its forwarded port through NAT-PMP, PCP or
+        UPnP-IGD, the Local node card's <b>Detect from VPN</b> fills it in; otherwise enter the port shown by your VPN app.
       </p>
       <p>
         <b>Behind CGNAT</b> (your router's internet address differs from your public IP), port forwarding can't work. You can

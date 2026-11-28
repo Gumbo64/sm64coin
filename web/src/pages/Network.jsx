@@ -4,6 +4,8 @@ import { chooseNode, daemonAt, getNode, nodeInUse, onNodeChange, getPublicNode, 
 import useInterval from '../lib/useInterval.js';
 import { verifyTitle } from '../lib/useVerify.js';
 import { getPlatform } from '../platform/index.js';
+import LocalNode from './LocalNode.jsx';
+import NodePortsHelp from './NodePortsHelp.jsx';
 
 const clean = (u) => (u || '').trim().replace(/\/+$/, '');
 const LIST_KEY = 'sm64coin.nodes';
@@ -72,11 +74,8 @@ export default function Network() {
   const check = async (u) => {
     try {
       const i = await daemonAt(u, 'get_info');
-      const base = `height ${i.height}, ${i.synchronized ? 'synced' : 'syncing'}, ${i.outgoing_connections_count + i.incoming_connections_count} peers`;
-      // Your own node with no incoming peers: other nodes can't reach it (it still syncs and mines through its outgoing ones).
-      return nodeInUse().kind === 'local' && i.incoming_connections_count === 0 && i.outgoing_connections_count > 0
-        ? `${base}. No incoming peers: forward TCP 16480 on your router (NAT) or VPN, and allow it in your firewall.`
-        : base;
+      // The local node's port-forward warning is on its own card (it knows the configured port): pages/automine/localNode.js.
+      return `height ${i.height}, ${i.synchronized ? 'synced' : 'syncing'}, ${i.outgoing_connections_count + i.incoming_connections_count} peers`;
     } catch (e) {
       return `unreachable: ${e.message}. ${NODE_HINT}`;
     }
@@ -96,13 +95,17 @@ export default function Network() {
   const test = async () => { const v = clean(draft) || node; setStatus('testing ' + (v || 'the proxy') + ': ' + (await check(v))); };
 
   return (
-    <div className="card">
-      <h2>Node</h2>
-      <p className="muted">The node this site reads the chain from and submits blocks to. Leave it empty for the default (your own node).</p>
+    <>
+      <LocalNode />
+      {!getPlatform().node && !getPlatform().mobile && <NodePortsHelp />}
+      <div className="card">
+      <h2>{getPlatform().node ? 'Read from another node' : 'Node'}</h2>
+      <p className="muted">The node this site reads the chain from and submits blocks to. Leave it empty for the default ({getPlatform().node ? "the app's own node" : 'this site\'s node'}).</p>
       <input className="wide" value={draft} placeholder="http://127.0.0.1:16481" onChange={(e) => setDraft(e.target.value)} />
       <button onClick={() => use(draft)}>Use this node</button>{' '}
       <button onClick={test}>Test</button>{' '}
-      <button onClick={save} disabled={!clean(draft)}>Save</button>
+      <button onClick={save} disabled={!clean(draft)}>Save</button>{' '}
+      {getPlatform().node && <button onClick={() => use('')}>Use the app's own node</button>}
       {nodeInUse().kind === 'local' && <p>Reading from: <b>this app's own node</b> (127.0.0.1)</p>}
       {nodeInUse().kind === 'public' && <p>Reading from: <b>the public node</b> <code>{nodeInUse().url}</code> (the local node is not running)</p>}
       {getPlatform().net && !['local', 'chosen'].includes(nodeInUse().kind) && <LightNet />}
@@ -126,6 +129,7 @@ export default function Network() {
           </tbody>
         </table>
       )}
-    </div>
+      </div>
+    </>
   );
 }

@@ -1,9 +1,9 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
-import { resolveNode } from './lib/rpc.js';
+import { resolveNode, watchLocalNode } from './lib/rpc.js';
 import { limitReady } from './lib/limit.js';
-import { initPlatform } from './platform/index.js';
+import { getPlatform, initPlatform } from './platform/index.js';
 import { autoSync } from './lib/webminer/sync.js';
 import { frameBuster } from './lib/security.js';
 import './index.css';
@@ -38,10 +38,28 @@ window.addEventListener('vite:preloadError', (e) => {
   location.reload();
 });
 
-// The time limit (lib/limit.js) is the Rust rules in a small WASM (250 KB): loaded with the node choice, before the first render.
-// Your own node, else the public one (public-node.json) for this visit: decided before the
-// first page asks the chain anything (at most a few seconds).
-// Worker sync is on by default: the first visit of a session may reload once (before anything renders) so the page comes
-// back cross-origin isolated (lib/webminer/sync.js).
+// The time limit (lib/limit.js) is the Rust rules in a small WASM (250 KB): loaded before the first render.
+// In a browser tab your own node (or the public one) is chosen before the first page asks the chain anything; in the desktop
+// app the window paints first and the node probe/follow runs in the background (a node loading its chain must not hold it).
+// Worker sync is on by default in a browser: the first visit of a session may reload once (before anything renders) so the page
+// comes back cross-origin isolated (lib/webminer/sync.js). The desktop webview cannot be isolated, so it skips that.
 // Framed by another page: stop before anything runs (the headers' frame-ancestors 'none' does the same where the host can send them).
-if (!frameBuster()) initPlatform().then(() => autoSync()).then((reloading) => { if (!reloading) Promise.all([resolveNode().catch(() => {}), limitReady().catch((e) => console.error('time-limit module failed to load', e))]).then(() => createRoot(document.getElementById('root')).render(<App />)); });
+if (!frameBuster()) {
+  initPlatform().then(async () => {
+    const p = getPlatform();
+    if (p.desktop) {
+      // The desktop webview cannot be cross-origin isolated (no SharedArrayBuffer), so the service-worker reload has nothing
+      // to give. Render after the small local time-limit wasm only: the node probe must never hold the first paint (a node
+      // loading its chain can take seconds to answer). The probe itself starts now, in the background.
+      watchLocalNode();
+      resolveNode().catch(() => {});
+      await limitReady().catch((e) => console.error('time-limit module failed to load', e));
+      createRoot(document.getElementById('root')).render(<App />);
+      return;
+    }
+    const reloading = await autoSync();
+    if (reloading) return;
+    await Promise.all([resolveNode().catch(() => {}), limitReady().catch((e) => console.error('time-limit module failed to load', e))]);
+    createRoot(document.getElementById('root')).render(<App />);
+  });
+}

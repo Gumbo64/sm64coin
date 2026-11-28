@@ -69,3 +69,36 @@ pub fn lower_priority(child: &Child) {
         }
     }
 }
+
+/// Removes ANSI/VT control sequences (the daemon writes colours into its log file): the app's log viewer shows plain text.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            if it.peek() == Some(&'[') {
+                it.next();
+                while let Some(&n) = it.peek() {
+                    it.next();
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn ansi_is_stripped() {
+        assert_eq!(strip_ansi("\x1b[0m\x1b[0;36mhello\x1b[1;33m world\x1b[0m\n"), "hello world\n");
+        assert_eq!(strip_ansi("plain"), "plain");
+    }
+}

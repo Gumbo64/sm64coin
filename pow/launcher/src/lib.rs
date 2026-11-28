@@ -8,6 +8,9 @@ pub mod dht;
 pub mod lcserve;
 #[cfg(feature = "desktop")]
 pub mod node;
+/// Port mapping (NAT-PMP, PCP, UPnP-IGD) for a VPN's forwarded P2P port (the desktop app's Detect button).
+#[cfg(feature = "desktop")]
+pub mod portmap;
 #[cfg(feature = "desktop")]
 pub mod proc;
 #[cfg(feature = "desktop")]

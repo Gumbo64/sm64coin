@@ -1,23 +1,39 @@
 ## SM64Coin @TAG@
 
-**Download, put your ROM next to it, open the wallet.**
+**Temporarily, this release ships two downloads: the Linux desktop app and the Android APK.**
 
-1. Download the bundle for your computer:
-   - `sm64coin-@VERSION@-linux-x86_64.tar.gz`: Linux on a PC (Intel/AMD, 64-bit)
-   - `sm64coin-@VERSION@-linux-aarch64.tar.gz`: Linux on ARM, e.g. Raspberry Pi 4/5 with a 64-bit OS
-2. Unpack it (`tar xzf sm64coin-*.tar.gz`) and open the folder.
-3. Copy your own US Super Mario 64 ROM into it, named `baserom.us.z64`
-   (SHA-1 `9bef1128717f958171a4afac3ed78ee2bb4e86ce`; it is not included).
-4. Open the wallet app (`./sm64coin-wallet-gui`; macOS: `SM64Coin-Wallet.app`; Windows: `sm64coin-wallet-gui.exe`).
-   The first start creates or restores a wallet and starts its own node, which syncs from the seed nodes.
-   Mining page: **Start** runs the automated miner, **Play to mine** opens the website (served by the wallet app itself).
+1. **Linux desktop app (AppImage):** download `SM64Coin_@VERSION@_amd64.AppImage`, make it executable
+   (`chmod +x SM64Coin_*.AppImage`) and open it. It runs its own full node; put your own US Super Mario 64 ROM
+   (SHA-1 `9bef1128717f958171a4afac3ed78ee2bb4e86ce`; it is not included) in the app when the node asks for it.
+   A VPN's port forward: open **Network → Local node**, set the P2P/public port, and use **Detect from VPN** when the
+   VPN's gateway implements NAT-PMP, PCP or UPnP-IGD (otherwise enter the port shown by the VPN app).
+2. **Android app (APK):** `sm64coin-@VERSION@-android.apk`, arm64, Android 7+.
 
-**Servers** (no wallet app): `./sm64coin-node` runs `sm64coind` with the seeds and the ROM; `sm64coin-node.service`
-is a systemd unit. Open TCP 16480. Details in `README.txt`.
+The node/wallet bundles, `.deb`, Windows and macOS installers are not published for now; they will return later.
+Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`.
 
-Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`.
-The `sm64coin` launcher is no longer shipped.
 
+### 0.5.8: a Local node page, VPN port setup, and a faster desktop start
+
+Same chain as 0.5.7, upgrade in place. This is the first release with the temporary two-download set
+(Linux AppImage and Android APK).
+
+- **Local node page** (`Network → Local node`): sync height, incoming/outgoing peers, start/stop, start-on-launch,
+  the data folder, and the daemon/startup logs. The app reads from the public nodes only while the local node is
+  starting or stopped, and the page says which.
+- **P2P and public ports before the node starts**: choose the local P2P port and the public port your VPN/router
+  forwards (`--p2p-external-port`); settings are kept in `node.json`. An explicitly chosen P2P port is never silently
+  moved: a taken port is an error, because the forward would point nowhere.
+- **Automatic port detection**: **Detect from VPN** asks the gateway with NAT-PMP, then PCP, then UPnP-IGD, fills the
+  public port and renews the mapping while the app runs. Manual entry is always available; a provider that only shows
+  the port in its own app is not reachable by any local protocol.
+- **A faster desktop start**: the first paint no longer waits for the node probe; the status call no longer blocks on
+  `get_connections`; the app skips the 20 s DHT lookup before spawning the daemon; the current-cycle replay is delayed;
+  and the game/replay pages are lazy-loaded.
+- **Less noise while starting**: no "local node is not running" banner while the node is starting or loading; the
+  remaining warning links to Node settings and uses the configured ports.
+- **Website**: a “Your node's ports” card gives the exact `p2p-bind-port`/`p2p-external-port` command for a node you
+  run yourself (the website cannot change a node it does not run).
 
 ### 0.5.7: fix for the website's auto-miner
 

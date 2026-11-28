@@ -1,6 +1,6 @@
 # SM64Coin
 
-**[⬇ Download the latest release](https://github.com/Gumbo64/sm64coin/releases/latest)** (node, wallet app and AutoMiner for Linux, Windows and macOS) · [Website](https://gumbo64.github.io/sm64coin/)
+**[⬇ Download the latest release](https://github.com/Gumbo64/sm64coin/releases/latest)** (temporarily: the Linux desktop app and the Android app) · [Website](https://gumbo64.github.io/sm64coin/)
 
 A Monero fork (v0.18.5.4, git branch `sm64coin`) whose proof of work is **playing Super Mario 64**. A block is sealed by a controller input sequence that, replayed on an emulated N64 from the previous block's end state, makes the game's next progress point (a star, a Bowser key, the Grand Star). Every node verifies a block by replaying the proof in an emulator.
 
@@ -59,7 +59,9 @@ Ports: p2p 16480, RPC 16481, ZMQ 16482 (testnet 2648x, stagenet 3648x); wallet R
 
 ## Download and run (no build)
 
-Releases (https://github.com/Gumbo64/sm64coin/releases) hold one archive per platform (Linux x86_64, Linux aarch64/Raspberry Pi). Unpack it, copy your US ROM next to it as `baserom.us.z64` (or into `~/.sm64coin/`), open the wallet app (`sm64coin-wallet-gui`; `SM64Coin-Wallet.app` on macOS, `sm64coin-wallet-gui.exe` on Windows). It creates or restores a wallet and starts its own node, which syncs from the seed nodes; the Mining page has Start (automated miner) and Play to mine (website). Servers without the wallet app run `sm64coin-node` (a script around `sm64coind`: finds the ROM, resolves `seeds.txt`, `--help` lists the options) and can use `sm64coin-node.service` (systemd); open TCP 16480. The old `sm64coin` launcher is no longer shipped (source kept in `pow/launcher`). Release process and gaps: `packaging/RELEASING.md`.
+**Temporarily, releases carry only the Linux desktop AppImage and the Android APK** (the node/wallet bundles, `.deb`, Windows and macOS installers below are built but not published). The AppImage runs the website in a Tauri window with its own full node: put your US ROM in when it asks, and use **Network → Local node** for the node state, the P2P/public ports a VPN forwards, and automatic NAT-PMP/PCP/UPnP-IGD port detection where the VPN gateway supports it (the fields also accept a manual port). The APK is the phone app.
+
+When the full bundles return: each archive is per platform (Linux x86_64, Linux aarch64/Raspberry Pi). Unpack it, copy your US ROM next to it as `baserom.us.z64` (or into `~/.sm64coin/`), open the wallet app (`sm64coin-wallet-gui`; `SM64Coin-Wallet.app` on macOS, `sm64coin-wallet-gui.exe` on Windows). It creates or restores a wallet and starts its own node, which syncs from the seed nodes; the Mining page has Start (automated miner) and Play to mine (website). Servers without the wallet app run `sm64coin-node` (a script around `sm64coind`: finds the ROM, resolves `seeds.txt`, `--help` lists the options) and can use `sm64coin-node.service` (systemd); open TCP 16480. The old `sm64coin` launcher is no longer shipped (source kept in `pow/launcher`). Release process and gaps: `packaging/RELEASING.md`.
 
 ### Android
 

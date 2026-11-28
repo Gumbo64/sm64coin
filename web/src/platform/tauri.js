@@ -24,6 +24,15 @@ const node = {
   },
   start: () => cmd('node_start'),
   stop: () => cmd('node_stop'),
+  /** {p2p_port, p2p_external_port, auto_start}: saved before a start. `p2p_external_port` is 0 for "same as p2p_port". */
+  settings: () => cmd('node_settings'),
+  /** Saves the settings; a running node keeps its ports until it is restarted. */
+  setSettings: (settings) => cmd('node_settings_set', { settings }),
+  /** Asks the VPN/router's gateway for the public port of `port` (default: the saved P2P port), trying NAT-PMP, PCP and
+   *  UPnP-IGD. A provider with a private mechanism returns a clear error and the port is entered by hand. */
+  detectPort: (port) => cmd('node_port_detect', { port: port || null }),
+  /** {dir, daemon, app}: the tails of the node's daemon log and its startup log. */
+  log: (lines = 200) => cmd('node_log', { lines }),
 };
 
 let netInfo = null; // the last net_status: the loopback daemon, the node and transport in use, the node list

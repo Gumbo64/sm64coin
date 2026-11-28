@@ -27,7 +27,11 @@ export const getPublicNode = () => publicNode;
 export const tipUrlFor = (node) => bootstrapTip(bootstrap, node);
 export const usingPublicFallback = () => fallback;
 let note = ''; // visible warning about the node's chain (old v0.2 node), '' for none
-export const nodeNote = () => (usingPublicNode() ? `The local node is not running (yet): this app reads the chain from the public node ${publicNode}. Mining needs the local node.` : note);
+// The local node process exists but its RPC is not answering yet (starting, or loading the chain). No "not running" banner
+// during that: the app reads from the public node meanwhile, and the Network page shows the real state.
+let localStarting = false;
+export const isLocalStarting = () => localStarting;
+export const nodeNote = () => (localStarting ? '' : usingPublicNode() ? `The local node is not running: this app reads the chain from the public node ${publicNode}. Mining needs the local node.` : note);
 const chosen = () => { try { return (localStorage.getItem(KEY) || '').trim(); } catch { return ''; } };
 /** True when the node was set by hand (localStorage 'sm64coin.node'), not the build default or the public node. */
 export const isChosenNode = () => !!chosen();
@@ -43,21 +47,29 @@ export const nodeInUse = () => (chosen() ? { kind: 'chosen', url: chosen() } : u
 const listeners = new Set();
 export const onNodeChange = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 let watching = false;
-/** Desktop: probe the local node every 4 s; when it does not answer, calls go to the public node (and back when it does). */
+/** Desktop: probe the local node every 2 s; while it is starting/loading, reads use the public node but no "not running"
+ *  banner is shown, and the app switches back to the local node as soon as it answers. */
 export function watchLocalNode() {
   if (watching || !desktopNode()) return;
   watching = true;
   const tick = async () => {
-    let up = false;
-    try { const s = await getPlatform().node.status(); up = !!(s && s.answering); } catch { /* not running */ }
-    if (up !== localUp) { localUp = up; infoShared = null; listeners.forEach((f) => f()); }
+    let s = null;
+    try { s = await getPlatform().node.status(); } catch { /* not running */ }
+    const answering = !!(s && s.answering);
+    // The process is up but its RPC is not: starting, or loading the chain. Reads use the public node meanwhile, but this is
+    // not a "node not running" warning (the Local node card shows the real state).
+    const starting = !!(s && (s.starting || (s.running && !s.answering)));
+    const changed = answering !== localUp || starting !== localStarting;
+    localUp = answering;
+    localStarting = starting;
+    if (changed) { infoShared = null; listeners.forEach((f) => f()); }
   };
-  setInterval(tick, 4000);
-  return tick();
+  tick();
+  setInterval(tick, 2000);
 }
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);
-// Decides this visit's node (main.jsx, before the first render).
+// Decides this visit's node (main.jsx; in a browser before the first render, in the desktop app right after it).
 export async function resolveNode() {
   await resolveNodeInner();
   startLightnet();
@@ -76,7 +88,7 @@ async function resolveNodeInner() {
   } catch { /* no public node */ }
   if (getPlatform().net) { try { await getPlatform().net.status(); } catch { /* the loopback daemon is not up yet */ } }
   if (getPlatform().remoteNode) { try { savedRemote = clean((await getPlatform().remoteNode.get()).saved); } catch { /* none */ } }
-  if (desktopNode() && !chosen()) { await watchLocalNode(); return; }
+  if (desktopNode() && !chosen()) { watchLocalNode(); return; }
   if (getPlatform().mobile && !chosen() && publicNode) { fallback = true; return; } // Android: no local node, the public one over https // the app's own node, or the public one while it is down
   const pick = chosen();
   if (pick) { // a node the user chose is respected, but warned about when it is on another chain

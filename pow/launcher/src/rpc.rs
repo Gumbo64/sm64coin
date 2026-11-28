@@ -85,8 +85,14 @@ pub fn call(port: u16, method: &str, params: serde_json::Value, timeout: Duratio
 
 /// The node's `get_info` result, or None if the RPC does not answer.
 pub fn get_info(rpc_port: u16) -> Option<serde_json::Value> {
+    get_info_timeout(rpc_port, Duration::from_secs(3))
+}
+
+/// `get_info` with a caller-chosen timeout: the app's status poll uses a short one so a node still loading its chain cannot
+/// hold a UI request for seconds.
+pub fn get_info_timeout(rpc_port: u16, timeout: Duration) -> Option<serde_json::Value> {
     let r = ureq::post(&format!("http://127.0.0.1:{rpc_port}/json_rpc"))
-        .timeout(Duration::from_secs(3))
+        .timeout(timeout)
         .send_string(r#"{"jsonrpc":"2.0","id":0,"method":"get_info"}"#)
         .ok()?;
     let v: serde_json::Value = serde_json::from_reader(r.into_reader()).ok()?;

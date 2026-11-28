@@ -7,6 +7,12 @@ name: Release
 # Platforms: Linux x86_64, Linux aarch64 (Raspberry Pi 4/5, 64-bit OS), Windows x86_64 (MSYS2
 # UCRT64), macOS arm64 (Apple silicon, Homebrew). A push to the branch `release-test` is a dry
 # run too (nothing is published); only a v* tag publishes.
+#
+# TEMPORARY (until further notice): the published release carries only the Android APK and the Linux
+# Tauri AppImage. The Windows/macOS jobs are skipped and the node/wallet/deb archives are built for the
+# AppImage's sidecars but are not attached. To restore everything: remove the `if: ${{ false }}` on
+# build-windows/build-macos, put linux-aarch64 back in build-linux's matrix, restore the desktop matrix,
+# and restore the `bundle-*` download + publish needs below.
 
 on:
   push:
@@ -106,10 +112,9 @@ jobs:
         include:
           # Ubuntu 22.04 (glibc 2.35) so the bundles also run on Raspberry Pi OS Bookworm
           # (glibc 2.36), Debian 12, Ubuntu 22.04 and anything newer.
+          # TEMPORARY: only x86_64 builds the sidecars for the AppImage; the aarch64 bundle is not published.
           - platform: linux-x86_64
             runner: ubuntu-22.04
-          - platform: linux-aarch64
-            runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     env:
@@ -247,7 +252,7 @@ jobs:
   build-windows:
     name: Build windows-x86_64
     needs: web
-    if: ${{ !cancelled() }}
+    if: ${{ false }}   # TEMPORARY: Windows is not published (see the header); remove this to build it again
     runs-on: windows-2022
     timeout-minutes: 360
     defaults:
@@ -390,7 +395,7 @@ jobs:
   build-macos:
     name: Build macos-arm64
     needs: web
-    if: ${{ !cancelled() }}
+    if: ${{ false }}   # TEMPORARY: macOS is not published (see the header); remove this to build it again
     runs-on: macos-15
     timeout-minutes: 360
     env:
@@ -574,30 +579,32 @@ jobs:
 
   desktop:
     name: Desktop ${{ matrix.platform }}
-    needs: [web-desktop, build-linux, build-windows, build-macos]
-    if: ${{ !cancelled() && github.ref != 'refs/heads/main' }}   # each platform needs its own bundle job; one platform failing does not stop the othe
+    needs: [web-desktop, build-linux]
+    if: ${{ !cancelled() && github.ref != 'refs/heads/main' }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # TEMPORARY: the AppImage is the only desktop installer published. The Windows/macOS entries and the .deb are
+          # commented out, not deleted, so they are easy to restore.
           - platform: linux-x86_64
             runner: ubuntu-22.04      # glibc 2.35, like the bundles
             triple: x86_64-unknown-linux-gnu
             config: linux
-            bundles: deb,appimage
+            bundles: appimage
             archive: tar.gz
-          - platform: windows-x86_64
-            runner: windows-2022
-            triple: x86_64-pc-windows-msvc
-            config: windows
-            bundles: nsis
-            archive: zip
-          - platform: macos-arm64
-            runner: macos-15
-            triple: aarch64-apple-darwin
-            config: macos
-            bundles: dmg
-            archive: tar.gz
+          # - platform: windows-x86_64
+          #   runner: windows-2022
+          #   triple: x86_64-pc-windows-msvc
+          #   config: windows
+          #   bundles: nsis
+          #   archive: zip
+          # - platform: macos-arm64
+          #   runner: macos-15
+          #   triple: aarch64-apple-darwin
+          #   config: macos
+          #   bundles: dmg
+          #   archive: tar.gz
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     defaults:
@@ -704,57 +711,45 @@ jobs:
 
   publish:
     name: Publish release
-    # The draft is made whenever Linux built, with whatever bundles exist: one platform without
-    # a runner (macOS capacity) doesn't block the rest. "Re-run failed jobs" adds it later.
-    # The desktop installers are optional: publish waits for that job but runs whatever its result (always()), and its
-    # download step below is continue-on-error, so the node/wallet bundles are published without them if it failed.
+    # TEMPORARY: only the Android APK and the Linux AppImage are attached. The node/wallet bundles (bundle-*) are built for
+    # the AppImage's sidecars but are not downloaded here; restore the `bundle-*` step with the other platforms.
     if: ${{ always() && github.ref_type == 'tag' && needs.build-linux.result == 'success' }}
-    needs: [build-linux, build-windows, build-macos, desktop, android]
+    needs: [build-linux, desktop, android]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: false
-      - name: Desktop installers (whatever was built)
+      - name: Linux AppImage
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: desktop-*
+          name: desktop-linux-x86_64
           path: assets
-          merge-multiple: true
       - name: Android APK (if it was built)
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: android-apk
           path: assets
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: bundle-*
-          path: assets
-          merge-multiple: true
-      - name: Flatten the desktop installers
+      - name: Flatten the installers
         # The desktop artifacts keep their build paths (desktop/src-tauri/target/<triple>/release/bundle/...);
-        # the release takes only assets/*, so move the installers up. Fail if the desktop job succeeded but
-        # no installer arrived (v0.5.1 shipped without them because of this). The Android APK is flattened (and checked) the same way.
-        env:
-          DESKTOP_OK: ${{ needs.desktop.result == 'success' && 'yes' || '' }}
-          ANDROID_OK: ${{ needs.android.result == 'success' && 'yes' || '' }}
+        # the release takes only assets/*, so move the AppImage up. The Android APK is flattened (and checked) the same way.
         run: |
-          find assets -mindepth 2 -type f \( -name 'SM64Coin*' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o -name '*-setup.exe' -o -name '*.apk' \) -exec mv -t assets {} +
+          find assets -mindepth 2 -type f \( -name '*.AppImage' -o -name '*.apk' \) -exec mv -t assets {} +
           find assets -mindepth 1 -type d -empty -delete
           ls -la assets
-          if [ -n "$DESKTOP_OK" ] && [ -z "$(ls assets | grep -E '\.(deb|AppImage|dmg|exe)$|portable\.zip$')" ]; then
-            echo "::error::the desktop job succeeded but no installer is in assets/"; exit 1
+          if [ -z "$(ls assets | grep -E '\.AppImage$')" ]; then
+            echo "::error::no Linux AppImage is in assets/"; exit 1
           fi
-          if [ -n "$ANDROID_OK" ] && ! ls assets/sm64coin-*-android.apk >/dev/null 2>&1; then
-            echo "::error::the android job succeeded but its APK is not in assets/"; exit 1
+          if ! ls assets/sm64coin-*-android.apk >/dev/null 2>&1; then
+            echo "::error::no Android APK is in assets/"; exit 1
           fi
       - name: Checksums
-        run: cd assets && sha256sum $(ls sm64coin-* SM64Coin_* SM64Coin-* 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
+        run: cd assets && sha256sum $(ls *.AppImage *.apk 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
       - name: Release notes
         env:
-          MISSING: ${{ needs.build-windows.result != 'success' && 'Windows ' || '' }}${{ needs.build-macos.result != 'success' && 'macOS ' || '' }}${{ needs.desktop.result != 'success' && '(some) desktop app installers ' || '' }}${{ needs.android.result != 'success' && 'Android APK' || '' }}
+          MISSING: ${{ needs.desktop.result != 'success' && 'Linux AppImage ' || '' }}${{ needs.android.result != 'success' && 'Android APK' || '' }}
         run: |
           sed "s/@TAG@/${GITHUB_REF_NAME}/g; s/@VERSION@/${GITHUB_REF_NAME#v}/g" packaging/release-notes.md > notes.md
           if [ -n "$MISSING" ]; then printf '\n**Not built this time:** %s (no runner or a failed build; re-run the failed jobs to add it).\n' "$MISSING" >> notes.md; fi

@@ -469,8 +469,14 @@ impl Net {
         #[cfg(not(mobile))]
         if let Some(rom) = rom {
             // The replay runs behind the verdict: reads already use the verified nodes; a failed replay re-runs the check.
+            // It is CPU-heavy (the emulator, up to two minutes): wait until the app has painted and the first startup work is
+            // done, so opening the app is not competing with a replay. `SM64COIN_NO_REPLAY=1` turns it off entirely.
             let me = self.clone();
             tauri::async_runtime::spawn(async move {
+                if std::env::var_os("SM64COIN_NO_REPLAY").is_some() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(45)).await;
                 if me.verifier.replay(&me.client, out, Some(rom)).await.is_err() {
                     // the resume point may descend from the block that failed: start again from the checkpoint
                     me.verifier.set_resume(None);

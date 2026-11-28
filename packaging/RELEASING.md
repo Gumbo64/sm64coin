@@ -1,5 +1,9 @@
 # Releasing
 
+> **TEMPORARY:** the release workflow publishes only the Android APK and the Linux Tauri AppImage. The Windows/macOS jobs
+> are skipped and the node/wallet bundles are built for the AppImage's sidecars but not attached. See the header of
+> `.github/workflows/release.yml` for what to restore.
+
 1. Make sure `main` is what you want to ship and CI is green.
    **Light-client checkpoint**: regenerate the anchor every light client verifies the chain from (the website, the apps):
    `scripts/update-checkpoint.sh http://127.0.0.1:16481` against a fully synced node of your own (default depth 36 blocks
@@ -10,8 +14,8 @@
    off the public node's chain or more than 2000 blocks behind (`CHECK_ONLY=1 scripts/update-checkpoint.sh https://eboy.au`
    does the same by hand).
 2. `git tag v0.1.0 && git push origin v0.1.0` (tag names must start with `v`).
-3. The `Release` workflow builds four bundles, writes `SHA256SUMS` and creates a **draft** release
-   with `packaging/release-notes.md` as its text. Edit the notes, publish.
+3. The `Release` workflow builds the Linux AppImage and the Android APK (temporarily; see the note above), writes
+   `SHA256SUMS` and creates a **draft** release with `packaging/release-notes.md` as its text. Edit the notes, publish.
 
    | platform | runner | bundle |
    |---|---|---|

@@ -224,3 +224,17 @@ html { -webkit-text-size-adjust: 100%; }
 .verify-verified b { color: #6bd68d; }
 .verify-conflict b { color: var(--acc); }
 .verify-unverified b { color: var(--red); }
+
+/* Local node card (pages/LocalNode.jsx) */
+.node-dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--mut); vertical-align:middle; }
+.node-dot.ok { background:#3ddc84; }
+.node-dot.sync, .node-dot.starting, .node-dot.loading { background:var(--acc); }
+.node-dot.bad { background:var(--red); }
+.node-ports { display:grid; grid-template-columns:max-content minmax(120px, 180px); gap:8px 12px; align-items:center; margin:10px 0; }
+.node-ports label { margin:0; }
+.node-ports input { margin:0; }
+.node-ports .ui-btn { grid-column:1 / -1; justify-self:start; }
+.checkline { display:flex; align-items:center; gap:8px; margin:8px 0; }
+.checkline input { margin:0; }
+@media (max-width:600px) { .node-ports { grid-template-columns:1fr; } }
+.error { color: var(--red); }

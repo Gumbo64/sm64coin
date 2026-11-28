@@ -3,11 +3,13 @@
 
 use crate::{link, miner, wallet};
 use crate::{AppError, Res};
-use serde::Serialize;
-use sm64coin_launcher::node::{APP_ORIGINS, Node, NodeConfig, NodeStatus, SITE_ORIGIN};
+use serde::{Deserialize, Serialize};
+use sm64coin_launcher::node::{probe_status, APP_ORIGINS, Node, NodeConfig, NodeStatus, SITE_ORIGIN};
 use sm64coin_launcher::util::{EXE, home};
 use sm64coin_launcher::{rom, rpc, version};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -19,6 +21,10 @@ pub struct App {
     node_error: Mutex<Option<String>>,
     /// A start is in progress (the DHT lookup takes seconds).
     starting: Mutex<bool>,
+    /// The NAT-PMP/PCP/UPnP mapping the user detected for the P2P port, renewed while the app runs.
+    portmap: Mutex<Option<sm64coin_launcher::portmap::Mapping>>,
+    /// One renewing thread per app.
+    renewing: AtomicBool,
     pub miner: Mutex<Option<miner::Miner>>,
     pub wallet: wallet::Wallet,
     pub link: link::Link,
@@ -76,6 +82,109 @@ impl Dirs {
 
 pub fn port_env(name: &str, default: u16) -> u16 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+/// The node settings the user can change before/after a start (kept in `<data>/node.json`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeSettings {
+    /// The local P2P listening port: the port a VPN's forward must reach.
+    pub p2p_port: u16,
+    /// The public P2P port peers are told (`--p2p-external-port`); 0 means the same as `p2p_port`.
+    pub p2p_external_port: u16,
+    /// Start the node when the app opens (and after a ROM is installed).
+    pub auto_start: bool,
+}
+
+impl Default for NodeSettings {
+    fn default() -> Self {
+        NodeSettings { p2p_port: port_env("SM64COIN_P2P_PORT", 16480), p2p_external_port: 0, auto_start: true }
+    }
+}
+
+fn settings_path(d: &Dirs) -> PathBuf {
+    d.data.join("node.json")
+}
+
+fn load_settings(d: &Dirs) -> NodeSettings {
+    let s = std::fs::read_to_string(settings_path(d)).ok().and_then(|t| serde_json::from_str::<NodeSettings>(&t).ok()).unwrap_or_default();
+    // A hand-edited file must not stop the app from starting; fix the one value that would make no sense (a privileged port).
+    NodeSettings { p2p_port: if s.p2p_port < 1024 { NodeSettings::default().p2p_port } else { s.p2p_port }, ..s }
+}
+
+fn validate_settings(s: &NodeSettings) -> Res<()> {
+    if s.p2p_port < 1024 {
+        return Err(AppError::new("bad_port", "the P2P port must be 1024 or higher (ports below need administrator rights)"));
+    }
+    if s.p2p_external_port != 0 && s.p2p_external_port < 1024 {
+        return Err(AppError::new("bad_port", "the public port must be 0 (same as P2P) or 1024 or higher"));
+    }
+    Ok(())
+}
+
+fn save_settings(d: &Dirs, s: &NodeSettings) -> Res<()> {
+    validate_settings(s)?;
+    std::fs::create_dir_all(&d.data).map_err(|e| AppError::new("settings_write", format!("cannot create {}: {e}", d.data.display())))?;
+    let body = serde_json::to_vec_pretty(s).map_err(|e| AppError::new("settings_write", e.to_string()))?;
+    std::fs::write(settings_path(d), body).map_err(|e| AppError::new("settings_write", format!("cannot write {}: {e}", settings_path(d).display())))
+}
+
+#[tauri::command]
+fn node_settings(app: State<'_, App>) -> Res<NodeSettings> {
+    Ok(load_settings(&app.dirs))
+}
+
+/// Saves the settings. A running node keeps the ports it started with: the page offers to restart it (the frontend does
+/// stop + start, so the user sees the two steps and their errors).
+#[tauri::command]
+fn node_settings_set(app: State<'_, App>, settings: NodeSettings) -> Res<NodeSettings> {
+    save_settings(&app.dirs, &settings)?;
+    Ok(settings)
+}
+
+/// Asks the default gateway (the VPN's tunnel gateway when the VPN owns the default route) for a mapping of the P2P port in
+/// the page's unsaved form (default: the saved one), trying NAT-PMP, PCP and UPnP-IGD. Gateways that implement one of them
+/// expose the forwarded port this way; providers that do not make this return a clear error, and the page asks the user for
+/// the port shown in the VPN app.
+#[tauri::command]
+async fn node_port_detect(app: AppHandle, port: Option<u16>) -> Res<sm64coin_launcher::portmap::Mapping> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = app.state::<App>();
+        let internal = port.unwrap_or_else(|| load_settings(&st.dirs).p2p_port);
+        let mapping = sm64coin_launcher::portmap::detect(internal).map_err(|e| AppError::new("port_detect", e))?;
+        *st.portmap.lock().unwrap() = Some(mapping.clone());
+        if !st.renewing.swap(true, Ordering::SeqCst) {
+            spawn_portmap_renewer(app.clone());
+        }
+        Ok(mapping)
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
+}
+
+/// Port mappings can be short-lived: renew the detected one for as long as the app runs.
+fn spawn_portmap_renewer(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        let st = app.state::<App>();
+        let current = st.portmap.lock().unwrap().clone();
+        let Some(mapping) = current else {
+            std::thread::sleep(Duration::from_secs(30));
+            continue;
+        };
+        std::thread::sleep(sm64coin_launcher::portmap::renew_every(&mapping));
+        let st = app.state::<App>();
+        match sm64coin_launcher::portmap::renew(&mapping) {
+            Ok(next) => {
+                if next.external_port != mapping.external_port {
+                    eprintln!(
+                        "port forward: the public port changed from {} to {}; set it on the Node page and restart the node",
+                        mapping.external_port, next.external_port
+                    );
+                }
+                *st.portmap.lock().unwrap() = Some(next);
+            }
+            Err(e) => eprintln!("port forward: renewal failed: {e}"),
+        }
+    });
 }
 
 #[derive(Serialize)]
@@ -137,7 +246,11 @@ fn rom_install(d: &Dirs, p: &Path) -> Res<RomInfo> {
 fn start_node_later(app: &AppHandle) {
     let h = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) = start_node(&h.state::<App>()) {
+        let st = h.state::<App>();
+        if !load_settings(&st.dirs).auto_start {
+            return;
+        }
+        if let Err(e) = start_node(&st) {
             eprintln!("node: {}", e.message);
         }
     });
@@ -178,21 +291,32 @@ async fn rom_bytes(app: AppHandle) -> Res<tauri::ipc::Response> {
 }
 
 fn node_config(d: &Dirs, rom: PathBuf) -> NodeConfig {
+    let s = load_settings(d);
     let mut c = NodeConfig::new(d.tool("sm64coind"), rom, d.data.clone());
     c.seed_files = vec![d.res.join("seeds.txt"), d.data.join("seeds.txt")];
-    c.p2p_port = port_env("SM64COIN_P2P_PORT", 16480);
+    c.p2p_port = s.p2p_port;
+    c.p2p_external_port = s.p2p_external_port;
+    c.strict_p2p_port = true; // a VPN forward points at this exact port: never silently move it
     c.rpc_port = port_env("SM64COIN_RPC_PORT", 16481);
     c.zmq_port = port_env("SM64COIN_ZMQ_PORT", 16482);
-    c.no_dht = std::env::var_os("SM64COIN_NO_DHT").is_some();
+    // The app has the release's seeds and the node's own peer exchange; a 20 s DHT lookup before the daemon starts only
+    // makes the window feel stuck (and often stalls behind a VPN). The CLI launcher keeps the DHT.
+    c.no_dht = std::env::var_os("SM64COIN_DHT").is_none();
     c.origins = Some(format!("{SITE_ORIGIN},{APP_ORIGINS}"));
     c
+}
+
+/// The ports shown while the node is stopped: the saved P2P settings and the configured local RPC/ZMQ ports.
+fn stopped_status(d: &Dirs) -> NodeStatus {
+    let s = load_settings(d);
+    NodeStatus { p2p_port: s.p2p_port, p2p_external_port: s.p2p_external_port, rpc_port: port_env("SM64COIN_RPC_PORT", 16481), zmq_port: port_env("SM64COIN_ZMQ_PORT", 16482), ..Default::default() }
 }
 
 #[derive(Serialize)]
 struct NodeInfo {
     #[serde(flatten)]
     status: NodeStatus,
-    /// A start is in progress (DHT lookup, spawn).
+    /// A start is in progress (spawn, or waiting for the ROM).
     starting: bool,
     /// Why the node is not running, if the last start failed.
     error: Option<String>,
@@ -203,14 +327,56 @@ struct NodeInfo {
 fn node_info(app: &App) -> NodeInfo {
     let starting = *app.starting.lock().unwrap();
     let error = app.node_error.lock().unwrap().clone();
-    let mut g = app.node.lock().unwrap();
-    match g.as_mut() {
-        Some(n) => {
-            let st = n.status();
-            NodeInfo { rpc_url: Some(format!("http://127.0.0.1:{}", n.rpc_port)), status: st, starting, error }
+    // Take the ownership/port fields under the lock, then release it before the RPC probe: a node loading its chain can take a
+    // second to answer, and holding the node mutex that long would stall the miner, the wallet and every other status poll.
+    let (mut st, rpc_port) = {
+        let mut g = app.node.lock().unwrap();
+        match g.as_mut() {
+            Some(n) => (n.status_base(), Some(n.rpc_port)),
+            None => (stopped_status(&app.dirs), None),
         }
-        None => NodeInfo { status: NodeStatus::default(), starting, error, rpc_url: None },
+    };
+    if let Some(port) = rpc_port {
+        probe_status(&mut st, port);
     }
+    NodeInfo { rpc_url: rpc_port.map(|p| format!("http://127.0.0.1:{p}")), status: st, starting, error }
+}
+
+/// The tail of the node's logs: the daemon's own log (`node-daemon.log`) and the child's stdout/stderr (`node.log`).
+#[derive(Serialize)]
+struct NodeLogs {
+    dir: String,
+    daemon: Option<String>,
+    app: Option<String>,
+}
+
+/// The last `lines` lines of a file, reading at most 256 KiB from its end (logs grow; never load the whole file).
+fn tail_text(path: &Path, lines: usize) -> Option<String> {
+    const MAX: u64 = 256 * 1024;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(MAX);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = sm64coin_launcher::util::strip_ansi(&String::from_utf8_lossy(&buf));
+    let mut all: Vec<&str> = text.lines().collect();
+    if start > 0 && !all.is_empty() {
+        all.remove(0); // the first line is a fragment of the line the read started in
+    }
+    let from = all.len().saturating_sub(lines);
+    Some(all[from..].join("\n"))
+}
+
+#[tauri::command]
+async fn node_log(app: AppHandle, lines: Option<usize>) -> Res<NodeLogs> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = app.state::<App>().dirs.data.join("logs");
+        let n = lines.unwrap_or(200).clamp(1, 2000);
+        Ok(NodeLogs { dir: dir.display().to_string(), daemon: tail_text(&dir.join("node-daemon.log"), n), app: tail_text(&dir.join("node.log"), n) })
+    })
+    .await
+    .map_err(|e| AppError::new("internal", e.to_string()))?
 }
 
 /// Starts the node (blocking: DHT lookup and spawn). The node answering is `node_status`'s business.
@@ -400,7 +566,17 @@ fn nav_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 pub fn run() {
     let dirs = Dirs::detect();
     let wallet = wallet::Wallet::new(&dirs);
-    let app = App { link: link::Link::default(), wallet, dirs, node: Mutex::new(None), node_error: Mutex::new(None), starting: Mutex::new(false), miner: Mutex::new(None) };
+    let app = App {
+        link: link::Link::default(),
+        wallet,
+        dirs,
+        node: Mutex::new(None),
+        node_error: Mutex::new(None),
+        starting: Mutex::new(false),
+        portmap: Mutex::new(None),
+        renewing: AtomicBool::new(false),
+        miner: Mutex::new(None),
+    };
     let remote = crate::remote::Remote::new(Some(app.dirs.data.join("remote-node.txt")), Some(app.dirs.data.join("nodes.json")));
     // The current cycle of the verified chain is replayed in the background (lcverify.rs) with the app's ROM, once there is one.
     let (bundle, data) = (app.dirs.bundle.clone(), app.dirs.data.clone());
@@ -440,7 +616,7 @@ pub fn run() {
             let h = t.handle().clone();
             std::thread::spawn(move || {
                 let st = h.state::<App>();
-                if rom::find(None, &st.dirs.bundle, &st.dirs.data).is_ok() {
+                if load_settings(&st.dirs).auto_start && rom::find(None, &st.dirs.bundle, &st.dirs.data).is_ok() {
                     if let Err(e) = start_node(&st) {
                         eprintln!("node: {}", e.message);
                     }
@@ -448,7 +624,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, crate::remote::net_status, crate::lctip::tip_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, wallet::wallet_pin_enable, wallet::wallet_pin_open, wallet::wallet_pin_disable, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
+        .invoke_handler(tauri::generate_handler![host_info, rom_set, rom_pick, rom_bytes, node_start, node_stop, node_status, node_settings, node_settings_set, node_port_detect, node_log, node_rpc, crate::remote::remote_rpc, crate::remote::remote_node_get, crate::remote::net_status, crate::lctip::tip_get, remote_node_set, wallet::wallet_state, wallet::wallet_rpc, wallet::wallet_settings, wallet::wallet_activity, wallet::wallet_pin_enable, wallet::wallet_pin_open, wallet::wallet_pin_disable, link::link_start, link::link_status, link::link_cancel, link::link_finish, miner_start, miner_stop, miner_status, miner_viz_on, miner_viz_mail])
         .build(tauri::generate_context!())
         .expect("error while building the SM64Coin app")
         .run(|h, ev| {

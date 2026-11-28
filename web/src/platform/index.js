@@ -6,7 +6,7 @@
 //   platform.net                  {status, walletDaemon}: the app's light-client network (which node and transport is in use, the
 //                                 loopback daemon the wallet and the native miner use), or null
 //   platform.tip                  {current, subscribe(fn)}: the chain tip followed in Rust (pushed), or null: lib/tip.js then polls
-//   platform.node                 {status, start, stop} of the local node, or null
+//   platform.node                 {status, start, stop, settings, setSettings, detectPort, log} of the local node, or null
 //   platform.nativeMiner          {start, stop, status, subscribe, onState} of the native miner, or null
 //   platform.wallet               the wallet-rpc sidecar's API (desktop) or null: the Wallet page then uses it, not the WASM engine
 //   platform.biometric            {status, wrap, unwrap, forget} Android only: the phone's fingerprint / screen lock seals the wallet password; null elsewhere

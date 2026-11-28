@@ -30,11 +30,14 @@ rounds, ROM copy, settings, `remote-node.txt`, logs, the webview's own storage) 
 ## What exists
 
 Commands (all return `{code, message}` errors; `capabilities/default.json` grants exactly these, plus event listen):
-`host_info`, `rom_set(path)`, `rom_pick` (system file dialog, the dialog plugin is used from Rust only), `rom_bytes` (feeds the in-page game: no second upload), `remote_rpc(url, method, params)` (the same RPC whitelist over https, only to the public node compiled in from `web/public/public-node.json` or the one https node the user confirmed in a native dialog through `remote_node_set` on the Network page, saved as `remote-node.txt` in the data dir; no redirects), `remote_node_get`, `node_start/stop/status`, `node_rpc(method, params)` (whitelist `rpc::allowed`, no CORS,
+`host_info`, `rom_set(path)`, `rom_pick` (system file dialog, the dialog plugin is used from Rust only), `rom_bytes` (feeds the in-page game: no second upload), `remote_rpc(url, method, params)` (the same RPC whitelist over https, only to the public node compiled in from `web/public/public-node.json` or the one https node the user confirmed in a native dialog through `remote_node_set` on the Network page, saved as `remote-node.txt` in the data dir; no redirects), `remote_node_get`, `node_start/stop/status`, `node_settings` / `node_settings_set` (the P2P and public ports and auto-start, kept in `node.json`), `node_port_detect` (NAT-PMP, then PCP, then UPnP-IGD on the VPN/router gateway: the public port it forwards to the P2P port), `node_log` (bounded tails of `logs/node-daemon.log` and `logs/node.log`), `node_rpc(method, params)` (whitelist `rpc::allowed`, no CORS,
 no HTTP from the webview), `miner_start({address, threads, viz})/miner_stop/miner_status`, `miner_viz_on(on)`, `miner_viz_mail(mail)` (the visualisation feed: `automine --viz`, frames checked and the mailbox rebuilt from its schema in `vizfeed.rs`); events `miner-log`, `miner-state`, `miner-viz`.
-The node starts with the app when a ROM is found and is stopped on quit (also on SIGTERM/SIGINT). The miner runs at
-low priority against the local node. The Mine page shows a "Native miner" card (threads under the gear, local node
-status, log); the WASM auto-miner stays available.
+The node starts with the app when a ROM is found (unless "Start the node when the app opens" is off) and is stopped on quit
+(also on SIGTERM/SIGINT). The Network page's Local node card shows the state, start/stop, the P2P/public port fields
+(the VPN's forward must match), the peers, the data folder and the log, and turns a detected NAT-PMP/PCP/UPnP mapping into the
+advertised `--p2p-external-port` and renews it. The app skips the 20 s DHT lookup and starts `sm64coind` at once (the CLI
+keeps the DHT). The miner runs at low priority against the local node. The Mine page shows a "Native miner" card (threads
+under the gear, local node status, log); the WASM auto-miner stays available.
 
 The window only shows the app's own pages (a navigation guard opens web links in the system browser).
 
@@ -44,6 +47,12 @@ Webview findings (WebKitGTK 2.x): WebGL2 works; WASM works; **SharedArrayBuffer 
 CSP also gives workers no `'unsafe-eval'` (unlike deploy/cloudflare/_headers `/workers/*`); the web miner's worker glue
 needs it, so check it in the app before relying on the WASM miner there. The webview's wallet engine talks to the local
 node directly (node CORS origins include `tauri://localhost`).
+
+Linux startup: the first paint no longer waits for the node probe or the public-node fallback (they run after the app is
+on screen), the P2P port probe has a short timeout and the app skips the DHT lookup before spawning `sm64coind`. The
+current-cycle replay that used to run at once is delayed 45 s (`SM64COIN_NO_REPLAY=1` turns it off). If the webview is
+slow or stutters on a particular GPU/driver, WebKitGTK's DMA-BUF renderer is the usual cause: try
+`WEBKIT_DISABLE_DMABUF_RENDERER=1 ./SM64Coin_*.AppImage` (and, on older drivers, `WEBKIT_DISABLE_COMPOSITING_MODE=1`).
 
 ## Phase 2 (done)
 
@@ -80,8 +89,9 @@ node directly (node CORS origins include `tauri://localhost`).
 
 ## Packaging (phase 2b)
 
-`.github/workflows/release.yml`: jobs `web-desktop` (frontend) and `desktop` (matrix: Linux x86_64 .deb + .AppImage, Windows NSIS
-.exe, macOS arm64 .dmg) after the bundle jobs; `publish` adds the installers to the draft release. `desktop/stage-sidecars.sh
+`.github/workflows/release.yml`: jobs `web-desktop` (frontend) and `desktop` (Linux x86_64 AppImage; Windows NSIS and macOS
+.dmg are temporarily disabled, see the workflow header) after the bundle jobs; `publish` adds the Linux AppImage and the
+Android APK to the draft release (temporary asset set). `desktop/stage-sidecars.sh
 <unpacked bundle> [triple]` stages `src-tauri/stage/` (sidecars named per triple, only the libraries they import, seeds.txt,
 routes/); `src-tauri/bundle/<os>.json` is passed with `tauri build --config` (kept out of tauri.conf.json so a plain
 `cargo build` needs no sidecars). Installed layout: sidecars next to the program, `lib/` next to them (the bundle's RUNPATH

@@ -1,8 +1,6 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from 'react-router';
 import Explorer from './pages/Explorer.jsx';
-import Block from './pages/Block.jsx';
-import Mine from './pages/Mine.jsx';
 import Leaderboard from './pages/Leaderboard.jsx';
 import Network from './pages/Network.jsx';
 import Info from './pages/Info.jsx';
@@ -16,6 +14,9 @@ import { REPO } from './lib/versions.js';
 // The wallet page is lazy: its engine (a wasm web worker) is fetched only when it is opened.
 const Wallet = React.lazy(() => import('./pages/Wallet.jsx'));
 const DesktopLink = React.lazy(() => import('./pages/DesktopLink.jsx')); // opened by the desktop app: hands the passkey wallet over
+// The game and replay pages carry the emulator, the recorder and the replay player (the largest modules): not at first paint.
+const Mine = React.lazy(() => import('./pages/Mine.jsx'));
+const Block = React.lazy(() => import('./pages/Block.jsx'));
 
 // The auto-miner and the manual miner are one page now: /automine (old links, the wallet's) lands on /mine, keeping ?address=.
 function ToMine() {
@@ -56,17 +57,19 @@ export default function App() {
       <UpdateBanner />
       <NewBlockBanner />
       <main>
-        <Routes>
-          <Route path="/" element={<Explorer />} />
-          <Route path="/block/:id" element={<Block />} />
-          <Route path="/mine" element={<Mine />} />
-          <Route path="/automine" element={<ToMine />} />
-          <Route path="/wallet" element={<React.Suspense fallback={<p className="muted">Loading…</p>}><Wallet /></React.Suspense>} />
-          <Route path="/desktop-link" element={<React.Suspense fallback={<p className="muted">Loading…</p>}><DesktopLink /></React.Suspense>} />
-          <Route path="/leaderboard" element={<Leaderboard />} />
-          <Route path="/info" element={<Info />} />
-          <Route path="/network" element={<Network />} />
-        </Routes>
+        <React.Suspense fallback={<p className="muted">Loading…</p>}>
+          <Routes>
+            <Route path="/" element={<Explorer />} />
+            <Route path="/block/:id" element={<Block />} />
+            <Route path="/mine" element={<Mine />} />
+            <Route path="/automine" element={<ToMine />} />
+            <Route path="/wallet" element={<Wallet />} />
+            <Route path="/desktop-link" element={<DesktopLink />} />
+            <Route path="/leaderboard" element={<Leaderboard />} />
+            <Route path="/info" element={<Info />} />
+            <Route path="/network" element={<Network />} />
+          </Routes>
+        </React.Suspense>
       </main>
       <SiteFooter />
     </BrowserRouter>

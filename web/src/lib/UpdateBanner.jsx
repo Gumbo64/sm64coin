@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { daemon, nodeNote, onNodeChange, usingPublicNode } from './rpc.js';
 import { latestRelease, isNewer, nodeLacksState, SITE_VERSION } from './updates.js';
 
@@ -16,15 +17,17 @@ export default function UpdateBanner() {
       const rel = await latestRelease();
       const old = await nodeLacksState(daemon);
       if (dead) return;
-      let text = null;
-      if (nodeNote()) {
-        text = nodeNote();
+      const nodeMessage = nodeNote();
+      let msg = null;
+      if (nodeMessage) {
+        // A node problem is fixed on the Node page, not by reading release notes.
+        msg = { text: nodeMessage, to: '/network', link: 'Node settings' };
       } else if (old) {
-        text = 'Your node is older than SM64Coin 0.2.8: some features fall back (update it).';
+        msg = { text: 'Your node is older than SM64Coin 0.2.8: some features fall back (update it).', url: rel?.url || 'https://github.com/Gumbo64/sm64coin/releases/latest' };
       } else if (rel && isNewer(rel.version, SITE_VERSION)) {
-        text = `SM64Coin ${rel.version} is available.`;
+        msg = { text: `SM64Coin ${rel.version} is available.`, url: rel.url, required: !old && !usingPublicNode() && rel.required };
       }
-      setMsg(text && { text, url: rel?.url || 'https://github.com/Gumbo64/sm64coin/releases/latest', required: !old && !usingPublicNode() && rel?.required });
+      setMsg(msg);
     };
     check();
     const t = setInterval(check, 6 * 3600 * 1000);
@@ -36,7 +39,7 @@ export default function UpdateBanner() {
   return (
     <div className={`update-banner${msg.required ? ' required' : ''}`} role="status">
       {msg.required && <b>Update required. </b>}{msg.text}{' '}
-      <a href={msg.url} target="_blank" rel="noreferrer">Release notes</a>
+      {msg.link ? <Link to={msg.to}>{msg.link}</Link> : <a href={msg.url} target="_blank" rel="noreferrer">Release notes</a>}
       <button className="close" onClick={() => setGone(true)} aria-label="Dismiss">×</button>
     </div>
   );
