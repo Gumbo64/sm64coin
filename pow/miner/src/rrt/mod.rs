@@ -832,6 +832,14 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                 what = format!("to {} ({})", name(via), if CAP.iter().any(|c| c.0 == w) { "cap switch" } else if o.target.is_some() { "forced target" } else { "most stars missing" });
             } else {
                 job.skip = no_go(&st, &mem);
+                if o.no_caps {
+                    // The fallback enters any course not in the skip list; keep the cap-switch courses out too.
+                    for c in CAP.iter() {
+                        if !job.skip.contains(&c.0) {
+                            job.skip.push(c.0);
+                        }
+                    }
+                }
                 what = format!("any course but {:?}", job.skip.iter().map(|&l| name(l)).collect::<Vec<_>>());
             }
             job.env = env;
