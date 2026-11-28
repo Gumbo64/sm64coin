@@ -29,3 +29,15 @@ pub mod sys {
         pub use std::fs::*;
     }
 }
+
+/// Seconds since the Unix epoch. Use this (and `sys::Instant`) instead of `std::time`: on
+/// wasm32-unknown-unknown (the web miner) `std::time::SystemTime::now()` and `Instant::now()` panic
+/// ("time not implemented on this platform"), which killed every web worker whose search met its goal
+/// (v0.5.0–v0.5.6). `tests/no_std_time.rs` keeps std's clock out of code the browser runs.
+pub fn unix_secs() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH);
+    #[cfg(not(target_arch = "wasm32"))]
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    now.map_or(0, |d| d.as_secs())
+}

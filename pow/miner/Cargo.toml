@@ -34,3 +34,5 @@ flate2 = "1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 sm64-binds = { workspace = true, features = ["wasm_js"] }
 wasm-bindgen = "0.2"
+# The browser has no std clock: std::time::{Instant, SystemTime}::now() panic on wasm32-unknown-unknown.
+web-time = "1.1"

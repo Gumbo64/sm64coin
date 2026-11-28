@@ -377,7 +377,7 @@ fn run_step_core(job: &Job, sc: &'static SearchConfig, rt: Option<Arc<Runtime>>,
     // frame budget (read at the top of every round) to a few frames on, and a wall-clock mark ends it too.
     if job.grace_frames > 0 || job.grace_secs > 0.0 {
         let (jb, rt) = (job.clone(), root.clone());
-        let (mut seen, mut met_at): (usize, Option<std::time::Instant>) = (1, None);
+        let (mut seen, mut met_at): (usize, Option<crate::sys::Instant>) = (1, None);
         let mut inner = engine.on_hybrid.take();
         engine.on_hybrid = Some(Box::new(move |e| {
             if let Some(f) = inner.as_mut() {
@@ -387,7 +387,7 @@ fn run_step_core(job: &Job, sc: &'static SearchConfig, rt: Option<Arc<Runtime>>,
                 let hit = e.tree.nodes.iter().skip(seen).any(|n| meets(&jb, &rt, &n.st) && n.st.frame.saturating_sub(jb.frame0) <= jb.max_path);
                 seen = e.tree.nodes.len();
                 if hit {
-                    met_at = Some(std::time::Instant::now());
+                    met_at = Some(crate::sys::Instant::now());
                     if jb.grace_frames > 0 {
                         let end = e.total_frames_emulated() + jb.grace_frames;
                         e.cfg.max_frames = Some(e.cfg.max_frames.map_or(end, |m| m.min(end)));

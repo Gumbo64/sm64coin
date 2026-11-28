@@ -19,6 +19,16 @@ Nothing else needs to be installed. Verify a download with `sha256sum -c SHA256S
 The `sm64coin` launcher is no longer shipped.
 
 
+### 0.5.7: fix for the website's auto-miner
+
+Same chain as 0.5.6, upgrade in place. Only a fix:
+
+- **The website's auto-miner no longer crashes.** A browser worker died ("unreachable executed …
+  `Instant::now`") whenever its search reached the goal, then restarted, so web auto-mining could not
+  finish a step. The cause was a call to the standard clock, which does not exist in browsers; the miner
+  now uses the browser's clock, and a test keeps the standard clock out of code the browser runs.
+  The desktop app, the Android app and the native miner were not affected.
+
 ### 0.5.6: the final release (instant blocks from public nodes again, PIN unlock and an address book)
 
 This is the last planned release of SM64Coin. Same chain as 0.5.0 to 0.5.5: no reset, upgrade in place.

@@ -458,13 +458,13 @@ fn run_inproc(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, st
         move || child::run_step_inproc(&job, &io)
     })?;
     let mut counted = 0u64;
-    let mut polled = std::time::Instant::now();
+    let mut polled = crate::sys::Instant::now();
     while !worker.is_finished() {
         if stop.load(Ordering::Relaxed) {
             flag.store(true, Ordering::Relaxed);
         }
         if polled.elapsed() >= Duration::from_millis(500) {
-            polled = std::time::Instant::now();
+            polled = crate::sys::Instant::now();
             let n = hub.step_frames();
             if n > counted {
                 hub.add_sim_frames(n - counted);
@@ -534,10 +534,10 @@ fn run_child(o: &RrtOptions, game: &SM64MiningGame, mut job: Job, tag: &str, sto
     };
     let pf = format!("{}.progress", job.out_dir);
     let mut counted = 0u64; // this step's frames already in the hub's counter
-    let mut polled = std::time::Instant::now();
+    let mut polled = crate::sys::Instant::now();
     let status = loop {
         if polled.elapsed() >= Duration::from_millis(500) {
-            polled = std::time::Instant::now();
+            polled = crate::sys::Instant::now();
             if let Ok(n) = crate::sys::fs::read_to_string(&pf).unwrap_or_default().trim().parse::<u64>() {
                 if n > counted {
                     hub.add_sim_frames(n - counted);

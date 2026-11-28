@@ -57,7 +57,7 @@ impl SignedStore {
     /// Records that `proof` is about to be signed for `seed_hash`, and saves the file
     /// BEFORE the caller signs (a crash after this can only forbid a signature).
     pub fn record(&mut self, seed_hash: &str, proof: &[u8], frames: u32) -> Result<()> {
-        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let at = crate::unix_secs();
         self.map.insert(seed_hash.to_string(), Signed { proof_id: hex::encode(sm64pow::proof_id(proof)), frames, at });
         while self.map.len() > KEEP {
             let oldest = self.map.iter().min_by_key(|(_, s)| s.at).map(|(k, _)| k.clone());
