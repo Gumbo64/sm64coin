@@ -60,6 +60,15 @@ struct Args {
     rrt_checkpoints: usize,
     #[arg(long, default_value_t = 0)]
     rrt_stall: u64,
+    /// Force the castle to enter this course level (e.g. 9 BoB, 24 WF, 12 JRB, 5 CCM, 4 BBH) instead of the
+    /// campaign's most-missing-course choice. Run one miner per course to search them in parallel; the first
+    /// valid run wins the block.
+    #[arg(long)]
+    rrt_target: Option<u16>,
+    /// Never choose a cap-switch course: the switch is a valid progress point but leaves the next block inside the
+    /// secret course, where the pause-menu exit is not reliable.
+    #[arg(long)]
+    no_caps: bool,
     #[arg(long, default_value = "")]
     rrt_env: String,
     #[arg(long, default_value = "run/rrt-scratch")]
@@ -163,6 +172,8 @@ fn main() -> Result<()> {
     cfg.scratch = Some(a.rrt_scratch.clone().into());
     cfg.signed_file = Some(a.signed_file.clone().into());
     cfg.frame_cap = a.rh_frames;
+    cfg.target = a.rrt_target;
+    cfg.no_caps = a.no_caps;
     cfg.anytime = a.anytime;
     cfg.submit_lead = a.submit_lead;
     cfg.normalise = if a.no_normalise { Normalise::Off } else if a.exact_normalise { Normalise::Exact } else { Normalise::Replay };

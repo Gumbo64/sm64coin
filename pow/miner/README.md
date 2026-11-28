@@ -65,3 +65,18 @@ while the run waits for the time limit, normalise, sign once, submit); `examples
 Android: `cargo build --release --target aarch64-linux-android -p sm64coin-miner --lib --examples` builds and links (NDK 27, the
 clang of `aarch64-linux-android24` as `CC_aarch64_linux_android`, `AR_aarch64_linux_android` and the cargo linker; `ring`, from
 `ureq`'s rustls, compiles C). Not run on a device: whether the wasmer JIT in sm64-binds runs under Android's policies is untested.
+
+## Hard-star policy (`scripts/automine-fast.sh`)
+
+The campaign does not need to commit to a hard star. The wrapper runs the tuned policy that mined the first blocks on the
+live v0.5 chain when a 150 M-frame commitment to BoB found nothing: two 20 M-frame course budgets, two checkpoints, a 45 s
+wall-clock cap per tree, and no cap-switch courses. A course that gives no progress is skipped and the next one is tried;
+the campaign's `campaign.json` memory keeps the skip list across blocks. `--no-caps` avoids a cap switch: the switch is a
+valid block but leaves the next block inside the secret course, where the pause-menu exit can fail (the miner now waits
+for the switch cutscene to finish and exits by the pause menu; `rrt::pause_exit`). `--rrt-target <level>` forces one course
+(a portfolio of miners can search different courses in parallel); `--rrt-course-frames`, `--rrt-checkpoints`,
+`--rrt-step-seconds` override the preset.
+
+```sh
+scripts/automine-fast.sh --address SM64... --daemon http://127.0.0.1:16481 --rom baserom.us.z64 --rh-threads 15 --blocks 1
+```

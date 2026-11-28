@@ -78,6 +78,13 @@ pub struct RrtOptions {
     pub seed: u64,
     /// Frames a run may take (0: the most any difficulty allows).
     pub frame_cap: usize,
+    /// Force the castle to enter this course level (its missing progress point) instead of the campaign's
+    /// most-missing-course choice. A portfolio of campaigns can target different courses in parallel; an
+    /// easy star in any of them wins the block.
+    pub target: Option<u16>,
+    /// Never choose a cap-switch course: the switch is a valid progress point but leaves the next block inside
+    /// the secret course, where the pause-menu exit is not reliable; stars and keys end in the castle after the dance.
+    pub no_caps: bool,
     /// Scratch directory for the step files, the campaign memory and the roadmap.
     pub scratch: PathBuf,
     /// The `rrtrun` binary (default: next to the running one).
@@ -198,6 +205,8 @@ impl Default for RrtOptions {
             mem_mb: 1500,
             seed: 1,
             frame_cap: 0,
+            target: None,
+            no_caps: false,
             scratch: crate::sys::env::temp_dir().join("sm64coin-rrt"),
             child: None,
             keep: false,
@@ -632,6 +641,24 @@ fn guard(shadow: &SM64MiningGame, played: &[GamePad], level: u16, frame: u32, po
 /// poke may have moved the cursor), with the game and `played` as they were.
 fn pause_exit(game: &mut SM64MiningGame, played: &mut Vec<GamePad>, max: usize, before: &sm64pow::game::Progress) -> Result<bool> {
     let save = (game.save_state(), played.len());
+    // A cap-switch block ends with the switch's cutscene still running: a START sent during it is swallowed (or starts the
+    // next dialog) and the pause menu never opens, so the parent loops in the course forever. Wait until the game has been
+    // standing in the normal idle action for a while; then the menu opens and "Exit Course" works.
+    let mut calm = 0;
+    for _ in 0..900 {
+        let st = read_state(game, played.len() as u32, false);
+        calm = if st.controllable() && st.dialog < 0 && st.menu_mode < 0 && st.action == 0xc400201 { calm + 1 } else { 0 };
+        if calm >= 30 {
+            break;
+        }
+        if played.len() >= max {
+            return Ok(false);
+        }
+        played.push(game.step(GamePad::default())?.0);
+        if sm64pow::rules().is_success(before, &game.progress()?) {
+            bail!("progress while waiting for the parent's cutscene to finish");
+        }
+    }
     let mut tail = vec![GamePad::new(0x1000, 0, 0)];
     tail.extend(std::iter::repeat_n(GamePad::default(), 30));
     tail.extend(std::iter::repeat_n(GamePad::new(0, 0, -80), 3));
@@ -779,9 +806,11 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             env.push(("OBRRT_FINAL".into(), "1".into()));
         }
         if in_hub {
-            let castle = castle_star(&st, &mem);
-            let moat = if castle.is_none() && !final_(&st) { moat_step(&st, &mem) } else { false };
-            let want = want_target(&st, &mem);
+            // A forced course (portfolio mining) bypasses the castle-star/moat choices: the campaign's job is that
+            // course's missing progress point, not the campaign's most-missing-course pick.
+            let castle = if o.target.is_none() { castle_star(&st, &mem) } else { None };
+            let moat = if o.target.is_none() && castle.is_none() && !final_(&st) { moat_step(&st, &mem) } else { false };
+            let want = o.target.or_else(|| if o.no_caps { want_open(&st, &mem) } else { want_target(&st, &mem) });
             job.budget = (o.hub_frames as f64 * mem.mult) as u64;
             let what;
             if let Some(area) = castle {
@@ -800,7 +829,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                 let via = via(w);
                 job.target = Some(via);
                 job.skip = all_courses().into_iter().filter(|&l| l != via).collect();
-                what = format!("to {} ({})", name(via), if CAP.iter().any(|c| c.0 == w) { "cap switch" } else { "most stars missing" });
+                what = format!("to {} ({})", name(via), if CAP.iter().any(|c| c.0 == w) { "cap switch" } else if o.target.is_some() { "forced target" } else { "most stars missing" });
             } else {
                 job.skip = no_go(&st, &mem);
                 what = format!("any course but {:?}", job.skip.iter().map(|&l| name(l)).collect::<Vec<_>>());

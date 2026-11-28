@@ -116,6 +116,10 @@ pub struct CampaignConfig {
     pub stall: u64,
     pub extra_env: String,
     pub frame_cap: usize,
+    /// Force the castle to enter this course level (portfolio mining); 0/None: the campaign's most-missing-course pick.
+    pub target: Option<u16>,
+    /// Never choose a cap-switch course (a switch leaves the next block inside the secret course).
+    pub no_caps: bool,
     /// `when-stuck`: also give up the parent-start search after this many seconds on an "either" template and take
     /// power-on (0: only when the search itself gives up).
     pub reset_after: u64,
@@ -157,6 +161,8 @@ impl CampaignConfig {
             stall: 0,
             extra_env: String::new(),
             frame_cap: 0,
+            target: None,
+            no_caps: false,
             reset_after: 0,
             stamp_ahead: 0,
             save_block: None,
@@ -571,6 +577,8 @@ impl Ctx<'_> {
             stall: self.cfg.stall,
             extra_env: self.cfg.extra_env.clone(),
             frame_cap: self.cfg.frame_cap,
+            target: self.cfg.target,
+            no_caps: self.cfg.no_caps,
             child: self.cfg.child.clone(),
             rom: self.cfg.rom_path.clone(),
             in_process: self.cfg.in_process,
