@@ -125,6 +125,11 @@ pub struct RrtOptions {
     pub seed_run: Option<SeedRun>,
     pub seed_chunk: usize,
     pub seed_weight: f64,
+    /// A movie segment to seed the course tree of this level: pads from the course step's root, added as manual
+    /// prefixes (the search branches off the known route). None: no course seed.
+    pub course_seed: Option<(u16, Vec<GamePad>)>,
+    pub course_seed_chunk: usize,
+    pub course_seed_weight: f64,
 }
 
 /// A run found earlier (by this or another search of the block): its pads and the played length at the start of each step.
@@ -226,6 +231,9 @@ impl Default for RrtOptions {
             seed_run: None,
             seed_chunk: 45,
             seed_weight: 2.0,
+            course_seed: None,
+            course_seed_chunk: 16,
+            course_seed_weight: 1.0,
         }
     }
 }
@@ -810,7 +818,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
             // course's missing progress point, not the campaign's most-missing-course pick.
             let castle = if o.target.is_none() { castle_star(&st, &mem) } else { None };
             let moat = if o.target.is_none() && castle.is_none() && !final_(&st) { moat_step(&st, &mem) } else { false };
-            let want = o.target.or_else(|| if o.no_caps { want_open(&st, &mem) } else { want_target(&st, &mem) });
+            let want = o.target.or_else(|| want_key(&st, &mem)).or_else(|| if o.no_caps { want_open(&st, &mem) } else { want_target(&st, &mem) });
             job.budget = (o.hub_frames as f64 * mem.mult) as u64;
             let what;
             if let Some(area) = castle {
@@ -829,7 +837,7 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
                 let via = via(w);
                 job.target = Some(via);
                 job.skip = all_courses().into_iter().filter(|&l| l != via).collect();
-                what = format!("to {} ({})", name(via), if CAP.iter().any(|c| c.0 == w) { "cap switch" } else if o.target.is_some() { "forced target" } else { "most stars missing" });
+                what = format!("to {} ({})", name(via), if CAP.iter().any(|c| c.0 == w) { "cap switch" } else if o.target.is_some() { "forced target" } else if KEY_OF.iter().any(|k| k.0 == w) { "next key" } else { "most stars missing" });
             } else {
                 job.skip = no_go(&st, &mem);
                 if o.no_caps {
@@ -955,6 +963,18 @@ pub fn mine(start: Start, parent: Option<&SaveState>, seed: &Seed, params: &Para
         let seen = mem.cp_seen.get(&zone).filter(|s| s.stars == course_byte(&st, zone)).cloned().unwrap_or_default();
         job.checkpoint = (cp_n < o.checkpoints).then(|| CpAsk { n: cp_n, prefer: if cp_n > 0 { cp_goal.clone() } else { None }, avoid: seen.at.clone(), used_stages: seen.stages.clone(), keys: st.keys, end: final_(&st) });
         job.env = env;
+        if let Some((lvl, pads)) = &o.course_seed {
+            if zone == *lvl && pads.len() > 1 {
+                let c = o.course_seed_chunk.max(1);
+                job.manual = (1..)
+                    .map(|k| k * c)
+                    .take_while(|&n| n < pads.len())
+                    .map(|n| pads[..n].iter().map(|p| (p.button, p.stick_x, p.stick_y)).collect())
+                    .collect();
+                job.manual_weight = o.course_seed_weight;
+                log(format!("  course seed: {} manual prefixes up to {} frames", job.manual.len(), pads.len()));
+            }
+        }
         log(format!("step {step}: {} at frame {} (act select {} controllable {} action {:#x}){}{}; budget {:.0} M frames", name(zone), played.len(), st.act_select, st.controllable(), st.action, if need != 0 { format!(", cap switch {need:#x} wanted") } else { String::new() }, if cp_n > 0 { format!(", after checkpoint {cp_n}") } else { String::new() }, job.budget as f64 / 1e6));
         tree_sync(o, &mut job, &played, zone, cp_n);
         let out = match run_child(o, &game, job, &format!("s{step}"), stop) {

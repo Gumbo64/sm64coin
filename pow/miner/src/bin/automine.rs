@@ -65,10 +65,16 @@ struct Args {
     /// valid run wins the block.
     #[arg(long)]
     rrt_target: Option<u16>,
-    /// Never choose a cap-switch course: the switch is a valid progress point but leaves the next block inside the
-    /// secret course, where the pause-menu exit is not reliable.
     #[arg(long)]
     no_caps: bool,
+    /// Seed the course tree of LEVEL with a movie segment: LEVEL:MOVIE:FROM:TO (frame range in the movie).
+    /// The segment must start at the state the campaign enters the course with; its prefixes are added to the tree.
+    #[arg(long)]
+    rrt_seed: Option<String>,
+    #[arg(long, default_value_t = 16)]
+    rrt_seed_chunk: usize,
+    #[arg(long, default_value_t = 1.0)]
+    rrt_seed_weight: f64,
     #[arg(long, default_value = "")]
     rrt_env: String,
     #[arg(long, default_value = "run/rrt-scratch")]
@@ -174,6 +180,20 @@ fn main() -> Result<()> {
     cfg.frame_cap = a.rh_frames;
     cfg.target = a.rrt_target;
     cfg.no_caps = a.no_caps;
+    cfg.course_seed_chunk = a.rrt_seed_chunk;
+    cfg.course_seed_weight = a.rrt_seed_weight;
+    if let Some(spec) = &a.rrt_seed {
+        let mut it = spec.splitn(4, ':');
+        let level: u16 = it.next().unwrap_or("").parse().map_err(|_| anyhow::anyhow!("--rrt-seed: bad level in {spec:?}"))?;
+        let movie = it.next().ok_or_else(|| anyhow::anyhow!("--rrt-seed wants LEVEL:MOVIE:FROM:TO"))?;
+        let from: usize = it.next().unwrap_or("0").parse().map_err(|_| anyhow::anyhow!("--rrt-seed: bad FROM in {spec:?}"))?;
+        let to: usize = it.next().map(|s| s.parse()).transpose().map_err(|_| anyhow::anyhow!("--rrt-seed: bad TO in {spec:?}"))?.unwrap_or(usize::MAX);
+        let pads = sm64coin_miner::m64::load_m64(movie)?;
+        let end = to.min(pads.len());
+        anyhow::ensure!(from < end, "--rrt-seed: FROM {from} is not before TO {end} (the movie has {} frames)", pads.len());
+        cfg.course_seed = Some((level, pads[from..end].to_vec()));
+        println!("course seed: level {level}, movie frames {from}..{end} ({} frames)", end - from);
+    }
     cfg.anytime = a.anytime;
     cfg.submit_lead = a.submit_lead;
     cfg.normalise = if a.no_normalise { Normalise::Off } else if a.exact_normalise { Normalise::Exact } else { Normalise::Replay };

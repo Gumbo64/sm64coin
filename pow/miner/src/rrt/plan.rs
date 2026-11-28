@@ -115,6 +115,12 @@ pub fn want_cap(st: &St, m: &Memory) -> Option<u16> {
         .map(|c| c.0)
 }
 
+/// The next key course whose key the save is missing, unless a tree failed at it since the last full pass: a key
+/// opens more stars than any one course, so it is tried before the most-missing-course pick.
+pub fn want_key(st: &St, m: &Memory) -> Option<u16> {
+    KEY_OF.iter().find(|&&(lvl, key)| st.keys < key && !m.skip.contains(&lvl)).map(|k| k.0)
+}
+
 /// The main course with the most stars missing, the least visited first,
 /// among those the doors let in, not skipped and not failed.
 pub fn want_open(st: &St, m: &Memory) -> Option<u16> {

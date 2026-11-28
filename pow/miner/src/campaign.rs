@@ -41,7 +41,7 @@ use crate::rh::Mined;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sm64pow::proof::Start;
-use sm64pow::sm64_binds::SaveState;
+use sm64pow::sm64_binds::{GamePad, SaveState};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -118,8 +118,12 @@ pub struct CampaignConfig {
     pub frame_cap: usize,
     /// Force the castle to enter this course level (portfolio mining); 0/None: the campaign's most-missing-course pick.
     pub target: Option<u16>,
-    /// Never choose a cap-switch course (a switch leaves the next block inside the secret course).
     pub no_caps: bool,
+    /// A movie segment that seeds the course tree of this level (pads from the course step's root): the search
+    /// branches off the known route as manual prefixes.
+    pub course_seed: Option<(u16, Vec<GamePad>)>,
+    pub course_seed_chunk: usize,
+    pub course_seed_weight: f64,
     /// `when-stuck`: also give up the parent-start search after this many seconds on an "either" template and take
     /// power-on (0: only when the search itself gives up).
     pub reset_after: u64,
@@ -163,6 +167,9 @@ impl CampaignConfig {
             frame_cap: 0,
             target: None,
             no_caps: false,
+            course_seed: None,
+            course_seed_chunk: 16,
+            course_seed_weight: 1.0,
             reset_after: 0,
             stamp_ahead: 0,
             save_block: None,
@@ -579,6 +586,9 @@ impl Ctx<'_> {
             frame_cap: self.cfg.frame_cap,
             target: self.cfg.target,
             no_caps: self.cfg.no_caps,
+            course_seed: self.cfg.course_seed.clone(),
+            course_seed_chunk: self.cfg.course_seed_chunk,
+            course_seed_weight: self.cfg.course_seed_weight,
             child: self.cfg.child.clone(),
             rom: self.cfg.rom_path.clone(),
             in_process: self.cfg.in_process,
